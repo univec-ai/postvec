@@ -8,8 +8,10 @@ description: Grants, RLS, credentials, and what the worker can see.
 ## On-prem is the default story
 
 Embedded mode runs the engine in the PostgreSQL launcher. There is no
-outbound embedding API and no third-party runtime. Text, weights and
-inference stay on the host.
+outbound embedding API and no third-party inference service. Text, weights and
+inference stay on the host. The engine uses packaged libraries such as ONNX
+Runtime locally; “on-prem” does not mean the software has no upstream
+dependencies.
 
 ## No provider keys in PostgreSQL
 

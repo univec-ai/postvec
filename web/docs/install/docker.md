@@ -8,6 +8,9 @@ description: Run the official postvec images and the rules that keep data safe.
 The embedded image is the shortest self-contained deployment: PostgreSQL,
 pgvector, postvec, the CLI, ONNX Runtime, and MiniLM.
 
+The commands below use the planned `0.1.0-1` tags. The [release artifacts
+page](/download) reports whether they are published.
+
 ## Embedded (all-in-one)
 
 ```bash

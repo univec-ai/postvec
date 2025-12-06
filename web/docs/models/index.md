@@ -47,6 +47,13 @@ Public entries keep their public download URLs even when you are logged
 in. The private channel is a **superset**. Details:
 [login](/docs/models/login).
 
+::: info Registry publication
+The client, schema, and authenticated route are implemented, but the public and
+private catalogue buckets are still in release preview. The bundled MiniLM
+package works without the registry. The [release page](/download) is the source
+for publication status.
+:::
+
 ## Who installs bytes
 
 | Mode | Install / remove / upgrade |

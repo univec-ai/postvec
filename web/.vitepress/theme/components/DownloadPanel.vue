@@ -19,28 +19,30 @@ const files = computed(() => {
   const d = selectedDistro.value;
   const a = selectedArch.value;
   const major = pg.value;
-  const rel = SITE.release;
+  const postvec = SITE.release;
+  const ort = `${SITE.onnxRuntimeVersion}-${SITE.packageRelease}`;
+  const model = `${SITE.bundledModelVersion}-${SITE.packageRelease}`;
   if (d.family === "deb") {
     const common = [
-      `postvec-cli_${rel}${d.tag}_${a.deb}.deb`,
-      `postgresql-${major}-postvec_${rel}${d.tag}_${a.deb}.deb`,
+      `postvec-cli_${postvec}${d.tag}_${a.deb}.deb`,
+      `postgresql-${major}-postvec_${postvec}${d.tag}_${a.deb}.deb`,
     ];
     const embedded = [
-      `postvec-onnxruntime_${rel}${d.tag}_${a.deb}.deb`,
-      `postvec-model-minilm-l6-v2_${rel}${d.tag}_all.deb`,
-      `postvec-embedded_${rel}${d.tag}_all.deb`,
+      `postvec-onnxruntime_${ort}${d.tag}_${a.deb}.deb`,
+      `postvec-model-minilm-l6-v2_${model}${d.tag}_all.deb`,
+      `postvec-embedded_${postvec}${d.tag}_all.deb`,
     ];
     return variant.value === "embedded" ? [...common, ...embedded] : common;
   }
   const rpmArch = a.rpm;
   const common = [
-    `postvec-cli-${rel}${d.tag}.${rpmArch}.rpm`,
-    `postgresql${major}-postvec-${rel}${d.tag}.${rpmArch}.rpm`,
+    `postvec-cli-${postvec}${d.tag}.${rpmArch}.rpm`,
+    `postgresql${major}-postvec-${postvec}${d.tag}.${rpmArch}.rpm`,
   ];
   const embedded = [
-    `postvec-onnxruntime-${rel}${d.tag}.${rpmArch}.rpm`,
-    `postvec-model-minilm-l6-v2-${rel}${d.tag}.noarch.rpm`,
-    `postvec-embedded-${rel}${d.tag}.noarch.rpm`,
+    `postvec-onnxruntime-${ort}${d.tag}.${rpmArch}.rpm`,
+    `postvec-model-minilm-l6-v2-${model}${d.tag}.noarch.rpm`,
+    `postvec-embedded-${postvec}${d.tag}.noarch.rpm`,
   ];
   return variant.value === "embedded" ? [...common, ...embedded] : common;
 });
@@ -96,9 +98,7 @@ onMounted(async () => {
       return;
     }
     const data = (await res.json()) as ReleaseInfo[];
-    const match =
-      data.find((r) => r.tag_name === SITE.releaseTag) ??
-      data.find((r) => r.tag_name.startsWith("postvec-v"));
+    const match = data.find((r) => r.tag_name === SITE.releaseTag);
     if (!match) {
       releaseState.value = "empty";
       return;
@@ -118,20 +118,38 @@ function assetUrl(name: string): string | null {
 
 <template>
   <div class="dl">
-    <div class="notice" v-if="releaseState !== 'ok'">
-      <strong>Hosting is GitHub Releases + GHCR.</strong>
-      There is no signed apt/yum repository yet. When a
-      <code>{{ SITE.releaseTag }}</code> release is published, the links below
-      light up automatically. Until then, pull the image or install the files
-      you built locally.
+    <div class="release-note" v-if="releaseState === 'loading'">
+      <span class="release-kicker">Release preview</span>
+      <p>
+        Checking GitHub for <code>{{ SITE.releaseTag }}</code>. The exact
+        artifact names are shown below meanwhile.
+      </p>
     </div>
 
-    <div class="notice ok" v-else>
-      Live release
-      <a :href="release?.html_url" target="_blank" rel="noreferrer">
-        {{ release?.tag_name }}
-      </a>
-      — checksums and attestations ship next to the packages.
+    <div class="release-note" v-else-if="releaseState === 'empty'">
+      <span class="release-kicker">Release preview</span>
+      <p>
+        <code>{{ SITE.releaseTag }}</code> is not published. The exact artifact
+        names are shown below for release rehearsal and local builds.
+      </p>
+    </div>
+
+    <div class="release-note" v-else-if="releaseState === 'error'">
+      <span class="release-kicker">Release status unavailable</span>
+      <p>
+        GitHub could not be checked. Confirm <code>{{ SITE.releaseTag }}</code>
+        on the releases page before using the artifact paths below.
+      </p>
+    </div>
+
+    <div class="release-note release-note--live" v-else>
+      <span class="release-kicker">Published release</span>
+      <p>
+        <a :href="release?.html_url" target="_blank" rel="noreferrer">
+          {{ release?.tag_name }}
+        </a>
+        includes checksums, attestations, packages, and matching image tags.
+      </p>
     </div>
 
     <div class="pickers">
@@ -166,12 +184,13 @@ function assetUrl(name: string): string | null {
       </label>
     </div>
 
-    <h3>Container</h3>
+    <h3>Container image</h3>
     <CopyCommand :command="`docker pull ${imageTag}`" label="Pinned tag" />
     <p class="hint">
-      Moving tag <code>{{ movingTag }}</code> exists too. There is no
+      The moving tag is <code>{{ movingTag }}</code>. There is no
       <code>latest</code> — it would hide the PostgreSQL major. Pin the
-      versioned tag in production, preferably by digest.
+      versioned tag in production, preferably by digest. A preview tag may not
+      resolve until the release is published.
     </p>
     <p class="hint">
       PostgreSQL 18 volumes mount at <code>/var/lib/postgresql</code>. 16 and 17
@@ -191,7 +210,7 @@ function assetUrl(name: string): string | null {
       </li>
     </ul>
     <p class="hint" v-if="releaseState !== 'ok'">
-      Expected release URL:
+      Publication path:
       <code>{{ releaseBase }}/</code> plus the filename.
     </p>
     <CopyCommand :command="installCmd" :label="selectedDistro.family === 'deb' ? 'apt' : 'dnf'" />
@@ -212,49 +231,81 @@ function assetUrl(name: string): string | null {
   margin: 1.4rem 0 2rem;
 }
 
-.notice {
-  padding: 0.85rem 1rem;
-  border-radius: 10px;
-  border: 1px solid var(--vp-c-divider);
-  background: var(--vp-c-bg-soft);
-  font-size: 0.94rem;
-  line-height: 1.5;
-  margin-bottom: 1.2rem;
+.release-note {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.28fr) 1fr;
+  gap: 1rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--vp-c-divider);
+  border-bottom: 1px solid var(--vp-c-divider);
+  margin-bottom: 1.5rem;
 }
 
-.notice.ok {
-  border-color: var(--vp-c-brand-1);
+.release-note p {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+
+.release-note--live {
+  border-top-color: var(--vp-c-brand-1);
+}
+
+.release-kicker {
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
 }
 
 .pickers {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid var(--vp-c-divider);
+  border-bottom: 1px solid var(--vp-c-divider);
+  margin-bottom: 2rem;
 }
 
 label {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.45rem;
+  padding: 0.85rem 1rem 0.9rem;
+  border-right: 1px solid var(--vp-c-divider);
+  border-bottom: 1px solid var(--vp-c-divider);
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--vp-c-text-2);
 }
 
+label:nth-child(odd) {
+  padding-left: 0;
+}
+
+label:nth-child(even) {
+  padding-right: 0;
+  border-right: 0;
+}
+
+label:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
 select {
   appearance: none;
-  border: 1px solid var(--vp-c-border);
-  background: var(--vp-c-bg-elv);
+  border: 0;
+  border-bottom: 1px solid var(--vp-c-border);
+  background: transparent;
   color: var(--vp-c-text-1);
-  border-radius: 8px;
-  padding: 0.5rem 0.7rem;
+  border-radius: 0;
+  padding: 0.4rem 1.25rem 0.35rem 0;
   font: inherit;
 }
 
 h3 {
-  margin: 1.5rem 0 0.7rem;
-  font-family: "Manrope", sans-serif;
+  margin: 2.25rem 0 0.7rem;
 }
 
 .files {
@@ -279,5 +330,31 @@ h3 {
 
 .dl > .copy-cmd + .hint {
   margin-top: 0.7rem;
+}
+
+@media (max-width: 640px) {
+  .release-note {
+    grid-template-columns: 1fr;
+    gap: 0.45rem;
+  }
+
+  .pickers {
+    grid-template-columns: 1fr;
+  }
+
+  label {
+    border-right: 0;
+    border-bottom: 1px solid var(--vp-c-divider);
+    padding-right: 0;
+    padding-left: 0;
+  }
+
+  label:nth-last-child(-n + 2) {
+    border-bottom: 1px solid var(--vp-c-divider);
+  }
+
+  label:last-child {
+    border-bottom: 0;
+  }
 }
 </style>

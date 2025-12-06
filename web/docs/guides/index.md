@@ -17,7 +17,7 @@ or `set_format()` for you.
 | Embed title + body | [`set_format()`](/docs/guides/templates) | — |
 | Long documents | [`chunking`](/docs/guides/chunking) | — |
 | Take over existing vectors | [`adopt()`](/docs/guides/adopt) | — |
-| Query a locked space without migrating | [bridge](/docs/guides/bridge) | `model pull` of the target + `embed-bridge` |
+| Query a locked space without migrating | [bridge](/docs/guides/bridge) | pull the converter; dependencies bring the embed model + `embed-bridge` |
 | Change model | [`migrate()`](/docs/guides/migrate) | — |
 | Speed up search | [`create_vector_index()`](/docs/guides/indexes) | `doctor` index checks |
 | Re-drive failures | [`retry_dead()`](/docs/guides/retry) | `doctor` `queue.dead` |

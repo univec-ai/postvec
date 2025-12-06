@@ -85,5 +85,6 @@ Yes. The CLI is a separate package so `postgresql-16-postvec` and
 
 ## Where are the downloads hosted?
 
-GitHub Releases and GHCR today. See [Download](/download). There is no
-signed apt/yum repo yet.
+GitHub Releases and GHCR are the configured publication channels. See
+[Release artifacts](/download) for the live/preview state. There is no signed
+apt/yum repository.

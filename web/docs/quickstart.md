@@ -8,6 +8,12 @@ description: Get hybrid search working in a disposable postvec container.
 This path never touches a host PostgreSQL cluster. It is the right first
 contact: one container, no API key, one table, one search.
 
+::: info Release status
+This recipe uses the planned `0.1.0-1` image. Check [release artifacts](/download)
+before pulling it. If the tag is not published yet, build the image locally or
+use an existing development package.
+:::
+
 ## 1. Run the embedded image
 
 ```bash

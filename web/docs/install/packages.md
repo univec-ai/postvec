@@ -7,7 +7,8 @@ description: apt and dnf install of postvec on Debian, Ubuntu, and EL9.
 
 This is the path a third-party host should use. Download the files for
 **one** release, **one** distribution, **one** architecture, **one**
-PostgreSQL major. The [download](/download) page names them.
+PostgreSQL major. The [release artifacts](/download) page names them and reports
+whether the release is published.
 
 ## 1. Prerequisites (PGDG)
 

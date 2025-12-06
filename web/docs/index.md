@@ -1,9 +1,9 @@
 ---
-title: What is postvec?
-description: PostgreSQL extension. Shadow pgvector column, hybrid search, in-place conversion between embedding models.
+title: postvec overview
+description: Local embedding, hybrid search, and in-place vector migration for PostgreSQL.
 ---
 
-# What is postvec?
+# postvec overview
 
 A PostgreSQL extension. Point it at a text column. It keeps a shadow
 `pgvector` column in sync, does hybrid (FTS + vector) search in one
@@ -14,7 +14,7 @@ space.
 Inference is in-process (embedded) or on a ninference node you run.
 Not a third-party embed API. No provider keys in PostgreSQL.
 
-The underlying problem has names:
+The underlying dependency has names:
 [vector lock-in and embedding debt](/docs/concepts/lock-in).
 
 ```sql
@@ -33,7 +33,17 @@ internal stack.
 You **cannot** use postvec on RDS or Aurora: the worker requires
 `shared_preload_libraries = 'postvec'`.
 
-## The loop
+## Choose by starting point
+
+| Your database today | Start with | What happens |
+|---|---|---|
+| Text, no vectors | [`enable()`](/docs/guides/enable) | postvec creates and maintains a shadow vector column |
+| Existing vector column, same model | [`adopt()`](/docs/guides/adopt) | existing bytes stay in place; missing rows can backfill |
+| Existing vectors in an old/provider-only space | [Bridge search](/docs/guides/bridge) | queries are converted into that space; corpus stays untouched |
+| Existing vectors, ready for a new model | [`migrate()`](/docs/guides/migrate) | stored vectors convert in place, or re-embed by explicit strategy |
+| Long source documents | [Recursive chunking](/docs/guides/chunking) | a managed 1:N destination stores passage vectors; search returns documents |
+
+## The operating loop
 
 1. **Install files** — Docker, apt/dnf, or source. Nothing in the cluster
    changes yet.

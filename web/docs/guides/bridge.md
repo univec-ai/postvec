@@ -1,101 +1,210 @@
 ---
-title: Query an existing space
-description: Adopt a locked corpus (ada-002 and friends) and search it without migrating — embed-bridge produces query vectors in that space.
+title: Search without migrating
+description: Adopt vectors in a retired or provider-only model space and search them through automatic embed-bridge routing.
 ---
 
-# Query an existing space
+# Search without migrating
 
-You do not have to migrate to use postvec. If the corpus is already
-vectorized — `ada-002`, a retired provider, any space the catalogue can
-*target* — you can leave those bytes alone and still run hybrid search.
+An existing corpus does not have to move before postvec can search it. If the
+column is already in a retired or provider-only space, postvec can create each
+new query vector locally and convert that vector into the stored space.
 
-postvec does this with the same `model =>` name you would use on
-`enable()`. Resolution is two-tier:
+For example, an `openai-text-embedding-ada-002` corpus can remain byte-for-byte
+unchanged. `search()` can embed the query with an available open model, convert
+that one vector to ada-002 space, then run pgvector and full-text search against
+the existing table. No OpenAI call and no corpus re-embed.
 
-1. a direct embed model with that name, or
-2. a converter *targeting* that name plus an `embed-bridge` executor
+Bridge search is normal `search()` behavior. There is no `search_bridge()` and
+no bridge parameter in application SQL.
 
-`search()` embeds the **query** through that route, so the query lands in
-the same space as the stored vectors. No re-embed of the corpus. No
-call to the original provider.
+## The route
 
-This is the "don't pay the debt today" path. Convert later with
-[`migrate()`](/docs/guides/migrate) if you want.
+```text
+query text
+  → direct local embed model
+      → converter into the stored model space
+          → existing vector column
+```
 
-## Adopt, then search
+Resolution is deterministic:
+
+1. A direct embed model for the declared target wins.
+2. Otherwise postvec chooses the lexicographically first converter into that
+   target whose source is directly embeddable, then uses an `embed-bridge`
+   executor.
+3. If neither route exists, `search()` follows the configured FTS-degradation
+   policy; administrative and write paths fail or retry normally.
+
+If a direct embed route becomes available later, it takes precedence after the
+next model refresh. The resolved route is inventory state, so postvec does not
+persist it in the table registry.
+
+## 1. Verify the stored space
+
+The vector dimension is a fact. The model name is your provenance assertion.
+Check both before adoption:
 
 ```sql
--- Name must appear in postvec.models (direct embed or a bridge target).
-SELECT name, model_type, target_model, target_dim
-  FROM postvec.models
- ORDER BY name;
+SELECT vector_dims(embedding) AS stored_dim
+  FROM public.legacy
+ WHERE embedding IS NOT NULL
+ LIMIT 1;
 
+SELECT name, model_type, source_model, target_model, target_dim
+  FROM postvec.models
+ WHERE name = 'openai-text-embedding-ada-002'
+    OR target_model = 'openai-text-embedding-ada-002'
+ ORDER BY model_type, name;
+```
+
+::: warning Provenance cannot be inferred from the bytes
+Matching `vector(1536)` only rules out models with another dimension. It does
+not prove that ada-002 produced the vectors. A wrong model assertion yields
+plausible but invalid ranks.
+:::
+
+## 2. Adopt without rewriting
+
+For a live table whose future writes should stay synchronized:
+
+```sql
 SELECT postvec.adopt(
   'public.legacy', 'body',
   vector_column => 'embedding',
-  model => 'text-embedding-ada-002'   -- example; use the catalogue name
+  model => 'openai-text-embedding-ada-002',
+  sync => true,
+  backfill => 'none'
 );
+```
 
-SELECT d.id, d.body, s.rrf_score
+`backfill => 'none'` protects the existing population. `sync => true` keeps
+future `INSERT` and `UPDATE` operations in the same target space through the
+same bridge route.
+
+For a frozen or `NOT NULL` legacy vector column, observe it without a write
+path:
+
+```sql
+SELECT postvec.adopt(
+  'public.legacy', 'body',
+  vector_column => 'embedding',
+  model => 'openai-text-embedding-ada-002',
+  sync => false,
+  backfill => 'none'
+);
+```
+
+Observed mode can search but does not synchronize future rows. See
+[`adopt()`](/docs/guides/adopt) before migrating an observed entry.
+
+## 3. Search normally
+
+```sql
+SELECT d.id, d.body,
+       round(s.rrf_score::numeric, 5) AS score,
+       s.semantic_rank, s.fts_rank
   FROM postvec.search(
          'public.legacy', 'body',
-         'quarterly guidance'
+         'embedding migration risk',
+         limit_n => 20
        ) AS s
-  JOIN public.legacy AS d ON d.id = s.pk_value::bigint;
+  JOIN public.legacy AS d
+    ON d.id = s.pk_value::bigint
+ ORDER BY s.rrf_score DESC;
 ```
 
 ::: tip Expected
-`owns_vector_column` is false. Existing vectors are not rewritten.
-`search()` returns ranked rows. The query vector has the column's
+The adopted column is not rewritten and `owns_vector_column` remains false.
+Semantic ranks are present, and the query vector has the stored target
 dimension (1536 for classic ada-002).
 :::
 
-New writes, if `sync => true`, also go through the same route — still
-no provider API in PostgreSQL.
+To make a missing route loud while validating the setup:
 
-Read-only is fine too: `adopt(..., sync => false, backfill => 'none')`.
-See [adopt](/docs/guides/adopt).
+```sql
+SET postvec.search_degrade_to_fts = off;
 
-## What has to be loaded
+SELECT *
+  FROM postvec.search(
+         'public.legacy', 'body',
+         'known semantic query'
+       );
+```
 
-On **embedded**, pull the converter, its source embed model, and
-`embed-bridge`. Dependencies are automatic:
+With degradation on (the default), a route or inference failure emits a warning
+and returns lexical results. `semantic_rank IS NULL` on every result is the
+observable sign that the semantic leg did not run.
+
+## Model requirements
+
+An executable route needs all three parts:
+
+- one direct embed model for the bridge/source space
+- one converter from that source to the stored target space
+- one `embed-bridge` executor
+
+On an **embedded** host, inspect the catalogue and pull the converter's
+inventory name. Dependencies bring the companion embed model and executor:
 
 ```bash
 sudo postvec model ls --available
-sudo postvec model pull text-embedding-ada-002 --dry-run
-sudo postvec model pull text-embedding-ada-002 --yes
+converter_name='replace-with-catalogue-name'
+sudo postvec model pull "$converter_name" --dry-run
+sudo postvec model pull "$converter_name" --yes
+sudo postvec doctor --database app --deep
 ```
 
-The plan labels companions. A public-registry subset may not include
-every commercial target; organisation accounts see the full catalogue.
+Not every source/target pair is present in the public subset. The organisation
+catalogue contains the broader conversion inventory.
 
-On **remote**, the ninference node must already advertise that route.
-`postvec model pull` against a remote cluster is refused.
+On **remote**, the ninference fleet is administered separately; local
+`postvec model pull` is refused. At least one node must host the complete embed
+model, converter, and bridge chain. Pieces discovered on different nodes do not
+form an executable route. Missing-chain errors are failover-eligible, so
+postvec can try another configured endpoint.
 
-## When the route is missing
-
-`enable()` / `adopt()` / `search()` refuse an unknown or non-embeddable
-name. `TARGET_RESTRICTED` means the engine is deliberately not allowed
-to bridge *into* that target (licence policy on current commercial
-spaces). Deprecated spaces such as ada-002 are the intended rescue
-targets.
+After any inventory change:
 
 ```sql
 SELECT postvec.refresh_models();
-SELECT name, model_type, target_model FROM postvec.models;
+
+SELECT name, model_type, source_model, target_model, target_dim
+  FROM postvec.models
+ ORDER BY model_type, name;
 ```
+
+`refresh_models()` is administrative and not executable by PUBLIC unless you
+grant it.
+
+## Latency and timeouts
+
+Bridge search is one database-to-engine RPC, but two inference stages run
+inside the engine. Keep the embedder, converter, and bridge executor warm. Set
+`postvec.query_timeout_ms` from measured bridge latency rather than from direct
+embedding latency alone.
+
+If a timeout quietly reduces semantic recall, turn FTS degradation off during
+diagnosis or monitor warnings plus the returned rank columns.
+
+## Bridge now, migrate later
+
+| Choice | Stored corpus | New queries | New writes with `sync => true` |
+|---|---|---|---|
+| Bridge search | unchanged | embedded, then converted into old space | embedded, then converted into old space |
+| [`migrate()`](/docs/guides/migrate) | converted to the new space | embedded directly in new space | embedded directly in new space |
+
+The lowest-change adoption sequence is: adopt the existing column, validate
+search through the bridge, then migrate in place later if and when the database
+is ready.
 
 ## Don't
 
-::: danger Don't adopt with the wrong model name
-The column's dimension is fact; the name is an assertion. A wrong name
-makes `search()` embed the query into the wrong space — confident, bad
-ranks. Check `target_dim` against `vector_dims(embedding)`.
+::: danger Don't treat a dimension match as provenance
+The wrong 1536-dimensional model is still the wrong vector space. Confirm the
+model that produced the column before synchronized writes or conversion.
 :::
 
-::: danger Don't expect every ada-002 row to be "upgraded"
-Nothing in this path rewrites stored vectors. They stay whatever they
-were. Bridge only produces **new** vectors (queries, and new writes) in
-that space.
+::: danger Don't expect bridge search to upgrade stored rows
+It only produces new vectors—queries and synchronized future writes—in the old
+target space. Existing rows remain exactly as they were.
 :::

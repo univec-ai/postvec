@@ -2,7 +2,7 @@ export const SITE = {
   name: "postvec",
   title: "postvec",
   description:
-    "PostgreSQL extension. Shadow pgvector column, hybrid search, in-place conversion between embedding models.",
+    "Local embedding, hybrid search, and in-place vector migration for PostgreSQL.",
   url: "https://postvec.dev",
   github: "https://github.com/univec-ai/stack",
   githubRepo: "univec-ai/stack",
@@ -11,6 +11,11 @@ export const SITE = {
   univec: "https://univec.ai",
   version: "0.1.0",
   release: "0.1.0-1",
+  packageRelease: "1",
+  onnxRuntimeVersion: "1.22.0",
+  bundledModelVersion: "1.1.0",
+  releaseStage: "preview",
+  registryStage: "preview",
   signerWorkflow: "univec-ai/stack/.github/workflows/postvec-release.yml",
 } as const;
 

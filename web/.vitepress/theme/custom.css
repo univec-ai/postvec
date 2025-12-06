@@ -7,7 +7,6 @@
   --pv-card: #fffcf6;
   --pv-warm: #c45c2a;
   --pv-sage: #5d7344;
-
   --vp-c-brand-1: #1a6b5a;
   --vp-c-brand-2: #155a4c;
   --vp-c-brand-3: #11483d;
@@ -58,8 +57,8 @@
   --vp-button-brand-text: #f4efe4;
   --vp-button-brand-hover-text: #f4efe4;
 
-  --vp-font-family-base: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --vp-font-family-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --vp-font-family-base: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --vp-font-family-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   --vp-home-hero-name-color: transparent;
   --vp-home-hero-name-background: linear-gradient(120deg, #1a6b5a, #2a9a7e);
@@ -104,23 +103,40 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+html {
+  scroll-padding-top: calc(var(--vp-nav-height) + 1.5rem);
+}
+
 .VPNavBarTitle .title {
-  font-family: "Manrope", var(--vp-font-family-base);
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-family: var(--vp-font-family-base);
+  font-weight: 650;
+  letter-spacing: -0.025em;
 }
 
 .VPDoc h1,
 .VPDoc h2,
 .VPDoc h3 {
-  font-family: "Manrope", var(--vp-font-family-base);
+  font-family: var(--vp-font-family-base);
   letter-spacing: -0.025em;
-  font-weight: 700;
+  font-weight: 650;
 }
 
 .VPDoc h1 {
-  font-size: 2.15rem;
+  max-width: 28ch;
+  font-size: clamp(1.9rem, 3vw, 2.35rem);
   line-height: 1.15;
+}
+
+.VPDoc h2 {
+  margin-top: 2.5rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--vp-c-divider);
+  font-size: 1.45rem;
+  line-height: 1.25;
+}
+
+.VPDoc h3 {
+  font-size: 1.15rem;
 }
 
 .VPDoc .vp-doc p,
@@ -137,7 +153,22 @@ body {
 .custom-block.warning,
 .custom-block.danger,
 .custom-block.details {
-  border-radius: 10px;
+  border: 0;
+  border-left: 2px solid var(--vp-c-divider);
+  border-radius: 0;
+  background: transparent;
+}
+
+.custom-block.tip {
+  border-left-color: var(--vp-c-tip-1);
+}
+
+.custom-block.warning {
+  border-left-color: var(--vp-c-warning-1);
+}
+
+.custom-block.danger {
+  border-left-color: var(--vp-c-danger-1);
 }
 
 .vp-doc table {
@@ -149,6 +180,14 @@ body {
 .vp-doc th,
 .vp-doc td {
   border-color: var(--vp-c-divider);
+}
+
+.vp-doc th {
+  background: transparent;
+  font-size: 0.77rem;
+  font-weight: 600;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
 }
 
 .vp-doc :not(pre) > code {
@@ -169,12 +208,28 @@ html:not(.dark) .vp-doc div[class*="language-"] {
   border: 1px solid var(--vp-c-divider);
 }
 
+.vp-doc div[class*="language-"] {
+  border-radius: 2px;
+}
+
 html:not(.dark) .vp-doc div[class*="language-"] code {
   color: var(--vp-code-block-color);
 }
 
 .VPLocalSearchBox {
   --vp-c-brand-1: var(--vp-c-brand-1);
+}
+
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .text {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.VPSidebarItem.level-0 > .item .text {
+  font-size: 0.72rem;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
 }
 
 /* Full-bleed landing: layout: page, no sidebar, no doc column. */
@@ -204,8 +259,8 @@ html:not(.dark) .vp-doc div[class*="language-"] code {
   padding: 0.85rem 1rem;
   border: 1px solid var(--vp-c-divider);
   border-left: 3px solid var(--vp-c-brand-1);
-  border-radius: 8px;
-  background: var(--vp-c-bg-elv);
+  border-radius: 0;
+  background: transparent;
 }
 
 .expected .label {
@@ -223,8 +278,8 @@ html:not(.dark) .vp-doc div[class*="language-"] code {
   padding: 0.85rem 1rem;
   border: 1px solid var(--vp-c-divider);
   border-left: 3px solid var(--vp-c-danger-1);
-  border-radius: 8px;
-  background: var(--vp-c-danger-soft);
+  border-radius: 0;
+  background: transparent;
 }
 
 .dont .label {

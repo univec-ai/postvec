@@ -18,6 +18,12 @@ This site configures **embedded** first (`setup --embedded`): on-prem
 inference, no third-party API. Remote/ninference is the organisation
 path — see [embedded vs remote](/docs/concepts/modes).
 
+::: info Release status
+The commands in these guides use the planned `0.1.0-1` artifact identity. The
+[release artifacts page](/download) reports whether those packages and images
+have been published; before that, use locally built artifacts.
+:::
+
 ## Pick one
 
 | Goal | Path |

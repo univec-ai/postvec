@@ -1,15 +1,19 @@
 ---
-title: Download
-description: GitHub Release packages, GHCR images, and how to verify them.
+title: Release artifacts
+description: GitHub Release packages, GHCR images, publication status, and verification.
 outline: deep
 ---
 
-# Download
+# Release artifacts
 
-postvec ships as **GitHub Release assets** and **GHCR images**. There is no
-signed apt/yum repository yet — that is deliberate until key rotation is
-rehearsed. Use the selector for the exact filenames of the current release
-identity, `0.1.0-1`.
+GitHub Releases and GHCR are the configured publication channels. The selector
+checks GitHub for a published postvec release and links assets only when they
+exist. Until then, it acts as an exact naming reference for locally built
+artifacts.
+
+There is no signed apt/yum repository. Installation is from downloaded files so
+the key-rotation and repository lifecycle are not implied before they exist.
+The current release identity is `0.1.0-1`.
 
 <DownloadPanel />
 
@@ -19,8 +23,8 @@ identity, `0.1.0-1`.
 |---|---|
 | `postvec-cli` | `/usr/bin/postvec` |
 | `postgresql-NN-postvec` / `postgresqlNN-postvec` | Extension library, control file, versioned SQL |
-| `postvec-onnxruntime` | CPU ONNX Runtime under `/opt/postvec/ninference/libs` |
-| `postvec-model-minilm-l6-v2` | Bundled 384-d model |
+| `postvec-onnxruntime` | CPU ONNX Runtime under `/opt/postvec/ninference/libs`; independently versioned |
+| `postvec-model-minilm-l6-v2` | Bundled 384-d model; independently versioned |
 | `postvec-embedded` | Metapackage pinning the runtime + model |
 | `…-pgNN` image | PostgreSQL + pgvector + postvec + CLI, remote mode |
 | `…-pgNN-embedded` image | The above plus the engine and MiniLM |
@@ -39,6 +43,6 @@ database, or download models.
 
 ## Hosting note
 
-If this page later moves to another bucket or a dedicated `postvec` GitHub
-repository, the filenames and image tags stay the same. The selector above
-reads `univec-ai/stack` releases tagged `postvec-v*`.
+The selector reads `univec-ai/stack` releases tagged `postvec-v*`. If packages
+later move to a dedicated repository or object store, the artifact identity and
+image-tag scheme remain the compatibility contract.

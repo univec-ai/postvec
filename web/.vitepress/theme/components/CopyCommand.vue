@@ -39,7 +39,7 @@ async function copy() {
 }
 
 .copy-cmd__label {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--vp-font-family-mono);
   font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -52,7 +52,7 @@ async function copy() {
   align-items: flex-start;
   gap: 0.75rem;
   padding: 0.85rem 0.95rem;
-  border-radius: 10px;
+  border-radius: 2px;
   border: 1px solid var(--vp-c-divider);
   background: var(--vp-code-block-bg);
   color: var(--pv-code-fg);
@@ -60,17 +60,19 @@ async function copy() {
 
 .copy-cmd__text {
   flex: 1;
+  min-width: 0;
   margin: 0;
   padding: 0;
   background: transparent;
   border: 0;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--vp-font-family-mono);
   font-size: 0.8rem;
   line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  word-break: normal;
   color: var(--pv-code-fg);
-  overflow: visible;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .copy-cmd__btn {
@@ -78,7 +80,7 @@ async function copy() {
   border: 1px solid var(--pv-code-btn-border);
   background: var(--pv-code-btn-bg);
   color: var(--pv-code-btn-fg);
-  border-radius: 7px;
+  border-radius: 2px;
   padding: 0.28rem 0.6rem;
   font-size: 0.75rem;
   cursor: pointer;

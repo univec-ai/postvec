@@ -20,6 +20,9 @@ The private catalogue is the organisation product, alongside
 [ninference](/docs/concepts/modes) (distributed CPU/GPU inference) and
 support. Get an account at [univec.ai](https://univec.ai).
 
+The catalogue is currently in publication preview; these commands document the
+client contract and become useful when the registry channels are live.
+
 The authenticated route is **identity-only**: account active/verified,
 key not expired. It does **not** check balance or spending limit. Create
 a dedicated key with a **$0 spending limit** — the same `uv_` key would
