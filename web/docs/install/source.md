@@ -82,6 +82,8 @@ packaging payloads:
 ```bash
 cd packaging/postvec
 scripts/build-onnxruntime-bundle.sh --arch amd64
+# The bundled model comes from the postvec model registry's public channel,
+# pulled by the postvec CLI you built above.
 scripts/build-model-bundle.sh
 
 sudo install -d -m 0755 /opt/postvec/ninference
