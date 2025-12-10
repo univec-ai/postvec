@@ -1,17 +1,17 @@
 ---
 title: Quick start
-description: Get hybrid search working in a disposable postvec container.
+description: Hybrid search in a disposable postvec container.
 ---
 
 # Quick start
 
-This path never touches a host PostgreSQL cluster. It is the right first
-contact: one container, no API key, one table, one search.
+The quick start runs in one disposable container and does not modify a host
+PostgreSQL cluster. It uses no API key and creates one example table.
 
 ::: info Release status
-This recipe uses the planned `0.1.0-1` image. Check [release artifacts](/download)
-before pulling it. If the tag is not published yet, build the image locally or
-use an existing development package.
+The commands use the planned `0.1.0-1` image. Publication status is listed with
+the [release artifacts](/download). An unpublished tag requires a local image
+build or an existing development package.
 :::
 
 ## 1. Run the embedded image
@@ -43,7 +43,7 @@ model loads. `postvec-healthcheck` exits 0.
 
 The image creates the extension in `POSTGRES_DB` on first initialization only.
 
-## 2. Prove inference
+## 2. Verify inference
 
 ```bash
 docker exec -i postvec psql -U app -d app <<'SQL'
@@ -62,8 +62,8 @@ SQL
 The bundled model is listed. `vector_dims` returns **384**.
 :::
 
-`embed()` is an administrative helper. Application roles do not have it
-until you `GRANT` it. Search is the public query surface.
+`embed()` is an administrative helper. Application roles require an explicit
+`GRANT`. Search is the public query surface.
 
 ## 3. Enable a column and insert
 
@@ -129,19 +129,20 @@ The engineering row ranks highly despite almost no keyword overlap.
 `status().has_vector_index` is true.
 :::
 
-`search()` returns the primary key as **text**. You join back. That is
-intentional — it avoids dynamic record types.
+`search()` returns the primary key as **text** for a join to the source table.
+This avoids dynamic record types.
 
-## 5. Throw it away
+## 5. Remove the container
 
 ```bash
 docker rm -f postvec
 ```
 
-No host files, no cluster configuration, no leftover database.
+The command removes the disposable container. No host files or PostgreSQL
+cluster configuration were created.
 
-## Next
+## Related documentation
 
 - [Install on a real cluster](/docs/install/)
-- [How the worker actually fills vectors](/docs/concepts/consistency)
+- [How the worker fills vectors](/docs/concepts/consistency)
 - [Usage guides](/docs/guides/) — filters, templates, chunking, migrate, adopt

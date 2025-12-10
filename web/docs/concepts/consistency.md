@@ -1,19 +1,20 @@
 ---
 title: Eventual consistency
-description: Why vectors are empty after INSERT, and how to wait correctly.
+description: Asynchronous vector updates and readiness checks.
 ---
 
 # Eventual consistency
 
 Application writes commit first. The vector is filled later, by a worker that
-does not hold your row lock while it talks to the engine.
+does not retain the application transaction's row lock while calling the
+engine.
 
-That is the contract. Search during the window can miss a brand-new row or,
-after an update, still rank the old vector. For chunked columns the contract
+Search during this window can miss a new row or, after an update, still rank
+the previous vector. For chunked columns the contract
 is stricter: an edited document is **absent** until it is rebuilt — false
-negatives, never stale chunk text. See [chunking](/docs/guides/chunking).
+negatives rather than stale chunk text. See [chunking](/docs/guides/chunking).
 
-## How to wait
+## Readiness checks
 
 ```sql
 SELECT relation, pending_jobs, dead_jobs, worker_last_beat
@@ -24,9 +25,9 @@ SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
   FROM docs;
 ```
 
-Ready means `pending_jobs = 0`, `dead_jobs = 0`, and `filled = total` (or
-whatever you consider complete). Presence of a heartbeat **row** is not
-health — the row survives a dead worker. The timestamp must **advance**.
+Ready means `pending_jobs = 0`, `dead_jobs = 0`, and `filled = total`, or the
+selected completeness threshold. Presence of a heartbeat **row** is not
+sufficient; the row survives a dead worker. The timestamp must **advance**.
 
 CLI counterpart:
 
@@ -34,31 +35,34 @@ CLI counterpart:
 sudo postvec doctor --database app --deep
 ```
 
-`--deep` samples the heartbeat twice and checks it moved. `doctor` never
-runs inference and never calls `refresh_models()`.
+`--deep` samples the heartbeat twice and checks that it advanced. `doctor`
+does not run inference or call `refresh_models()`.
 
-## What the worker does with failures
+## Failure handling
 
-| Engine response | What you see |
+| Engine response | Result |
 |---|---|
 | Transient / timeout | Retry with backoff (`max_retries`, `retry_backoff_ms`) |
 | `CONTEXT_LENGTH_EXCEEDED` | Batch is split; one oversized row is isolated |
 | Permanent / retries exhausted | Row moves to `postvec.jobs_dead` |
 | Endpoints empty / engine not up yet | Jobs stay pending; attempts are not burned |
 
-Re-drive dead letters with `retry_dead()` after you fix the cause — never
-by inserting into `jobs` yourself. [Retry](/docs/guides/retry).
+After the underlying cause is resolved, dead letters can be re-driven with
+`retry_dead()`. Direct inserts into `jobs` are unsupported. See
+[Retry](/docs/guides/retry).
 
 ## Query path is synchronous
 
-`search()` embeds the query **now**. If inference is down and
-`search_degrade_to_fts` is on, you get lexical results only. If you turn
-degradation off, the search errors.
+`search()` embeds the query synchronously. If inference is unavailable and
+`search_degrade_to_fts` is enabled, the result is lexical only. With
+degradation disabled, the search returns an error.
 
-`search_with_vector()` skips query embedding when you already have a vector.
+`search_with_vector()` skips query embedding when a vector is supplied.
 
-## Don't
+## Transaction boundary
 
-::: danger Don't poll the vector column in the same transaction as the INSERT
-The worker cannot write back until you commit. Look from a new transaction.
+::: danger The worker cannot fill a vector before the inserting transaction commits
+Polling the vector column within the inserting transaction cannot observe the
+worker write-back. Readiness checks require a separate transaction after
+commit.
 :::

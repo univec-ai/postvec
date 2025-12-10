@@ -1,15 +1,15 @@
 ---
 title: Build from source
-description: cargo-pgrx package and a manual copy into a development PostgreSQL.
+description: Source build and manual installation for development PostgreSQL.
 ---
 
 # Build from source
 
-Use this to iterate on the extension. For a host you intend to keep, prefer
-[packages](/docs/install/packages). Do not let apt and a manual copy compete
-for the same paths.
+Source installation supports extension development. Persistent deployments
+should use [packages](/docs/install/packages). Package-owned and manually
+copied files must not share paths.
 
-## Prerequisites (you install these)
+## Prerequisites
 
 - Rust 1.96 or newer
 - cargo-pgrx **0.18.1**
@@ -26,7 +26,8 @@ protoc --version
 
 ## Build
 
-The extension is **not** in the Cargo workspace. The CLI is.
+The extension is **not** in the Cargo workspace. The CLI remains a workspace
+member.
 
 ```bash
 cd postvec
@@ -40,7 +41,8 @@ cargo build --release -p postvec-cli
 ```
 
 Staged extension: `postvec/target/release/postvec-pg18/`.
-CLI: `target/release/postvec`. Nothing outside the repo has changed yet.
+CLI: `target/release/postvec`. The build does not modify files outside the
+repository.
 
 ## Install into a pgrx cluster
 
@@ -54,7 +56,8 @@ cargo pgrx install --release \
 
 ## Install into a system PGDG tree
 
-These files have **no** package owner. Record every path you copy.
+These files have **no** package owner. Every copied path requires a record for
+later removal.
 
 ```bash
 export PV_STAGE=postvec/target/release/postvec-pg18
@@ -91,7 +94,7 @@ sudo cp -a build/payload-common/opt/postvec/ninference/models \
 Manually copied models are operator-owned. `postvec model rm` will not
 delete them.
 
-## Rebuild loop
+## Development rebuild sequence
 
 1. `cargo pgrx package`
 2. Stop PostgreSQL before replacing a preloaded `.so`
@@ -104,9 +107,10 @@ in the same window as the restart. [Upgrade](/docs/install/upgrade).
 
 ## Rollback (files only)
 
-Stop PostgreSQL. Prove the paths are **not** package-owned (`dpkg -S` /
-`rpm -qf`). Remove only the files you recorded. Restore a backup of a
-previous hand install while the cluster is still stopped.
+PostgreSQL must be stopped first. Confirm that each path is **not**
+package-owned with `dpkg -S` or `rpm -qf`. Remove only recorded files, then
+restore any previous manual installation while the cluster remains stopped.
 
-Then [configure](/docs/install/setup) — or, if you already ran `setup`,
-[uninstall](/docs/install/uninstall) before deleting files.
+[Cluster configuration](/docs/install/setup) follows file installation. If
+`setup` was already run, complete [uninstallation](/docs/install/uninstall)
+before deleting files.

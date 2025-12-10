@@ -1,14 +1,14 @@
 ---
 title: Adopt existing vectors
-description: postvec.adopt() takes over a populated vector column without rewriting it.
+description: Register a populated vector column without rewriting it.
 ---
 
 # Adopt existing vectors
 
-Use `adopt()` when the application already owns a `vector(N)` column.
-postvec does **not** rewrite it during the call.
+`adopt()` registers an application-owned `vector(N)` column without rewriting
+it during the call.
 
-To **keep** that space (ada-002 and friends) and still search it, name
+To **keep** an existing space such as ada-002 and continue searching it, name
 the original model and let embed-bridge produce query vectors —
 [query an existing space](/docs/guides/bridge). To **leave** the space,
 adopt then [`migrate()`](/docs/guides/migrate).
@@ -27,14 +27,15 @@ SELECT postvec.adopt(
 are synchronized.
 :::
 
-## The model name is an assertion
+## Model provenance
 
 The column's declared dimension is fact. The catalogue can only
-*contradict* a wrong model (dimension mismatch). Nothing can prove which
+*contradict* an incorrect model (dimension mismatch). Nothing can prove which
 model produced the bytes.
 
-A wrong assertion makes `search()` embed the query into the wrong space
-and `migrate(strategy => 'convert')` convert garbage — silently.
+An incorrect assertion makes `search()` embed the query into an incompatible space
+and causes `migrate(strategy => 'convert')` to produce invalid vectors without
+an explicit error.
 
 ## Options
 
@@ -45,8 +46,7 @@ and `migrate(strategy => 'convert')` convert garbage — silently.
 | `backfill_mode` | `queue` | `cursor` refused with `all` |
 | others | same as `enable()` | distance, FTS, format, index_mode |
 
-`sync` and `backfill` are independent. They are never rewritten from each
-other.
+`sync` and `backfill` are independent and are not derived from each other.
 
 ## Observed (read-only) adoption
 
@@ -64,14 +64,15 @@ SELECT postvec.adopt(
 (so a dropped-and-recreated same-named table cannot silently reattach).
 No embed route is required. Search may degrade to FTS.
 
-`migrate()` refuses an observed entry unless you pass
-`observed_writes_quiesced => true`, and writes must stay stopped **through
+`migrate()` refuses an observed entry unless
+`observed_writes_quiesced => true` is supplied, and writes must stay stopped **through
 `migration_finalize()`**. The flag is an acknowledgement, not a lock.
 
-Promote later by calling `adopt()` again with `sync => true`. You must
-repeat the stored immutable options **byte-exactly**, including `format`.
+An observed entry can later be promoted by calling `adopt()` again with
+`sync => true`. Stored immutable options, including `format`, must be repeated
+**byte-exactly**.
 
-## What is refused
+## Validation constraints
 
 Missing column · not exact `vector` (`halfvec`, arrays, domains) · bare
 `vector` with no dimension · generated / PK-member / alias of the source
@@ -84,20 +85,20 @@ claimed · no embed route when `sync` or any finite backfill ·
 A `halfvec` refusal includes an `ALTER TABLE … TYPE vector(N) USING …`
 recipe.
 
-## Teardown never drops it
+## Teardown behavior
 
 Because postvec did not create the column, `disable(drop_column => true)`
 and `uninstall(drop_columns => true)` leave it in place.
 
-## Don't
+## Provenance and write constraints
 
-::: danger Don't guess the model to "just get search working"
-Wrong space, confident ranks. If you are not sure, treat the column as
-untrusted: `backfill => 'all'` after you pick a model you can actually
-embed with, or rebuild.
+::: danger The source model must be known
+An incorrect model assertion produces plausible but invalid ranks. Columns
+with uncertain provenance should be treated as untrusted and rebuilt, or
+backfilled with `backfill => 'all'` after selecting an available model.
 :::
 
-::: danger Don't adopt a `NOT NULL` vector you still want the worker to
-write
-Refused. Drop `NOT NULL` first, or use observed + `backfill => 'none'`.
+::: danger Synchronized vector columns must permit NULL
+A `NOT NULL` vector column is refused for synchronized adoption. Remove the
+constraint first, or use observed mode with `backfill => 'none'`.
 :::

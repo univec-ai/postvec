@@ -1,6 +1,6 @@
 ---
 title: Upgrade
-description: Package files, restart, and ALTER EXTENSION belong in one window.
+description: Coordinating package files, PostgreSQL restart, and ALTER EXTENSION.
 ---
 
 # Upgrade
@@ -19,12 +19,12 @@ sudo postvec doctor --database app --deep
 
 Repeat `ALTER EXTENSION` for each database in `postvec.database`.
 
-## Why the window matters
+## Maintenance window
 
-Between restart and `ALTER EXTENSION` the worker **parks**: no jobs, no
-heartbeat. That protects worker transactions. It does **not** protect
-application backends — they can load the new library against old SQL. Keep
-traffic out until every database is updated.
+Between restart and `ALTER EXTENSION` the worker **pauses**: no jobs, no
+heartbeat. This prevents worker transactions from running against mismatched
+SQL, but application backends can still load the new library against old SQL.
+Application traffic should remain paused until every database is updated.
 
 There is no `postvec upgrade` command. This is distinct from
 `postvec model upgrade`, which replaces model bytes and does not touch
@@ -38,21 +38,22 @@ Pull the new image, then on the **existing** volume:
 ALTER EXTENSION postvec UPDATE;
 ```
 
-Init scripts will not do this for you. Run `postvec-healthcheck` afterwards.
+Init scripts do not apply extension upgrades to existing volumes. Run
+`postvec-healthcheck` afterward.
 
-Never change the PostgreSQL major by changing the image tag against the
-same volume.
+A PostgreSQL major change requires `pg_upgrade` or dump/restore; changing only
+the image tag against the same volume is unsupported.
 
 ## Rollback
 
 PostgreSQL has no general extension downgrade. Restore the pre-upgrade
 backup, or follow the release's rollback note if it has one.
 
-## Don't
+## Version alignment
 
-::: danger Don't replace only the `.so`
+::: danger Shipped upgrades require matching library and SQL changes
 Same-version SQL changes on an unreleased tree are a special case for
 developers. On a shipped version, missing `postvec--X--Y.sql` plus
-`ALTER EXTENSION` means the worker stays parked and application calls are
+`ALTER EXTENSION` means the worker remains paused and application calls are
 undefined.
 :::

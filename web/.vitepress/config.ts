@@ -60,7 +60,7 @@ export default defineConfig({
         {
           text: "Install",
           items: [
-            { text: "Choose a path", link: "/docs/install/" },
+            { text: "Installation options", link: "/docs/install/" },
             { text: "Docker", link: "/docs/install/docker" },
             { text: "Packages", link: "/docs/install/packages" },
             { text: "Build from source", link: "/docs/install/source" },
@@ -130,7 +130,7 @@ export default defineConfig({
       ],
     },
     socialLinks: [{ icon: "github", link: SITE.github }],
-    outline: { level: [2, 3], label: "On this page" },
+    outline: { level: [2, 3], label: "Contents" },
     footer: {
       message:
         'PostgreSQL License · a <a href="https://univec.ai">UniVec</a> project',

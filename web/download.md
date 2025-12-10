@@ -17,9 +17,9 @@ The current release identity is `0.1.0-1`.
 
 <DownloadPanel />
 
-## What each artifact is
+## Artifact contents
 
-| Artifact | What you get |
+| Artifact | Contents |
 |---|---|
 | `postvec-cli` | `/usr/bin/postvec` |
 | `postgresql-NN-postvec` / `postgresqlNN-postvec` | Extension library, control file, versioned SQL |
@@ -32,7 +32,7 @@ The current release identity is `0.1.0-1`.
 Debian 12 and Ubuntu 22.04 packages are **not** interchangeable even though
 both are `.deb`. Match the host that will *run* the binaries.
 
-## After the files land
+## Post-installation
 
 Packages install files and stop. They do not edit PostgreSQL, create a
 database, or download models.

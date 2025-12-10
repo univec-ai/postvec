@@ -1,11 +1,12 @@
 ---
 title: Status and health
-description: status(), stats(), and postvec doctor — what healthy looks like.
+description: Health signals from status(), stats(), and postvec doctor.
 ---
 
 # Status and health
 
-Two SQL views of one worker, plus a read-only CLI that can see the host.
+`status()` and `stats()` expose database worker state. `postvec doctor` adds
+read-only checks of the host installation.
 
 ## `status()` — per entry
 
@@ -18,16 +19,17 @@ SELECT relation, model, dim, state,
   FROM postvec.status();
 ```
 
-| You want | Look at |
+| Check | Field |
 |---|---|
 | Backfill done | `pending_jobs = 0` (and refresh/embed = 0 if chunked) |
 | Failures | `dead_jobs`, `last_error` |
 | Worker alive | `worker_last_beat` **advances** |
 | Search will be fast | `has_vector_index` |
-| Auto-index parked | `index_error` |
+| Automatic index build paused after failure | `index_error` |
 | Quarantined entry | `state` (source/vector/template column vanished) |
 
-A heartbeat **row** surviving a crash is not health. Sample twice.
+A heartbeat row survives a worker crash. Health requires the timestamp to
+advance between samples.
 
 ## `stats()` — the worker
 
@@ -56,8 +58,8 @@ sudo postvec doctor --database app --deep --format json \
 | `--strict` | Warnings fail the command |
 | `--format json` | Versioned object on stdout; progress on stderr |
 
-`doctor` never runs inference, never calls `refresh_models()`, and has no
-mutating database handle.
+`doctor` is read-only, does not run inference, and does not call
+`refresh_models()`.
 
 Inside a container, use `postvec-healthcheck` or an explicit socket URL —
 [Docker](/docs/install/docker).

@@ -1,6 +1,6 @@
 ---
 title: Air-gapped hosts
-description: Move models as ordinary directories plus receipts. No private bundle format.
+description: Offline model transfer using ordinary directories and receipts.
 ---
 
 # Air-gapped hosts
@@ -25,13 +25,14 @@ loads them and refreshes SQL caches.
 ::: tip Expected
 `show --verify` hashes every file against the receipt with **no**
 catalogue present. `doctor --deep` does the same across every
-CLI-installed model. `registry.reachable` is a **warning**, never a
-failure — offline hosts are a supported shape.
+CLI-installed model. `registry.reachable` is a **warning**, not a failure;
+offline hosts are supported.
 :::
 
-Stop any process using the root before you replace files via `--path`.
+Processes using the engine root must be stopped before files are replaced via
+`--path`.
 
 ## Withdrawn names
 
-A withdrawn model cannot be pulled again. Do not `rm` it on a host that
-must keep serving it. Installed copies keep working.
+A withdrawn model cannot be pulled again. Installed copies remain functional,
+but removal prevents subsequent restoration from the catalogue.

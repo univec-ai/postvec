@@ -5,7 +5,7 @@ description: All postvec.* settings, defaults, and which ones need a restart.
 
 # GUCs
 
-Read at *use* time, never cached at worker start — that is what keeps
+Read at *use* time rather than cached at worker start. This keeps
 `SIGHUP` live. POSTMASTER settings are only *defined* when
 `shared_preload_libraries` includes `postvec`.
 
@@ -40,5 +40,5 @@ Prefer `postvec setup` to writing these. The CLI merges
 `pg_reload_conf()` does nothing to POSTMASTER settings. After changing
 `database`, `mode`, `ninference_path`, `embedded_*`, or preload: restart.
 
-Let `setup` add databases. A name that does not exist FATAL-loops a
-worker every ~15 seconds.
+`setup` should add databases. A name that does not exist causes the worker to
+fail and respawn approximately every 15 seconds.

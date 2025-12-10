@@ -5,8 +5,9 @@ description: Hybrid RRF search with postvec.search() and search_with_vector().
 
 # Search
 
-One function, two legs (vector + full-text), fused with Reciprocal Rank
-Fusion. You get the matching primary key as text; you join back.
+One function runs vector and full-text retrieval and combines the results with
+Reciprocal Rank Fusion. Matching primary keys are returned as text for a join
+to the source table.
 
 ```sql
 SELECT d.id, d.body,
@@ -40,7 +41,7 @@ Chunked entries also return `chunk_seq`, `chunk_start`, `chunk_end`,
 `chunk_text` for the **winning** chunk — one row per document. Column-mode
 entries leave those NULL.
 
-## Bring your own vector
+## Search with a supplied vector
 
 ```sql
 SELECT d.id, d.body, s.rrf_score
@@ -58,11 +59,12 @@ SELECT d.id, d.body, s.rrf_score
 
 `query_text` still feeds the FTS leg. Omit it (default `''`) for a
 vector-only search. `embed()` is not PUBLIC — grant it, or pass a vector
-you computed elsewhere.
+computed elsewhere.
 
-## When it is slow
+## Search performance
 
-There is no ANN index. Default `index_mode` is `manual` on purpose.
+The default `index_mode` is `manual`, so no ANN index exists until explicitly
+created.
 
 ```sql
 SELECT has_vector_index, index_error FROM postvec.status();
@@ -72,21 +74,20 @@ SELECT postvec.create_vector_index('public.docs', 'body');
 See [indexes](/docs/guides/indexes). A missing FTS index only hurts the
 lexical leg; `create_fts_index => true` at enable time builds one.
 
-## When it looks "FTS only"
+## Lexical-only results
 
-Query embedding failed and `postvec.search_degrade_to_fts` is on (default).
-`semantic_rank` is NULL on every row. Fix inference, or `SET
-postvec.search_degrade_to_fts = off` so the failure is loud.
+Query embedding failed and `postvec.search_degrade_to_fts` is enabled by
+default. `semantic_rank` is NULL on every row. Correct the inference failure,
+or set `postvec.search_degrade_to_fts = off` to return an error instead.
 
-## Don't
+## Result and transaction constraints
 
-::: danger Don't treat `search()` as `SELECT * FROM docs`
+::: info `search()` returns rank data rather than source rows
 It returns rank diagnostics, not the row. Join on `pk_value`. Cast it
 back to the PK type (`::bigint`, `::uuid`, …).
 :::
 
-::: danger Don't call `search()` and expect a filled vector on a row you
-just inserted in this transaction
-The worker cannot write back until you commit. See
+::: danger Newly inserted rows are not embedded within the inserting transaction
+The worker cannot write back before the transaction commits. See
 [eventual consistency](/docs/concepts/consistency).
 :::

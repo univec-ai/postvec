@@ -1,22 +1,22 @@
 ---
 title: Usage overview
-description: The SQL journey from enable to migrate, and which CLI command sits next to each step.
+description: SQL operations from column registration through search and migration.
 ---
 
 # Usage overview
 
 Application work is SQL. The CLI configures the cluster and, in embedded
 mode, the models. There is no CLI flag that calls `enable()`, `search()`,
-or `set_format()` for you.
+or `set_format()`.
 
-| You want to… | SQL | CLI counterpart |
+| Task | SQL | CLI counterpart |
 |---|---|---|
 | Attach a new column | [`enable()`](/docs/guides/enable) | `doctor` / `status()` |
 | Search | [`search()`](/docs/guides/search) | — |
 | Restrict by metadata | [`filter`](/docs/guides/filters) | — |
 | Embed title + body | [`set_format()`](/docs/guides/templates) | — |
 | Long documents | [`chunking`](/docs/guides/chunking) | — |
-| Take over existing vectors | [`adopt()`](/docs/guides/adopt) | — |
+| Register existing vectors | [`adopt()`](/docs/guides/adopt) | — |
 | Query a locked space without migrating | [bridge](/docs/guides/bridge) | pull the converter; dependencies bring the embed model + `embed-bridge` |
 | Change model | [`migrate()`](/docs/guides/migrate) | — |
 | Speed up search | [`create_vector_index()`](/docs/guides/indexes) | `doctor` index checks |
@@ -27,7 +27,7 @@ or `set_format()` for you.
 Every function is schema-qualified: `postvec.*`. Nothing is added to
 `search_path`.
 
-## Smallest complete journey
+## Minimal workflow
 
 ```sql
 CREATE TABLE docs (
@@ -71,7 +71,8 @@ Management verbs (`enable`, `adopt`, `disable`, `migrate`, `set_format`,
 `uninstall()` is superuser only. `search()` is executable by PUBLIC.
 `embed` / `convert` / `refresh_models` are revoked from PUBLIC.
 
-## Next
+## Related documentation
 
-Start at [enable](/docs/guides/enable) unless you already have a vector
-column — then start at [adopt](/docs/guides/adopt).
+- [Enable a column](/docs/guides/enable) — create and maintain a vector column
+- [Adopt existing vectors](/docs/guides/adopt) — register an existing vector
+  column

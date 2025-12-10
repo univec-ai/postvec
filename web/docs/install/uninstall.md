@@ -1,12 +1,12 @@
 ---
 title: Uninstall
-description: Remove postvec from a database, then optionally remove the packages.
+description: Database cleanup and optional package removal.
 ---
 
 # Uninstall
 
-Choose the layer that matches the end state. Never
-`DROP EXTENSION postvec CASCADE`.
+The removal scope depends on the required end state. `DROP EXTENSION postvec
+CASCADE` is unsupported.
 
 | Goal | Command |
 |---|---|
@@ -14,10 +14,10 @@ Choose the layer that matches the end state. Never
 | Remove postvec from one database, keep data | `sudo postvec uninstall --database app` |
 | Also drop postvec-created shadow columns | add `--drop-columns --acknowledge-data-loss --yes` |
 | Drop a chunk destination | SQL `disable(..., drop_destination => true)` **first** |
-| Reset a disposable DB and retry `setup` | [below](#reset-and-retry) |
+| Reset a disposable DB and retry `setup` | [development reset](#development-reset) |
 | Remove packages after SQL cleanup | `sudo apt remove postgresql-18-postvec postvec-cli` |
 
-## Default is retain
+## Default retention behavior
 
 `uninstall` runs `postvec.uninstall(...)` and `DROP EXTENSION postvec`
 **without** `CASCADE` in one transaction, then removes that database from
@@ -34,11 +34,11 @@ There is **no** `--drop-destinations` on the CLI. Destinations stay as
 ordinary tables after this command.
 
 ```sql
--- before CLI uninstall, if you want the chunks gone:
+-- before CLI uninstall, when chunk removal is required:
 SELECT postvec.disable('public.articles', 'body', drop_destination => true);
 ```
 
-## Reset and retry (dev)
+## Development reset
 
 Packages and engine assets stay installed.
 
@@ -52,10 +52,11 @@ sudo postvec setup --database app \
 sudo postvec doctor --database app --deep
 ```
 
-`uninstall` takes the name out of the running launcher (restart). If you
-`dropdb` *without* uninstalling first, rerun `uninstall` — or edit
+`uninstall` removes the name from the running launcher through a restart. If
+`dropdb` runs before uninstallation, rerun `uninstall` or edit
 `postvec.database` **and restart**. Reload is not enough: the list is
-POSTMASTER. Until the name is gone, the worker FATAL-loops every ~15 s.
+POSTMASTER. Until the name is removed, the worker fails and respawns
+approximately every 15 seconds.
 
 ## SQL-only teardown
 
@@ -69,7 +70,7 @@ SELECT postvec.uninstall(
 DROP EXTENSION postvec;                     -- no CASCADE
 ```
 
-Then remove packages, if that is the end state:
+After database teardown, packages may also be removed:
 
 ```bash
 sudo apt remove postgresql-18-postvec postvec-cli
@@ -81,26 +82,27 @@ On EL9, `dnf remove` the corresponding names (`postgresql18-postvec`, …).
 
 ## Exit 3
 
-SQL went through but the CLI would not touch configuration (hand-owned or
-drifted file). It prints the file and line. Follow that — a launcher may
-still be connecting to the removed database. `--keep-config` makes the
-same state explicit (required for a URI-only target).
+Exit code 3 indicates that SQL teardown completed but the CLI did not modify a
+hand-owned or drifted configuration file. The diagnostic identifies the file
+and line. A launcher may still be connecting to the removed database.
+`--keep-config` produces the same state explicitly and is required for a
+URI-only target.
 
 ## Docker
 
 ```bash
 docker rm -f postvec
-docker volume rm postvec-data     # only if you want the data gone
+docker volume rm postvec-data     # only when permanent data removal is required
 ```
 
-## Don't
+## Destructive operations
 
-::: danger Don't `DROP EXTENSION … CASCADE`
-That walks unknown dependent objects. The CLI and the SQL `uninstall()`
-exist so teardown is bounded.
+::: danger `DROP EXTENSION … CASCADE` is unsupported
+`CASCADE` can remove unknown dependent objects. The CLI and the SQL
+`uninstall()` provide bounded teardown.
 :::
 
-::: danger Don't `dropdb` while the worker is configured
-Use `uninstall` first, then `dropdb --force`. Otherwise the launcher
+::: danger Remove worker configuration before `dropdb`
+Run `uninstall` before `dropdb --force`. Otherwise the launcher repeatedly
 respawns a worker against a missing database.
 :::

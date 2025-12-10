@@ -10,7 +10,8 @@ outline: deep
 `to_regclass` / `::regconfig`. `'schema.table'` works. `retry_dead()` is
 the exception: it takes `regclass`.
 
-Nothing is added to `search_path`. Call `postvec.*`.
+The extension does not modify `search_path`; all functions require the
+`postvec` schema qualifier.
 
 ## Functions
 
@@ -66,8 +67,8 @@ Untrusted cdylib. `CREATE EXTENSION` needs superuser.
 | Revoked from PUBLIC | `embed`, `convert`, `refresh_models` |
 
 `USAGE` on schema `postvec` and a column-scoped `INSERT (registry_id, pk_value)`
-on `postvec.jobs` are PUBLIC on purpose — they make non-owner DML on an
-enabled table work. Do not revoke them.
+on `postvec.jobs` are required for non-owner DML on enabled tables and must
+remain in place.
 
 The worker connects as the bootstrap superuser and **bypasses RLS**.
 

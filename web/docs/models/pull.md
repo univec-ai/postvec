@@ -7,7 +7,7 @@ description: postvec model pull / upgrade / rm / activate / ls / show.
 
 These commands change an **engine root**. On an embedded cluster they
 also hot-load and refresh `postvec.models` in every configured database.
-No PostgreSQL restart.
+A PostgreSQL restart is not required.
 
 ```bash
 postvec model ls --available
@@ -21,13 +21,13 @@ sudo postvec --cluster 18/main doctor --database app --deep
 The plan lists the requested model, engine dependencies, download size,
 peak disk, and licences. After `--yes`, `model ls` shows it loaded.
 `SELECT vector_dims(postvec.embed('…', 'baai-bge-m3')::vector)` returns
-**1024** for BGE-M3. No restart.
+**1024** for BGE-M3. The operation does not require a restart.
 :::
 
-Dependencies are automatic. There is no `--with-deps`. The whole archive
+Dependencies are automatic. There is no `--with-deps`. The complete archive
 is SHA-256 verified **before** anything is extracted.
 
-## `pull` will not replace
+## Replacement constraints
 
 If the name is already installed, `pull` prints the `model upgrade`
 command and stops. It also refuses:
@@ -47,7 +47,8 @@ sudo postvec model upgrade --all --yes
 ```
 
 Identity must stay compatible (type, backend, dimensions, source/target).
-Downgrades are refused. Package/manual models are never replaced.
+Downgrades are refused. Package-owned and manually installed models are not
+replaced.
 
 On a live embedded target the swap is recoverable: a crash leaves enough
 state for the next model command to finish or roll forward. During the
@@ -65,25 +66,26 @@ sudo postvec model activate --yes
 ```
 
 - `ls` — name, type/dimension, size, owner, revision, enabled, load
-  state. `?` means unknown, never "current".
+  state. `?` means unknown, not current.
 - `show --verify` hashes every file against the receipt. Works offline.
 - `rm` only deletes CLI-owned receipts. Refuses an explicitly preloaded
-  model until you change the `--model` allow-list. Refuses breaking a
-  dependant unless `--force`. Unloads before deleting.
-- `activate` takes **no names**. Scan-load vs allow-list is whatever
-  `setup --model` configured.
+  model until the `--model` allow-list changes. Removal is refused when it
+  would break a dependant unless `--force` is supplied. The model unloads
+  before deletion.
+- `activate` takes **no names**. Scan-load or allow-list behavior follows the
+  existing `setup --model` configuration.
 
-`rm` never touches stored database vectors.
+`rm` does not modify stored database vectors.
 
 ## Terms
 
-| Policy | What you do |
+| Policy | Required action |
 |---|---|
 | `none` | Display only |
 | `notice` | Confirm interactively, or `--accept-license ID@VERSION` |
 | `organization` | Cannot be accepted locally |
 
-`--yes` confirms the mutation. It never accepts terms.
+`--yes` confirms the mutation but does not accept licence terms.
 
 ## Remote mode
 
@@ -93,14 +95,15 @@ sudo postvec --cluster 18/main model pull baai-bge-m3 --dry-run
 ```
 
 ::: tip Expected
-The second command **refuses**. Files on the database host would not
-change the remote fleet. Administer ninference, or use `--path` on a
-standalone root.
+The second command returns an error because files on the database host would
+not change the remote fleet. Model changes must occur through ninference or
+through `--path` on a standalone root.
 :::
 
-## Don't
+## Credential scope
 
-::: danger Don't `sudo model pull` after a non-root `login`
-Credentials are per effective user. Run `sudo postvec login` too, or
-pass `--api-key-file`. A failed credential never falls back to public.
+::: danger Credentials are scoped to the effective user
+After a non-root `login`, a command run through `sudo` requires a separate
+`sudo postvec login` or `--api-key-file`. Invalid credentials do not fall back
+to public access.
 :::

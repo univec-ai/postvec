@@ -1,27 +1,28 @@
 ---
 title: Configure the cluster
-description: postvec setup and doctor — the only commands that change a cluster.
+description: Cluster configuration and diagnostics with postvec setup and doctor.
 ---
 
 # Configure the cluster
 
-Files are installed. This page turns them into a running worker.
+Cluster configuration is separate from file installation. `postvec setup`
+configures the launcher, database workers, and inference mode.
 
 `setup` creates missing databases, installs the extension, merges
 `shared_preload_libraries`, writes **one** owned file
 (`conf.d/99-postvec.conf`), validates it, restarts or reloads if needed,
-refreshes models, and proves the worker heartbeat **advances**.
+refreshes models, and verifies that the worker heartbeat **advances**.
 
-Always preview:
+A dry run reports the planned changes without applying them:
 
 ```bash
 sudo postvec setup --database app ... --dry-run
 ```
 
-## Embedded (start here)
+## Embedded
 
-This is the on-prem path: engine in the launcher, no account, no
-outbound embed API.
+The engine runs in the launcher. No account or outbound embedding API is
+required.
 
 ```bash
 sudo postvec setup --database app \
@@ -40,10 +41,11 @@ inventories.
 `--model NAME` (repeatable) is an embedded preload allow-list. Omit it to
 scan-load every enabled descriptor.
 
-## Remote — organisations
+## Remote gRPC
 
-ninference on your network: distributed CPU/GPU inference, the private
-catalogue, support. Same SQL. See [embedded vs remote](/docs/concepts/modes).
+Remote mode uses ninference nodes on the local network for distributed CPU or
+GPU inference and private catalogue access. The SQL surface is unchanged. See
+[embedded vs remote](/docs/concepts/modes).
 
 ```bash
 sudo postvec setup --database app \
@@ -54,13 +56,12 @@ sudo postvec doctor --database app --deep
 ```
 
 `--allow-unreachable` is only for staging configuration before ninference
-exists. The worker will still be up; inference will not.
+exists. The worker starts, but inference remains unavailable.
 
 ## EL9 / non-`postgresql-common`
 
-There is no `pg_lsclusters`. Select the binaries and a directory
-`postgresql.conf` already includes. The CLI will not invent that
-relationship.
+There is no `pg_lsclusters`. `--pg-config` must identify the PostgreSQL
+binaries, and `--config-dir` must already be included by `postgresql.conf`.
 
 ```bash
 sudo -u postgres postvec setup \
@@ -77,9 +78,10 @@ sudo -u postgres postvec doctor \
 ```
 
 Run as the cluster owner, or set `POSTVEC_DATABASE_URL`. `--no-restart`
-writes valid state and exits **4**; you restart, then `doctor`.
+writes valid state and exits **4**. PostgreSQL must then be restarted before
+running `doctor`.
 
-## Several databases
+## Multiple databases
 
 `postvec.database` is cluster-wide. Each `--database` **adds**; it does not
 remove the others.
@@ -92,11 +94,11 @@ sudo postvec setup --database analytics \
 Switching remote ↔ embedded requires `--switch-mode` and must name **every**
 configured database.
 
-Never hand-edit a name that does not exist into `postvec.database`. The
-launcher will FATAL-respawn that worker forever. `setup` creates the
-database *before* activating the list so this cannot happen.
+Every name in `postvec.database` must refer to an existing database. A missing
+database causes the launcher to repeatedly respawn the failing worker. `setup`
+creates the database before activating the list.
 
-## What `setup` will refuse
+## Configuration ownership checks
 
 | State of `99-postvec.conf` | Result |
 |---|---|
@@ -106,9 +108,10 @@ database *before* activating the list so this cannot happen.
 
 `--yes` does **not** override those two. Reconcile or move the file.
 
-Do not mix a hand-owned `postvec.conf` with the CLI-owned `99-postvec.conf`.
+A manually maintained `postvec.conf` should not coexist with the CLI-owned
+`99-postvec.conf`.
 
-## Prove it from SQL
+## SQL verification
 
 ```sql
 SELECT postvec.version(), postvec.build_info();
@@ -119,13 +122,14 @@ SELECT * FROM postvec.status();
 ```
 
 ::: tip Expected
-Both extensions present. At least one model if inference is reachable.
-`worker_last_beat` is recent and moves if you wait and look again.
+Both extensions are present. At least one model is listed when inference is
+reachable.
+`worker_last_beat` is recent and advances between samples.
 :::
 
-## Manual configuration (you own it)
+## Manual configuration
 
-Only if you deliberately do not want the CLI to own the file:
+Manual configuration keeps the file outside CLI ownership:
 
 ```ini
 shared_preload_libraries = 'postvec'
@@ -134,16 +138,17 @@ postvec.mode = 'embedded'
 postvec.ninference_path = '/opt/postvec/ninference'
 ```
 
-Remote organisations instead set `postvec.mode = 'grpc'` and the two
-endpoint GUCs. Prefer `setup` over hand-editing.
+Remote deployments set `postvec.mode = 'grpc'` and the two endpoint GUCs.
+`setup` is preferred over manual editing.
 
 Create the database and `CREATE EXTENSION postvec CASCADE` **before** adding
 the name to `postvec.database`, then restart.
 
-## `doctor` in one paragraph
+## `doctor` summary
 
-Read-only. ~40 checks, each with a fix. `--deep` proves the heartbeat
-advanced and hashes CLI-installed model receipts. `--strict` fails on
+`doctor` is read-only and performs approximately 40 checks, each with a
+remediation. `--deep` verifies that the heartbeat advanced and hashes
+CLI-installed model receipts. `--strict` fails on
 warnings. `--format json` is the automation surface. Exit 0 is clean.
 
 ```bash

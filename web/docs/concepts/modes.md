@@ -1,6 +1,6 @@
 ---
 title: Embedded vs remote
-description: Embedded is the default path on this site. Remote grpc is the organisation product.
+description: Operational differences between embedded inference and remote gRPC inference.
 ---
 
 # Embedded vs remote
@@ -8,24 +8,24 @@ description: Embedded is the default path on this site. Remote grpc is the organ
 `postvec.mode` is cluster-wide and POSTMASTER: changing it requires a restart.
 Both modes share SQL, the job queue, retry policy, and the gRPC wire contract.
 
-This site teaches **embedded first**. That is the on-prem, no-account,
-no-third-party-API path. Remote mode is the organisation product: a
-ninference fleet, the private catalogue, and support.
+**Embedded mode** provides on-prem inference without an external embedding API
+or account. Remote mode uses a separately operated ninference fleet and
+supports private model catalogues.
 
 | | Embedded | Remote (`grpc`) |
 |---|---|---|
-| Inference | One engine inside the PostgreSQL launcher | ninference node(s) you operate |
+| Inference | One engine inside the PostgreSQL launcher | Separately operated ninference nodes |
 | Discovery | Loopback HTTP on the launcher | `GET /config` on those nodes |
 | DB-host assets | Extension, CLI, ONNX Runtime, models | Extension + CLI |
-| Raw text leaves the DB host | No | To your ninference service only — not a SaaS embed API |
-| Model commands | `postvec model pull / upgrade / rm / activate` | Local mutation refused; administer the fleet |
+| Raw text leaves the DB host | No | Only to the configured ninference service, not a SaaS embedding API |
+| Model commands | `postvec model pull / upgrade / rm / activate` | Local mutation unsupported; models are administered on the fleet |
 | Engine crash | Restarts the launcher | Stays outside PostgreSQL |
-| Who it is for | Single node, private, edge, air-gapped, compliance | Distributed / GPU workloads, org catalogue, support |
+| Typical use | Single-node, private, edge, air-gapped, and regulated deployments | Distributed or GPU workloads and private catalogues |
 
 The public extension package includes both. Installing
-`postvec-embedded` does not flip the mode. `postvec setup --embedded`
-does. If you run `setup` with `--grpc` / `--http` and no `--embedded`,
-you get remote.
+`postvec-embedded` does not change `postvec.mode`. `postvec setup --embedded`
+does. Invoking `setup` with `--grpc` / `--http` and without `--embedded`
+selects remote mode.
 
 ## Embedded
 
@@ -50,10 +50,10 @@ pulled with `postvec model pull` hot-load; no PostgreSQL restart.
 The embedded gRPC/HTTP listeners are **loopback only**. No environment
 variable can move them off `127.0.0.1`.
 
-Inference, weights and text stay on the database host. No outbound
-embedding API.
+Inference, weights, and text remain on the database host. Embedded inference
+does not use an outbound embedding API.
 
-## Remote — organisations
+## Remote gRPC
 
 ```bash
 sudo postvec setup --database app \
@@ -61,29 +61,29 @@ sudo postvec setup --database app \
   --http https://10.0.0.20:22222
 ```
 
-ninference is a separate inference server (CPU or GPU) that you run on
-your network. It is how you:
+ninference is a separate CPU or GPU inference server deployed on the local
+network. Remote mode provides:
 
-- spread embedding and conversion across machines
-- keep PostgreSQL thin
-- serve the **private** catalogue (full embed suite, 100+ conversion
-  pairs, higher-fidelity converters)
-- get organisation support
+- distributed embedding and conversion
+- inference memory and compute outside PostgreSQL
+- the **private** catalogue (full embedding suite, 100+ conversion pairs,
+  and additional converter variants)
+- organisation support services
 
-Provider credentials, if you use any at all, live on the ninference
-side — never in PostgreSQL. `--allow-unreachable` is only for staging
+Provider credentials, when required, remain on the ninference side and are
+not stored in PostgreSQL. `--allow-unreachable` is only for staging
 configuration before the fleet exists.
 
-If the remote engine is down, jobs stay **pending** rather than burning
-retries. Lexical search can still run while
+If the remote engine is unavailable, jobs remain **pending** without consuming
+retry attempts. Lexical search can still run while
 `postvec.search_degrade_to_fts` is on (the default).
 
 Accounts and support: [univec.ai](https://univec.ai).
 
 ## Switching
 
-Mode is cluster-wide. Name every configured database and pass
-`--switch-mode`:
+Mode is cluster-wide. Switching requires every configured database name and
+the `--switch-mode` flag:
 
 ```bash
 sudo postvec setup --database app \
@@ -93,10 +93,11 @@ sudo postvec setup --database app \
 
 Engine files on disk are unused in remote mode; they are not deleted.
 
-## Don't
+## Selection guidance
 
-::: danger Don't pick embedded to "go faster" on a busy primary
+::: warning Embedded mode shares resources with PostgreSQL
 Embedded faults restart the launcher. Remote keeps engine faults off the
-database host. Use embedded when text must not leave, or when there is
-no fleet. Use remote when you want isolation, GPUs, or the org catalogue.
+database host. Embedded mode suits deployments where text must remain on the
+database host or no inference fleet exists. Remote mode provides workload
+isolation, GPU support, and access to the private catalogue.
 :::

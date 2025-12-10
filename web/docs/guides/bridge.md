@@ -12,12 +12,12 @@ new query vector locally and convert that vector into the stored space.
 For example, an `openai-text-embedding-ada-002` corpus can remain byte-for-byte
 unchanged. `search()` can embed the query with an available open model, convert
 that one vector to ada-002 space, then run pgvector and full-text search against
-the existing table. No OpenAI call and no corpus re-embed.
+the existing table. This requires neither an OpenAI call nor a corpus re-embed.
 
-Bridge search is normal `search()` behavior. There is no `search_bridge()` and
-no bridge parameter in application SQL.
+Bridge search is part of the standard `search()` behavior. There is no
+`search_bridge()` function or bridge parameter in application SQL.
 
-## The route
+## Route resolution
 
 ```text
 query text
@@ -28,7 +28,7 @@ query text
 
 Resolution is deterministic:
 
-1. A direct embed model for the declared target wins.
+1. A direct embed model for the declared target takes precedence.
 2. Otherwise postvec chooses the lexicographically first converter into that
    target whose source is directly embeddable, then uses an `embed-bridge`
    executor.
@@ -41,8 +41,8 @@ persist it in the table registry.
 
 ## 1. Verify the stored space
 
-The vector dimension is a fact. The model name is your provenance assertion.
-Check both before adoption:
+The vector dimension is a fact. The model name is an operator-supplied
+provenance assertion. Both require verification before adoption:
 
 ```sql
 SELECT vector_dims(embedding) AS stored_dim
@@ -59,7 +59,7 @@ SELECT name, model_type, source_model, target_model, target_dim
 
 ::: warning Provenance cannot be inferred from the bytes
 Matching `vector(1536)` only rules out models with another dimension. It does
-not prove that ada-002 produced the vectors. A wrong model assertion yields
+not prove that ada-002 produced the vectors. An incorrect model assertion yields
 plausible but invalid ranks.
 :::
 
@@ -77,9 +77,9 @@ SELECT postvec.adopt(
 );
 ```
 
-`backfill => 'none'` protects the existing population. `sync => true` keeps
-future `INSERT` and `UPDATE` operations in the same target space through the
-same bridge route.
+`backfill => 'none'` leaves existing rows unchanged. `sync => true` writes
+future `INSERT` and `UPDATE` vectors in the same target space through the same
+bridge route.
 
 For a frozen or `NOT NULL` legacy vector column, observe it without a write
 path:
@@ -97,7 +97,7 @@ SELECT postvec.adopt(
 Observed mode can search but does not synchronize future rows. See
 [`adopt()`](/docs/guides/adopt) before migrating an observed entry.
 
-## 3. Search normally
+## 3. Search the adopted column
 
 ```sql
 SELECT d.id, d.body,
@@ -119,7 +119,7 @@ Semantic ranks are present, and the query vector has the stored target
 dimension (1536 for classic ada-002).
 :::
 
-To make a missing route loud while validating the setup:
+To return an error for a missing route during validation:
 
 ```sql
 SET postvec.search_degrade_to_fts = off;
@@ -154,7 +154,7 @@ sudo postvec model pull "$converter_name" --yes
 sudo postvec doctor --database app --deep
 ```
 
-Not every source/target pair is present in the public subset. The organisation
+Not every source/target pair is present in the public subset. The private
 catalogue contains the broader conversion inventory.
 
 On **remote**, the ninference fleet is administered separately; local
@@ -173,38 +173,38 @@ SELECT name, model_type, source_model, target_model, target_dim
  ORDER BY model_type, name;
 ```
 
-`refresh_models()` is administrative and not executable by PUBLIC unless you
-grant it.
+`refresh_models()` is administrative and is not executable by PUBLIC without
+an explicit grant.
 
 ## Latency and timeouts
 
 Bridge search is one database-to-engine RPC, but two inference stages run
-inside the engine. Keep the embedder, converter, and bridge executor warm. Set
-`postvec.query_timeout_ms` from measured bridge latency rather than from direct
-embedding latency alone.
+inside the engine. The embedder, converter, and bridge executor should remain
+warm. `postvec.query_timeout_ms` should reflect measured bridge latency rather
+than direct embedding latency alone.
 
-If a timeout quietly reduces semantic recall, turn FTS degradation off during
-diagnosis or monitor warnings plus the returned rank columns.
+FTS degradation can be disabled during timeout diagnosis. Warnings and returned
+rank columns also indicate whether the semantic leg ran.
 
-## Bridge now, migrate later
+## Migration after bridge adoption
 
 | Choice | Stored corpus | New queries | New writes with `sync => true` |
 |---|---|---|---|
 | Bridge search | unchanged | embedded, then converted into old space | embedded, then converted into old space |
 | [`migrate()`](/docs/guides/migrate) | converted to the new space | embedded directly in new space | embedded directly in new space |
 
-The lowest-change adoption sequence is: adopt the existing column, validate
-search through the bridge, then migrate in place later if and when the database
-is ready.
+A staged migration can adopt the existing column, validate search through the
+bridge, and later migrate the stored vectors in place.
 
-## Don't
+## Validation constraints
 
-::: danger Don't treat a dimension match as provenance
-The wrong 1536-dimensional model is still the wrong vector space. Confirm the
-model that produced the column before synchronized writes or conversion.
+::: danger A dimension match does not establish provenance
+An incorrect 1536-dimensional model still represents an incompatible vector
+space. Confirm the model that produced the column before synchronized writes
+or conversion.
 :::
 
-::: danger Don't expect bridge search to upgrade stored rows
+::: danger Bridge search does not upgrade stored rows
 It only produces new vectors—queries and synchronized future writes—in the old
 target space. Existing rows remain exactly as they were.
 :::

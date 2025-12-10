@@ -7,7 +7,7 @@ description: AND-only JSON filters pushed into both search legs before ranking.
 
 `filter` is a JSON object. Every key is a column on the **source** table.
 Conditions are AND-ed and applied **inside both candidate legs** before
-ranking and `LIMIT`. A bad filter is rejected *before* the query is
+ranking and `LIMIT`. An invalid filter is rejected *before* the query is
 embedded, so it costs no inference.
 
 ```sql
@@ -48,22 +48,22 @@ Caps: 64 KiB serialized, 32 columns, 256 `in` values.
 
 ## Highly selective filters
 
-HNSW can under-recall when most of the index is excluded. Raise
-`candidates`, `hnsw.ef_search`, or `hnsw.max_scan_tuples`. There is no
-selectivity estimator on purpose.
+HNSW can under-recall when most of the index is excluded. Increasing
+`candidates`, `hnsw.ef_search`, or `hnsw.max_scan_tuples` can compensate.
+postvec does not implement a filter selectivity estimator.
 
-## Don't
+## Invalid forms
 
-::: danger Don't pass a SQL fragment
-`filter => 'category = ''finance'''` is refused. The injection surface is
-why this is JSON, not a predicate string.
+::: danger SQL predicate fragments are not accepted
+`filter => 'category = ''finance'''` is refused. The JSON grammar prevents
+arbitrary SQL predicates from entering generated queries.
 :::
 
-::: danger Don't write `"category": {"eq": "finance"}`
+::: danger `eq` is not an operator
 There is no `eq`. Use `"category": "finance"`.
 :::
 
-::: danger Don't put `null` inside `in` or a comparison
+::: danger `null` is invalid inside `in` and comparison operators
 Use the scalar `null` / `{"is_not": null}` forms.
 :::
 

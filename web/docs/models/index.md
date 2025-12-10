@@ -18,33 +18,33 @@ SELECT name, model_type, target_model, target_dim
  ORDER BY name;
 ```
 
-## Two tiers of embedding
+## Direct and bridged embedding
 
-When you write `model => 'some-name'` on `enable()` / `adopt()` /
-`search()`:
+When `model => 'some-name'` is supplied to `enable()`, `adopt()`, or
+`search()`, resolution uses:
 
 1. A direct embed model with that public name, or
 2. A converter *targeting* that name whose source is embeddable, routed
    through an `embed-bridge` executor.
 
-That is how a convert-only space (classic example: `ada-002`) can still
-accept new writes and query embeddings **without** the original provider
-and without migrating the corpus. See
+This resolution allows a convert-only space such as `ada-002` to accept new
+writes and query embeddings **without** the original provider or corpus
+migration. See
 [query an existing space](/docs/guides/bridge).
 
 Conversion itself resolves a direct converter or a two-hop
 `convert-bridge`. All write, search, one-shot, and migration paths use
 the same resolver.
 
-## Two catalogues
+## Catalogue channels
 
-| Channel | Who | What is on it |
+| Channel | Access | Contents |
 |---|---|---|
 | **Public** | Anyone, no login | A subset of open-weight embedders and a subset of conversion pairs |
-| **Private** | Organisation accounts, `postvec login` | The full embed suite, 100+ conversion pairs, higher-fidelity converters |
+| **Private** | Organisation accounts, `postvec login` | The full embedding suite, 100+ conversion pairs, and additional converter variants |
 
-Public entries keep their public download URLs even when you are logged
-in. The private channel is a **superset**. Details:
+Public entries retain their public download URLs after authentication. The
+private channel is a **superset**. Details:
 [login](/docs/models/login).
 
 ::: info Registry publication
@@ -54,7 +54,7 @@ package works without the registry. The [release page](/download) is the source
 for publication status.
 :::
 
-## Who installs bytes
+## Model installation by mode
 
 | Mode | Install / remove / upgrade |
 |---|---|
@@ -81,7 +81,7 @@ four generations. To make a column uniform, re-embed or
 Upgrading the extension is a different lifecycle. Neither implies the
 other.
 
-## Next
+## Related documentation
 
 - [Pull, upgrade, remove](/docs/models/pull)
 - [Login](/docs/models/login) — private catalogue

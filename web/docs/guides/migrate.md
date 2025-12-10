@@ -9,8 +9,8 @@ Stored vectors move to a new model in place. Default strategy is
 `convert`: UniVec translates the vectors. Source text is not
 re-embedded.
 
-If you do not want to move the corpus, [bridge the query](/docs/guides/bridge)
-into the existing space instead.
+When the corpus should remain unchanged, [bridge search](/docs/guides/bridge)
+converts queries into the existing space instead.
 
 ```sql
 SELECT postvec.migrate(
@@ -42,7 +42,7 @@ SELECT postvec.migration_finalize(:migration_id);
 SELECT state FROM postvec.migration_status(:migration_id);
 ```
 
-`\gexec` in psql will run `suggested_index_sql` for you.
+In psql, `\gexec` executes `suggested_index_sql`.
 
 ## Strategies
 
@@ -52,8 +52,8 @@ SELECT state FROM postvec.migration_status(:migration_id);
 | `reembed` | Embed current source text (renders the template) with the new model. |
 | `auto` | Convert when a route exists, otherwise re-embed. |
 
-`reindex`: `manual` (default) or `blocking`. Manual is the right default
-on a table that already has traffic.
+`reindex`: `manual` (default) or `blocking`. Manual is recommended for tables
+serving application traffic.
 
 Need a converter on an embedded host? [`postvec model pull`](/docs/models/pull).
 Need one on a remote host? Install it on the ninference node.
@@ -64,40 +64,42 @@ Need one on a remote host? Install it on the ninference node.
 SELECT postvec.migration_abort(:migration_id);
 ```
 
-Available **before** the swap. The original column is untouched.
+`migration_abort()` is available **before** the swap. The original column
+remains unchanged.
 
 ## Observed entries
 
 An `adopt(sync => false)` entry has no write path. `migrate()` refuses it
-unless `observed_writes_quiesced => true`, and you keep writes stopped
-through finalize. Otherwise the watermark can miss updates behind it.
+unless `observed_writes_quiesced => true`, with writes remaining stopped
+through finalization. Otherwise the watermark can miss updates.
 
 ## Chunked entries
 
-Counts are **chunk** counts. Convert sends vectors, never chunk text.
+Counts refer to **chunks**. Conversion sends vectors rather than chunk text.
 New writes during the migration embed with the new model into the
 scratch column.
 
-## What `finalize` will refuse
+## Finalization constraints
 
 `migrate()` already refuses lossy column metadata (defaults, `NOT NULL`,
 constraints, comments, ACLs, stats/storage) before creating the `_new`
-scratch column. `finalize` takes `ACCESS EXCLUSIVE` and re-inspects —
-retryably, never `CASCADE` — if dependent views/indexes appeared. The
+scratch column. `finalize` takes `ACCESS EXCLUSIVE` and re-inspects. If
+dependent views or indexes appeared, it returns a retryable error without
+using `CASCADE`. The
 inspection walks `pg_partition_tree`.
 
-## Don't
+## Validation constraints
 
-::: danger Don't `migrate()` to a model you asserted wrongly at `adopt()`
-Convert will faithfully map garbage into the new space. Confirm
-provenance first, or use `strategy => 'reembed'`.
+::: danger Conversion requires correct source-model provenance
+An incorrect model assertion at `adopt()` produces invalid converted vectors.
+Provenance must be confirmed first; otherwise use `strategy => 'reembed'`.
 :::
 
-::: danger Don't treat `awaiting_index` as failure
+::: info `awaiting_index` is not a failure state
 The data is already on the new model. Build the index, finalize again.
 :::
 
-::: danger Don't start a second migration on the same entry
-One live migration per entry. Watch `migration_status()`; abort if you
-need to change your mind before the swap.
+::: danger Only one migration may be active per entry
+`migration_status()` reports the active migration. It can be aborted before
+the column swap when a different target or strategy is required.
 :::

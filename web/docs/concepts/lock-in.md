@@ -1,12 +1,12 @@
 ---
 title: Vector lock-in and embedding debt
-description: Why stored embeddings are tied to one model, and what it costs to change.
+description: The dependency between stored vectors and their embedding model.
 ---
 
 # Vector lock-in and embedding debt
 
-These terms describe a database dependency that is easy to omit from a
-schema diagram.
+These terms describe a database dependency that is often absent from schema
+diagrams.
 
 ## Vector lock-in
 
@@ -31,24 +31,22 @@ That accumulated, deferred migration work is **embedding debt**. It is not a
 claim that every vector corpus should move immediately; it is a name for the
 cost and risk that otherwise remain implicit.
 
-## Two ways to service the debt
+## Available approaches
 
-postvec's answers:
-
-| Instead of | Use |
+| Requirement | postvec operation |
 |---|---|
 | Re-embed the corpus | [`migrate()`](/docs/guides/migrate) converts the stored vectors |
 | Call a hosted embed API | [Embedded mode](/docs/concepts/modes) runs local open-weight models |
-| Move the corpus just to try a new query model | Keep the column, [bridge the query](/docs/guides/bridge) |
+| Query with a different model without moving the corpus | Keep the column and [bridge the query](/docs/guides/bridge) |
 | Hand-rolled hybrid SQL | [`search()`](/docs/guides/search) + [filters](/docs/guides/filters) |
 
 Bridge search and migration are complementary:
 
 - **Bridge search** keeps stored vectors exactly where they are and converts
-  new query vectors into that space. It is the low-change adoption path.
+  new query vectors into that space. The stored corpus remains unchanged.
 - **In-place migration** converts the stored corpus to a new space without
-  sending source text through the old embedding provider. It is the path when
-  the database is ready to change its model contract.
+  sending source text through the old embedding provider. This changes the
+  model contract of the column.
 
 ## Related
 

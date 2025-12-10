@@ -1,22 +1,22 @@
 ---
-title: Choose an install path
-description: Docker, packages, or source — and what "installed" actually means.
+title: Installation options
+description: Docker, package, and source installation options.
 ---
 
-# Choose an install path
+# Installation options
 
-Installing postvec is two steps that must stay separate:
+File installation and cluster configuration are separate operations:
 
 1. **Deliver files** — packages, an image, or a manual copy.
-2. **Configure a cluster** — `postvec setup`, which you run on purpose.
+2. **Configure a cluster** — an explicit `postvec setup` invocation.
 
-A package or image never edits `postgresql.conf`, never creates a database,
-and never downloads a model. That is why you can install next to existing
-clusters without a surprise restart.
+A package or image does not edit `postgresql.conf`, create a database, or
+download a model. Files can therefore be installed alongside an
+existing cluster without causing a restart.
 
-This site configures **embedded** first (`setup --embedded`): on-prem
-inference, no third-party API. Remote/ninference is the organisation
-path — see [embedded vs remote](/docs/concepts/modes).
+**Embedded mode** (`setup --embedded`) provides on-prem inference with no
+third-party embedding API. Remote mode uses separately operated ninference
+nodes. See [embedded vs remote](/docs/concepts/modes).
 
 ::: info Release status
 The commands in these guides use the planned `0.1.0-1` artifact identity. The
@@ -24,19 +24,19 @@ The commands in these guides use the planned `0.1.0-1` artifact identity. The
 have been published; before that, use locally built artifacts.
 :::
 
-## Pick one
+## Select an installation method
 
-| Goal | Path |
+| Use case | Method |
 |---|---|
-| Try it without touching the host cluster | [Docker](/docs/install/docker) |
-| Production-shaped install on Debian / Ubuntu / EL9 | [Packages](/docs/install/packages) |
+| Test without modifying the host cluster | [Docker](/docs/install/docker) |
+| Persistent install on Debian / Ubuntu / EL9 | [Packages](/docs/install/packages) |
 | Iterate on extension code | [Source](/docs/install/source) |
 
-Do not mix package-owned and hand-copied files at the same path.
-`command -v postvec` must name the binary you think you are testing
-(`/usr/bin` vs `/usr/local/bin`).
+Package-owned and manually copied files must not share a path.
+`command -v postvec` should resolve to the intended binary
+(`/usr/bin` or `/usr/local/bin`).
 
-## Requirements (every path)
+## Requirements
 
 - PostgreSQL **16, 17, or 18**, matching the artifact.
 - **pgvector ≥ 0.8** for that major.
@@ -48,8 +48,10 @@ Do not mix package-owned and hand-copied files at the same path.
 Not supported: **RDS, Aurora**, and any host that forbids
 `shared_preload_libraries = 'postvec'`.
 
-## Then configure
+## Cluster configuration
 
-After files are in place: [Configure the cluster](/docs/install/setup).
+[Configure the cluster](/docs/install/setup) after installing the required
+files.
 
-Later: [Upgrade](/docs/install/upgrade) · [Uninstall](/docs/install/uninstall).
+Lifecycle procedures: [Upgrade](/docs/install/upgrade) ·
+[Uninstall](/docs/install/uninstall).

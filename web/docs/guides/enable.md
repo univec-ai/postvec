@@ -1,6 +1,6 @@
 ---
 title: Enable a column
-description: postvec.enable() — create a shadow vector column and start sync.
+description: Behavior and options for postvec.enable().
 ---
 
 # Enable a column
@@ -16,17 +16,17 @@ SELECT postvec.enable(
 );
 ```
 
-Returns the registry id.
+The function returns the registry identifier.
 
 If the table already has a populated `vector(N)` column, use
 [`adopt()`](/docs/guides/adopt) instead. `enable()` will not take it over.
 
-## Before you call it
+## Requirements
 
 - The table is ordinary or partitioned, not `TEMPORARY`.
 - It has a primary key.
 - The model exists in `postvec.models` and has an embed route.
-- You own the table (or you are superuser).
+- The invoking role owns the table or is a superuser.
 
 ```sql
 SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
@@ -36,15 +36,15 @@ Unlogged tables are allowed with a durability warning.
 
 ## Useful options
 
-| Option | Default | When to change it |
+| Option | Default | Change when |
 |---|---|---|
-| `vector_column` | `{col}_semantic` | You want a specific name |
+| `vector_column` | `{col}_semantic` | A specific column name is required |
 | `create_fts_index` | `false` | Hybrid search should have a GIN |
 | `fts_config` | `pg_catalog.english` | Non-English lexical |
-| `distance` | `cosine` | Must match how you will search / index |
+| `distance` | `cosine` | Search and index operations use another distance metric |
 | `trigger_mode` | `statement` | Use `row` on partitioned tables |
 | `index_mode` | `manual` | `auto` only on small, quiet tables |
-| `backfill` | `true` | `false` if you will load data next |
+| `backfill` | `true` | `false` when the initial data load follows configuration |
 | `backfill_mode` | `queue` | `cursor` for a huge existing table |
 | `format` | raw column | See [templates](/docs/guides/templates) |
 | `chunking` | `none` | See [chunking](/docs/guides/chunking) |
@@ -53,7 +53,7 @@ Statement triggers do **not** fire for subscriber-applied logical
 replication. Run postvec on the **publisher**. On a partitioned parent,
 prefer `trigger_mode => 'row'` so every partition is covered.
 
-## After `enable()`
+## Verification after `enable()`
 
 ```sql
 INSERT INTO docs (body) VALUES ('…');
@@ -73,9 +73,9 @@ CLI check:
 sudo postvec doctor --database app --deep
 ```
 
-`doctor` will warn that a `manual` entry has no ANN index. That is the
-default, not a failure. Build one when backfill is done —
-[indexes](/docs/guides/indexes).
+With `index_mode => 'manual'`, `doctor` reports the missing ANN index as a
+warning rather than a failure. The index can be built after backfill completes;
+see [indexes](/docs/guides/indexes).
 
 ## Disable
 
@@ -88,17 +88,17 @@ SELECT postvec.disable('public.docs', 'body', drop_column => true);
 `drop_column` is refused for a column postvec did not create (adopted).
 Chunk destinations are a separate flag — [chunking](/docs/guides/chunking).
 
-## Don't
+## Validation constraints
 
-::: danger Don't enable a table without a primary key
-Refused. Jobs are keyed by PK.
+::: danger A primary key is required
+Jobs are keyed by primary key, so tables without one are refused.
 :::
 
-::: danger Don't enable a TEMP table
-The worker has its own session and will never see it.
+::: danger Temporary tables are unsupported
+The worker uses a separate session and cannot access temporary tables.
 :::
 
-::: danger Don't `enable()` a column whose text must be hidden from superuser
+::: danger Source text is visible to the bootstrap superuser
 The worker connects as the bootstrap superuser and bypasses RLS. Anyone
 who can read the table can read the derived vector.
 :::

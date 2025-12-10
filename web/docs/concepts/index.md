@@ -1,13 +1,13 @@
 ---
 title: How it works
-description: Runtime shape, write path, and the two constraints that explain most surprises.
+description: Runtime shape, write path, and common operational constraints.
 ---
 
 # How it works
 
-You do not need the internals to use postvec. You do need the shape, because
-it explains the three surprises people hit first: empty vectors just after
-`INSERT`, a silent worker, and a slow `search()`.
+A small part of the runtime model explains the most common operational issues:
+empty vectors immediately after `INSERT`, an inactive worker, and slow
+`search()` calls.
 
 ## Runtime
 
@@ -18,7 +18,7 @@ PostgreSQL cluster
 │   ├─ one worker per name in postvec.database                │
 │   └─ embedded mode: one shared InferenceEngine              │
 │                                                             │
-│ your table  docs(id, body, body_semantic vector(N))         │
+│ source table  docs(id, body, body_semantic vector(N))       │
 │   AFTER INSERT/UPDATE/TRUNCATE ──▶ postvec.jobs             │
 │                                                             │
 │ worker  claim/read  →  inference  →  write-back             │
@@ -42,38 +42,38 @@ INSERT / UPDATE
               → worker writes the vector (or retries / dead-letters)
 ```
 
-Between your commit and the write-back the vector is NULL or stale. That
-window is normally `postvec.poll_interval_ms` plus inference time. See
-[eventual consistency](/docs/concepts/consistency).
+Between the application commit and worker write-back, the vector is NULL or
+stale. The interval is normally `postvec.poll_interval_ms` plus inference time.
+See [eventual consistency](/docs/concepts/consistency).
 
-`search()` is the exception: it embeds the **query** synchronously. That is
-the one inline network call on the query path.
+`search()` is the exception: it embeds the **query** synchronously. Query
+embedding is the only synchronous inference operation in the search path.
 
-## What lives where
+## Durable and transient state
 
 | Durable (dumped) | Cache (not dumped) |
 |---|---|
 | registry, jobs, jobs_dead, migrations | `postvec.models`, worker heartbeat |
 
-After restore you reinstall matching files, restore cluster configuration,
-refresh models, and run `doctor`. [Backup](/docs/guides/backup) has the
-checklist.
+Restoration requires matching files, cluster configuration, a model refresh,
+and `doctor`. [Backup](/docs/guides/backup) contains the checklist.
 
-## The five things that trip people up
+## Operational constraints
 
-1. **Vectors fill later.** Poll `status()`; do not assume the `INSERT`
-   returned a filled column.
-2. **No worker without preload + restart.** Also: name only databases that
-   exist. A missing name in `postvec.database` FATAL-loops every ~15 s.
-3. **No ANN index by default.** Slow search is almost always this.
-   `index_mode => 'auto'` is opt-in because the build is blocking.
+1. **Vectors fill later.** `INSERT` completion does not imply that the vector
+   column is filled. Readiness is available through `status()`.
+2. **No worker without preload + restart.** Every database named in
+   `postvec.database` must exist. A missing name causes the worker to fail and
+   respawn approximately every 15 seconds.
+3. **No ANN index by default.** A missing ANN index is a common cause of slow
+   search. `index_mode => 'auto'` is opt-in because the build is blocking.
 4. **Replacing `postvec.so` does not upgrade SQL.** Restart and
    `ALTER EXTENSION postvec UPDATE` belong in one window. Until then the
-   worker parks.
-5. **`adopt()`'s `model` is an assertion**, not a proof. A wrong name makes
-   `search()` embed into the wrong space.
+   worker pauses.
+5. **`adopt()`'s `model` is an assertion**, not a proof. An incorrect name
+   makes `search()` embed into an incompatible space.
 
-## Next
+## Related documentation
 
 - [Embedded vs remote](/docs/concepts/modes)
 - [Embedding debt and vector lock-in](/docs/concepts/lock-in)

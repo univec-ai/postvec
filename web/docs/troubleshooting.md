@@ -1,11 +1,11 @@
 ---
 title: Troubleshooting
-description: Start with doctor --deep, then match the symptom.
+description: Diagnostic checks and common postvec failure conditions.
 ---
 
 # Troubleshooting
 
-Start here:
+Initial diagnostic:
 
 ```bash
 sudo postvec doctor --database app --deep
@@ -23,9 +23,9 @@ Inside a container: `postvec-healthcheck`, or `doctor` with
 | No advancing `worker_last_beat` | Preload, `postvec.database`, restart finished, worker slots, server log |
 | Jobs pile up with endpoint errors | Restore ninference; an empty endpoint list does not burn attempts |
 | Embedded engine will not start | Engine path, unversioned `libonnxruntime.so`, readable descriptors, loopback ports |
-| Search returns FTS only | Query embed failed; degradation is on. Fix inference or disable it |
+| Search returns FTS only | Query embedding failed while degradation was enabled; restore inference or disable degradation |
 | Search is slow | No usable ANN index for the entry's distance |
-| `status().index_error` set | Fix the recorded auto-index failure, then `create_vector_index()` |
+| `status().index_error` set | Resolve the recorded automatic-index failure, then run `create_vector_index()` |
 | Entry becomes disabled | Table / source / vector / template column vanished; worker quarantined it |
 | Migration is `awaiting_index` | Run `suggested_index_sql`, finalize again |
 | Rows in `jobs_dead` | Fix `last_error`, then `retry_dead()` |
@@ -36,7 +36,7 @@ Inside a container: `postvec-healthcheck`, or `doctor` with
 | `DROP DATABASE` is blocked | Worker holds a connection. `uninstall` then `dropdb --force` |
 | `sudo model pull` is anonymous | Credentials are per user. `sudo postvec login` |
 | `model pull` says package/manual owned | Use the package manager or the original owner |
-| Remote `model pull` refuses | Correct. Administer the ninference host |
+| Remote `model pull` returns an error | Expected; models are administered on the ninference host |
 | Uninstall exits 3 | SQL changed; config left alone. Follow the printed file/line |
 | Exit 4 | Restart the selected cluster, then `doctor --deep` |
 
@@ -48,16 +48,16 @@ Inside a container: `postvec-healthcheck`, or `doctor` with
 4. `sudo postvec doctor --database app --deep`
 
 If pending stays non-zero and `doctor` fails endpoint checks, inference
-is down and the queue is doing the right thing.
+is unavailable. Jobs remain pending without consuming retry attempts.
 
 ## Version skew
 
 Replacing `postvec.so` does not upgrade a database. Until
-`ALTER EXTENSION postvec UPDATE`, the worker parks and writes **no**
-heartbeat. Application backends are not gated. Keep them out of that
-window.
+`ALTER EXTENSION postvec UPDATE`, the worker pauses and writes **no**
+heartbeat. Application backends are not gated, so application traffic should
+remain paused during that window.
 
-## Still stuck
+## Further diagnostics
 
-`postvec doctor --format json --deep` is the artifact to keep. Each check
-has an id, a status, and a printed repair.
+`postvec doctor --format json --deep` produces a persistent diagnostic
+artifact. Each check includes an identifier, status, and remediation.

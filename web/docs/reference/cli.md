@@ -10,8 +10,8 @@ outline: deep
 postvec [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
-Packages install files. This binary changes a cluster or a database only
-when you invoke it.
+Package installation does not configure a cluster or database. The `postvec`
+CLI performs those changes only when explicitly invoked.
 
 | Goal | Command |
 |---|---|
@@ -36,13 +36,14 @@ There is no extension-upgrade command. See [upgrade](/docs/install/upgrade).
 | `--timeout 30s` | Network / subprocess bound |
 
 Auto-select works only when exactly one supported online cluster exists.
-Otherwise list and refuse.
+When zero or multiple candidates exist, the CLI lists them and returns an
+error.
 
-`sudo postvec …` keeps root for the filesystem and drops to the cluster
-owner for database work. Peer auth as yourself usually fails — that is
-expected.
+`sudo postvec …` retains root for filesystem operations and drops to the
+cluster owner for database work. Peer authentication as the invoking non-cluster
+role usually fails, as expected.
 
-`--database-url` alone never authorizes local configuration. Pair it with
+`--database-url` alone does not authorize local configuration. Pair it with
 `--cluster` only when both connections prove they are the same instance.
 
 ## `setup`
@@ -85,7 +86,8 @@ sudo postvec doctor --format json --strict
 | `--ninference-path DIR` | Diagnose an env-supplied root without writing it |
 | `--tls extension-compatible\|strict` | Self-signed tolerance vs a trusted chain |
 
-Never mutates. Never runs inference. Never calls `refresh_models()`.
+`doctor` is read-only, does not run inference, and does not call
+`refresh_models()`.
 
 ## `uninstall`
 
@@ -123,8 +125,8 @@ model activate [--yes]
 |---:|---|
 | 0 | Done; `doctor` clean (`--strict` includes warnings) |
 | 1 | Apply / postcondition / diagnostic failure |
-| 2 | Bad invocation or refused prompt |
-| 3 | Partial multi-target, or config left untouched |
+| 2 | Invalid invocation or refused prompt |
+| 3 | Partial multi-target result, or configuration left unchanged |
 | 4 | Valid changes written; restart still required |
 
 Automation should use `--format json`, not parse the human layout.

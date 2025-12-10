@@ -1,12 +1,12 @@
 ---
 title: Install with Docker
-description: Run the official postvec images and the rules that keep data safe.
+description: postvec container images, volume layouts, and runtime configuration.
 ---
 
 # Install with Docker
 
-The embedded image is the shortest self-contained deployment: PostgreSQL,
-pgvector, postvec, the CLI, ONNX Runtime, and MiniLM.
+The embedded image contains PostgreSQL, pgvector, postvec, the CLI, ONNX
+Runtime, and MiniLM in one container.
 
 The commands below use the planned `0.1.0-1` tags. The [release artifacts
 page](/download) reports whether they are published.
@@ -22,8 +22,8 @@ docker run -d --name postvec \
   ghcr.io/univec-ai/postvec:0.1.0-1-pg18-embedded
 ```
 
-For a local demo, `-e POSTGRES_PASSWORD=demo` is fine. Bind the port to
-loopback.
+For a local demonstration, `-e POSTGRES_PASSWORD=demo` is sufficient. The
+example binds the port to loopback.
 
 <div v-pre>
 
@@ -39,7 +39,7 @@ State becomes `healthy`. The extension exists in `POSTGRES_DB` **only on
 first initialization** of an empty volume.
 :::
 
-The first-hour SQL is in the [quick start](/docs/quickstart).
+The initial SQL workflow is in the [quick start](/docs/quickstart).
 
 ## Remote image
 
@@ -56,16 +56,17 @@ docker run -d --name postvec \
   ghcr.io/univec-ai/postvec:0.1.0-1-pg18
 ```
 
-## Volume path (easy to get wrong)
+## Volume path
 
 | PostgreSQL major | Mount |
 |---|---|
 | 18 | `/var/lib/postgresql` |
 | 16 or 17 | `/var/lib/postgresql/data` |
 
-::: danger Don't change major by changing the image tag
-A 16/17 data directory is not a 18 data directory. Use `pg_upgrade` or
-dump/restore. A wrong mount path **silently loses data** on restart.
+::: danger PostgreSQL majors require distinct volume layouts
+A PostgreSQL 16 or 17 data directory is not a PostgreSQL 18 data directory.
+Major upgrades require `pg_upgrade` or dump/restore. An incorrect mount path
+can create a new empty data directory and conceal the existing data.
 :::
 
 ## Environment
@@ -97,9 +98,9 @@ CREATE DATABASE analytics;
 CREATE EXTENSION postvec CASCADE;
 ```
 
-Include `analytics` in `POSTVEC_DATABASES` and recreate the container (or
-pass `-c postvec.database=...` yourself). Restart is required: the database
-list is POSTMASTER.
+Include `analytics` in `POSTVEC_DATABASES` and recreate the container, or pass
+`-c postvec.database=...`. Restart is required because the database list is
+POSTMASTER.
 
 ## Diagnose inside the image
 
@@ -115,11 +116,11 @@ docker exec -u postgres postvec \
   --database app
 ```
 
-## Models that survive recreation
+## Persistent model storage
 
 Pulled models land under the image's engine root. A **named volume** on
 `/opt/postvec/ninference/models` copies the bundled MiniLM in. A **bind mount or PVC masks**
-the bundled directory — you must copy MiniLM up yourself.
+the bundled directory, so MiniLM must be copied into the mounted directory.
 
 ## Tags
 
@@ -127,5 +128,5 @@ the bundled directory — you must copy MiniLM up yourself.
 - Moving: `ghcr.io/univec-ai/postvec:pg18-embedded`
 - No `latest`. Pin by digest in production.
 
-Pulling a new image never runs `ALTER EXTENSION` for you. See
+Pulling a new image does not run `ALTER EXTENSION`. See
 [upgrade](/docs/install/upgrade).

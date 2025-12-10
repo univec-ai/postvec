@@ -9,8 +9,8 @@ description: Recursive 1:N chunking into a managed destination table.
 vectors in a table postvec manages. Search still returns **one row per
 document**, plus the winning chunk.
 
-Use this when a document is larger than the model likes, or when you want
-passage-level hits with document-level results.
+This mode supports documents above the model's preferred input length and
+passage-level matches with document-level results.
 
 ```sql
 CREATE TABLE public.articles (
@@ -42,7 +42,7 @@ produces one refresh job; the worker splits it and fans out one embed
 job per chunk.
 :::
 
-## Look at chunks
+## Inspect chunks
 
 The destination and `{destination}_view` are **owner-only**. Grant
 explicitly:
@@ -52,7 +52,8 @@ GRANT SELECT ON public.articles_body_chunks,
                public.articles_body_chunks_view TO app_role;
 ```
 
-The view is chunk fields only — no vector, no source columns. Join back.
+The view contains chunk fields but no vector or source columns. Source fields
+require a join to the source table.
 
 ```sql
 SELECT pk_value, chunk_seq, chunk_start, chunk_end, left(chunk_text, 40)
@@ -69,14 +70,14 @@ SELECT a.id, a.title, s.chunk_seq, left(s.chunk_text, 40) AS winning_chunk,
 
 Source-table RLS constrains chunk visibility through the view.
 
-## Updates invalidate in the writer
+## Update and delete behavior
 
 An `UPDATE`/`DELETE` deletes that document's chunk rows (and queued work)
 **inside the writer's transaction**. Bulk updates multiply the cost.
 Splitting and re-embedding stay asynchronous.
 
 Until refresh + embeds drain, the document is **missing from search**.
-False negatives, never stale text.
+The result is a temporary false negative rather than stale text.
 
 ```sql
 UPDATE public.articles SET body = 'a completely new short body' WHERE id = 1;
@@ -101,17 +102,17 @@ CREATE INDEX CONCURRENTLY articles_chunks_hnsw
 or `index_mode => 'auto'` on a small table, or
 `postvec.create_vector_index('public.articles', 'body')`.
 
-Storage amplifies: overlap duplicates text, every chunk is an index row.
-Lower autovacuum scale factors on a hot destination; consider periodic
-`REINDEX INDEX CONCURRENTLY`.
+Storage requirements increase because overlap duplicates text and every chunk
+is an index row. Active destinations may require lower autovacuum scale factors
+and periodic `REINDEX INDEX CONCURRENTLY` operations.
 
 ## Migration counts chunks
 
 `migrate()` converts or re-embeds **chunk rows**. `rows_total` /
-`rows_done` are chunk counts. Convert sends vectors, never chunk text.
+`rows_done` are chunk counts. Conversion sends vectors rather than chunk text.
 Fresh writes during a migration embed with the new model directly.
 
-## Teardown keeps the destination
+## Destination retention during teardown
 
 ```sql
 SELECT postvec.disable('public.articles', 'body');  -- keeps chunks
@@ -119,24 +120,25 @@ SELECT postvec.disable('public.articles', 'body',
                        drop_destination => true);   -- needs ownership markers
 ```
 
-Rows you edit in the destination yourself are invisible to postvec until
-that document's source row changes again.
+Manual edits to destination rows are invisible to postvec until the related
+source row changes again.
 
 ## Limits and refusals
 
 - Single-column PK only. No composite PK. No `adopt()` of a chunked entry.
 - Deterministic splitter, ≤ 10,000 non-blank chunks, ≤ 32 MiB UTF-8 input,
   ≤ 4× output amplification per document. Overlap above 75% of
-  `chunk_size` trips the budget on long documents; `enable()` warns.
+  `chunk_size` can exceed the amplification limit on long documents;
+  `enable()` emits a warning.
 - Live splitter reconfiguration is refused — disable, drop, re-enable.
 
-## Don't
+## Access and ownership constraints
 
-::: danger Don't `GRANT` nothing and wonder why the app cannot see chunks
-Owner-only is the default. Grant the destination and the view.
+::: info Chunk destinations are owner-only by default
+Application access requires an explicit grant on the destination and its view.
 :::
 
-::: danger Don't `DROP TABLE` the destination out from under postvec
+::: danger Destination tables must remain under postvec management
 Ownership is a marker comment, not an OID. Teardown without that marker
-refuses. Recreating a same-named table does not make it postvec's.
+is refused. Recreating a same-named table does not restore postvec ownership.
 :::

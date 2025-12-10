@@ -1,6 +1,6 @@
 ---
 title: Limits and compatibility
-description: What postvec runs on, and the refusals that are deliberate.
+description: Supported environments and explicit limitations.
 ---
 
 # Limits and compatibility
@@ -34,7 +34,7 @@ description: What postvec runs on, and the refusals that are deliberate.
 | Live splitter reconfiguration | Disable / drop / re-enable |
 | `halfvec` / undimensioned `vector` on adopt | Refused, with a rewrite recipe |
 | `NOT NULL` vector the worker would write | Refused |
-| `DROP EXTENSION … CASCADE` | Don't. Use `uninstall` |
+| `DROP EXTENSION … CASCADE` | Unsupported; use `uninstall` |
 | Signed apt/yum repository | Not shipped yet |
 
 ## Resource notes

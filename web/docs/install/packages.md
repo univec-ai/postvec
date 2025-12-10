@@ -1,14 +1,14 @@
 ---
 title: Install packages
-description: apt and dnf install of postvec on Debian, Ubuntu, and EL9.
+description: Package installation for Debian, Ubuntu, and EL9.
 ---
 
 # Install packages
 
-This is the path a third-party host should use. Download the files for
-**one** release, **one** distribution, **one** architecture, **one**
-PostgreSQL major. The [release artifacts](/download) page names them and reports
-whether the release is published.
+Package installation is intended for persistent third-party hosts. Each
+installation requires files for **one** release, **one** distribution,
+**one** architecture, and **one** PostgreSQL major. The
+[release artifacts](/download) page provides names and publication status.
 
 ## 1. Prerequisites (PGDG)
 
@@ -65,8 +65,8 @@ API key. Installing this payload does **not** turn embedded mode on —
 
 ## 3. Extension + CLI only
 
-Use this when a ninference fleet will do inference (organisation /
-remote mode):
+This payload supports remote mode, where a ninference fleet performs
+inference:
 
 ::: code-group
 
@@ -101,10 +101,10 @@ gh attestation verify postgresql-18-postvec_0.1.0-1+deb12_amd64.deb \
   --repo univec-ai/stack --signer-workflow "$SIGNER"
 ```
 
-`--ignore-missing` is for a partial download. Omit it when you have the
-whole release.
+`--ignore-missing` supports partial downloads and should be omitted when the
+complete release is present.
 
-## 5. Confirm files, not a running worker
+## 5. Verify installed files
 
 ```bash
 postvec --version
@@ -113,18 +113,22 @@ test -f /usr/share/postgresql/18/extension/postvec.control
 ```
 
 ::: tip Expected
-The cluster may still be stopped. No `99-postvec.conf`, no database, no
-worker. That is correct. [setup](/docs/install/setup) is the next command.
+These checks do not require a running cluster. Package installation does not
+create `99-postvec.conf`, create a database, or start a worker. Worker and
+database configuration occurs during
+[cluster configuration](/docs/install/setup).
 :::
 
-## What packages never do
+## Package installation scope
 
-- Edit PostgreSQL configuration or `pg_hba.conf`
-- Restart or reload
-- `CREATE` / `DROP EXTENSION`
-- Call the registry
-- Delete user data on `apt remove`
+Package installation does not:
 
-## Next
+- edit PostgreSQL configuration or `pg_hba.conf`
+- restart or reload PostgreSQL
+- run `CREATE EXTENSION` or `DROP EXTENSION`
+- access the model registry
+- delete user data during `apt remove`
+
+## Cluster configuration
 
 [Configure the cluster](/docs/install/setup)

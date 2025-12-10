@@ -1,45 +1,46 @@
 ---
 title: FAQ
-description: Short answers to the questions a first-time operator actually asks.
+description: Short answers to common postvec questions.
 ---
 
 # FAQ
 
-## Does this work on RDS / Aurora / Cloud SQL / Azure Database?
+## Are RDS, Aurora, Cloud SQL, and Azure Database supported?
 
 No, if the service will not load `shared_preload_libraries = 'postvec'`.
-That is structural, not a packaging gap. Use a host you control, or the
-[Docker image](/docs/install/docker).
+This is an architectural requirement rather than a packaging limitation. A
+self-managed host or the [Docker image](/docs/install/docker) is required.
 
 ## What are embedding debt and vector lock-in?
 
-[Defined here](/docs/concepts/lock-in). Lock-in is "these vectors only
-work with one model." Debt is what that costs you every time you want
-to change.
+[Defined here](/docs/concepts/lock-in). Vector lock-in is the dependency of
+stored vectors on one model space. Embedding debt is the accumulated cost and
+risk of changing that dependency.
 
-## Do I need a UniVec API key?
+## Is a UniVec API key required?
 
-Not to embed with the bundled MiniLM model, and not to search. You need
-a key (`postvec login`) to pull **private**-catalogue models — the full
-embed suite and 100+ conversion pairs. Organisation accounts live at
-[univec.ai](https://univec.ai).
+No key is required for the bundled MiniLM model or for search. A key and
+`postvec login` are required to pull **private-catalogue** models, including
+the full embedding suite and more than 100 conversion pairs. Organisation
+account information is available at [univec.ai](https://univec.ai).
 
-## Can I stay on ada-002 and still search?
+## Can an ada-002 corpus remain unchanged?
 
 Yes. [Adopt the column](/docs/guides/adopt) and name that space;
-[embed-bridge](/docs/guides/bridge) produces query vectors in it. No
-corpus re-embed, no OpenAI call.
+[embed-bridge](/docs/guides/bridge) produces query vectors in it without a
+corpus re-embed or OpenAI call.
 
-## Does embedded mode call out to the internet?
+## Does embedded inference require internet access?
 
-Not for inference. Models you already have on disk run in the launcher.
-`model pull` / `ls --available` contact the registry when you ask them
-to. Air-gapped hosts are [supported](/docs/models/air-gapped).
+No. Models already present on disk run in the launcher. `model pull` and
+`ls --available` contact the registry when invoked. Air-gapped hosts are
+[supported](/docs/models/air-gapped).
 
 ## Where do OpenAI / Gemini keys go?
 
-They don't. Not in PostgreSQL. Embedded mode has no place to put them.
-Remote mode talks to *your* ninference, not to those providers.
+They are not stored in PostgreSQL. Embedded mode does not use provider
+credentials. Remote mode communicates with configured ninference nodes rather
+than those providers.
 
 ## Why is the vector NULL right after INSERT?
 
@@ -50,35 +51,35 @@ Remote mode talks to *your* ninference, not to those providers.
 
 There is no ANN index. [Indexes](/docs/guides/indexes).
 
-## Why did search ignore my new row's meaning and just keyword-match?
+## Why can a new row produce only a lexical match?
 
 Either the vector is not filled yet, or query embedding failed and
 `search_degrade_to_fts` kicked in.
 
-## Can I keep my existing `embedding vector(768)` column?
+## Can an existing `embedding vector(768)` column be retained?
 
 Yes. [`adopt()`](/docs/guides/adopt). postvec will not drop it later.
 
-## Can I change the chunk size later?
+## Can chunk size be changed later?
 
 Not live. `disable` (optionally `drop_destination`), then `enable`
 again.
 
-## Does `model upgrade` rewrite my column?
+## Does `model upgrade` rewrite stored vector columns?
 
 No. Only [`migrate()`](/docs/guides/migrate) or a re-embed does that.
 
 ## Is the extension AGPL?
 
-No. PostgreSQL License, for the extension, the CLI, and their packages.
+No. The extension, CLI, and packages use the PostgreSQL License.
 
-## Will `apt remove` drop my data?
+## Does `apt remove` drop database data?
 
-No. Packages never run `DROP EXTENSION` or delete user data. You still
-need [uninstall](/docs/install/uninstall) to take the worker off a
+No. Packages do not run `DROP EXTENSION` or delete user data. The
+[uninstall procedure](/docs/install/uninstall) removes the worker from a
 database.
 
-## Can I run two PostgreSQL majors on one host?
+## Can two PostgreSQL majors run on one host?
 
 Yes. The CLI is a separate package so `postgresql-16-postvec` and
 `postgresql-18-postvec` can coexist. Select with `--cluster`.

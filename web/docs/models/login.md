@@ -1,24 +1,24 @@
 ---
 title: Login and the private catalogue
-description: Public subset for everyone; organisation accounts see every model and the better converters.
+description: Authentication and access rules for the public and private model catalogues.
 ---
 
 # Login and the private catalogue
 
-Two channels, compiled into the CLI. There is no flag to point it at
-another index.
+The CLI contains two compiled-in catalogue channels. It does not accept an
+alternative index URL.
 
 | Channel | Who | Contents |
 |---|---|---|
 | Public | No credential | A **subset** of open-weight embedding models and a **subset** of conversion pairs |
-| Private | Organisation account, a `uv_` API key | **All** embedders, 100+ conversion pairs, higher-fidelity converters |
+| Private | Organisation account, a `uv_` API key | The full embedding suite, 100+ conversion pairs, and additional converter variants |
 
-Public entries keep their public download URLs even when you are logged
-in. Signing in does not move ordinary models onto the private path.
+Public entries retain their public download URLs after authentication.
+Authentication does not move public models to the private channel.
 
-The private catalogue is the organisation product, alongside
-[ninference](/docs/concepts/modes) (distributed CPU/GPU inference) and
-support. Get an account at [univec.ai](https://univec.ai).
+The private catalogue is available to organisation accounts alongside
+[ninference](/docs/concepts/modes) deployments and support. Account details
+are published at [univec.ai](https://univec.ai).
 
 The catalogue is currently in publication preview; these commands document the
 client contract and become useful when the registry channels are live.
@@ -49,11 +49,11 @@ Credential order:
    otherwise `$XDG_CONFIG_HOME/postvec/auth.json`
 4. None → public catalogue
 
-A bad credential **fails**. It never silently becomes anonymous. `logout`
-is how you choose public on purpose.
+An invalid credential returns an error and does not fall back to anonymous
+access. `logout` restores public-only catalogue resolution.
 
-## Don't
+## Credential isolation
 
-::: danger Don't reuse a production spending key for `model pull`
-A dedicated zero-limit key is the whole point of identity-only auth.
+::: danger Production spending keys are unsuitable for model operations
+Model catalogue access should use a dedicated key with a zero spending limit.
 :::
