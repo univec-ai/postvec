@@ -20,9 +20,10 @@ risk of changing that dependency.
 ## Is a UniVec API key required?
 
 No key is required for the bundled MiniLM model or for search. A key and
-`postvec login` are required to pull **private-catalogue** models, including
-the full embedding suite and more than 100 conversion pairs. Organisation
-account information is available at [univec.ai](https://univec.ai).
+`postvec login` are required to pull **private-catalogue** models. The
+authenticated route is identity-only (verified account, unexpired key). Use a
+dedicated key with a $0 spending limit. Account details:
+[univec.ai](https://univec.ai).
 
 ## Can an ada-002 corpus remain unchanged?
 

@@ -3,7 +3,7 @@ layout: page
 sidebar: false
 title: postvec
 titleTemplate: postvec
-description: Local embedding, hybrid search, and in-place vector migration for PostgreSQL.
+description: A PostgreSQL extension for in-database embeddings, hybrid search, and in-place vector migration.
 ---
 
 <HomePage>

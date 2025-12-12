@@ -2,7 +2,7 @@ export const SITE = {
   name: "postvec",
   title: "postvec",
   description:
-    "Local embedding, hybrid search, and in-place vector migration for PostgreSQL.",
+    "A PostgreSQL extension for in-database embeddings, hybrid search, and in-place vector migration.",
   url: "https://postvec.dev",
   github: "https://github.com/univec-ai/stack",
   githubRepo: "univec-ai/stack",
@@ -13,10 +13,12 @@ export const SITE = {
   release: "0.1.0-1",
   packageRelease: "1",
   onnxRuntimeVersion: "1.22.0",
-  bundledModelVersion: "1.1.0",
+  // Packaging pin: registry revision 2 + bundle 1 → 2.1.0
+  bundledModelVersion: "2.1.0",
   releaseStage: "preview",
   registryStage: "preview",
   signerWorkflow: "univec-ai/stack/.github/workflows/postvec-release.yml",
+  conversionPairs: "nearly 100",
 } as const;
 
 export const DISTROS = [

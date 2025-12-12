@@ -29,8 +29,7 @@ When `model => 'some-name'` is supplied to `enable()`, `adopt()`, or
 
 This resolution allows a convert-only space such as `ada-002` to accept new
 writes and query embeddings **without** the original provider or corpus
-migration. See
-[query an existing space](/docs/guides/bridge).
+migration. See [query an existing space](/docs/guides/bridge).
 
 Conversion itself resolves a direct converter or a two-hop
 `convert-bridge`. All write, search, one-shot, and migration paths use
@@ -41,18 +40,17 @@ the same resolver.
 | Channel | Access | Contents |
 |---|---|---|
 | **Public** | Anyone, no login | A subset of open-weight embedders and a subset of conversion pairs |
-| **Private** | Organisation accounts, `postvec login` | The full embedding suite, 100+ conversion pairs, and additional converter variants |
+| **Private** | A verified UniVec account and `postvec login` | The full embedding suite, nearly 100 conversion pairs, and additional converter variants |
 
 Public entries retain their public download URLs after authentication. The
-private channel is a **superset**. Details:
-[login](/docs/models/login).
+private channel is a **superset**. Details: [login](/docs/models/login).
 
-::: info Registry publication
-The client, schema, and authenticated route are implemented, but the public and
-private catalogue buckets are still in release preview. The bundled MiniLM
-package works without the registry. The [release page](/download) is the source
-for publication status.
-:::
+:::: info Registry publication
+The client, schema, and authenticated route are implemented, but the public
+and private catalogue buckets are still in release preview. The bundled
+MiniLM package works without the registry. The [release page](/download) is
+the source for publication status.
+::::
 
 ## Model installation by mode
 

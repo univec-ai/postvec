@@ -1,30 +1,30 @@
 ---
-title: Installation options
-description: Docker, package, and source installation options.
+title: Choose an installation method
+description: Docker, package, and source installation — files first, then setup.
 ---
 
-# Installation options
+# Choose an installation method
 
 File installation and cluster configuration are separate operations:
 
-1. **Deliver files** — packages, an image, or a manual copy.
+1. **Deliver files** — an image, packages, or a manual copy.
 2. **Configure a cluster** — an explicit `postvec setup` invocation.
 
 A package or image does not edit `postgresql.conf`, create a database, or
-download a model. Files can therefore be installed alongside an
-existing cluster without causing a restart.
+download a model. Files can therefore be installed alongside an existing
+cluster without causing a restart.
 
 **Embedded mode** (`setup --embedded`) provides on-prem inference with no
 third-party embedding API. Remote mode uses separately operated ninference
 nodes. See [embedded vs remote](/docs/concepts/modes).
 
-::: info Release status
-The commands in these guides use the planned `0.1.0-1` artifact identity. The
-[release artifacts page](/download) reports whether those packages and images
-have been published; before that, use locally built artifacts.
-:::
+:::: info Release status
+The commands in these guides use the planned `0.1.0-1` artifact identity.
+The [release artifacts page](/download) reports whether those packages and
+images have been published; before that, use locally built artifacts.
+::::
 
-## Select an installation method
+## Select a method
 
 | Use case | Method |
 |---|---|
@@ -48,10 +48,7 @@ Package-owned and manually copied files must not share a path.
 Not supported: **RDS, Aurora**, and any host that forbids
 `shared_preload_libraries = 'postvec'`.
 
-## Cluster configuration
+## After the files are in place
 
-[Configure the cluster](/docs/install/setup) after installing the required
-files.
-
-Lifecycle procedures: [Upgrade](/docs/install/upgrade) ·
-[Uninstall](/docs/install/uninstall).
+[Configure the cluster](/docs/install/setup). Lifecycle later:
+[Upgrade](/docs/install/upgrade) · [Uninstall](/docs/install/uninstall).

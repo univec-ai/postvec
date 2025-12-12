@@ -60,9 +60,9 @@ SELECT d.id, d.body, s.rrf_score
  ORDER BY s.rrf_score DESC;
 ```
 
-::: tip Expected
+:::: tip Expected
 The second row ranks first. `has_vector_index` is true. No dead jobs.
-:::
+::::
 
 ## Roles
 
@@ -71,8 +71,14 @@ Management verbs (`enable`, `adopt`, `disable`, `migrate`, `set_format`,
 `uninstall()` is superuser only. `search()` is executable by PUBLIC.
 `embed` / `convert` / `refresh_models` are revoked from PUBLIC.
 
-## Related documentation
+## Guides in this section
 
-- [Enable a column](/docs/guides/enable) — create and maintain a vector column
-- [Adopt existing vectors](/docs/guides/adopt) — register an existing vector
-  column
+1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt)
+   one that already exists.
+2. [Search](/docs/guides/search), then add [filters](/docs/guides/filters)
+   and [templates](/docs/guides/templates) as needed.
+3. [Chunk](/docs/guides/chunking) long documents.
+4. [Bridge](/docs/guides/bridge) an existing space, or
+   [migrate](/docs/guides/migrate) it.
+5. [Index](/docs/guides/indexes), [retry](/docs/guides/retry) dead work,
+   and [watch](/docs/guides/status) the worker.

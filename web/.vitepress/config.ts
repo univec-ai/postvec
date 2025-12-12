@@ -15,8 +15,20 @@ export default defineConfig({
   },
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
-    ["meta", { name: "theme-color", content: "#F1ECE0" }],
+    ["meta", { name: "theme-color", content: "#f0f2ee" }],
     ["meta", { name: "color-scheme", content: "light dark" }],
+    ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
+    [
+      "link",
+      { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" },
+    ],
+    [
+      "link",
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Serif:ital,wght@0,400;0,500;0,600;1,400&display=swap",
+      },
+    ],
     ["meta", { property: "og:type", content: "website" }],
     ["meta", { property: "og:site_name", content: "postvec" }],
     ["meta", { property: "og:title", content: SITE.title }],
@@ -43,9 +55,9 @@ export default defineConfig({
     },
     nav: [
       { text: "Docs", link: "/docs/" },
-      { text: "Quick start", link: "/docs/quickstart" },
       { text: "Install", link: "/docs/install/" },
-      { text: "SQL", link: "/docs/reference/sql" },
+      { text: "Guides", link: "/docs/guides/" },
+      { text: "Models", link: "/docs/models/" },
       { text: "Downloads", link: "/download" },
     ],
     sidebar: {
@@ -55,20 +67,25 @@ export default defineConfig({
           items: [
             { text: "Overview", link: "/docs/" },
             { text: "Quick start", link: "/docs/quickstart" },
+            { text: "How it works", link: "/docs/concepts/" },
+            { text: "Vector lock-in", link: "/docs/concepts/lock-in" },
+            { text: "Embedded vs remote", link: "/docs/concepts/modes" },
           ],
         },
         {
           text: "Install",
           items: [
-            { text: "Installation options", link: "/docs/install/" },
+            { text: "Choose a method", link: "/docs/install/" },
             { text: "Docker", link: "/docs/install/docker" },
             { text: "Packages", link: "/docs/install/packages" },
             { text: "Build from source", link: "/docs/install/source" },
             { text: "Configure the cluster", link: "/docs/install/setup" },
+            { text: "Upgrade", link: "/docs/install/upgrade" },
+            { text: "Uninstall", link: "/docs/install/uninstall" },
           ],
         },
         {
-          text: "Core workflows",
+          text: "Use",
           items: [
             { text: "Usage overview", link: "/docs/guides/" },
             { text: "Enable a column", link: "/docs/guides/enable" },
@@ -76,25 +93,13 @@ export default defineConfig({
             { text: "Filters", link: "/docs/guides/filters" },
             { text: "Templates", link: "/docs/guides/templates" },
             { text: "Chunk long documents", link: "/docs/guides/chunking" },
-          ],
-        },
-        {
-          text: "Existing vectors",
-          items: [
             { text: "Adopt existing vectors", link: "/docs/guides/adopt" },
             { text: "Search without migrating", link: "/docs/guides/bridge" },
             { text: "Migrate in place", link: "/docs/guides/migrate" },
-          ],
-        },
-        {
-          text: "Operate",
-          items: [
             { text: "Indexes", link: "/docs/guides/indexes" },
             { text: "Retry dead jobs", link: "/docs/guides/retry" },
             { text: "Status and health", link: "/docs/guides/status" },
             { text: "Backup and restore", link: "/docs/guides/backup" },
-            { text: "Upgrade", link: "/docs/install/upgrade" },
-            { text: "Uninstall", link: "/docs/install/uninstall" },
           ],
         },
         {
@@ -104,15 +109,6 @@ export default defineConfig({
             { text: "Pull, upgrade, remove", link: "/docs/models/pull" },
             { text: "Login and private catalogue", link: "/docs/models/login" },
             { text: "Air-gapped hosts", link: "/docs/models/air-gapped" },
-          ],
-        },
-        {
-          text: "Concepts",
-          items: [
-            { text: "Vector lock-in and embedding debt", link: "/docs/concepts/lock-in" },
-            { text: "How postvec works", link: "/docs/concepts/" },
-            { text: "Embedded vs remote", link: "/docs/concepts/modes" },
-            { text: "Eventual consistency", link: "/docs/concepts/consistency" },
           ],
         },
         {
@@ -130,7 +126,7 @@ export default defineConfig({
       ],
     },
     socialLinks: [{ icon: "github", link: SITE.github }],
-    outline: { level: [2, 3], label: "Contents" },
+    outline: { level: [2, 3], label: "On this page" },
     footer: {
       message:
         'PostgreSQL License · a <a href="https://univec.ai">UniVec</a> project',

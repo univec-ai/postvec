@@ -1,8 +1,8 @@
 # postvec.dev
 
-Public documentation site for [postvec](https://postvec.dev) — the
-PostgreSQL extension that keeps embeddings in sync, searches them, and
-migrates them between models in place.
+Public documentation site for [postvec](https://postvec.dev) — a PostgreSQL
+extension for in-database embeddings, hybrid search, and in-place vector
+migration.
 
 ```bash
 cd web/postvec.dev

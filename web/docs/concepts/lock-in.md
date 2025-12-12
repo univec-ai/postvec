@@ -35,10 +35,10 @@ cost and risk that otherwise remain implicit.
 
 | Requirement | postvec operation |
 |---|---|
-| Re-embed the corpus | [`migrate()`](/docs/guides/migrate) converts the stored vectors |
-| Call a hosted embed API | [Embedded mode](/docs/concepts/modes) runs local open-weight models |
+| Change the stored space without replaying source text | [`migrate()`](/docs/guides/migrate) converts the stored vectors |
+| Keep inference on the database host | [Embedded mode](/docs/concepts/modes) runs local open-weight models |
 | Query with a different model without moving the corpus | Keep the column and [bridge the query](/docs/guides/bridge) |
-| Hand-rolled hybrid SQL | [`search()`](/docs/guides/search) + [filters](/docs/guides/filters) |
+| Combine lexical and semantic retrieval | [`search()`](/docs/guides/search) + [filters](/docs/guides/filters) |
 
 Bridge search and migration are complementary:
 

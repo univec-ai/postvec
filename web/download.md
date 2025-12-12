@@ -1,18 +1,18 @@
 ---
-title: Release artifacts
+title: Downloads
 description: GitHub Release packages, GHCR images, publication status, and verification.
 outline: deep
 ---
 
-# Release artifacts
+# Downloads
 
-GitHub Releases and GHCR are the configured publication channels. The selector
-checks GitHub for a published postvec release and links assets only when they
-exist. Until then, it acts as an exact naming reference for locally built
-artifacts.
+GitHub Releases and GHCR are the configured publication channels. The
+selector checks GitHub for a published postvec release and links assets only
+when they exist. Until then, it is an exact naming reference for locally
+built artifacts.
 
-There is no signed apt/yum repository. Installation is from downloaded files so
-the key-rotation and repository lifecycle are not implied before they exist.
+There is no signed apt/yum repository. Installation is from downloaded files
+so a key-rotation and repository lifecycle are not implied before they exist.
 The current release identity is `0.1.0-1`.
 
 <DownloadPanel />
@@ -24,7 +24,7 @@ The current release identity is `0.1.0-1`.
 | `postvec-cli` | `/usr/bin/postvec` |
 | `postgresql-NN-postvec` / `postgresqlNN-postvec` | Extension library, control file, versioned SQL |
 | `postvec-onnxruntime` | CPU ONNX Runtime under `/opt/postvec/ninference/libs`; independently versioned |
-| `postvec-model-minilm-l6-v2` | Bundled 384-d model; independently versioned |
+| `postvec-model-minilm-l6-v2` | Bundled 384-d model; independently versioned (`2.1.0` = registry revision 2, bundle 1) |
 | `postvec-embedded` | Metapackage pinning the runtime + model |
 | `…-pgNN` image | PostgreSQL + pgvector + postvec + CLI, remote mode |
 | `…-pgNN-embedded` image | The above plus the engine and MiniLM |
@@ -32,7 +32,7 @@ The current release identity is `0.1.0-1`.
 Debian 12 and Ubuntu 22.04 packages are **not** interchangeable even though
 both are `.deb`. Match the host that will *run* the binaries.
 
-## Post-installation
+## After the files are on disk
 
 Packages install files and stop. They do not edit PostgreSQL, create a
 database, or download models.
@@ -41,8 +41,8 @@ database, or download models.
 - [Docker runtime notes](/docs/install/docker)
 - [Uninstall](/docs/install/uninstall)
 
-## Hosting note
+## Hosting
 
-The selector reads `univec-ai/stack` releases tagged `postvec-v*`. If packages
-later move to a dedicated repository or object store, the artifact identity and
-image-tag scheme remain the compatibility contract.
+The selector reads `univec-ai/stack` releases tagged `postvec-v*`. If
+packages later move to a dedicated repository or object store, the artifact
+identity and image-tag scheme remain the compatibility contract.

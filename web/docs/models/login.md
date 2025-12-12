@@ -11,22 +11,22 @@ alternative index URL.
 | Channel | Who | Contents |
 |---|---|---|
 | Public | No credential | A **subset** of open-weight embedding models and a **subset** of conversion pairs |
-| Private | Organisation account, a `uv_` API key | The full embedding suite, 100+ conversion pairs, and additional converter variants |
+| Private | A verified UniVec account and a `uv_` API key | The full embedding suite, nearly 100 conversion pairs, and additional converter variants |
 
 Public entries retain their public download URLs after authentication.
 Authentication does not move public models to the private channel.
 
-The private catalogue is available to organisation accounts alongside
-[ninference](/docs/concepts/modes) deployments and support. Account details
-are published at [univec.ai](https://univec.ai).
+The private catalogue is the same inventory a ninference fleet can serve.
+Organisation accounts and support around that fleet are documented at
+[univec.ai](https://univec.ai). The authenticated route itself is
+**identity-only**: the account must be active and verified, and the key must
+not be expired. It does **not** check balance or spending limit.
 
-The catalogue is currently in publication preview; these commands document the
-client contract and become useful when the registry channels are live.
+The catalogue is currently in publication preview; these commands document
+the client contract and become useful when the registry channels are live.
 
-The authenticated route is **identity-only**: account active/verified,
-key not expired. It does **not** check balance or spending limit. Create
-a dedicated key with a **$0 spending limit** — the same `uv_` key would
-otherwise also authorize billable UniVec API calls.
+Create a dedicated key with a **$0 spending limit**. The same `uv_` key
+would otherwise also authorize billable UniVec API calls.
 
 ## Commands
 
@@ -54,6 +54,6 @@ access. `logout` restores public-only catalogue resolution.
 
 ## Credential isolation
 
-::: danger Production spending keys are unsuitable for model operations
+:::: danger Production spending keys are unsuitable for model operations
 Model catalogue access should use a dedicated key with a zero spending limit.
-:::
+::::

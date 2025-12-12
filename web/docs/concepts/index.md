@@ -43,7 +43,8 @@ INSERT / UPDATE
 ```
 
 Between the application commit and worker write-back, the vector is NULL or
-stale. The interval is normally `postvec.poll_interval_ms` plus inference time.
+stale. A committed write arms an at-commit latch, so the interval is normally
+inference time; `postvec.poll_interval_ms` (default 5000) is only the backstop.
 See [eventual consistency](/docs/concepts/consistency).
 
 `search()` is the exception: it embeds the **query** synchronously. Query

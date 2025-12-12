@@ -8,11 +8,11 @@ description: Hybrid search in a disposable postvec container.
 The quick start runs in one disposable container and does not modify a host
 PostgreSQL cluster. It uses no API key and creates one example table.
 
-::: info Release status
-The commands use the planned `0.1.0-1` image. Publication status is listed with
-the [release artifacts](/download). An unpublished tag requires a local image
-build or an existing development package.
-:::
+:::: info Release status
+The commands use the planned `0.1.0-1` image. Publication status is listed
+with the [release artifacts](/download). An unpublished tag requires a local
+image build or an existing development package.
+::::
 
 ## 1. Run the embedded image
 
@@ -36,12 +36,13 @@ docker exec postvec postvec-healthcheck
 
 </div>
 
-::: tip Expected
+:::: tip Expected
 Health becomes `healthy` after PostgreSQL starts and the bundled MiniLM
 model loads. `postvec-healthcheck` exits 0.
-:::
+::::
 
-The image creates the extension in `POSTGRES_DB` on first initialization only.
+The image creates the extension in `POSTGRES_DB` on first initialization
+only.
 
 ## 2. Verify inference
 
@@ -58,9 +59,9 @@ SELECT vector_dims(postvec.embed(
 SQL
 ```
 
-::: tip Expected
+:::: tip Expected
 The bundled model is listed. `vector_dims` returns **384**.
-:::
+::::
 
 `embed()` is an administrative helper. Application roles require an explicit
 `GRANT`. Search is the public query surface.
@@ -94,8 +95,9 @@ SELECT relation, pending_jobs, dead_jobs
 SQL
 ```
 
-Vectors fill **asynchronously**. Repeat until `pending_jobs = 0` and every
-`body_semantic` is non-NULL:
+Vectors fill **asynchronously**. A committed write arms an at-commit latch,
+so the worker normally starts within inference time of the commit. Repeat
+until `pending_jobs = 0` and every `body_semantic` is non-NULL:
 
 ```sql
 SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
@@ -103,10 +105,12 @@ SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
   FROM docs;
 ```
 
-::: tip Expected
-`filled = total`, `pending_jobs = 0`, `dead_jobs = 0`. This usually takes
-one poll interval plus inference time (about a second here).
-:::
+:::: tip Expected
+`filled = total`, `pending_jobs = 0`, `dead_jobs = 0`. On this image that is
+usually a second or two. `postvec.poll_interval_ms` (default 5000) is only
+the backstop if the worker restarted between the latch being armed and the
+commit.
+::::
 
 ## 4. Index and search
 
@@ -124,13 +128,13 @@ SELECT d.id, d.body,
  ORDER BY s.rrf_score DESC;
 ```
 
-::: tip Expected
+:::: tip Expected
 The engineering row ranks highly despite almost no keyword overlap.
 `status().has_vector_index` is true.
-:::
+::::
 
-`search()` returns the primary key as **text** for a join to the source table.
-This avoids dynamic record types.
+`search()` returns the primary key as **text** for a join to the source
+table. This avoids dynamic record types.
 
 ## 5. Remove the container
 
@@ -141,8 +145,8 @@ docker rm -f postvec
 The command removes the disposable container. No host files or PostgreSQL
 cluster configuration were created.
 
-## Related documentation
+## Next
 
 - [Install on a real cluster](/docs/install/)
 - [How the worker fills vectors](/docs/concepts/consistency)
-- [Usage guides](/docs/guides/) — filters, templates, chunking, migrate, adopt
+- [Usage](/docs/guides/) — filters, templates, chunking, migrate, adopt

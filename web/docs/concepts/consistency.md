@@ -9,10 +9,15 @@ Application writes commit first. The vector is filled later, by a worker that
 does not retain the application transaction's row lock while calling the
 engine.
 
+A committed write arms an **at-commit latch**. Under light load the worker
+normally starts within inference time of the commit.
+`postvec.poll_interval_ms` (default 5000) is only the backstop for a worker
+that restarted between the latch being armed and the commit.
+
 Search during this window can miss a new row or, after an update, still rank
-the previous vector. For chunked columns the contract
-is stricter: an edited document is **absent** until it is rebuilt — false
-negatives rather than stale chunk text. See [chunking](/docs/guides/chunking).
+the previous vector. For chunked columns the contract is stricter: an edited
+document is **absent** until it is rebuilt — false negatives rather than stale
+chunk text. See [chunking](/docs/guides/chunking).
 
 ## Readiness checks
 
@@ -61,8 +66,8 @@ degradation disabled, the search returns an error.
 
 ## Transaction boundary
 
-::: danger The worker cannot fill a vector before the inserting transaction commits
+:::: danger The worker cannot fill a vector before the inserting transaction commits
 Polling the vector column within the inserting transaction cannot observe the
 worker write-back. Readiness checks require a separate transaction after
 commit.
-:::
+::::
