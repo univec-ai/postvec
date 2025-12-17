@@ -5,13 +5,13 @@ description: Cluster configuration and diagnostics with postvec setup and doctor
 
 # Configure the cluster
 
-Cluster configuration is separate from file installation. `postvec setup`
-configures the launcher, database workers, and inference mode.
+File installation stops at the binaries. `postvec setup` then configures
+the launcher, the database workers and the inference mode.
 
 `setup` creates missing databases, installs the extension, merges
 `shared_preload_libraries`, writes **one** owned file
 (`conf.d/99-postvec.conf`), validates it, restarts or reloads if needed,
-refreshes models, and verifies that the worker heartbeat **advances**.
+refreshes models and verifies that the worker heartbeat **advances**.
 
 A dry run reports the planned changes without applying them:
 
@@ -32,11 +32,11 @@ sudo postvec model ls
 sudo postvec doctor --database app --deep
 ```
 
-::: tip Expected
+:::: tip Expected
 `model ls` shows MiniLM as loaded. `doctor` reports aligned library/SQL
-versions, an advancing heartbeat, and matching on-disk / engine / SQL
+versions, an advancing heartbeat and matching on-disk / engine / SQL
 inventories.
-:::
+::::
 
 `--model NAME` (repeatable) is an embedded preload allow-list. Omit it to
 scan-load every enabled descriptor.
@@ -61,7 +61,7 @@ exists. The worker starts, but inference remains unavailable.
 ## EL9 / non-`postgresql-common`
 
 There is no `pg_lsclusters`. `--pg-config` must identify the PostgreSQL
-binaries, and `--config-dir` must already be included by `postgresql.conf`.
+binaries and `--config-dir` must already be included by `postgresql.conf`.
 
 ```bash
 sudo -u postgres postvec setup \
@@ -91,8 +91,8 @@ sudo postvec setup --database analytics \
   --embedded --path /opt/postvec/ninference
 ```
 
-Switching remote ↔ embedded requires `--switch-mode` and must name **every**
-configured database.
+Switching between remote and embedded requires `--switch-mode` and must name
+**every** configured database.
 
 Every name in `postvec.database` must refer to an existing database. A missing
 database causes the launcher to repeatedly respawn the failing worker. `setup`
@@ -121,11 +121,11 @@ SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
 SELECT * FROM postvec.status();
 ```
 
-::: tip Expected
+:::: tip Expected
 Both extensions are present. At least one model is listed when inference is
 reachable.
 `worker_last_beat` is recent and advances between samples.
-:::
+::::
 
 ## Manual configuration
 

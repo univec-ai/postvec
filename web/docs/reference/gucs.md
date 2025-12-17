@@ -1,21 +1,21 @@
 ---
 title: GUCs
-description: All postvec.* settings, defaults, and which ones need a restart.
+description: postvec.* settings, defaults and which ones need a restart.
 ---
 
 # GUCs
 
-Values are read at *use* time rather than cached at worker start. This keeps
-`SIGHUP` live. POSTMASTER settings are only *defined* when
-`shared_preload_libraries` includes `postvec`.
+Each GUC is read at use time, so a `SIGHUP` takes effect without a worker
+restart. POSTMASTER settings exist only when `shared_preload_libraries`
+includes `postvec`.
 
 | GUC (`postvec.*`) | Default | Context |
 |---|---:|---|
-| `ninference_grpc_endpoints` | — | SIGHUP |
-| `ninference_http_endpoints` | — | SIGHUP |
-| `database` | — | **POSTMASTER** (comma-separated) |
+| `ninference_grpc_endpoints` | - | SIGHUP |
+| `ninference_http_endpoints` | - | SIGHUP |
+| `database` | - | **POSTMASTER** (comma-separated) |
 | `worker_enabled` | on | SIGHUP |
-| `poll_interval_ms` | 5000 | SIGHUP — empty-queue backstop; writers wake the worker at commit |
+| `poll_interval_ms` | 5000 | SIGHUP - empty-queue backstop; writers wake the worker at commit |
 | `batch_size` | 64 | SIGHUP (×4 = cursor chunk) |
 | `migrate_batch_size` | 256 | SIGHUP |
 | `embed_timeout_ms` | 30000 | SIGHUP |
@@ -28,22 +28,23 @@ Values are read at *use* time rather than cached at worker start. This keeps
 | `search_degrade_to_fts` | on | USERSET |
 | `notify_on_write` | off | SIGHUP |
 | `worker_lock_timeout_ms` | 10000 | SIGHUP (`0` disables) |
-| `max_document_bytes` | 1 MiB | SIGHUP — oversized rows dead-letter; never truncated |
-| `max_batch_total_bytes` | 16 MiB | SIGHUP — remaining rows stay pending |
-| `ddl_lock_timeout_ms` | 60000 | USERSET — applied `SET LOCAL` in lifecycle verbs |
-| `heartbeat_interval_ms` | 30000 | SIGHUP — idle workers write no WAL between beats |
+| `max_document_bytes` | 1 MiB | SIGHUP - oversized rows dead-letter; never truncated |
+| `max_batch_total_bytes` | 16 MiB | SIGHUP - remaining rows stay pending |
+| `ddl_lock_timeout_ms` | 60000 | USERSET - applied `SET LOCAL` in lifecycle verbs |
+| `heartbeat_interval_ms` | 30000 | SIGHUP - idle workers write no WAL between beats |
 | `mode` | `grpc` | **POSTMASTER** |
-| `ninference_path` | — | **POSTMASTER** (else `$NINFERENCE_PATH`) |
-| `embedded_models` | — | **POSTMASTER** (empty = scan-load) |
+| `ninference_path` | - | **POSTMASTER** (else `$NINFERENCE_PATH`) |
+| `embedded_models` | - | **POSTMASTER** (empty = scan-load) |
 | `embedded_listen` | `127.0.0.1:33433` | **POSTMASTER** |
 | `embedded_http_listen` | `127.0.0.1:33434` | **POSTMASTER** |
 | `embedded_max_inflight` | 1 | **POSTMASTER** |
 
-Prefer `postvec setup` to writing these. The CLI merges
+`postvec setup` is the supported way to write these. The CLI merges
 `shared_preload_libraries` and owns `99-postvec.conf`.
 
-`pg_reload_conf()` does nothing to POSTMASTER settings. After changing
-`database`, `mode`, `ninference_path`, `embedded_*`, or preload: restart.
+`pg_reload_conf()` does not apply POSTMASTER settings. A restart is required
+after a change to `database`, `mode`, `ninference_path`, `embedded_*` or
+preload.
 
-`setup` should add databases. A name that does not exist causes the worker to
-fail and respawn approximately every 15 seconds.
+Add databases through `setup`. A name that does not exist makes the worker
+fail and respawn about every 15 seconds.

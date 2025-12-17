@@ -5,9 +5,9 @@ description: Source build and manual installation for development PostgreSQL.
 
 # Build from source
 
-Source installation supports extension development. Persistent deployments
-should use [packages](/docs/install/packages). Package-owned and manually
-copied files must not share paths.
+Build from source when iterating on the extension. Persistent deployments
+should use [packages](/docs/install/packages). Package-owned files and
+manually copied files must not share paths.
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ copied files must not share paths.
 - cargo-pgrx **0.18.1**
 - `protoc`
 - PostgreSQL server-development headers for the target major
-- pgvector ≥ 0.8 built against the same `pg_config`
+- pgvector >= 0.8 built against the same `pg_config`
 
 ```bash
 rustc --version
@@ -41,8 +41,7 @@ cargo build --release -p postvec-cli
 ```
 
 Staged extension: `postvec/target/release/postvec-pg18/`.
-CLI: `target/release/postvec`. The build does not modify files outside the
-repository.
+CLI: `target/release/postvec`. The build stays inside the repository.
 
 ## Install into a pgrx cluster
 
@@ -56,8 +55,8 @@ cargo pgrx install --release \
 
 ## Install into a system PGDG tree
 
-These files have **no** package owner. Every copied path requires a record for
-later removal.
+These files have **no** package owner. Every copied path needs a record so
+it can be removed later.
 
 ```bash
 export PV_STAGE=postvec/target/release/postvec-pg18
@@ -75,15 +74,14 @@ sudo install -m 0755 target/release/postvec /usr/local/bin/postvec
 
 ## Embedded engine root
 
-A source build has no ONNX Runtime and no weights. Either install the
-engine-asset packages, reuse an existing ninference root, or copy the
-packaging payloads:
+A source build has no ONNX Runtime and no weights. Install the engine-asset
+packages, reuse an existing ninference root or copy the packaging payloads:
 
 ```bash
 cd packaging/postvec
 scripts/build-onnxruntime-bundle.sh --arch amd64
 # The bundled model comes from the postvec model registry's public channel,
-# pulled by the postvec CLI you built above.
+# pulled by the postvec CLI built above.
 scripts/build-model-bundle.sh
 
 sudo install -d -m 0755 /opt/postvec/ninference
@@ -103,16 +101,16 @@ delete them.
 3. Copy the staged files
 4. Recreate a disposable database if same-version generated SQL changed
 
-Installing a new `.so` does not change SQL already in a database. A new
-extension version needs upgrade SQL plus `ALTER EXTENSION postvec UPDATE`
-in the same window as the restart. [Upgrade](/docs/install/upgrade).
+A new `.so` does not change SQL already in a database. A new extension
+version needs upgrade SQL plus `ALTER EXTENSION postvec UPDATE` in the same
+window as the restart. [Upgrade](/docs/install/upgrade).
 
 ## Rollback (files only)
 
-PostgreSQL must be stopped first. Confirm that each path is **not**
-package-owned with `dpkg -S` or `rpm -qf`. Remove only recorded files, then
-restore any previous manual installation while the cluster remains stopped.
+Stop PostgreSQL first. Confirm that each path is **not** package-owned with
+`dpkg -S` or `rpm -qf`. Remove only recorded files, then restore any
+previous manual installation while the cluster remains stopped.
 
 [Cluster configuration](/docs/install/setup) follows file installation. If
-`setup` was already run, complete [uninstallation](/docs/install/uninstall)
+`setup` already ran, finish [uninstallation](/docs/install/uninstall)
 before deleting files.

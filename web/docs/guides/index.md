@@ -5,27 +5,24 @@ description: SQL operations from column registration through search and migratio
 
 # Usage overview
 
-Application work is SQL. The CLI configures the cluster and, in embedded
-mode, the models. There is no CLI flag that calls `enable()`, `search()`,
-or `set_format()`.
+Registration, search, filters and migration are SQL. The CLI configures the cluster and, in embedded mode, the model inventory. There is no CLI entry point for `enable()`, `search()` or `set_format()`.
 
 | Task | SQL | CLI counterpart |
 |---|---|---|
 | Attach a new column | [`enable()`](/docs/guides/enable) | `doctor` / `status()` |
-| Search | [`search()`](/docs/guides/search) | — |
-| Restrict by metadata | [`filter`](/docs/guides/filters) | — |
-| Embed title + body | [`set_format()`](/docs/guides/templates) | — |
-| Long documents | [`chunking`](/docs/guides/chunking) | — |
-| Register existing vectors | [`adopt()`](/docs/guides/adopt) | — |
+| Search | [`search()`](/docs/guides/search) | - |
+| Restrict by metadata | [`filter`](/docs/guides/filters) | - |
+| Embed title + body | [`set_format()`](/docs/guides/templates) | - |
+| Long documents | [`chunking`](/docs/guides/chunking) | - |
+| Register existing vectors | [`adopt()`](/docs/guides/adopt) | - |
 | Query a locked space without migrating | [bridge](/docs/guides/bridge) | pull the converter; dependencies bring the embed model + `embed-bridge` |
-| Change model | [`migrate()`](/docs/guides/migrate) | — |
+| Change model | [`migrate()`](/docs/guides/migrate) | - |
 | Speed up search | [`create_vector_index()`](/docs/guides/indexes) | `doctor` index checks |
 | Re-drive failures | [`retry_dead()`](/docs/guides/retry) | `doctor` `queue.dead` |
 | See health | [`status()` / `stats()`](/docs/guides/status) | `postvec doctor` |
 | Dump / restore | [Backup](/docs/guides/backup) | `setup` after restore |
 
-Every function is schema-qualified: `postvec.*`. Nothing is added to
-`search_path`.
+Functions live in the `postvec` schema. The extension does not add itself to `search_path`, so every call stays schema-qualified: `postvec.*`.
 
 ## Minimal workflow
 
@@ -66,19 +63,12 @@ The second row ranks first. `has_vector_index` is true. No dead jobs.
 
 ## Roles
 
-Management verbs (`enable`, `adopt`, `disable`, `migrate`, `set_format`,
-`retry_dead`, `create_vector_index`) require table ownership or superuser.
-`uninstall()` is superuser only. `search()` is executable by PUBLIC.
-`embed` / `convert` / `refresh_models` are revoked from PUBLIC.
+Table ownership or superuser is required for the management verbs: `enable`, `adopt`, `disable`, `migrate`, `set_format`, `retry_dead` and `create_vector_index`. `uninstall()` is superuser only. `search()` is executable by PUBLIC. `embed` / `convert` / `refresh_models` are revoked from PUBLIC.
 
 ## Guides in this section
 
-1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt)
-   one that already exists.
-2. [Search](/docs/guides/search), then add [filters](/docs/guides/filters)
-   and [templates](/docs/guides/templates) as needed.
+1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt) one that already exists.
+2. [Search](/docs/guides/search), then add [filters](/docs/guides/filters) and [templates](/docs/guides/templates) as needed.
 3. [Chunk](/docs/guides/chunking) long documents.
-4. [Bridge](/docs/guides/bridge) an existing space, or
-   [migrate](/docs/guides/migrate) it.
-5. [Index](/docs/guides/indexes), [retry](/docs/guides/retry) dead work,
-   and [watch](/docs/guides/status) the worker.
+4. [Bridge](/docs/guides/bridge) an existing space, or [migrate](/docs/guides/migrate) it.
+5. [Index](/docs/guides/indexes), [retry](/docs/guides/retry) dead work and [watch](/docs/guides/status) the worker.

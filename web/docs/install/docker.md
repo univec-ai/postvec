@@ -1,14 +1,14 @@
 ---
 title: Install with Docker
-description: postvec container images, volume layouts, and runtime configuration.
+description: postvec container images, volume layouts and runtime configuration.
 ---
 
 # Install with Docker
 
-The embedded image contains PostgreSQL, pgvector, postvec, the CLI, ONNX
-Runtime, and MiniLM in one container.
+One container holds PostgreSQL, pgvector, postvec, the CLI, ONNX Runtime
+and MiniLM.
 
-The commands below use the planned `0.1.0-1` tags. The [release artifacts
+Commands below use the planned `0.1.0-1` tags. The [release artifacts
 page](/download) reports whether they are published.
 
 ## Embedded (all-in-one)
@@ -22,8 +22,8 @@ docker run -d --name postvec \
   ghcr.io/univec-ai/postvec:0.1.0-1-pg18-embedded
 ```
 
-For a local demonstration, `-e POSTGRES_PASSWORD=demo` is sufficient. The
-example binds the port to loopback.
+A local demo can pass `-e POSTGRES_PASSWORD=demo` instead. The example
+binds the port to loopback.
 
 <div v-pre>
 
@@ -34,12 +34,12 @@ docker exec postvec postvec-healthcheck
 
 </div>
 
-::: tip Expected
+:::: tip Expected
 State becomes `healthy`. The extension exists in `POSTGRES_DB` **only on
 first initialization** of an empty volume.
-:::
+::::
 
-The initial SQL workflow is in the [quick start](/docs/quickstart).
+The first SQL steps live in the [quick start](/docs/quickstart).
 
 ## Remote image
 
@@ -63,11 +63,11 @@ docker run -d --name postvec \
 | 18 | `/var/lib/postgresql` |
 | 16 or 17 | `/var/lib/postgresql/data` |
 
-::: danger PostgreSQL majors require distinct volume layouts
+:::: danger PostgreSQL majors require distinct volume layouts
 A PostgreSQL 16 or 17 data directory is not a PostgreSQL 18 data directory.
 Major upgrades require `pg_upgrade` or dump/restore. An incorrect mount path
 can create a new empty data directory and conceal the existing data.
-:::
+::::
 
 ## Environment
 
@@ -84,7 +84,7 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 | `POSTVEC_SHARED_PRELOAD_LIBRARIES` | unset | Existing preloads; postvec is appended |
 | `POSTVEC_CREATE_EXTENSION` | `1` | `0` skips first-run `CREATE EXTENSION` |
 
-Invalid mode, an empty database list, or a newline in a value exits **64**.
+Invalid mode, an empty database list or a newline in a value exits **64**.
 Embedded mode with no engine assets exits **78**. Embedded listeners stay
 loopback-only.
 
@@ -104,7 +104,7 @@ POSTMASTER.
 
 ## Diagnose inside the image
 
-The official PostgreSQL image is not `postgresql-common`, so plain
+The official PostgreSQL image is not `postgresql-common`, so a plain
 `postvec doctor` finds no cluster.
 
 ```bash
@@ -119,8 +119,9 @@ docker exec -u postgres postvec \
 ## Persistent model storage
 
 Pulled models land under the image's engine root. A **named volume** on
-`/opt/postvec/ninference/models` copies the bundled MiniLM in. A **bind mount or PVC masks**
-the bundled directory, so MiniLM must be copied into the mounted directory.
+`/opt/postvec/ninference/models` copies the bundled MiniLM in. A **bind mount
+or PVC** masks the bundled directory, so MiniLM must be copied into the
+mounted directory.
 
 ## Tags
 

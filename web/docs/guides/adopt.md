@@ -5,13 +5,9 @@ description: Register a populated vector column without rewriting it.
 
 # Adopt existing vectors
 
-`adopt()` registers an application-owned `vector(N)` column without rewriting
-it during the call.
+`adopt()` registers an application-owned `vector(N)` column. The call does not rewrite stored bytes.
 
-To **keep** an existing space such as ada-002 and continue searching it, name
-the original model and let embed-bridge produce query vectors —
-[query an existing space](/docs/guides/bridge). To **leave** the space,
-adopt then [`migrate()`](/docs/guides/migrate).
+To keep an existing space such as ada-002 and continue searching it, name the original model and let embed-bridge produce query vectors. See [query an existing space](/docs/guides/bridge). To leave the space, adopt then [`migrate()`](/docs/guides/migrate).
 
 ```sql
 SELECT postvec.adopt(
@@ -21,21 +17,17 @@ SELECT postvec.adopt(
 );
 ```
 
-::: tip Expected
+:::: tip Expected
 `registry.owns_vector_column` is false. Only NULL vectors are queued
 (`backfill => 'missing'`). Existing bytes are left alone. Future writes
 are synchronized.
-:::
+::::
 
 ## Model provenance
 
-The column's declared dimension is fact. The catalogue can only
-*contradict* an incorrect model (dimension mismatch). Nothing can prove which
-model produced the bytes.
+The column's declared dimension is fact. The model name is an operator-supplied assertion. The catalogue can only *contradict* an incorrect model (dimension mismatch). Nothing can prove which model produced the bytes.
 
-An incorrect assertion makes `search()` embed the query into an incompatible space
-and causes `migrate(strategy => 'convert')` to produce invalid vectors without
-an explicit error.
+An incorrect assertion makes `search()` embed the query into an incompatible space. `migrate(strategy => 'convert')` then produces invalid vectors without an explicit error.
 
 ## Options
 
@@ -46,7 +38,7 @@ an explicit error.
 | `backfill_mode` | `queue` | `cursor` refused with `all` |
 | others | same as `enable()` | distance, FTS, format, index_mode |
 
-`sync` and `backfill` are independent and are not derived from each other.
+`sync` and `backfill` are independent. Neither is derived from the other.
 
 ## Observed (read-only) adoption
 
@@ -60,45 +52,31 @@ SELECT postvec.adopt(
 );
 ```
 
-`trigger_mode` is stored as `none`. Only a TRUNCATE sentinel is installed
-(so a dropped-and-recreated same-named table cannot silently reattach).
-No embed route is required. Search may degrade to FTS.
+`trigger_mode` is stored as `none`. Only a TRUNCATE sentinel is installed, so a dropped-and-recreated same-named table cannot silently reattach. No embed route is required. Search may degrade to FTS.
 
-`migrate()` refuses an observed entry unless
-`observed_writes_quiesced => true` is supplied, and writes must stay stopped **through
-`migration_finalize()`**. The flag is an acknowledgement, not a lock.
+`migrate()` refuses an observed entry unless `observed_writes_quiesced => true` is supplied, and writes must stay stopped **through `migration_finalize()`**. The flag is an acknowledgement, not a lock.
 
-An observed entry can later be promoted by calling `adopt()` again with
-`sync => true`. Stored immutable options, including `format`, must be repeated
-**byte-exactly**.
+An observed entry can later be promoted by calling `adopt()` again with `sync => true`. Stored immutable options, including `format`, must be repeated **byte-exactly**.
 
 ## Validation constraints
 
-Missing column · not exact `vector` (`halfvec`, arrays, domains) · bare
-`vector` with no dimension · generated / PK-member / alias of the source
-· `NOT NULL` unless both `sync => false` and `backfill => 'none'` (the
-worker must be allowed to NULL a vector when the source goes NULL) ·
-dimension ≠ the model's known dimension · unknown model · column already
-claimed · no embed route when `sync` or any finite backfill ·
-`'all'` + `'cursor'`.
+Missing column · not exact `vector` (`halfvec`, arrays, domains) · bare `vector` with no dimension · generated / PK-member / alias of the source · `NOT NULL` unless both `sync => false` and `backfill => 'none'` (the worker must be allowed to NULL a vector when the source goes NULL) · dimension != the model's known dimension · unknown model · column already claimed · no embed route when `sync` or any finite backfill · `'all'` + `'cursor'`.
 
-A `halfvec` refusal includes an `ALTER TABLE … TYPE vector(N) USING …`
-recipe.
+A `halfvec` refusal includes an `ALTER TABLE ... TYPE vector(N) USING ...` recipe.
 
 ## Teardown behavior
 
-Because postvec did not create the column, `disable(drop_column => true)`
-and `uninstall(drop_columns => true)` leave it in place.
+Because postvec did not create the column, `disable(drop_column => true)` and `uninstall(drop_columns => true)` leave it in place.
 
 ## Provenance and write constraints
 
-::: danger The source model must be known
+:::: danger The source model must be known
 An incorrect model assertion produces plausible but invalid ranks. Columns
 with uncertain provenance should be treated as untrusted and rebuilt, or
 backfilled with `backfill => 'all'` after selecting an available model.
-:::
+::::
 
-::: danger Synchronized vector columns must permit NULL
+:::: danger Synchronized vector columns must permit NULL
 A `NOT NULL` vector column is refused for synchronized adoption. Remove the
 constraint first, or use observed mode with `backfill => 'none'`.
-:::
+::::

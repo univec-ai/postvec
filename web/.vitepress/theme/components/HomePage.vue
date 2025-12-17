@@ -8,22 +8,22 @@ import { SITE } from "../site";
     <div class="wrap">
       <header class="intro">
         <p class="kicker">
-          PostgreSQL 16–18 · PostgreSQL License · {{ SITE.releaseStage }}
+          PostgreSQL 16-18 · PostgreSQL License · {{ SITE.releaseStage }}
           {{ SITE.version }}
         </p>
         <h1>Embeddings that live in the table.<br />Models that do not have to.</h1>
         <p class="lede">
           postvec is a PostgreSQL extension. It keeps a
-          <code>pgvector</code> column synchronized with source text, runs
-          hybrid full-text and semantic search in one call, and converts stored
-          vectors from one embedding model to another without sending the
-          corpus through an embedding API again.
+          <code>pgvector</code> column in step with source text, runs
+          hybrid full-text and semantic search in one call and can convert
+          stored vectors from one embedding model to another. The original
+          documents do not go through an embedding API a second time.
         </p>
         <p class="follow">
           Inference runs on the database host in
-          <a :href="withBase('/docs/concepts/modes')">embedded mode</a>,
-          or on a ninference fleet in remote mode. There is no third-party
-          embedding key in PostgreSQL.
+          <a :href="withBase('/docs/concepts/modes')">embedded mode</a>.
+          Remote mode talks to a ninference fleet instead. PostgreSQL does
+          not hold a third-party embedding key in either case.
         </p>
         <nav class="links" aria-label="Primary documentation">
           <a :href="withBase('/docs/quickstart')">Quick start</a>
@@ -38,7 +38,7 @@ import { SITE } from "../site";
         <ol class="path">
           <li>
             <a :href="withBase('/docs/quickstart')">Run the embedded image</a>
-            if the host cluster should stay untouched.
+            when the host cluster should stay as it is.
           </li>
           <li>
             <a :href="withBase('/docs/guides/enable')"><code>enable()</code></a>
@@ -70,7 +70,7 @@ import { SITE } from "../site";
           <slot name="example" />
         </div>
         <p class="note">
-          Writes fill asynchronously — normally within inference time of
+          Writes fill in the background, usually within inference time of
           commit. Query embedding is synchronous. Filters apply to both legs
           before reciprocal-rank fusion.
         </p>
@@ -81,15 +81,15 @@ import { SITE } from "../site";
         <p>
           An embedding is a point in the space of the model that produced it.
           Matching dimensions do not make two models comparable. Once a corpus,
-          its index, and every query caller assume space A, the model is part
+          its index and every query caller assume space A, the model is part
           of the data contract. That coupling is
           <strong>vector lock-in</strong>.
         </p>
         <p>
           Changing the contract normally means re-embedding the corpus,
-          rebuilding the index, dual-writing through cutover, and re-evaluating
-          retrieval. Every new row in the old space increases that deferred
-          work. The accumulated cost is
+          rebuilding the index, dual-writing through cutover and checking
+          retrieval again. Every new row in the old space adds to that
+          deferred work. The accumulated cost is
           <strong>embedding debt</strong>.
         </p>
         <p>
@@ -108,15 +108,15 @@ import { SITE } from "../site";
             <dd>
               Embedded mode runs inference inside the PostgreSQL launcher.
               Text and model weights stay on that host. No hosted embedding
-              API is required.
+              API is involved.
             </dd>
           </div>
           <div>
             <dt>In the table</dt>
             <dd>
-              <code>enable()</code> maintains vectors from source text through
-              a background worker. Application SQL never calls an embedding
-              provider.
+              <code>enable()</code> keeps vectors current from source text
+              through a background worker. Application SQL does not call an
+              embedding provider.
             </dd>
           </div>
           <div>
@@ -124,32 +124,33 @@ import { SITE } from "../site";
             <dd>
               <code>migrate()</code> translates stored vectors into another
               model space with local conversion models. The source corpus is
-              not replayed. A knowledge base can change models and keep its
-              rows.
+              left alone. A long-lived knowledge base can change models and
+              keep its rows.
             </dd>
           </div>
           <div>
             <dt>Hybrid, filtered</dt>
             <dd>
-              <code>search()</code> fuses pgvector and PostgreSQL full-text
-              ranks. Typed filters constrain both legs before ranking.
+              <code>search()</code> combines pgvector ranks with PostgreSQL
+              full-text ranks. Typed filters constrain both legs before
+              ranking.
             </dd>
           </div>
           <div>
             <dt>Without moving the corpus</dt>
             <dd>
               Bridge search embeds a new query locally and converts that one
-              vector into an existing space — including classic ada-002
-              columns — so the stored bytes can stay put.
+              vector into an existing space, including classic ada-002
+              columns. The stored bytes stay as they are.
             </dd>
           </div>
           <div>
             <dt>With a local catalogue</dt>
             <dd>
               Open-weight embedders and conversion pairs are pulled onto the
-              host. The public channel is a subset; a verified UniVec account
+              host. The public channel is a subset. A verified UniVec account
               sees the private superset ({{ SITE.conversionPairs }} conversion
-              pairs, a broader embed suite). Registry publication is
+              pairs and a broader embed suite). Registry publication is
               {{ SITE.registryStage }}.
             </dd>
           </div>
@@ -162,18 +163,18 @@ import { SITE } from "../site";
           <article>
             <h3>Embedded</h3>
             <p>
-              The engine lives in the launcher. Use this when text must not
-              leave the database host, or when there is no inference fleet.
-              Models are administered with <code>postvec model …</code>.
+              The engine lives in the launcher. Typical when text must stay
+              on the database host, or when no inference fleet is available.
+              Models are administered with <code>postvec model ...</code>.
             </p>
           </article>
           <article>
             <h3>Remote</h3>
             <p>
-              Backends call ninference over gRPC. Use this for GPU or
-              distributed inference, and for organisation deployments that
-              serve the private catalogue from that fleet. The SQL does not
-              change.
+              Backends call ninference over gRPC. Typical for GPU or
+              distributed inference and for organisation deployments that
+              serve the private catalogue from that fleet. The SQL stays the
+              same.
             </p>
           </article>
         </div>
@@ -213,7 +214,7 @@ import { SITE } from "../site";
         <p class="note">
           Release {{ SITE.version }} is {{ SITE.releaseStage }}. The
           <a :href="withBase('/download')">downloads page</a> reports whether
-          the named artifacts exist on GitHub; until they do, the names are
+          the named artifacts exist on GitHub. Until they do, the names are
           the local-build contract.
         </p>
       </section>

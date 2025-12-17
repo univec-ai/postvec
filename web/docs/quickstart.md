@@ -5,8 +5,9 @@ description: Hybrid search in a disposable postvec container.
 
 # Quick start
 
-The quick start runs in one disposable container and does not modify a host
-PostgreSQL cluster. It uses no API key and creates one example table.
+A single disposable container is enough for this walkthrough. The host
+PostgreSQL cluster is left alone. No API key is involved. One example
+table is created.
 
 :::: info Release status
 The commands use the planned `0.1.0-1` image. Publication status is listed
@@ -133,8 +134,8 @@ The engineering row ranks highly despite almost no keyword overlap.
 `status().has_vector_index` is true.
 ::::
 
-`search()` returns the primary key as **text** for a join to the source
-table. This avoids dynamic record types.
+`search()` returns the primary key as **text**, which joins back to the
+source table without a dynamic record type.
 
 ## 5. Remove the container
 
@@ -142,11 +143,11 @@ table. This avoids dynamic record types.
 docker rm -f postvec
 ```
 
-The command removes the disposable container. No host files or PostgreSQL
-cluster configuration were created.
+That removes the disposable container. No host files or PostgreSQL cluster
+configuration were created.
 
 ## Next
 
 - [Install on a real cluster](/docs/install/)
 - [How the worker fills vectors](/docs/concepts/consistency)
-- [Usage](/docs/guides/) — filters, templates, chunking, migrate, adopt
+- [Usage](/docs/guides/) - filters, templates, chunking, migrate, adopt

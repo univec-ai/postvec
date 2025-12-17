@@ -5,9 +5,7 @@ description: Behavior and options for postvec.enable().
 
 # Enable a column
 
-`enable()` declares a text column semantic. It **creates** a shadow
-`vector(N)` column (default name `{column}_semantic`), installs enqueue
-triggers, and optionally backfills.
+`enable()` declares a text column semantic. The call **creates** a shadow `vector(N)` column (default name `{column}_semantic`), installs enqueue triggers and optionally backfills existing rows.
 
 ```sql
 SELECT postvec.enable(
@@ -18,8 +16,7 @@ SELECT postvec.enable(
 
 The function returns the registry identifier.
 
-If the table already has a populated `vector(N)` column, use
-[`adopt()`](/docs/guides/adopt) instead. `enable()` will not take it over.
+If the table already has a populated `vector(N)` column, use [`adopt()`](/docs/guides/adopt). `enable()` will not take that column over.
 
 ## Requirements
 
@@ -32,7 +29,7 @@ If the table already has a populated `vector(N)` column, use
 SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
 ```
 
-Unlogged tables are allowed with a durability warning.
+Unlogged tables are accepted and emit a durability warning.
 
 ## Useful options
 
@@ -49,23 +46,21 @@ Unlogged tables are allowed with a durability warning.
 | `format` | raw column | See [templates](/docs/guides/templates) |
 | `chunking` | `none` | See [chunking](/docs/guides/chunking) |
 
-Statement triggers do **not** fire for subscriber-applied logical
-replication. Run postvec on the **publisher**. On a partitioned parent,
-prefer `trigger_mode => 'row'` so every partition is covered.
+Statement triggers do **not** fire for subscriber-applied logical replication. Run postvec on the **publisher**. On a partitioned parent, prefer `trigger_mode => 'row'` so every partition is covered.
 
 ## Verification after `enable()`
 
 ```sql
-INSERT INTO docs (body) VALUES ('…');
+INSERT INTO docs (body) VALUES ('...');
 
 SELECT relation, model, dim, pending_jobs, dead_jobs
   FROM postvec.status();
 ```
 
-::: tip Expected
+:::: tip Expected
 `pending_jobs` rises, then returns to 0. `docs.body_semantic` fills with
 `vector(N)` where `N` is the model's `target_dim`.
-:::
+::::
 
 CLI check:
 
@@ -73,9 +68,7 @@ CLI check:
 sudo postvec doctor --database app --deep
 ```
 
-With `index_mode => 'manual'`, `doctor` reports the missing ANN index as a
-warning rather than a failure. The index can be built after backfill completes;
-see [indexes](/docs/guides/indexes).
+With `index_mode => 'manual'`, `doctor` reports the missing ANN index as a warning. Build the index after backfill completes; see [indexes](/docs/guides/indexes).
 
 ## Disable
 
@@ -85,20 +78,18 @@ SELECT postvec.disable('public.docs', 'body');
 SELECT postvec.disable('public.docs', 'body', drop_column => true);
 ```
 
-`drop_column` is refused for a column postvec did not create (adopted).
-Chunk destinations are a separate flag — [chunking](/docs/guides/chunking).
+`drop_column` is refused for a column postvec did not create (adopted). Chunk destinations are a separate flag; see [chunking](/docs/guides/chunking).
 
 ## Validation constraints
 
-::: danger A primary key is required
+:::: danger A primary key is required
 Jobs are keyed by primary key, so tables without one are refused.
-:::
+::::
 
-::: danger Temporary tables are unsupported
+:::: danger Temporary tables are unsupported
 The worker uses a separate session and cannot access temporary tables.
-:::
+::::
 
-::: danger Source text is visible to the bootstrap superuser
-The worker connects as the bootstrap superuser and bypasses RLS. Anyone
-who can read the table can read the derived vector.
-:::
+:::: danger Source text is visible to the bootstrap superuser
+The worker connects as the bootstrap superuser and bypasses RLS. A role that can read the table can also read the derived vector.
+::::

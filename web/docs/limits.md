@@ -16,7 +16,7 @@ description: Supported environments and explicit limitations.
 
 ## Not supported
 
-- **RDS, Aurora**, and any host that cannot set
+- **RDS, Aurora** and any host that cannot set
   `shared_preload_libraries = 'postvec'`
 - `TEMPORARY` tables (the worker cannot see them)
 - In-SQL chat / RAG completion
@@ -34,20 +34,20 @@ description: Supported environments and explicit limitations.
 | Live splitter reconfiguration | Disable / drop / re-enable |
 | `halfvec` / undimensioned `vector` on adopt | Refused, with a rewrite recipe |
 | `NOT NULL` vector the worker would write | Refused |
-| `DROP EXTENSION … CASCADE` | Unsupported; use `uninstall` |
+| `DROP EXTENSION ... CASCADE` | Unsupported. `uninstall` is the supported path. |
 | Signed apt/yum repository | Not shipped yet |
 
 ## Resource notes
 
-- One worker per configured database. `auto` index builds occupy it.
+- One worker per configured database. An `auto` index build occupies that worker.
 - Chunked writers pay invalidation inside their own transaction.
 - `set_format()` blocks writers while it enqueues a full refresh.
 - `query_timeout_ms` (default 2 s) bounds the synchronous query embed.
-- Chunk splitter: ≤ 10,000 non-blank chunks, ≤ 32 MiB UTF-8, ≤ 4×
+- Chunk splitter: at most 10,000 non-blank chunks, 32 MiB UTF-8 and 4x
   amplification per document.
 
 ## License split
 
-Extension + CLI + packaging: **PostgreSQL License**.
-Converter catalogue: UniVec, not this license. The bundled MiniLM model
-keeps its own upstream license, shipped in the package.
+The extension, CLI and packaging use the **PostgreSQL License**.
+The converter catalogue is UniVec, under a separate license. The bundled
+MiniLM model keeps its upstream license and ships in the package.

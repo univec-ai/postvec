@@ -1,11 +1,11 @@
 ---
 title: Upgrade
-description: Coordinating package files, PostgreSQL restart, and ALTER EXTENSION.
+description: Coordinating package files, PostgreSQL restart and ALTER EXTENSION.
 ---
 
 # Upgrade
 
-Two lifecycles, one maintenance window:
+Two lifecycles share one maintenance window:
 
 1. New files (`postvec.so`, control, upgrade SQL).
 2. `ALTER EXTENSION postvec UPDATE` in **every** database that has it.
@@ -22,13 +22,12 @@ Repeat `ALTER EXTENSION` for each database in `postvec.database`.
 ## Maintenance window
 
 Between restart and `ALTER EXTENSION` the worker **pauses**: no jobs, no
-heartbeat. This prevents worker transactions from running against mismatched
-SQL, but application backends can still load the new library against old SQL.
-Application traffic should remain paused until every database is updated.
+heartbeat. Worker transactions therefore cannot run against mismatched SQL.
+Application backends can still load the new library against old SQL, so
+application traffic should stay paused until every database is updated.
 
-There is no `postvec upgrade` command. This is distinct from
-`postvec model upgrade`, which replaces model bytes and does not touch
-extension SQL or stored vectors.
+There is no `postvec upgrade` command. `postvec model upgrade` replaces
+model bytes and does not touch extension SQL or stored vectors.
 
 ## Containers
 
@@ -51,9 +50,9 @@ backup, or follow the release's rollback note if it has one.
 
 ## Version alignment
 
-::: danger Shipped upgrades require matching library and SQL changes
+:::: danger Shipped upgrades require matching library and SQL changes
 Same-version SQL changes on an unreleased tree are a special case for
 developers. On a shipped version, missing `postvec--X--Y.sql` plus
 `ALTER EXTENSION` means the worker remains paused and application calls are
 undefined.
-:::
+::::

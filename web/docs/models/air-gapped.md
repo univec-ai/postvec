@@ -22,17 +22,18 @@ sudo postvec model activate
 `--path` is files only. `activate` (on the embedded cluster) is what
 loads them and refreshes SQL caches.
 
-::: tip Expected
+:::: tip Expected
 `show --verify` hashes every file against the receipt with **no**
 catalogue present. `doctor --deep` does the same across every
-CLI-installed model. `registry.reachable` is a **warning**, not a failure;
-offline hosts are supported.
-:::
+CLI-installed model. `registry.reachable` is a **warning**. Offline
+hosts are supported.
+::::
 
-Processes using the engine root must be stopped before files are replaced via
-`--path`.
+Processes using the engine root must be stopped before files are
+replaced via `--path`.
 
 ## Withdrawn names
 
-A withdrawn model cannot be pulled again. Installed copies remain functional,
-but removal prevents subsequent restoration from the catalogue.
+A withdrawn model cannot be pulled again. Installed copies remain
+functional, but removal prevents subsequent restoration from the
+catalogue.

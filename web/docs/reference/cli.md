@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-description: postvec setup, doctor, uninstall, model, login — flags and exit codes.
+description: postvec setup, doctor, uninstall, model and login. Flags and exit codes.
 outline: deep
 ---
 
@@ -10,41 +10,41 @@ outline: deep
 postvec [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
-Package installation does not configure a cluster or database. The `postvec`
-CLI performs those changes only when explicitly invoked.
+A package install places files on disk. Cluster and database configuration
+happen only when the `postvec` CLI is invoked.
 
 | Goal | Command |
 |---|---|
 | Configure | `postvec setup` |
 | Diagnose (read-only) | `postvec doctor` |
 | Remove SQL + config | `postvec uninstall` |
-| Embedded models | `postvec model …` |
+| Embedded models | `postvec model ...` |
 | Registry identity | `postvec login` / `whoami` / `logout` |
 
-There is no extension-upgrade command. See [upgrade](/docs/install/upgrade).
+The CLI has no extension-upgrade command. See [upgrade](/docs/install/upgrade).
 
 ## Global options
 
 | Option | Use |
 |---|---|
 | `--cluster 18/main` | `postgresql-common` cluster, including a stopped one |
-| `--pg-config PATH` | PGDG-RPM, pgrx, or source install |
+| `--pg-config PATH` | PGDG-RPM, pgrx or source install |
 | `--config-dir DIR` | With `--pg-config`; must already be included by `postgresql.conf` |
-| `--database-url URI` | Prefer `POSTVEC_DATABASE_URL` so credentials stay out of `/proc` |
+| `--database-url URI` | `POSTVEC_DATABASE_URL` keeps credentials out of `/proc` |
 | `--format json` | Versioned JSON on stdout; progress on stderr |
 | `--no-color` | Also honoured via `NO_COLOR` |
 | `--timeout 30s` | Network / subprocess bound |
 
-Auto-select works only when exactly one supported online cluster exists.
-When zero or multiple candidates exist, the CLI lists them and returns an
-error.
+Auto-select runs only when exactly one supported online cluster is present.
+Zero or several candidates produce a listing and an error.
 
-`sudo postvec …` retains root for filesystem operations and drops to the
-cluster owner for database work. Peer authentication as the invoking non-cluster
-role usually fails, as expected.
+`sudo postvec ...` keeps root for filesystem work and drops to the cluster
+owner for database work. Peer authentication as the invoking non-cluster
+role usually fails. That is expected.
 
-`--database-url` alone does not authorize local configuration. Pair it with
-`--cluster` only when both connections prove they are the same instance.
+`--database-url` alone does not authorize local configuration writes. Add
+`--cluster` only after both connections prove they are the same
+instance.
 
 ## `setup`
 
@@ -63,7 +63,7 @@ sudo postvec setup --database app \
 | `--embedded --path DIR` | Absolute engine root |
 | `--model NAME` | Embedded preload allow-list; omit to scan-load |
 | `--embedded-grpc-listen`, `--embedded-http-listen` | Loopback only |
-| `--switch-mode` | Acknowledge remote ↔ embedded; name every database |
+| `--switch-mode` | Acknowledge remote <-> embedded; name every database |
 | `--allow-unreachable` | Stage config before inference exists |
 | `--no-restart` | Write state, exit 4 |
 | `--dry-run`, `--yes` | Preview / non-interactive |
@@ -86,7 +86,7 @@ sudo postvec doctor --format json --strict
 | `--ninference-path DIR` | Diagnose an env-supplied root without writing it |
 | `--tls extension-compatible\|strict` | Self-signed tolerance vs a trusted chain |
 
-`doctor` is read-only, does not run inference, and does not call
+`doctor` is read-only. It does not run inference and does not call
 `refresh_models()`.
 
 ## `uninstall`

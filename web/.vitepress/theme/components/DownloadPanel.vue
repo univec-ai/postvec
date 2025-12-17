@@ -122,7 +122,7 @@ function assetUrl(name: string): string | null {
       <span class="release-kicker">Release preview</span>
       <p>
         Checking GitHub for <code>{{ SITE.releaseTag }}</code>. The exact
-        artifact names are shown below meanwhile.
+        artifact names are listed below in the meantime.
       </p>
     </div>
 
@@ -130,7 +130,7 @@ function assetUrl(name: string): string | null {
       <span class="release-kicker">Release preview</span>
       <p>
         <code>{{ SITE.releaseTag }}</code> is not published. The exact artifact
-        names are shown below for release rehearsal and local builds.
+        names below are for release rehearsal and local builds.
       </p>
     </div>
 
@@ -148,7 +148,7 @@ function assetUrl(name: string): string | null {
         <a :href="release?.html_url" target="_blank" rel="noreferrer">
           {{ release?.tag_name }}
         </a>
-        includes checksums, attestations, packages, and matching image tags.
+        includes checksums, attestations, packages and matching image tags.
       </p>
     </div>
 
@@ -188,9 +188,9 @@ function assetUrl(name: string): string | null {
     <CopyCommand :command="`docker pull ${imageTag}`" label="Pinned tag" />
     <p class="hint">
       The moving tag is <code>{{ movingTag }}</code>. There is no
-      <code>latest</code> — it would hide the PostgreSQL major. Pin the
-      versioned tag in production, preferably by digest. A preview tag may not
-      resolve until the release is published.
+      <code>latest</code> tag, because it would hide the PostgreSQL major.
+      Pin the versioned tag in production, preferably by digest. A preview
+      tag may not resolve until the release is published.
     </p>
     <p class="hint">
       PostgreSQL 18 volumes mount at <code>/var/lib/postgresql</code>. 16 and 17
@@ -216,8 +216,8 @@ function assetUrl(name: string): string | null {
     <CopyCommand :command="installCmd" :label="selectedDistro.family === 'deb' ? 'apt' : 'dnf'" />
     <p class="hint">
       Use <code>apt</code> / <code>dnf</code>, not <code>dpkg</code> /
-      <code>rpm -i</code>, so PostgreSQL, pgvector, and ELF dependencies
-      resolve. Packages install files only — they never restart the cluster or
+      <code>rpm -i</code>, so PostgreSQL, pgvector and ELF dependencies
+      resolve. Packages install files only. They never restart the cluster or
       create a database.
     </p>
 

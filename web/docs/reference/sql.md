@@ -1,16 +1,16 @@
 ---
 title: SQL reference
-description: Function signatures, option values, and grants.
+description: Function signatures, option values and grants.
 outline: deep
 ---
 
 # SQL reference
 
-`relation` and `fts_config` are `text`, resolved internally with
-`to_regclass` / `::regconfig`. `'schema.table'` works. `retry_dead()` is
-the exception: it takes `regclass`.
+`relation` and `fts_config` are `text`. The extension resolves them with
+`to_regclass` / `::regconfig`, so `'schema.table'` works. `retry_dead()`
+is the exception: it takes `regclass`.
 
-The extension does not modify `search_path`; all functions require the
+The extension does not change `search_path`. Every call needs the
 `postvec` schema qualifier.
 
 ## Functions
@@ -24,7 +24,7 @@ The extension does not modify `search_path`; all functions require the
 | `uninstall(drop_columns DEFAULT false, drop_destinations DEFAULT false)` | `bigint` entries torn down; superuser |
 | `create_vector_index(relation, column_name)` | `void` |
 | `search(relation, column_name, query, limit_n DEFAULT 10, semantic_weight DEFAULT 0.5, rrf_k DEFAULT 60, candidates DEFAULT NULL, filter DEFAULT NULL)` | `TABLE(pk_value text, rrf_score float8, semantic_rank bigint, fts_rank bigint, chunk_seq int, chunk_start bigint, chunk_end bigint, chunk_text text)` |
-| `search_with_vector(relation, column_name, query_vector real[], query_text DEFAULT '', …same including filter…)` | same |
+| `search_with_vector(relation, column_name, query_vector real[], query_text DEFAULT '', ...same including filter...)` | same |
 | `retry_dead(relation regclass, column_name, dead_ids bigint[] DEFAULT NULL)` | `bigint` dead rows consumed |
 | `migrate(relation, column_name, new_model, strategy DEFAULT 'convert', reindex DEFAULT 'manual', observed_writes_quiesced DEFAULT false)` | `bigint` migration id |
 | `migration_status(migration_id DEFAULT NULL)` | progress, state, `suggested_index_sql` |
@@ -66,15 +66,16 @@ Untrusted cdylib. `CREATE EXTENSION` needs superuser.
 | PUBLIC | `search`, `search_with_vector`, `status`, `stats`, `version`, `build_info` |
 | Revoked from PUBLIC | `embed`, `convert`, `refresh_models` |
 
-`USAGE` on schema `postvec` and a column-scoped `INSERT (registry_id, pk_value)`
-on `postvec.jobs` are required for non-owner DML on enabled tables and must
-remain in place.
+Non-owner DML on an enabled table needs `USAGE` on schema `postvec` and a
+column-scoped `INSERT (registry_id, pk_value)` on `postvec.jobs`. Those
+grants must stay.
 
 The worker connects as the bootstrap superuser and **bypasses RLS**.
 
 ## `enable()` refusals
 
-No PK · non-ordinary / non-partitioned · `TEMPORARY` · unknown model ·
-no embed route. Unlogged is allowed with a warning. Composite PKs work
-in column mode (compared as text — keep `DateStyle` / `TimeZone`
-consistent) and are refused for chunking.
+Refused: no primary key, a relation that is not ordinary or partitioned,
+`TEMPORARY`, an unknown model or a model with no embed route. Unlogged
+tables are accepted with a warning. Composite primary keys work in
+column mode (compared as text; `DateStyle` / `TimeZone` must stay consistent)
+and are refused for chunking.

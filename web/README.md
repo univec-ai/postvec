@@ -1,7 +1,7 @@
 # postvec.dev
 
-Public documentation site for [postvec](https://postvec.dev) — a PostgreSQL
-extension for in-database embeddings, hybrid search, and in-place vector
+Public documentation site for [postvec](https://postvec.dev), a PostgreSQL
+extension for in-database embeddings, hybrid search and in-place vector
 migration.
 
 ```bash

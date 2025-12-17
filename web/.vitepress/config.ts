@@ -39,7 +39,7 @@ export default defineConfig({
     ["meta", { name: "twitter:description", content: SITE.description }],
   ],
   themeConfig: {
-    logo: { src: "/logo.svg", alt: "postvec" },
+    logo: { light: "/logo.svg", dark: "/logo-dark.svg", alt: "postvec" },
     siteTitle: "postvec",
     search: {
       provider: "local",
@@ -64,6 +64,7 @@ export default defineConfig({
       "/docs/": [
         {
           text: "Start",
+          collapsed: false,
           items: [
             { text: "Overview", link: "/docs/" },
             { text: "Quick start", link: "/docs/quickstart" },
@@ -74,6 +75,7 @@ export default defineConfig({
         },
         {
           text: "Install",
+          collapsed: true,
           items: [
             { text: "Choose a method", link: "/docs/install/" },
             { text: "Docker", link: "/docs/install/docker" },
@@ -86,6 +88,7 @@ export default defineConfig({
         },
         {
           text: "Use",
+          collapsed: true,
           items: [
             { text: "Usage overview", link: "/docs/guides/" },
             { text: "Enable a column", link: "/docs/guides/enable" },
@@ -104,6 +107,7 @@ export default defineConfig({
         },
         {
           text: "Models",
+          collapsed: true,
           items: [
             { text: "How models work", link: "/docs/models/" },
             { text: "Pull, upgrade, remove", link: "/docs/models/pull" },
@@ -113,6 +117,7 @@ export default defineConfig({
         },
         {
           text: "Reference",
+          collapsed: true,
           items: [
             { text: "SQL functions", link: "/docs/reference/sql" },
             { text: "CLI", link: "/docs/reference/cli" },

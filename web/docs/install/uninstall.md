@@ -5,8 +5,8 @@ description: Database cleanup and optional package removal.
 
 # Uninstall
 
-The removal scope depends on the required end state. `DROP EXTENSION postvec
-CASCADE` is unsupported.
+How far removal goes depends on the required end state. `DROP EXTENSION
+postvec CASCADE` is unsupported.
 
 | Goal | Command |
 |---|---|
@@ -28,7 +28,7 @@ the CLI-owned config.
 | Triggers, jobs, migrations, the extension | The database itself |
 | The name in `99-postvec.conf` | pgvector, source tables, source data |
 | Shadow columns, only with `--drop-columns` | Adopted / user-owned vector columns |
-| — | Chunk destinations and their views |
+| | Chunk destinations and their views |
 
 There is **no** `--drop-destinations` on the CLI. Destinations stay as
 ordinary tables after this command.
@@ -52,11 +52,10 @@ sudo postvec setup --database app \
 sudo postvec doctor --database app --deep
 ```
 
-`uninstall` removes the name from the running launcher through a restart. If
-`dropdb` runs before uninstallation, rerun `uninstall` or edit
-`postvec.database` **and restart**. Reload is not enough: the list is
-POSTMASTER. Until the name is removed, the worker fails and respawns
-approximately every 15 seconds.
+`uninstall` takes the name out of the running launcher through a restart.
+If `dropdb` ran first, rerun `uninstall` or edit `postvec.database` **and
+restart**. Reload is not enough: the list is POSTMASTER. Until the name is
+removed, the worker fails and respawns approximately every 15 seconds.
 
 ## SQL-only teardown
 
@@ -78,13 +77,13 @@ sudo apt remove postvec-embedded postvec-model-minilm-l6-v2 \
   postvec-onnxruntime
 ```
 
-On EL9, `dnf remove` the corresponding names (`postgresql18-postvec`, …).
+On EL9, `dnf remove` the corresponding names (`postgresql18-postvec`, ...).
 
 ## Exit 3
 
-Exit code 3 indicates that SQL teardown completed but the CLI did not modify a
-hand-owned or drifted configuration file. The diagnostic identifies the file
-and line. A launcher may still be connecting to the removed database.
+Exit code 3 means SQL teardown finished, but the CLI left a hand-owned or
+drifted configuration file untouched. The diagnostic names the file and
+line. A launcher may still be connecting to the removed database.
 `--keep-config` produces the same state explicitly and is required for a
 URI-only target.
 
@@ -97,12 +96,12 @@ docker volume rm postvec-data     # only when permanent data removal is required
 
 ## Destructive operations
 
-::: danger `DROP EXTENSION … CASCADE` is unsupported
+:::: danger `DROP EXTENSION ... CASCADE` is unsupported
 `CASCADE` can remove unknown dependent objects. The CLI and the SQL
 `uninstall()` provide bounded teardown.
-:::
+::::
 
-::: danger Remove worker configuration before `dropdb`
+:::: danger Remove worker configuration before `dropdb`
 Run `uninstall` before `dropdb --force`. Otherwise the launcher repeatedly
 respawns a worker against a missing database.
-:::
+::::

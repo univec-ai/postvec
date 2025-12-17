@@ -1,18 +1,18 @@
 ---
 title: Install packages
-description: Package installation for Debian, Ubuntu, and EL9.
+description: Package installation for Debian, Ubuntu and EL9.
 ---
 
 # Install packages
 
-Package installation is intended for persistent third-party hosts. Each
-installation requires files for **one** release, **one** distribution,
-**one** architecture, and **one** PostgreSQL major. The
-[release artifacts](/download) page provides names and publication status.
+Use packages when the host will keep postvec installed. Each install
+matches **one** release, **one** distribution, **one** architecture and
+**one** PostgreSQL major. The [release artifacts](/download) page lists
+names and publication status.
 
 ## 1. Prerequisites (PGDG)
 
-Supported distros do not ship every PostgreSQL-major × pgvector pair in
+Supported distros do not ship every PostgreSQL-major x pgvector pair in
 their default archives. Each release includes `postvec-prerequisites.sh`.
 
 ```bash
@@ -25,11 +25,11 @@ less postvec-prerequisites.sh
 sudo bash ./postvec-prerequisites.sh --pg 18
 ```
 
-`--pg` is required (`16`, `17`, or `18`). `--print` / `--dry-run` shows the
+`--pg` is required (`16`, `17` or `18`). `--print` / `--dry-run` shows the
 commands. `--yes` skips the prompt.
 
 The script is idempotent. It installs **no** postvec package, edits no
-cluster, and restarts nothing. On CentOS Stream 9 or subscribed RHEL 9 it
+cluster and restarts nothing. On CentOS Stream 9 or subscribed RHEL 9 it
 prints the commands and requires `--force-untested`.
 
 ## 2. Embedded (recommended)
@@ -37,7 +37,7 @@ prints the commands and requires `--force-untested`.
 Extension, CLI, ONNX Runtime and the bundled MiniLM model. On-prem
 inference; `setup --embedded` afterwards.
 
-::: code-group
+:::: code-group
 
 ```bash [Debian / Ubuntu]
 sudo apt install \
@@ -57,18 +57,18 @@ sudo dnf install \
   ./postvec-embedded-*.rpm
 ```
 
-:::
+::::
 
 Files land under `/opt/postvec/ninference`. MiniLM is 384-d and needs no
-API key. Installing this payload does **not** turn embedded mode on —
-`postvec setup --embedded` does.
+API key. Installing this payload leaves embedded mode off.
+`postvec setup --embedded` turns it on.
 
 ## 3. Extension + CLI only
 
-This payload supports remote mode, where a ninference fleet performs
+This payload is for remote mode, where a ninference fleet performs
 inference:
 
-::: code-group
+:::: code-group
 
 ```bash [Debian / Ubuntu]
 sudo apt install \
@@ -82,9 +82,9 @@ sudo dnf install \
   ./postgresql18-postvec-0.1.0-1.el9.x86_64.rpm
 ```
 
-:::
+::::
 
-Use `apt` / `dnf`, not `dpkg` / `rpm -i`, so PostgreSQL, pgvector, and ELF
+Use `apt` / `dnf`, not `dpkg` / `rpm -i`, so PostgreSQL, pgvector and ELF
 dependencies resolve.
 
 The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
@@ -112,12 +112,12 @@ test -f /usr/lib/postgresql/18/lib/postvec.so
 test -f /usr/share/postgresql/18/extension/postvec.control
 ```
 
-::: tip Expected
+:::: tip Expected
 These checks do not require a running cluster. Package installation does not
-create `99-postvec.conf`, create a database, or start a worker. Worker and
-database configuration occurs during
+create `99-postvec.conf`, create a database or start a worker. Worker and
+database configuration happens during
 [cluster configuration](/docs/install/setup).
-:::
+::::
 
 ## Package installation scope
 

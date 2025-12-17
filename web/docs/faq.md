@@ -5,11 +5,10 @@ description: Short answers to common postvec questions.
 
 # FAQ
 
-## Are RDS, Aurora, Cloud SQL, and Azure Database supported?
+## Are RDS, Aurora, Cloud SQL and Azure Database supported?
 
-No, if the service will not load `shared_preload_libraries = 'postvec'`.
-This is an architectural requirement rather than a packaging limitation. A
-self-managed host or the [Docker image](/docs/install/docker) is required.
+No, when the service will not load `shared_preload_libraries = 'postvec'`.
+A self-managed host or the [Docker image](/docs/install/docker) is required.
 
 ## What are embedding debt and vector lock-in?
 
@@ -21,8 +20,8 @@ risk of changing that dependency.
 
 No key is required for the bundled MiniLM model or for search. A key and
 `postvec login` are required to pull **private-catalogue** models. The
-authenticated route is identity-only (verified account, unexpired key). Use a
-dedicated key with a $0 spending limit. Account details:
+authenticated route is identity-only (verified account, unexpired key). A
+dedicated key with a $0 spending limit is the recommended credential. Account details:
 [univec.ai](https://univec.ai).
 
 ## Can an ada-002 corpus remain unchanged?
@@ -40,8 +39,7 @@ No. Models already present on disk run in the launcher. `model pull` and
 ## Where do OpenAI / Gemini keys go?
 
 They are not stored in PostgreSQL. Embedded mode does not use provider
-credentials. Remote mode communicates with configured ninference nodes rather
-than those providers.
+credentials. Remote mode talks to the configured ninference nodes.
 
 ## Why is the vector NULL right after INSERT?
 
@@ -72,7 +70,7 @@ No. Only [`migrate()`](/docs/guides/migrate) or a re-embed does that.
 
 ## Is the extension AGPL?
 
-No. The extension, CLI, and packages use the PostgreSQL License.
+No. The extension, CLI and packages use the PostgreSQL License.
 
 ## Does `apt remove` drop database data?
 

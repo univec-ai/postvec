@@ -6,13 +6,13 @@
   --pv-paper-deep: #e4e8e2;
   --pv-card: #f7f8f5;
   --pv-rule: #c8cdc4;
-  --pv-mark: #b42318;
+  --pv-mark: #228165;
   --pv-field: #2c4a42;
 
-  --vp-c-brand-1: #2c4a42;
-  --vp-c-brand-2: #233b35;
-  --vp-c-brand-3: #1b2e29;
-  --vp-c-brand-soft: rgb(44 74 66 / 10%);
+  --vp-c-brand-1: #228165;
+  --vp-c-brand-2: #1b6852;
+  --vp-c-brand-3: #145242;
+  --vp-c-brand-soft: rgb(34 129 101 / 12%);
 
   --vp-c-bg: #f0f2ee;
   --vp-c-bg-alt: #e4e8e2;
@@ -41,10 +41,12 @@
   --vp-c-danger-2: #8f1c13;
   --vp-c-danger-soft: rgb(180 35 24 / 8%);
 
-  --vp-c-default-soft: rgb(26 35 48 / 5%);
+  --vp-c-default-soft: rgb(34 129 101 / 10%);
 
   --vp-sidebar-bg-color: #e8ebe4;
   --vp-nav-bg-color: rgb(240 242 238 / 90%);
+  --vp-code-bg: rgb(34 129 101 / 12%);
+  --vp-code-color: #1a2330;
   --vp-code-block-bg: #e8ebe6;
   --vp-code-block-color: #1a2330;
   --vp-code-copy-code-bg: #f0f2ee;
@@ -69,13 +71,13 @@
 
 .dark {
   --pv-ink: #e6eadf;
-  --pv-mark: #e05a4f;
+  --pv-mark: #49d4a1;
   --pv-field: #8fb3a6;
 
-  --vp-c-brand-1: #8fb3a6;
-  --vp-c-brand-2: #a3c2b6;
-  --vp-c-brand-3: #6e968a;
-  --vp-c-brand-soft: rgb(143 179 166 / 14%);
+  --vp-c-brand-1: #49d4a1;
+  --vp-c-brand-2: #6ee0b4;
+  --vp-c-brand-3: #34b88a;
+  --vp-c-brand-soft: rgb(73 212 161 / 16%);
 
   --vp-c-bg: #12161c;
   --vp-c-bg-alt: #0d1015;
@@ -102,9 +104,9 @@
   --vp-button-brand-hover-bg: #a3c2b6;
   --vp-button-brand-text: #12161c;
   --vp-button-brand-hover-text: #12161c;
-
-  --vp-c-tip-1: #8fb3a6;
-  --vp-c-danger-1: #e05a4f;
+  --vp-c-default-soft: rgb(73 212 161 / 20%);
+  --vp-code-bg: rgb(73 212 161 / 22%);
+  --vp-code-color: #e6eadf;
 }
 
 html,
@@ -206,6 +208,14 @@ html {
 
 .vp-doc :not(pre) > code {
   border-radius: 0;
+  background: var(--vp-code-bg);
+  color: var(--vp-code-color);
+  padding: 0.12em 0.32em;
+  border: 1px solid rgb(34 129 101 / 18%);
+}
+
+.dark .vp-doc :not(pre) > code {
+  border-color: rgb(73 212 161 / 28%);
 }
 
 .vp-doc .copy-cmd pre,
@@ -236,6 +246,25 @@ html:not(.dark) .vp-doc div[class*="language-"] code {
 .VPNavBarMenuLink,
 .VPNavBarMenuGroup .text {
   font-size: 0.88rem;
+}
+
+.VPNavBarMenuLink.active {
+  color: var(--vp-c-brand-1) !important;
+  font-weight: 600;
+}
+
+.VPNavBarMenuLink.active::after {
+  background-color: var(--vp-c-brand-1) !important;
+  height: 2px;
+}
+
+.VPSidebarItem.is-active > .item .text {
+  color: var(--vp-c-brand-1) !important;
+  font-weight: 600;
+}
+
+.VPSidebarItem .indicator {
+  display: none;
 }
 
 .VPSidebarItem.level-0 > .item .text {

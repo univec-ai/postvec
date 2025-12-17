@@ -1,14 +1,13 @@
 ---
 title: Status and health
-description: Health signals from status(), stats(), and postvec doctor.
+description: Health signals from status(), stats() and postvec doctor.
 ---
 
 # Status and health
 
-`status()` and `stats()` expose database worker state. `postvec doctor` adds
-read-only checks of the host installation.
+`status()` and `stats()` expose database worker state. `postvec doctor` adds read-only checks of the host installation.
 
-## `status()` — per entry
+## `status()` - per entry
 
 ```sql
 SELECT relation, model, dim, state,
@@ -28,10 +27,9 @@ SELECT relation, model, dim, state,
 | Automatic index build paused after failure | `index_error` |
 | Quarantined entry | `state` (source/vector/template column vanished) |
 
-A heartbeat row survives a worker crash. Health requires the timestamp to
-advance between samples.
+A heartbeat row survives a worker crash. Health requires the timestamp to advance between samples.
 
-## `stats()` — the worker
+## `stats()` - the worker
 
 ```sql
 SELECT worker_pid, worker_started_at, worker_last_beat,
@@ -58,11 +56,9 @@ sudo postvec doctor --database app --deep --format json \
 | `--strict` | Warnings fail the command |
 | `--format json` | Versioned object on stdout; progress on stderr |
 
-`doctor` is read-only, does not run inference, and does not call
-`refresh_models()`.
+`doctor` is read-only, does not run inference and does not call `refresh_models()`.
 
-Inside a container, use `postvec-healthcheck` or an explicit socket URL —
-[Docker](/docs/install/docker).
+Inside a container, use `postvec-healthcheck` or an explicit socket URL. See [Docker](/docs/install/docker).
 
 ## Version
 
@@ -71,5 +67,4 @@ SELECT postvec.version();
 SELECT postvec.build_info();  -- {version, diagnostics_api, features.embedded}
 ```
 
-If `doctor` (or the worker log) asks for `ALTER EXTENSION`, the library
-and installed SQL disagree. [Upgrade](/docs/install/upgrade).
+If `doctor` (or the worker log) asks for `ALTER EXTENSION`, the library and installed SQL disagree. See [Upgrade](/docs/install/upgrade).
