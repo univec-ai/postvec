@@ -6,7 +6,7 @@ import { ARCHES, DISTROS, PG_MAJORS, SITE } from "../site";
 const distro = ref<(typeof DISTROS)[number]["id"]>("debian12");
 const pg = ref<(typeof PG_MAJORS)[number]>(18);
 const arch = ref<(typeof ARCHES)[number]["id"]>("amd64");
-const variant = ref<"remote" | "embedded">("embedded");
+const variant = ref<"remote" | "complete">("complete");
 
 const selectedDistro = computed(
   () => DISTROS.find((d) => d.id === distro.value) ?? DISTROS[0]
@@ -27,24 +27,24 @@ const files = computed(() => {
       `postvec-cli_${postvec}${d.tag}_${a.deb}.deb`,
       `postgresql-${major}-postvec_${postvec}${d.tag}_${a.deb}.deb`,
     ];
-    const embedded = [
+    const extras = [
       `postvec-onnxruntime_${ort}${d.tag}_${a.deb}.deb`,
       `postvec-model-minilm-l6-v2_${model}${d.tag}_all.deb`,
-      `postvec-embedded_${postvec}${d.tag}_all.deb`,
+      `postvec-extras_${postvec}${d.tag}_all.deb`,
     ];
-    return variant.value === "embedded" ? [...common, ...embedded] : common;
+    return variant.value === "complete" ? [...common, ...extras] : common;
   }
   const rpmArch = a.rpm;
   const common = [
     `postvec-cli-${postvec}${d.tag}.${rpmArch}.rpm`,
     `postgresql${major}-postvec-${postvec}${d.tag}.${rpmArch}.rpm`,
   ];
-  const embedded = [
+  const extras = [
     `postvec-onnxruntime-${ort}${d.tag}.${rpmArch}.rpm`,
     `postvec-model-minilm-l6-v2-${model}${d.tag}.noarch.rpm`,
-    `postvec-embedded-${postvec}${d.tag}.noarch.rpm`,
+    `postvec-extras-${postvec}${d.tag}.noarch.rpm`,
   ];
-  return variant.value === "embedded" ? [...common, ...embedded] : common;
+  return variant.value === "complete" ? [...common, ...extras] : common;
 });
 
 const releaseBase = computed(
@@ -68,12 +68,12 @@ const verifyCmd = computed(() => {
 });
 
 const imageTag = computed(() => {
-  const suffix = variant.value === "embedded" ? "-embedded" : "";
+  const suffix = variant.value === "complete" ? "-complete" : "";
   return `${SITE.ghcr}:${SITE.release}-pg${pg.value}${suffix}`;
 });
 
 const movingTag = computed(() => {
-  const suffix = variant.value === "embedded" ? "-embedded" : "";
+  const suffix = variant.value === "complete" ? "-complete" : "";
   return `${SITE.ghcr}:pg${pg.value}${suffix}`;
 });
 
@@ -178,7 +178,7 @@ function assetUrl(name: string): string | null {
       <label>
         Payload
         <select v-model="variant">
-          <option value="embedded">Embedded (engine + MiniLM)</option>
+          <option value="complete">Complete (ONNX + MiniLM; both modes)</option>
           <option value="remote">Remote only (extension + CLI)</option>
         </select>
       </label>

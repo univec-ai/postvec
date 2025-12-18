@@ -19,7 +19,7 @@ docker run -d --name postvec \
   -e POSTGRES_DB=app \
   -v postvec-data:/var/lib/postgresql \
   -p 127.0.0.1:5432:5432 \
-  ghcr.io/univec-ai/postvec:0.1.0-1-pg18-embedded
+  ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
 ```
 
 A local demo can pass `-e POSTGRES_PASSWORD=demo` instead. The example
@@ -43,7 +43,7 @@ The first SQL steps live in the [quick start](/docs/quickstart).
 
 ## Remote image
 
-Omit `-embedded` and point at ninference:
+Omit `-complete` and point at ninference:
 
 ```bash
 docker run -d --name postvec \
@@ -75,7 +75,7 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `POSTVEC_MODE` | `grpc`; `embedded` in `*-embedded` images | Inference mode |
+| `POSTVEC_MODE` | `grpc`; `embedded` in `*-complete` images | Inference mode |
 | `POSTVEC_DATABASES` | `POSTGRES_DB` | Comma-separated worker databases |
 | `POSTVEC_GRPC_ENDPOINTS` | unset | Remote gRPC |
 | `POSTVEC_HTTP_ENDPOINTS` | unset | Remote `/config` |
@@ -125,8 +125,8 @@ mounted directory.
 
 ## Tags
 
-- Pinned: `ghcr.io/univec-ai/postvec:0.1.0-1-pg18-embedded`
-- Moving: `ghcr.io/univec-ai/postvec:pg18-embedded`
+- Pinned: `ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete`
+- Moving: `ghcr.io/univec-ai/postvec:pg18-complete`
 - No `latest`. Pin by digest in production.
 
 Pulling a new image does not run `ALTER EXTENSION`. See

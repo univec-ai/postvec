@@ -24,9 +24,9 @@ The current release identity is `0.1.0-1`.
 | `postgresql-NN-postvec` / `postgresqlNN-postvec` | Extension library, control file, versioned SQL |
 | `postvec-onnxruntime` | CPU ONNX Runtime under `/opt/postvec/ninference/libs`; independently versioned |
 | `postvec-model-minilm-l6-v2` | Bundled 384-d model; independently versioned (`2.1.0` = registry revision 2, bundle 1) |
-| `postvec-embedded` | Metapackage pinning the runtime + model |
+| `postvec-extras` | Metapackage pinning the runtime + model (not a complete install) |
 | `...-pgNN` image | PostgreSQL + pgvector + postvec + CLI, remote mode |
-| `...-pgNN-embedded` image | The above plus the engine and MiniLM |
+| `...-pgNN-complete` image | The above plus ONNX Runtime and MiniLM (both modes) |
 
 Debian 12 and Ubuntu 22.04 packages are not interchangeable, even though both
 are `.deb`. The filename tag has to match the host that will run the

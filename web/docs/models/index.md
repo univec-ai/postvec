@@ -66,7 +66,7 @@ hot-load, no SQL refresh.
 
 ## Bundled model
 
-The embedded package/image ships `sentence-transformers-all-minilm-l6-v2`
+The extras package and the complete image ship `sentence-transformers-all-minilm-l6-v2`
 (384-d). It is package-owned. `model rm` will not delete it.
 
 ## Revisions are not migrations

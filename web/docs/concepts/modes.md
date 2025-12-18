@@ -26,7 +26,7 @@ stay the same.
 | Typical use | Single-node, private, edge, air-gapped, regulated | Distributed or GPU workloads; organisation ninference |
 
 The public extension package includes both. Installing
-`postvec-embedded` does not change `postvec.mode`.
+`postvec-extras` does not change `postvec.mode`.
 `postvec setup --embedded` does. Invoking `setup` with `--grpc` /
 `--http` and without `--embedded` selects remote mode.
 

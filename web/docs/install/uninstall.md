@@ -73,7 +73,7 @@ After database teardown, packages may also be removed:
 
 ```bash
 sudo apt remove postgresql-18-postvec postvec-cli
-sudo apt remove postvec-embedded postvec-model-minilm-l6-v2 \
+sudo apt remove postvec-extras postvec-model-minilm-l6-v2 \
   postvec-onnxruntime
 ```
 

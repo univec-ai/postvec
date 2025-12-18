@@ -23,7 +23,7 @@ docker run -d --name postvec \
   -e POSTGRES_USER=app \
   -e POSTGRES_DB=app \
   -p 127.0.0.1:5433:5432 \
-  ghcr.io/univec-ai/postvec:0.1.0-1-pg18-embedded
+  ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
 ```
 
 Wait until it is healthy:

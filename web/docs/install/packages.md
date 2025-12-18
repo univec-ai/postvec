@@ -45,7 +45,7 @@ sudo apt install \
   ./postgresql-18-postvec_0.1.0-1+deb12_amd64.deb \
   ./postvec-onnxruntime_*.deb \
   ./postvec-model-minilm-l6-v2_*.deb \
-  ./postvec-embedded_*.deb
+  ./postvec-extras_*.deb
 ```
 
 ```bash [EL9]
@@ -54,7 +54,7 @@ sudo dnf install \
   ./postgresql18-postvec-0.1.0-1.el9.x86_64.rpm \
   ./postvec-onnxruntime-*.rpm \
   ./postvec-model-minilm-l6-v2-*.rpm \
-  ./postvec-embedded-*.rpm
+  ./postvec-extras-*.rpm
 ```
 
 ::::
