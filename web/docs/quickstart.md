@@ -1,6 +1,6 @@
 ---
 title: Quick start
-description: Hybrid search in a disposable postvec container.
+description: Hybrid search in a disposable postvec container. Pick PostgreSQL 16, 17 or 18.
 ---
 
 # Quick start
@@ -9,22 +9,18 @@ A single disposable container is enough for this walkthrough. The host
 PostgreSQL cluster is left alone. No API key is involved. One example
 table is created.
 
+The tabs on each command pick the PostgreSQL major. The same choice is
+remembered on the install pages.
+
 :::: info Release status
-The commands use the planned `0.1.0-1` image. Publication status is listed
-with the [release artifacts](/download). An unpublished tag requires a local
-image build or an existing development package.
+Commands use the planned `0.1.0-1` image. Publication status is listed
+with the [release artifacts](/download). An unpublished tag requires a
+local image build or an existing development package.
 ::::
 
 ## 1. Run the embedded image
 
-```bash
-docker run -d --name postvec \
-  -e POSTGRES_PASSWORD=demo \
-  -e POSTGRES_USER=app \
-  -e POSTGRES_DB=app \
-  -p 127.0.0.1:5433:5432 \
-  ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
-```
+<PgSnippet id="docker-quickstart" />
 
 Wait until it is healthy:
 
@@ -64,8 +60,8 @@ SQL
 The bundled model is listed. `vector_dims` returns **384**.
 ::::
 
-`embed()` is an administrative helper. Application roles require an explicit
-`GRANT`. Search is the public query surface.
+`embed()` is an administrative helper. Application roles require an
+explicit `GRANT`. Search is the public query surface.
 
 ## 3. Enable a column and insert
 
@@ -96,9 +92,10 @@ SELECT relation, pending_jobs, dead_jobs
 SQL
 ```
 
-Vectors fill **asynchronously**. A committed write arms an at-commit latch,
-so the worker normally starts within inference time of the commit. Repeat
-until `pending_jobs = 0` and every `body_semantic` is non-NULL:
+Vectors fill **asynchronously**. A committed write arms an at-commit
+latch, so the worker normally starts within inference time of the
+commit. Repeat until `pending_jobs = 0` and every `body_semantic` is
+non-NULL:
 
 ```sql
 SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
@@ -107,10 +104,10 @@ SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
 ```
 
 :::: tip Expected
-`filled = total`, `pending_jobs = 0`, `dead_jobs = 0`. On this image that is
-usually a second or two. `postvec.poll_interval_ms` (default 5000) is only
-the backstop if the worker restarted between the latch being armed and the
-commit.
+`filled = total`, `pending_jobs = 0`, `dead_jobs = 0`. On this image
+that is usually a second or two. `postvec.poll_interval_ms` (default
+5000) is only the backstop if the worker restarted between the latch
+being armed and the commit.
 ::::
 
 ## 4. Index and search
@@ -143,11 +140,11 @@ source table without a dynamic record type.
 docker rm -f postvec
 ```
 
-That removes the disposable container. No host files or PostgreSQL cluster
-configuration were created.
+That removes the disposable container. No host files or PostgreSQL
+cluster configuration were created.
 
 ## Next
 
 - [Install on a real cluster](/docs/install/)
+- [Choose the SQL call](/docs/guides/starting) - enable, adopt, bridge or migrate
 - [How the worker fills vectors](/docs/concepts/consistency)
-- [Usage](/docs/guides/) - filters, templates, chunking, migrate, adopt

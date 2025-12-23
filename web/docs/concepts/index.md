@@ -64,16 +64,14 @@ and `doctor`. [Backup](/docs/guides/backup) has the checklist.
 
 ## Operational constraints
 
-1. **Vectors fill later.** Finishing an `INSERT` does not fill the
-   vector column. `status()` reports readiness.
-2. **No worker without preload + restart.** Every database named in
+1. **Vectors fill after commit.** `status()` reports readiness.
+2. **The worker needs preload and a restart.** Every database named in
    `postvec.database` must exist. A missing name makes the worker fail
    and respawn about every 15 seconds.
-3. **No ANN index by default.** Missing ANN is a common reason search is
-   slow. `index_mode => 'auto'` is opt-in because the build is blocking.
-4. **Replacing `postvec.so` does not upgrade SQL.** Restart and
-   `ALTER EXTENSION postvec UPDATE` belong in one window. Until then the
-   worker pauses.
+3. **ANN indexes are opt-in.** Missing ANN is a common reason search is
+   slow. `index_mode => 'auto'` is available; the build is blocking.
+4. **A new library and `ALTER EXTENSION` belong in one window.** Until
+   then the worker pauses.
 5. **`adopt()`'s `model` is an assertion.** The wrong name makes
    `search()` embed into an incompatible space.
 

@@ -5,8 +5,7 @@ description: Authentication and access rules for the public and private model ca
 
 # Login and the private catalogue
 
-The CLI contains two compiled-in catalogue channels. It does not accept
-an alternative index URL.
+The CLI uses two compiled-in catalogue channels.
 
 | Channel | Who | Contents |
 |---|---|---|
@@ -40,8 +39,8 @@ sudo postvec logout
 ```
 
 `login`, `whoami`, `ls --available`, `pull` and `upgrade` accept
-`--api-key-file FILE`. There is no `--api-key` value flag: arguments
-show up in `/proc`.
+`--api-key-file FILE`. Pass the secret that way, or via
+`POSTVEC_API_KEY`, so it stays out of `/proc`.
 
 Credential order:
 

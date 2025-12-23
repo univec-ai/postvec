@@ -5,7 +5,9 @@ description: SQL operations from column registration through search and migratio
 
 # Usage overview
 
-Registration, search, filters and migration are SQL. The CLI configures the cluster and, in embedded mode, the model inventory. There is no CLI entry point for `enable()`, `search()` or `set_format()`.
+Column registration, search, filters and migration are SQL functions. The CLI configures the cluster and, in embedded mode, the model inventory.
+
+[Choose the SQL call](/docs/guides/starting) maps the current table to `enable()`, `adopt()`, bridge search, `migrate()` or chunking.
 
 | Task | SQL | CLI counterpart |
 |---|---|---|
@@ -15,14 +17,14 @@ Registration, search, filters and migration are SQL. The CLI configures the clus
 | Embed title + body | [`set_format()`](/docs/guides/templates) | - |
 | Long documents | [`chunking`](/docs/guides/chunking) | - |
 | Register existing vectors | [`adopt()`](/docs/guides/adopt) | - |
-| Query a locked space without migrating | [bridge](/docs/guides/bridge) | pull the converter; dependencies bring the embed model + `embed-bridge` |
+| Query a retired or provider-only space | [bridge](/docs/guides/bridge) | pull the converter; dependencies bring the embed model + `embed-bridge` |
 | Change model | [`migrate()`](/docs/guides/migrate) | - |
 | Speed up search | [`create_vector_index()`](/docs/guides/indexes) | `doctor` index checks |
 | Re-drive failures | [`retry_dead()`](/docs/guides/retry) | `doctor` `queue.dead` |
 | See health | [`status()` / `stats()`](/docs/guides/status) | `postvec doctor` |
 | Dump / restore | [Backup](/docs/guides/backup) | `setup` after restore |
 
-Functions live in the `postvec` schema. The extension does not add itself to `search_path`, so every call stays schema-qualified: `postvec.*`.
+Functions live in the `postvec` schema. Qualify every call: `postvec.*`. The extension leaves `search_path` unchanged.
 
 ## Minimal workflow
 
@@ -67,8 +69,10 @@ Table ownership or superuser is required for the management verbs: `enable`, `ad
 
 ## Guides in this section
 
-1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt) one that already exists.
-2. [Search](/docs/guides/search), then add [filters](/docs/guides/filters) and [templates](/docs/guides/templates) as needed.
-3. [Chunk](/docs/guides/chunking) long documents.
-4. [Bridge](/docs/guides/bridge) an existing space, or [migrate](/docs/guides/migrate) it.
-5. [Index](/docs/guides/indexes), [retry](/docs/guides/retry) dead work and [watch](/docs/guides/status) the worker.
+1. [Choose the SQL call](/docs/guides/starting) from the current table.
+2. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt) one that already exists.
+3. [Search](/docs/guides/search), then add [filters](/docs/guides/filters) and [templates](/docs/guides/templates) as needed.
+4. [Chunk](/docs/guides/chunking) long documents.
+5. [Bridge](/docs/guides/bridge) an existing space, or [migrate](/docs/guides/migrate) it.
+6. [Index](/docs/guides/indexes), [retry](/docs/guides/retry) dead work and [watch](/docs/guides/status) the worker.
+7. [One-shot helpers](/docs/guides/helpers) for administrative `embed()` / `convert()`.

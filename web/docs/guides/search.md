@@ -7,7 +7,9 @@ description: Hybrid RRF search with postvec.search() and search_with_vector().
 
 One function runs vector and full-text retrieval and combines the results with Reciprocal Rank Fusion. Matching primary keys are returned as text for a join to the source table.
 
-```sql
+:::: code-group
+
+```sql [search]
 SELECT d.id, d.body,
        round(s.rrf_score::numeric, 5) AS score,
        s.semantic_rank, s.fts_rank
@@ -18,6 +20,22 @@ SELECT d.id, d.body,
   JOIN public.docs AS d ON d.id = s.pk_value::bigint
  ORDER BY s.rrf_score DESC;
 ```
+
+```sql [search_with_vector]
+SELECT d.id, d.body, s.rrf_score
+  FROM postvec.search_with_vector(
+         'public.docs', 'body',
+         postvec.embed(
+           'switching AI models without redoing the work',
+           'sentence-transformers-all-minilm-l6-v2'
+         ),
+         query_text => 'switching AI models without redoing the work'
+       ) AS s
+  JOIN public.docs AS d ON d.id = s.pk_value::bigint
+ ORDER BY s.rrf_score DESC;
+```
+
+::::
 
 :::: tip Expected
 Rows that mean the same thing rank above rows that merely share a word.
@@ -39,21 +57,10 @@ Chunked entries also return `chunk_seq`, `chunk_start`, `chunk_end`, `chunk_text
 
 ## Search with a supplied vector
 
-```sql
-SELECT d.id, d.body, s.rrf_score
-  FROM postvec.search_with_vector(
-         'public.docs', 'body',
-         postvec.embed(
-           'watering the plants',
-           'sentence-transformers-all-minilm-l6-v2'
-         ),
-         query_text => 'watering the plants'
-       ) AS s
-  JOIN public.docs AS d ON d.id = s.pk_value::bigint
- ORDER BY s.rrf_score DESC;
-```
-
-`query_text` still feeds the FTS leg. Omit it (default `''`) for a vector-only search. `embed()` is not PUBLIC. Grant it, or pass a vector computed elsewhere.
+The `search_with_vector` tab above is the same join, with a vector you
+already have. `query_text` still feeds the FTS leg. Omit it (default
+`''`) for a vector-only search. Grant `embed()` explicitly, or
+pass a vector computed elsewhere.
 
 ## Search performance
 
@@ -76,7 +83,7 @@ When query embedding fails, `postvec.search_degrade_to_fts` is on by default and
 The function returns rank columns. Join on `pk_value` and cast it back to the PK type (`::bigint`, `::uuid`, ...).
 ::::
 
-:::: danger Newly inserted rows are not embedded within the inserting transaction
-The worker cannot write back before the transaction commits. See
+:::: danger Vectors fill after the inserting transaction commits
+The worker writes back on a later transaction. See
 [eventual consistency](/docs/concepts/consistency).
 ::::

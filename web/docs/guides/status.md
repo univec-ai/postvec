@@ -9,7 +9,9 @@ description: Health signals from status(), stats() and postvec doctor.
 
 ## `status()` - per entry
 
-```sql
+:::: code-group
+
+```sql [SQL]
 SELECT relation, model, dim, state,
        pending_jobs, dead_jobs,
        has_vector_index, index_error,
@@ -17,6 +19,12 @@ SELECT relation, model, dim, state,
        chunking, pending_refresh_jobs, pending_embed_jobs
   FROM postvec.status();
 ```
+
+```bash [CLI]
+sudo postvec doctor --database app --deep
+```
+
+::::
 
 | Check | Field |
 |---|---|

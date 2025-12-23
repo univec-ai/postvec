@@ -6,13 +6,19 @@ outline: deep
 
 # Downloads
 
-GitHub Releases and GHCR are the publication channels. The selector checks
-GitHub for a published postvec release and links assets only when they exist.
-Until then the names below are the contract for a local build.
+Publication channels:
 
-There is no signed apt/yum repository. Installation is from downloaded files,
-so a key-rotation and repository lifecycle are not implied before they exist.
-The current release identity is `0.1.0-1`.
+| Channel | What it holds |
+|---|---|
+| [GitHub Releases](https://github.com/univec-ai/stack/releases) tagged `postvec-v*` | `.deb` / `.rpm` packages, `SHA256SUMS`, Sigstore attestations, `postvec-prerequisites.sh` |
+| [GHCR](https://github.com/univec-ai/stack/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pg16` / `-pg17` / `-pg18`, with or without `-complete`) |
+
+The selector checks GitHub for a published postvec release and links
+assets only when they exist. Until then the names below are the contract
+for a local build.
+
+Install from the downloaded files. A signed apt/yum repository is
+planned later. The current release identity is `0.1.0-1`.
 
 <DownloadPanel />
 
@@ -34,8 +40,9 @@ binaries.
 
 ## After the files are on disk
 
-Packages install files and stop. They do not edit PostgreSQL, create a
-database or download models.
+After the files are on disk, configure the cluster. Packages leave
+PostgreSQL configuration, databases and the model inventory for that
+later step.
 
 - [Configure the cluster](/docs/install/setup)
 - [Docker runtime notes](/docs/install/docker)

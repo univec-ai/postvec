@@ -12,9 +12,8 @@ rarely appears on a schema diagram, but it is part of the data.
 
 An embedding is a point in the vector space of the model that produced
 it. `openai-text-embedding-ada-002`, BGE-M3, Gemini, Arctic and GTE each
-live in a different space. Matching dimensions do not make those spaces
-compatible. Embed a query with model B and search a corpus from model A,
-and the ranks are invalid.
+live in a different space, even when dimensions match. Embed a query
+with model B and search a corpus from model A, and the ranks are invalid.
 
 Once the stored corpus, its ANN index and every query caller assume
 space A, the model stops being an ordinary configuration value. It is
@@ -51,5 +50,5 @@ Bridge search and migration sit next to each other:
 ## Related
 
 - [Embedded vs remote](/docs/concepts/modes)
-- [Search without migrating](/docs/guides/bridge)
+- [Search a retired space](/docs/guides/bridge)
 - [`migrate()`](/docs/guides/migrate)

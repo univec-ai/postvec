@@ -5,8 +5,9 @@ description: Discovery, embed versus convert and which CLI commands apply in eac
 
 # How models work
 
-postvec does not download models as a side effect of anything. Package
-install does not. `setup` does not. `search()` does not.
+On an embedded host, add models with `postvec model pull`. In remote
+mode, administer them on the ninference fleet. Package install,
+`setup` and `search()` use the inventory that is already present.
 
 A name in `postvec.models` is a cache of what the engine currently
 advertises. Workers refresh it on an interval and prune stale entries
@@ -29,7 +30,7 @@ When `model => 'some-name'` is supplied to `enable()`, `adopt()` or
 
 A convert-only space such as `ada-002` can then accept new writes and
 query embeddings without the original provider or a corpus migration.
-See [query an existing space](/docs/guides/bridge).
+See [search a retired space](/docs/guides/bridge).
 
 Conversion itself resolves a direct converter or a two-hop
 `convert-bridge`. Write, search, one-shot and migration paths share the
@@ -67,7 +68,7 @@ hot-load, no SQL refresh.
 ## Bundled model
 
 The extras package and the complete image ship `sentence-transformers-all-minilm-l6-v2`
-(384-d). It is package-owned. `model rm` will not delete it.
+(384-d). It is package-owned, so `model rm` leaves it in place.
 
 ## Revisions are not migrations
 

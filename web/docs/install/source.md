@@ -1,13 +1,15 @@
 ---
 title: Build from source
-description: Source build and manual installation for development PostgreSQL.
+description: Source build and manual installation for PostgreSQL 16, 17 or 18.
 ---
 
 # Build from source
 
-Build from source when iterating on the extension. Persistent deployments
-should use [packages](/docs/install/packages). Package-owned files and
-manually copied files must not share paths.
+Build from source when iterating on the extension. Persistent
+deployments should use [packages](/docs/install/packages). Package-owned
+files and manually copied files must not share paths.
+
+Tabs pick the PostgreSQL major and the layout of the target tree.
 
 ## Prerequisites
 
@@ -17,30 +19,16 @@ manually copied files must not share paths.
 - PostgreSQL server-development headers for the target major
 - pgvector >= 0.8 built against the same `pg_config`
 
-```bash
-rustc --version
-cargo pgrx --version
-protoc --version
-/usr/lib/postgresql/18/bin/pg_config --version
-```
+<PgSnippet id="source-prereq" />
 
 ## Build
 
-The extension is **not** in the Cargo workspace. The CLI remains a workspace
-member.
+The extension is **not** in the Cargo workspace. The CLI remains a
+workspace member.
 
-```bash
-cd postvec
-cargo pgrx package \
-  --no-default-features \
-  --features pg18,embedded \
-  --pg-config /usr/lib/postgresql/18/bin/pg_config
+<PgSnippet id="source-build" />
 
-cd ..
-cargo build --release -p postvec-cli
-```
-
-Staged extension: `postvec/target/release/postvec-pg18/`.
+Staged extension: `postvec/target/release/postvec-pgNN/`.
 CLI: `target/release/postvec`. The build stays inside the repository.
 
 ## Install into a pgrx cluster
@@ -53,29 +41,20 @@ cargo pgrx install --release \
   --pg-config /path/to/development/postgres/bin/pg_config
 ```
 
+Replace `pg18` with `pg16` or `pg17` to match that development cluster.
+
 ## Install into a system PGDG tree
 
-These files have **no** package owner. Every copied path needs a record so
-it can be removed later.
+These files have **no** package owner. Every copied path needs a record
+so it can be removed later.
 
-```bash
-export PV_STAGE=postvec/target/release/postvec-pg18
-
-sudo install -m 0755 \
-  "$PV_STAGE/usr/lib/postgresql/18/lib/postvec.so" \
-  /usr/lib/postgresql/18/lib/postvec.so
-sudo install -m 0644 \
-  "$PV_STAGE/usr/share/postgresql/18/extension/postvec.control" \
-  "$PV_STAGE/usr/share/postgresql/18/extension/postvec--0.1.0.sql" \
-  /usr/share/postgresql/18/extension/
-
-sudo install -m 0755 target/release/postvec /usr/local/bin/postvec
-```
+<PgSnippet id="source-install-pgdg" />
 
 ## Embedded engine root
 
-A source build has no ONNX Runtime and no weights. Install the engine-asset
-packages, reuse an existing ninference root or copy the packaging payloads:
+A source build has no ONNX Runtime and no weights. Install the
+engine-asset packages, reuse an existing ninference root or copy the
+packaging payloads:
 
 ```bash
 cd packaging/postvec
@@ -102,15 +81,15 @@ delete them.
 4. Recreate a disposable database if same-version generated SQL changed
 
 A new `.so` does not change SQL already in a database. A new extension
-version needs upgrade SQL plus `ALTER EXTENSION postvec UPDATE` in the same
-window as the restart. [Upgrade](/docs/install/upgrade).
+version needs upgrade SQL plus `ALTER EXTENSION postvec UPDATE` in the
+same window as the restart. [Upgrade](/docs/install/upgrade).
 
 ## Rollback (files only)
 
-Stop PostgreSQL first. Confirm that each path is **not** package-owned with
-`dpkg -S` or `rpm -qf`. Remove only recorded files, then restore any
-previous manual installation while the cluster remains stopped.
+Stop PostgreSQL first. Confirm that each path is **not** package-owned
+with `dpkg -S` or `rpm -qf`. Remove only recorded files, then restore
+any previous manual installation while the cluster remains stopped.
 
-[Cluster configuration](/docs/install/setup) follows file installation. If
-`setup` already ran, finish [uninstallation](/docs/install/uninstall)
-before deleting files.
+[Cluster configuration](/docs/install/setup) follows file installation.
+If `setup` already ran, finish
+[uninstallation](/docs/install/uninstall) before deleting files.

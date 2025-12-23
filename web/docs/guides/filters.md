@@ -37,7 +37,7 @@ subset.
 | `"region": ["EU","UK"]` | shorthand for `{"in": ["EU","UK"]}` |
 | `"title": {"like": "Q3%"}` | `LIKE` (`ilike` too) |
 
-Closed operator set: `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `like`, `ilike`, `is_not` (null only). Equality is the scalar shorthand. There is no `eq`.
+Closed operator set: `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `like`, `ilike`, `is_not` (null only). Equality is the scalar shorthand: `"category": "finance"`.
 
 Caps: 64 KiB serialized, 32 columns, 256 `in` values.
 
@@ -52,8 +52,8 @@ HNSW can under-recall when most of the index is excluded. Increasing `candidates
 arbitrary SQL predicates from entering generated queries.
 ::::
 
-:::: danger `eq` is not an operator
-There is no `eq`. Use `"category": "finance"`.
+:::: danger Equality uses the scalar form
+Write `"category": "finance"`.
 ::::
 
 :::: danger `null` is invalid inside `in` and comparison operators

@@ -48,6 +48,13 @@ description: Supported environments and explicit limitations.
 
 ## License split
 
-The extension, CLI and packaging use the **PostgreSQL License**.
-The converter catalogue is UniVec, under a separate license. The bundled
-MiniLM model keeps its upstream license and ships in the package.
+| Layer | License |
+|---|---|
+| Extension, CLI, packages, images | **PostgreSQL License** |
+| Embedded inference on the database host | The same stack, running in-process |
+| Remote ninference server | Community (non-commercial) and organisation (commercial) terms |
+| Converter catalogue | UniVec, under a separate license |
+| Bundled MiniLM | Upstream license, shipped in the model package |
+
+A verified UniVec account sees the private catalogue superset. The
+public channel is a subset and does not require a key.

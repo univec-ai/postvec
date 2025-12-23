@@ -119,6 +119,7 @@ Application access requires an explicit grant on the destination and its view.
 ::::
 
 :::: danger Destination tables must remain under postvec management
-Ownership is a marker comment, not an OID. Teardown without that marker
-is refused. Recreating a same-named table does not restore postvec ownership.
+Ownership is stored as a marker comment on the destination. Teardown
+requires that marker. Recreating a same-named table leaves ownership
+unset.
 ::::

@@ -5,7 +5,7 @@ description: Manual, automatic and immediate ANN index modes.
 
 # Indexes
 
-No vector index is built by default. Missing ANN indexes are a common cause of slow search.
+Index creation is manual by default. Missing ANN indexes are a common cause of slow search.
 
 ```sql
 SELECT postvec.create_vector_index('public.docs', 'body');

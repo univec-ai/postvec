@@ -38,8 +38,8 @@ No. Models already present on disk run in the launcher. `model pull` and
 
 ## Where do OpenAI / Gemini keys go?
 
-They are not stored in PostgreSQL. Embedded mode does not use provider
-credentials. Remote mode talks to the configured ninference nodes.
+Embedded mode uses local models. Remote mode talks to the configured
+ninference nodes. Provider credentials stay off the database.
 
 ## Why is the vector NULL right after INSERT?
 
@@ -48,7 +48,7 @@ credentials. Remote mode talks to the configured ninference nodes.
 
 ## Why is search slow?
 
-There is no ANN index. [Indexes](/docs/guides/indexes).
+Build an ANN index. [Indexes](/docs/guides/indexes).
 
 ## Why can a new row produce only a lexical match?
 
@@ -57,7 +57,7 @@ Either the vector is not filled yet, or query embedding failed and
 
 ## Can an existing `embedding vector(768)` column be retained?
 
-Yes. [`adopt()`](/docs/guides/adopt). postvec will not drop it later.
+Yes. [`adopt()`](/docs/guides/adopt). The column stays application-owned.
 
 ## Can chunk size be changed later?
 
@@ -70,7 +70,20 @@ No. Only [`migrate()`](/docs/guides/migrate) or a re-embed does that.
 
 ## Is the extension AGPL?
 
-No. The extension, CLI and packages use the PostgreSQL License.
+No. The extension, CLI and packages use the PostgreSQL License. Remote
+ninference is licensed separately, under community (non-commercial) and
+organisation terms.
+
+## Which PostgreSQL versions are supported?
+
+16, 17 and 18. Install snippets on this site have tabs for each major.
+The selected major is remembered in the browser.
+
+## How do I find a function or topic?
+
+Use search in the header. It is local to this site (no third-party
+service). Try `enable`, `migrate`, `shared_preload_libraries` or
+`ada-002`.
 
 ## Does `apt remove` drop database data?
 
@@ -86,5 +99,5 @@ Yes. The CLI is a separate package so `postgresql-16-postvec` and
 ## Where are the downloads hosted?
 
 GitHub Releases and GHCR are the configured publication channels. See
-[Release artifacts](/download) for the live/preview state. There is no signed
-apt/yum repository.
+[Release artifacts](/download) for the live/preview state. A signed
+apt/yum repository is planned later.

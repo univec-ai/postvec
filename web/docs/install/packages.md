@@ -1,6 +1,6 @@
 ---
 title: Install packages
-description: Package installation for Debian, Ubuntu and EL9.
+description: Package installation for Debian, Ubuntu and EL9, with copy-paste snippets for PostgreSQL 16, 17 and 18.
 ---
 
 # Install packages
@@ -10,23 +10,19 @@ matches **one** release, **one** distribution, **one** architecture and
 **one** PostgreSQL major. The [release artifacts](/download) page lists
 names and publication status.
 
+Tabs pick the PostgreSQL major and the package family. Debian examples
+use the `+deb12` filename tag. Ubuntu files use `+ubuntu22.04` or
+`+ubuntu24.04` instead; the rest of the command is the same.
+
 ## 1. Prerequisites (PGDG)
 
 Supported distros do not ship every PostgreSQL-major x pgvector pair in
 their default archives. Each release includes `postvec-prerequisites.sh`.
 
-```bash
-gh --version   # 2.49 or newer
+<PgSnippet id="prerequisites" />
 
-gh attestation verify postvec-prerequisites.sh \
-  --repo univec-ai/stack \
-  --signer-workflow univec-ai/stack/.github/workflows/postvec-release.yml
-less postvec-prerequisites.sh
-sudo bash ./postvec-prerequisites.sh --pg 18
-```
-
-`--pg` is required (`16`, `17` or `18`). `--print` / `--dry-run` shows the
-commands. `--yes` skips the prompt.
+`--pg` is required (`16`, `17` or `18`). `--print` / `--dry-run` shows
+the commands. `--yes` skips the prompt.
 
 The script is idempotent. It installs **no** postvec package, edits no
 cluster and restarts nothing. On CentOS Stream 9 or subscribed RHEL 9 it
@@ -37,27 +33,7 @@ prints the commands and requires `--force-untested`.
 Extension, CLI, ONNX Runtime and the bundled MiniLM model. On-prem
 inference; `setup --embedded` afterwards.
 
-:::: code-group
-
-```bash [Debian / Ubuntu]
-sudo apt install \
-  ./postvec-cli_0.1.0-1+deb12_amd64.deb \
-  ./postgresql-18-postvec_0.1.0-1+deb12_amd64.deb \
-  ./postvec-onnxruntime_*.deb \
-  ./postvec-model-minilm-l6-v2_*.deb \
-  ./postvec-extras_*.deb
-```
-
-```bash [EL9]
-sudo dnf install \
-  ./postvec-cli-0.1.0-1.el9.x86_64.rpm \
-  ./postgresql18-postvec-0.1.0-1.el9.x86_64.rpm \
-  ./postvec-onnxruntime-*.rpm \
-  ./postvec-model-minilm-l6-v2-*.rpm \
-  ./postvec-extras-*.rpm
-```
-
-::::
+<PgSnippet id="packages-complete" />
 
 Files land under `/opt/postvec/ninference`. MiniLM is 384-d and needs no
 API key. Installing this payload leaves embedded mode off.
@@ -68,66 +44,37 @@ API key. Installing this payload leaves embedded mode off.
 This payload is for remote mode, where a ninference fleet performs
 inference:
 
-:::: code-group
+<PgSnippet id="packages-remote" />
 
-```bash [Debian / Ubuntu]
-sudo apt install \
-  ./postvec-cli_0.1.0-1+deb12_amd64.deb \
-  ./postgresql-18-postvec_0.1.0-1+deb12_amd64.deb
-```
-
-```bash [EL9]
-sudo dnf install \
-  ./postvec-cli-0.1.0-1.el9.x86_64.rpm \
-  ./postgresql18-postvec-0.1.0-1.el9.x86_64.rpm
-```
-
-::::
-
-Use `apt` / `dnf`, not `dpkg` / `rpm -i`, so PostgreSQL, pgvector and ELF
-dependencies resolve.
+Use `apt` / `dnf`, not `dpkg` / `rpm -i`, so PostgreSQL, pgvector and
+ELF dependencies resolve.
 
 The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
-identifies the **target OS**. Debian 12 and Ubuntu 22.04 packages are not
-interchangeable.
+identifies the **target OS**. Debian 12 and Ubuntu 22.04 packages are
+not interchangeable.
 
 ## 4. Verify the download
 
-```bash
-SIGNER=univec-ai/stack/.github/workflows/postvec-release.yml
+<PgSnippet id="packages-verify-download" />
 
-sha256sum --ignore-missing --check SHA256SUMS
-gh attestation verify postgresql-18-postvec_0.1.0-1+deb12_amd64.deb \
-  --repo univec-ai/stack --signer-workflow "$SIGNER"
-```
-
-`--ignore-missing` supports partial downloads and should be omitted when the
-complete release is present.
+`--ignore-missing` supports partial downloads and should be omitted when
+the complete release is present.
 
 ## 5. Verify installed files
 
-```bash
-postvec --version
-test -f /usr/lib/postgresql/18/lib/postvec.so
-test -f /usr/share/postgresql/18/extension/postvec.control
-```
+<PgSnippet id="packages-verify-files" />
 
 :::: tip Expected
-These checks do not require a running cluster. Package installation does not
-create `99-postvec.conf`, create a database or start a worker. Worker and
-database configuration happens during
+These checks succeed on the files alone. Worker and database
+configuration happens during
 [cluster configuration](/docs/install/setup).
 ::::
 
-## Package installation scope
+## After the packages are installed
 
-Package installation does not:
-
-- edit PostgreSQL configuration or `pg_hba.conf`
-- restart or reload PostgreSQL
-- run `CREATE EXTENSION` or `DROP EXTENSION`
-- access the model registry
-- delete user data during `apt remove`
+The packages place files. `postvec setup` writes cluster configuration,
+creates the extension and starts the worker. `apt remove` / `dnf remove`
+remove those files and leave user data in place.
 
 ## Cluster configuration
 

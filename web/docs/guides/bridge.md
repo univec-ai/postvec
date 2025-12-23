@@ -1,15 +1,15 @@
 ---
-title: Search without migrating
+title: Search a retired space
 description: Adopt vectors in a retired or provider-only model space and search them through automatic embed-bridge routing.
 ---
 
-# Search without migrating
+# Search a retired space
 
-An existing corpus does not have to move before postvec can search it. If the column is already in a retired or provider-only space, postvec can create each new query vector locally and convert that vector into the stored space.
+If the column is already in a retired or provider-only space, postvec can create each new query vector locally and convert that vector into the stored space.
 
-For example, an `openai-text-embedding-ada-002` corpus can remain byte-for-byte unchanged. `search()` can embed the query with an available open model, convert that one vector to ada-002 space, then run pgvector and full-text search against the existing table. The path needs neither an OpenAI call nor a corpus re-embed.
+For example, an `openai-text-embedding-ada-002` corpus can remain byte-for-byte unchanged. `search()` embeds the query with an available open model, converts that one vector to ada-002 space, then runs pgvector and full-text search against the existing table.
 
-Bridge search is part of the standard `search()` behavior. There is no `search_bridge()` function or bridge parameter in application SQL.
+The bridge route is selected inside ordinary `search()`.
 
 ## Route resolution
 
@@ -168,13 +168,13 @@ A staged migration can adopt the existing column, validate search through the br
 
 ## Validation constraints
 
-:::: danger A dimension match does not establish provenance
+:::: danger Confirm the source model separately from the dimension
 An incorrect 1536-dimensional model still represents an incompatible vector
 space. Confirm the model that produced the column before synchronized writes
 or conversion.
 ::::
 
-:::: danger Bridge search does not upgrade stored rows
-It only produces new vectors (queries and synchronized future writes) in the old
+:::: danger Existing rows stay in the old space
+Bridge search produces new vectors (queries and synchronized future writes) in the old
 target space. Existing rows remain exactly as they were.
 ::::

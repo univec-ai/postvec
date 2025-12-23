@@ -5,7 +5,7 @@ description: In-place model migration via convert (or re-embed), finalize and ab
 
 # Migrate models
 
-Stored vectors move to a new model in place. The default strategy is `convert`: UniVec translates the vectors. Source text is not re-embedded.
+Stored vectors move to a new model in place. The default strategy is `convert`: UniVec translates the stored vectors.
 
 When the corpus should remain unchanged, [bridge search](/docs/guides/bridge) converts queries into the existing space instead.
 
@@ -49,6 +49,34 @@ In psql, `\gexec` executes `suggested_index_sql`.
 | `reembed` | Embed current source text (renders the template) with the new model. |
 | `auto` | Convert when a route exists, otherwise re-embed. |
 
+:::: code-group
+
+```sql [convert]
+SELECT postvec.migrate(
+  'public.docs', 'body',
+  new_model => 'baai-bge-m3',
+  strategy => 'convert'
+);
+```
+
+```sql [reembed]
+SELECT postvec.migrate(
+  'public.docs', 'body',
+  new_model => 'baai-bge-m3',
+  strategy => 'reembed'
+);
+```
+
+```sql [auto]
+SELECT postvec.migrate(
+  'public.docs', 'body',
+  new_model => 'baai-bge-m3',
+  strategy => 'auto'
+);
+```
+
+::::
+
 `reindex`: `manual` (default) or `blocking`. Manual is recommended for tables serving application traffic.
 
 On an embedded host, pull a converter with [`postvec model pull`](/docs/models/pull). On a remote host, install it on the ninference node.
@@ -80,8 +108,8 @@ An incorrect model assertion at `adopt()` produces invalid converted vectors.
 Provenance must be confirmed first; otherwise use `strategy => 'reembed'`.
 ::::
 
-:::: info `awaiting_index` is not a failure state
-The data is already on the new model. Build the index, finalize again.
+:::: info `awaiting_index` means the column is already live
+The data is on the new model. Build the index, then finalize again.
 ::::
 
 :::: danger Only one migration may be active per entry

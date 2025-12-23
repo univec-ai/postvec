@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { withBase } from "vitepress";
 import { SITE } from "../site";
+import PgSnippet from "./PgSnippet.vue";
 </script>
 
 <template>
@@ -8,56 +9,88 @@ import { SITE } from "../site";
     <div class="wrap">
       <header class="intro">
         <p class="kicker">
-          PostgreSQL 16-18 · PostgreSQL License · {{ SITE.releaseStage }}
-          {{ SITE.version }}
+          PostgreSQL 16, 17 and 18 · PostgreSQL License ·
+          {{ SITE.releaseStage }} {{ SITE.version }}
         </p>
         <h1>Embeddings that live in the table.<br />Models that do not have to.</h1>
         <p class="lede">
-          postvec is a PostgreSQL extension. It keeps a
-          <code>pgvector</code> column in step with source text, runs
-          hybrid full-text and semantic search in one call and can convert
-          stored vectors from one embedding model to another. The original
-          documents do not go through an embedding API a second time.
+          A knowledge base stored as vectors is tied to the embedding model
+          that produced them. Providers retire a generation every year or
+          two. Search then only works after the corpus is re-embedded and
+          the index rebuilt. The next generation repeats the same work.
         </p>
+        <dl class="defs">
+          <div>
+            <dt>Vector lock-in</dt>
+            <dd>
+              The dependency between stored vectors and the model that
+              produced them.
+            </dd>
+          </div>
+          <div>
+            <dt>Embedding debt</dt>
+            <dd>The cost of changing that dependency later.</dd>
+          </div>
+        </dl>
         <p class="follow">
-          Inference runs on the database host in
-          <a :href="withBase('/docs/concepts/modes')">embedded mode</a>.
-          Remote mode talks to a ninference fleet instead. PostgreSQL does
-          not hold a third-party embedding key in either case.
+          postvec operates on both. It keeps a
+          <code>pgvector</code> column in step with source text, runs hybrid
+          full-text and semantic search in one call, and can convert stored
+          vectors from one model space to another.
         </p>
         <nav class="links" aria-label="Primary documentation">
           <a :href="withBase('/docs/quickstart')">Quick start</a>
           <a :href="withBase('/docs/install/')">Install</a>
-          <a :href="withBase('/docs/guides/')">Usage</a>
+          <a :href="withBase('/docs/guides/starting')">Choose the SQL call</a>
           <a :href="withBase('/download')">Downloads</a>
         </nav>
       </header>
 
-      <section aria-labelledby="path-heading">
-        <h2 id="path-heading">A working path</h2>
-        <ol class="path">
-          <li>
-            <a :href="withBase('/docs/quickstart')">Run the embedded image</a>
-            when the host cluster should stay as it is.
-          </li>
-          <li>
-            <a :href="withBase('/docs/guides/enable')"><code>enable()</code></a>
-            a text column, or
-            <a :href="withBase('/docs/guides/adopt')"><code>adopt()</code></a>
-            an existing vector column.
-          </li>
-          <li>
-            Wait until <code>pending_jobs = 0</code>, then
-            <a :href="withBase('/docs/guides/search')"><code>search()</code></a>.
-          </li>
-          <li>
-            Later,
-            <a :href="withBase('/docs/guides/migrate')"><code>migrate()</code></a>
-            the stored space, or
-            <a :href="withBase('/docs/guides/bridge')">bridge each query</a>
-            and leave the column as it is.
-          </li>
-        </ol>
+      <section aria-labelledby="snapshot-heading">
+        <h2 id="snapshot-heading">What it does</h2>
+        <dl class="caps">
+          <div>
+            <dt>Local models</dt>
+            <dd>
+              Open-weight models run inside PostgreSQL or on on-prem
+              inference nodes.
+            </dd>
+          </div>
+          <div>
+            <dt>Evergreen knowledge bases</dt>
+            <dd>
+              Existing vectors convert between embedding spaces through a
+              catalogue of {{ SITE.conversionPairs }} UniVec pairs.
+              Conversion uses the stored vectors.
+            </dd>
+          </div>
+          <div>
+            <dt>Search a retired space</dt>
+            <dd>
+              An ada-002 column can stay as it is. postvec embeds the query
+              with an available model and converts that one vector into the
+              stored space.
+            </dd>
+          </div>
+        </dl>
+      </section>
+
+      <section aria-labelledby="start-heading">
+        <h2 id="start-heading">Try it on this machine</h2>
+        <p>
+          A disposable container is enough for a first look. Tabs pick
+          the PostgreSQL major; the same choice is remembered on the
+          install pages.
+        </p>
+        <PgSnippet
+          id="docker-quickstart"
+          caption="Wait until the container is healthy, then follow the quick start. Persistent volumes and package installs are on the install pages. RDS and Aurora cannot load the worker."
+        />
+        <p class="note">
+          Images live on GHCR. Packages are GitHub Release assets. See
+          <a :href="withBase('/download')">downloads</a> for names and
+          publication status.
+        </p>
       </section>
 
       <section aria-labelledby="example-heading">
@@ -71,90 +104,35 @@ import { SITE } from "../site";
         </div>
         <p class="note">
           Writes fill in the background, usually within inference time of
-          commit. Query embedding is synchronous. Filters apply to both legs
-          before reciprocal-rank fusion.
+          commit. Query embedding is synchronous. Filters apply to both
+          legs before reciprocal-rank fusion.
         </p>
       </section>
 
-      <section aria-labelledby="ideas-heading">
-        <h2 id="ideas-heading">Vector lock-in and embedding debt</h2>
-        <p>
-          An embedding is a point in the space of the model that produced it.
-          Matching dimensions do not make two models comparable. Once a corpus,
-          its index and every query caller assume space A, the model is part
-          of the data contract. That coupling is
-          <strong>vector lock-in</strong>.
-        </p>
-        <p>
-          Changing the contract normally means re-embedding the corpus,
-          rebuilding the index, dual-writing through cutover and checking
-          retrieval again. Every new row in the old space adds to that
-          deferred work. The accumulated cost is
-          <strong>embedding debt</strong>.
-        </p>
-        <p>
-          postvec names both so they can be operated on.
-          <a :href="withBase('/docs/concepts/lock-in')">The definitions</a>
-          sit next to the two available operations: convert the stored vectors,
-          or convert only the query.
-        </p>
-      </section>
-
-      <section aria-labelledby="capabilities-heading">
-        <h2 id="capabilities-heading">What the extension does</h2>
-        <dl class="caps">
-          <div>
-            <dt>On the database host</dt>
-            <dd>
-              Embedded mode runs inference inside the PostgreSQL launcher.
-              Text and model weights stay on that host. No hosted embedding
-              API is involved.
-            </dd>
-          </div>
-          <div>
-            <dt>In the table</dt>
-            <dd>
-              <code>enable()</code> keeps vectors current from source text
-              through a background worker. Application SQL does not call an
-              embedding provider.
-            </dd>
-          </div>
-          <div>
-            <dt>In place</dt>
-            <dd>
-              <code>migrate()</code> translates stored vectors into another
-              model space with local conversion models. The source corpus is
-              left alone. A long-lived knowledge base can change models and
-              keep its rows.
-            </dd>
-          </div>
-          <div>
-            <dt>Hybrid, filtered</dt>
-            <dd>
-              <code>search()</code> combines pgvector ranks with PostgreSQL
-              full-text ranks. Typed filters constrain both legs before
-              ranking.
-            </dd>
-          </div>
-          <div>
-            <dt>Without moving the corpus</dt>
-            <dd>
-              Bridge search embeds a new query locally and converts that one
-              vector into an existing space, including classic ada-002
-              columns. The stored bytes stay as they are.
-            </dd>
-          </div>
-          <div>
-            <dt>With a local catalogue</dt>
-            <dd>
-              Open-weight embedders and conversion pairs are pulled onto the
-              host. The public channel is a subset. A verified UniVec account
-              sees the private superset ({{ SITE.conversionPairs }} conversion
-              pairs and a broader embed suite). Registry publication is
-              {{ SITE.registryStage }}.
-            </dd>
-          </div>
-        </dl>
+      <section aria-labelledby="which-heading">
+        <h2 id="which-heading">Choose the SQL call</h2>
+        <ol class="path">
+          <li>
+            Text, no vectors:
+            <a :href="withBase('/docs/guides/enable')"><code>enable()</code></a>
+            creates and maintains a shadow column.
+          </li>
+          <li>
+            A populated vector column:
+            <a :href="withBase('/docs/guides/adopt')"><code>adopt()</code></a>
+            registers it without rewriting the bytes.
+          </li>
+          <li>
+            A retired or provider-only space:
+            <a :href="withBase('/docs/guides/bridge')">bridge search</a>
+            converts each query into that space.
+          </li>
+          <li>
+            Ready for a new model:
+            <a :href="withBase('/docs/guides/migrate')"><code>migrate()</code></a>
+            converts the stored vectors in place.
+          </li>
+        </ol>
       </section>
 
       <section aria-labelledby="modes-heading">
@@ -163,21 +141,26 @@ import { SITE } from "../site";
           <article>
             <h3>Embedded</h3>
             <p>
-              The engine lives in the launcher. Typical when text must stay
-              on the database host, or when no inference fleet is available.
-              Models are administered with <code>postvec model ...</code>.
+              The engine lives in the PostgreSQL launcher. Text and
+              weights stay on the database host. The extension, CLI and
+              packages are under the PostgreSQL License.
             </p>
           </article>
           <article>
             <h3>Remote</h3>
             <p>
-              Backends call ninference over gRPC. Typical for GPU or
-              distributed inference and for organisation deployments that
-              serve the private catalogue from that fleet. The SQL stays the
-              same.
+              Backends call ninference over gRPC for distributed CPU or
+              GPU inference. That server is licensed separately, under
+              community (non-commercial) and organisation terms. The SQL
+              stays the same.
             </p>
           </article>
         </div>
+        <p class="note">
+          Converter weights are a UniVec product. The public catalogue is
+          a subset; a verified account sees the private superset. The
+          bundled MiniLM model works offline.
+        </p>
       </section>
 
       <section aria-labelledby="docs-heading">
@@ -186,17 +169,17 @@ import { SITE } from "../site";
           <div>
             <h3>Install</h3>
             <ul>
+              <li><a :href="withBase('/docs/quickstart')">Quick start</a></li>
               <li><a :href="withBase('/docs/install/docker')">Docker</a></li>
-              <li><a :href="withBase('/docs/install/packages')">apt and dnf</a></li>
-              <li><a :href="withBase('/docs/install/source')">Source</a></li>
+              <li><a :href="withBase('/docs/install/packages')">Packages</a></li>
               <li><a :href="withBase('/docs/install/uninstall')">Uninstall</a></li>
             </ul>
           </div>
           <div>
             <h3>Use</h3>
             <ul>
+              <li><a :href="withBase('/docs/guides/starting')">Choose the SQL call</a></li>
               <li><a :href="withBase('/docs/guides/search')">Search</a></li>
-              <li><a :href="withBase('/docs/guides/chunking')">Chunking</a></li>
               <li><a :href="withBase('/docs/guides/migrate')">Migrate</a></li>
               <li><a :href="withBase('/docs/models/')">Models</a></li>
             </ul>
@@ -215,7 +198,8 @@ import { SITE } from "../site";
           Release {{ SITE.version }} is {{ SITE.releaseStage }}. The
           <a :href="withBase('/download')">downloads page</a> reports whether
           the named artifacts exist on GitHub. Until they do, the names are
-          the local-build contract.
+          the local-build contract. Search in the header jumps to a function
+          or topic.
         </p>
       </section>
     </div>
@@ -228,7 +212,7 @@ import { SITE } from "../site";
 }
 
 .wrap {
-  width: min(44rem, calc(100% - 3rem));
+  width: min(48rem, calc(100% - 3rem));
   margin: 0 auto;
   padding: 4.25rem 0 5rem;
 }
@@ -261,7 +245,7 @@ h1::after {
 
 .lede,
 .follow {
-  max-width: 40rem;
+  max-width: 42rem;
   margin: 1.15rem 0 0;
   font-size: 1.05rem;
   line-height: 1.65;
@@ -270,6 +254,38 @@ h1::after {
 .follow {
   color: var(--vp-c-text-2);
   font-size: 1rem;
+}
+
+.defs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  margin: 1.5rem 0 0;
+  border-top: 1px solid var(--vp-c-divider);
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.defs > div {
+  padding: 0.95rem 1.15rem 1rem 0;
+}
+
+.defs > div + div {
+  padding-left: 1.15rem;
+  padding-right: 0;
+  border-left: 1px solid var(--vp-c-divider);
+}
+
+.defs dt {
+  font-family: var(--pv-font-display);
+  font-weight: 500;
+  margin-bottom: 0.3rem;
+}
+
+.defs dd {
+  margin: 0;
+  color: var(--vp-c-text-2);
+  font-size: 0.95rem;
+  line-height: 1.55;
 }
 
 .links {
@@ -375,7 +391,7 @@ dd code {
 
 .caps > div {
   display: grid;
-  grid-template-columns: 11.5rem minmax(0, 1fr);
+  grid-template-columns: 14.5rem minmax(0, 1fr);
   gap: 1.1rem;
   padding: 0.85rem 0;
   border-top: 1px solid var(--vp-c-divider);
@@ -433,15 +449,26 @@ dd code {
 
 @media (max-width: 720px) {
   .wrap {
-    width: min(100% - 2rem, 44rem);
+    width: min(100% - 2rem, 48rem);
     padding-top: 3rem;
   }
 
+  .defs,
   .caps > div,
   .modes,
   .index {
     grid-template-columns: 1fr;
     gap: 0.85rem;
+  }
+
+  .defs > div,
+  .defs > div + div {
+    padding: 0.85rem 0;
+    border-left: 0;
+  }
+
+  .defs > div + div {
+    border-top: 1px solid var(--vp-c-divider);
   }
 }
 </style>

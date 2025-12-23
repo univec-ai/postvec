@@ -231,6 +231,35 @@ html:not(.dark) .vp-doc div[class*="language-"] {
   border-radius: 0;
 }
 
+.vp-code-group {
+  margin: 1rem 0 1.25rem;
+}
+
+.vp-code-group .tabs {
+  border-radius: 0;
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  border-bottom: 0;
+  padding: 0 0.2rem;
+}
+
+.vp-code-group .tabs label {
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.vp-code-group .tabs label.active {
+  color: var(--vp-c-brand-1);
+  border-bottom-color: var(--vp-c-brand-1);
+}
+
+.vp-code-group div[class*="language-"] {
+  margin-top: 0;
+}
+
 html:not(.dark) .vp-doc div[class*="language-"] code {
   color: var(--vp-code-block-color);
 }

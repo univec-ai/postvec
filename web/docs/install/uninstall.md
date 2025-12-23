@@ -1,6 +1,6 @@
 ---
 title: Uninstall
-description: Database cleanup and optional package removal.
+description: Database cleanup and optional package removal for PostgreSQL 16, 17 and 18.
 ---
 
 # Uninstall
@@ -15,13 +15,13 @@ postvec CASCADE` is unsupported.
 | Also drop postvec-created shadow columns | add `--drop-columns --acknowledge-data-loss --yes` |
 | Drop a chunk destination | SQL `disable(..., drop_destination => true)` **first** |
 | Reset a disposable DB and retry `setup` | [development reset](#development-reset) |
-| Remove packages after SQL cleanup | `sudo apt remove postgresql-18-postvec postvec-cli` |
+| Remove packages after SQL cleanup | [package removal](#package-removal) below |
 
 ## Default retention behavior
 
 `uninstall` runs `postvec.uninstall(...)` and `DROP EXTENSION postvec`
-**without** `CASCADE` in one transaction, then removes that database from
-the CLI-owned config.
+**without** `CASCADE` in one transaction, then removes that database
+from the CLI-owned config.
 
 | Removed | Kept |
 |---|---|
@@ -52,14 +52,17 @@ sudo postvec setup --database app \
 sudo postvec doctor --database app --deep
 ```
 
-`uninstall` takes the name out of the running launcher through a restart.
-If `dropdb` ran first, rerun `uninstall` or edit `postvec.database` **and
-restart**. Reload is not enough: the list is POSTMASTER. Until the name is
-removed, the worker fails and respawns approximately every 15 seconds.
+`uninstall` takes the name out of the running launcher through a
+restart. If `dropdb` ran first, rerun `uninstall` or edit
+`postvec.database` **and restart**. Reload is not enough: the list is
+POSTMASTER. Until the name is removed, the worker fails and respawns
+approximately every 15 seconds.
 
 ## SQL-only teardown
 
-```sql
+:::: code-group
+
+```sql [SQL]
 SELECT postvec.disable('public.docs', 'body');
 SELECT postvec.uninstall();                 -- superuser; keeps columns
 SELECT postvec.uninstall(
@@ -69,21 +72,27 @@ SELECT postvec.uninstall(
 DROP EXTENSION postvec;                     -- no CASCADE
 ```
 
-After database teardown, packages may also be removed:
-
-```bash
-sudo apt remove postgresql-18-postvec postvec-cli
-sudo apt remove postvec-extras postvec-model-minilm-l6-v2 \
-  postvec-onnxruntime
+```bash [CLI]
+sudo postvec uninstall --database app --dry-run
+sudo postvec uninstall --database app
+sudo postvec uninstall --database app \
+  --drop-columns --acknowledge-data-loss --yes
 ```
 
-On EL9, `dnf remove` the corresponding names (`postgresql18-postvec`, ...).
+::::
+
+## Package removal
+
+After database teardown, packages may also be removed. This does not
+drop user data.
+
+<PgSnippet id="uninstall-packages" />
 
 ## Exit 3
 
-Exit code 3 means SQL teardown finished, but the CLI left a hand-owned or
-drifted configuration file untouched. The diagnostic names the file and
-line. A launcher may still be connecting to the removed database.
+Exit code 3 means SQL teardown finished, but the CLI left a hand-owned
+or drifted configuration file untouched. The diagnostic names the file
+and line. A launcher may still be connecting to the removed database.
 `--keep-config` produces the same state explicitly and is required for a
 URI-only target.
 
@@ -102,6 +111,6 @@ docker volume rm postvec-data     # only when permanent data removal is required
 ::::
 
 :::: danger Remove worker configuration before `dropdb`
-Run `uninstall` before `dropdb --force`. Otherwise the launcher repeatedly
-respawns a worker against a missing database.
+Run `uninstall` before `dropdb --force`. Otherwise the launcher
+repeatedly respawns a worker against a missing database.
 ::::

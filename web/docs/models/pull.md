@@ -7,24 +7,18 @@ description: postvec model pull / upgrade / rm / activate / ls / show.
 
 These commands change an **engine root**. On an embedded cluster they
 also hot-load and refresh `postvec.models` in every configured database.
-A PostgreSQL restart is not required.
+The engine hot-loads the model.
 
-```bash
-postvec model ls --available
-sudo postvec model pull baai-bge-m3 --dry-run
-sudo postvec model pull baai-bge-m3 --yes
-sudo postvec model show baai-bge-m3 --verify
-sudo postvec --cluster 18/main doctor --database app --deep
-```
+<PgSnippet id="model-pull" />
 
 :::: tip Expected
 The plan lists the requested model, engine dependencies, download size,
 peak disk and licences. After `--yes`, `model ls` shows it loaded.
 `SELECT vector_dims(postvec.embed('...', 'baai-bge-m3')::vector)` returns
-**1024** for BGE-M3. The operation does not require a restart.
+**1024** for BGE-M3. The engine hot-loads the model.
 ::::
 
-Dependencies are automatic. There is no `--with-deps`. The complete
+Dependencies are pulled automatically. The complete
 archive is SHA-256 verified **before** anything is extracted.
 
 ## Replacement constraints

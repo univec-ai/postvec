@@ -7,17 +7,16 @@ description: Grants, RLS, credentials and worker visibility.
 
 ## On-prem operation
 
-Embedded mode runs the engine in the PostgreSQL launcher. There is no
-outbound embedding API and no third-party inference service. Text, weights and
-inference stay on the host. The engine still loads packaged libraries such as
-ONNX Runtime from the install.
+Embedded mode runs the engine in the PostgreSQL launcher. Text, weights
+and inference stay on the host. The engine loads packaged libraries such
+as ONNX Runtime from the install.
 
-## No provider keys in PostgreSQL
+## Credentials stay on the host
 
 Remote inference authenticates to the configured ninference fleet on the
-deployment network. That path is not a SaaS embedding API. UniVec API keys
-are used only by `postvec login` / `model pull` on the host. They are stored
-`0600` per effective user and never written into PostgreSQL GUCs.
+deployment network. UniVec API keys are used only by `postvec login` /
+`model pull` on the host. They are stored `0600` per effective user and
+never written into PostgreSQL GUCs.
 
 Presigned registry URLs are omitted from terminal output, JSON and receipts.
 

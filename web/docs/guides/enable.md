@@ -16,7 +16,7 @@ SELECT postvec.enable(
 
 The function returns the registry identifier.
 
-If the table already has a populated `vector(N)` column, use [`adopt()`](/docs/guides/adopt). `enable()` will not take that column over.
+`enable()` creates a new shadow column. For an already populated `vector(N)` column, use [`adopt()`](/docs/guides/adopt).
 
 ## Requirements
 
@@ -50,25 +50,28 @@ Statement triggers do **not** fire for subscriber-applied logical replication. R
 
 ## Verification after `enable()`
 
-```sql
+:::: code-group
+
+```sql [SQL]
 INSERT INTO docs (body) VALUES ('...');
 
 SELECT relation, model, dim, pending_jobs, dead_jobs
   FROM postvec.status();
 ```
 
-:::: tip Expected
-`pending_jobs` rises, then returns to 0. `docs.body_semantic` fills with
-`vector(N)` where `N` is the model's `target_dim`.
-::::
-
-CLI check:
-
-```bash
+```bash [CLI]
 sudo postvec doctor --database app --deep
 ```
 
-With `index_mode => 'manual'`, `doctor` reports the missing ANN index as a warning. Build the index after backfill completes; see [indexes](/docs/guides/indexes).
+::::
+
+:::: tip Expected
+`pending_jobs` rises, then returns to 0. `docs.body_semantic` fills with
+`vector(N)` where `N` is the model's `target_dim`. With
+`index_mode => 'manual'`, `doctor` reports the missing ANN index as a
+warning. Build the index after backfill completes; see
+[indexes](/docs/guides/indexes).
+::::
 
 ## Disable
 

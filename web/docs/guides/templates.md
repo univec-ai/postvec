@@ -52,9 +52,9 @@ On `adopt(format => ...)` the template is also a provenance assertion about the 
 
 ## Invalid forms
 
-:::: danger Plain SQL strings do not interpret `\n`
-In a plain SQL string that is a backslash and an `n`. Use
-`E'$title\n\n$body'`.
+:::: danger Newlines come from SQL string syntax
+Use `E'$title\n\n$body'` or dollar-quoting. In a plain SQL string, `\n`
+is a backslash and an `n`.
 ::::
 
 :::: danger Templates cannot reference the vector column

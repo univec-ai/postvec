@@ -11,13 +11,13 @@ can be converted to another model in place, or each query can be
 [bridged](/docs/guides/bridge) into the space that already exists.
 
 Inference runs in-process ([embedded](/docs/concepts/modes)) or on separately
-operated ninference nodes. PostgreSQL does not need a third-party embedding
-API or a provider key.
+operated ninference nodes. Models are local or on-prem.
 
 [Vector lock-in](/docs/concepts/lock-in) is the dependency between stored
 vectors and the model that produced them. [Embedding debt](/docs/concepts/lock-in)
-is the cost of changing that dependency later. postvec is how those two
-are operated on.
+is the cost of changing that dependency later. postvec operates on both.
+
+Use search in the header to jump to a function, GUC or topic.
 
 ```sql
 SELECT postvec.enable('public.docs', 'body',
@@ -27,14 +27,16 @@ SELECT postvec.migrate('public.docs', 'body', new_model => 'baai-bge-m3');
 
 ## Who this is for
 
-A third-party operator with a working PostgreSQL 16, 17 or 18 install, on a
-host that permits `shared_preload_libraries`. Familiarity with the internal
-UniVec stack is not required.
+An operator with a working PostgreSQL 16, 17 or 18 install on a host
+that permits `shared_preload_libraries`.
 
 RDS and Aurora are unsupported. The worker requires
 `shared_preload_libraries = 'postvec'`.
 
 ## Starting points
+
+The same table, with a short walkthrough for each row, lives on
+[Choose the SQL call](/docs/guides/starting).
 
 | Initial state | Operation | Result |
 |---|---|---|
@@ -48,7 +50,7 @@ RDS and Aurora are unsupported. The worker requires
 
 1. **Install files** - [Docker](/docs/install/docker),
    [packages](/docs/install/packages) or [source](/docs/install/source).
-   File installation does not change cluster state.
+   Then configure the cluster.
 2. **Configure** - `postvec setup --embedded` for local inference, or
    remote ninference endpoints. See
    [cluster configuration](/docs/install/setup).

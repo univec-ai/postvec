@@ -5,9 +5,9 @@ description: Register a populated vector column without rewriting it.
 
 # Adopt existing vectors
 
-`adopt()` registers an application-owned `vector(N)` column. The call does not rewrite stored bytes.
+`adopt()` registers an application-owned `vector(N)` column and leaves stored bytes as they are.
 
-To keep an existing space such as ada-002 and continue searching it, name the original model and let embed-bridge produce query vectors. See [query an existing space](/docs/guides/bridge). To leave the space, adopt then [`migrate()`](/docs/guides/migrate).
+To keep an existing space such as ada-002 and continue searching it, name the original model and let embed-bridge produce query vectors. See [search a retired space](/docs/guides/bridge). To change the space, adopt then [`migrate()`](/docs/guides/migrate).
 
 ```sql
 SELECT postvec.adopt(
@@ -54,7 +54,7 @@ SELECT postvec.adopt(
 
 `trigger_mode` is stored as `none`. Only a TRUNCATE sentinel is installed, so a dropped-and-recreated same-named table cannot silently reattach. No embed route is required. Search may degrade to FTS.
 
-`migrate()` refuses an observed entry unless `observed_writes_quiesced => true` is supplied, and writes must stay stopped **through `migration_finalize()`**. The flag is an acknowledgement, not a lock.
+`migrate()` on an observed entry requires `observed_writes_quiesced => true`, and writes must stay stopped **through `migration_finalize()`**. The flag records that acknowledgement.
 
 An observed entry can later be promoted by calling `adopt()` again with `sync => true`. Stored immutable options, including `format`, must be repeated **byte-exactly**.
 
