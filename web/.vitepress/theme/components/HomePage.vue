@@ -16,7 +16,7 @@ type Tab = {
 const tabs: Tab[] = [
   {
     id: "enable",
-    label: "enable()",
+    label: "ENABLE ON A TEXT COLUMN",
     state: "A text column that should become searchable.",
     note:
       "postvec adds a vector column beside the source, installs the triggers that keep it current, and fills it in the background.",
@@ -25,7 +25,7 @@ const tabs: Tab[] = [
   },
   {
     id: "search",
-    label: "search()",
+    label: "HYBRID SEARCH",
     state: "One call, ranked rows.",
     note:
       "Semantic and full-text candidates get filtered, ranked and fused. The primary key comes back as text, so the join works on any table shape.",
@@ -34,7 +34,7 @@ const tabs: Tab[] = [
   },
   {
     id: "adopt",
-    label: "adopt()",
+    label: "ENABLE ON PRE-EXISTING VECTORS",
     state: "A populated pgvector column, filled by application code.",
     note:
       "adopt() registers the column and leaves every stored byte alone. If the model behind it is retired, queries are embedded with an available model and converted into that space.",
@@ -43,7 +43,7 @@ const tabs: Tab[] = [
   },
   {
     id: "migrate",
-    label: "migrate()",
+    label: "MIGRATE VECTOR FORMATS",
     state: "The stored space is the one that has to move.",
     note:
       "Stored vectors convert in batches into a new column while writes keep flowing. The columns swap at finalization. The source text stays put.",
@@ -60,14 +60,14 @@ const active = ref(tabs[0].id);
     <div class="wrap">
       <header class="hero">
         <div class="hero__copy">
-          <p class="kicker">
-            PostgreSQL 16, 17 and 18 · PostgreSQL License ·
-            {{ SITE.releaseStage }} {{ SITE.version }}
-          </p>
           <h1>
-            In-database embeddings, hybrid search and vector conversion
+            Managed embeddings, hybrid search and vector conversion
             for PostgreSQL
           </h1>
+          <p class="subhead">
+            In-database inference using local models or remote via 3rd
+            party providers. Compatible with Pg 16, 17, 18.
+          </p>
           <p class="lede">
             postvec makes a text column semantic. It keeps a
             <code>pgvector</code> column beside your data, answers
@@ -123,10 +123,7 @@ const active = ref(tabs[0].id);
         </aside>
       </header>
 
-      <section class="band band--facts" aria-labelledby="snapshot-heading">
-        <div class="band__head">
-          <h2 id="snapshot-heading">What it does</h2>
-        </div>
+      <section class="band band--facts" aria-label="What it does">
         <dl class="caps">
           <div>
             <dt>No API keys</dt>
@@ -285,7 +282,7 @@ const active = ref(tabs[0].id);
           </div>
         </dl>
 
-        <p class="note note--after-grid">
+        <p class="note note--wide">
           <a :href="withBase('/docs/concepts/')">How it works</a> covers
           the worker, the queue and the consistency window.
         </p>
@@ -331,18 +328,15 @@ const active = ref(tabs[0].id);
               <p class="tabs__note">
                 {{ tab.note }}
                 <a :href="withBase(tab.href)">{{ tab.linkText }}</a>
+                Long documents go through
+                <a :href="withBase('/docs/guides/chunking')">recursive chunking</a>.
+                <a :href="withBase('/docs/guides/templates')">Templates</a>
+                control what text is sent for embedding.
+                <a :href="withBase('/docs/reference/sql')">SQL reference</a>
+                lists every function.
               </p>
             </div>
           </div>
-
-          <p class="note note--after-block">
-            Long documents go through
-            <a :href="withBase('/docs/guides/chunking')">recursive chunking</a>.
-            <a :href="withBase('/docs/guides/templates')">Templates</a>
-            control what text is sent for embedding.
-            <a :href="withBase('/docs/reference/sql')">SQL reference</a>
-            lists every function.
-          </p>
       </section>
 
       <section class="band" aria-labelledby="modes-heading">
@@ -367,7 +361,7 @@ const active = ref(tabs[0].id);
             </p>
           </article>
         </div>
-        <p class="note note--after-grid">
+        <p class="note note--wide">
           The extension, the CLI and their packages are under the
           PostgreSQL License. ninference is licensed separately, under
           community (non-commercial) and organisation (commercial)
@@ -433,17 +427,9 @@ const active = ref(tabs[0].id);
   padding: 3.75rem 0 5rem;
 }
 
-.kicker {
-  margin: 0 0 1.05rem;
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
-  color: var(--vp-c-text-3);
-}
-
 h1 {
   margin: 0;
-  max-width: 18ch;
+  max-width: 20ch;
   font-family: var(--pv-font-display);
   font-size: clamp(2.05rem, 3.6vw, 2.85rem);
   font-weight: 500;
@@ -459,6 +445,14 @@ h1::after {
   height: 2px;
   margin-top: 1.1rem;
   background: var(--pv-mark);
+}
+
+.subhead {
+  max-width: 38rem;
+  margin: 1.05rem 0 0;
+  font-size: 1.08rem;
+  line-height: 1.5;
+  color: var(--vp-c-text-2);
 }
 
 .lede {
@@ -491,7 +485,7 @@ h1::after {
 }
 
 .hero__aside {
-  margin-top: 2.55rem;
+  margin-top: 0.35rem;
   padding-left: 1.85rem;
   border-left: 1px solid var(--vp-c-divider);
 }
@@ -560,8 +554,10 @@ a:focus-visible {
   border-top: 1px solid var(--vp-c-divider);
 }
 
-h2 {
-  margin: 0 0 0.75rem;
+.home-page h2 {
+  margin: 0 0 1.15rem;
+  padding-top: 0;
+  border-top: 0;
   font-family: var(--pv-font-display);
   font-size: 1.32rem;
   font-weight: 500;
@@ -580,7 +576,7 @@ h3 {
 }
 
 .band__head--row h2 {
-  margin: 0 0 0.5rem;
+  margin: 0 0 1.15rem;
 }
 
 .band__head--row p,
@@ -612,19 +608,17 @@ dd code {
   max-width: none;
 }
 
-.note--after-grid,
-.note--after-block {
-  margin-top: 1.65rem;
-  padding-top: 1.2rem;
-  border-top: 1px solid var(--vp-c-divider);
+.band > p.note--wide {
+  margin-top: 1.35rem;
+  max-width: none;
 }
 
 .caps {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
-  margin: 0.35rem 0 0;
-  border-top: 1px solid var(--vp-c-divider);
+  margin: 0;
+  border-top: 0;
 }
 
 .caps > div {
@@ -791,7 +785,7 @@ dd code {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1.75rem 2.5rem;
-  margin-top: 0.85rem;
+  margin-top: 0;
 }
 
 .modes p {
