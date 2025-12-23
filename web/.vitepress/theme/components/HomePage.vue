@@ -16,7 +16,7 @@ type Tab = {
 const tabs: Tab[] = [
   {
     id: "enable",
-    label: "Text, no vectors",
+    label: "enable()",
     state: "A text column that should become searchable.",
     note:
       "postvec adds a vector column beside the source, installs the triggers that keep it current, and fills it in the background.",
@@ -25,28 +25,28 @@ const tabs: Tab[] = [
   },
   {
     id: "search",
-    label: "Search it",
+    label: "search()",
     state: "One call, ranked rows.",
     note:
-      "Semantic and full-text candidates are filtered, ranked and fused together. The primary key comes back as text, so it joins to any table shape.",
+      "Semantic and full-text candidates get filtered, ranked and fused. The primary key comes back as text, so the join works on any table shape.",
     href: "/docs/guides/search",
     linkText: "Search and filters",
   },
   {
     id: "adopt",
-    label: "Vectors already there",
+    label: "adopt()",
     state: "A populated pgvector column, filled by application code.",
     note:
-      "adopt() registers the column without rewriting a byte. If the model behind it is retired, queries are embedded with an available model and converted into that space.",
+      "adopt() registers the column and leaves every stored byte alone. If the model behind it is retired, queries are embedded with an available model and converted into that space.",
     href: "/docs/guides/adopt",
     linkText: "Adopt existing vectors",
   },
   {
     id: "migrate",
-    label: "Change the model",
+    label: "migrate()",
     state: "The stored space is the one that has to move.",
     note:
-      "Stored vectors convert in batches into a new column while writes keep flowing. The columns swap at finalization; the source text is never re-read.",
+      "Stored vectors convert in batches into a new column while writes keep flowing. The columns swap at finalization. The source text stays put.",
     href: "/docs/guides/migrate",
     linkText: "Migrate in place",
   },
@@ -58,97 +58,116 @@ const active = ref(tabs[0].id);
 <template>
   <main class="home-page">
     <div class="wrap">
-      <header class="intro">
-        <p class="kicker">
-          PostgreSQL 16, 17 and 18 · PostgreSQL License ·
-          {{ SITE.releaseStage }} {{ SITE.version }}
-        </p>
-        <h1>
-          In-database embeddings, hybrid search and vector conversion
-          for PostgreSQL
-        </h1>
-        <p class="lede">
-          postvec makes a text column semantic. It creates and maintains a
-          <code>pgvector</code> column beside your data, answers full-text
-          and semantic queries together in a single call, and converts
-          stored vectors from one embedding model's space into another
-          without reading the source text again.
-        </p>
-        <p class="lede">
-          That last part is the reason it exists. A knowledge base held as
-          vectors is tied to the model that produced them, and providers
-          retire a generation every year or two. The usual answer is to
-          re-embed the corpus and rebuild the index — then to do it again
-          at the next generation.
-        </p>
-        <dl class="defs">
-          <div>
-            <dt>Vector lock-in</dt>
-            <dd>
-              The dependency between stored vectors and the model that
-              produced them.
-            </dd>
+      <header class="hero">
+        <div class="hero__copy">
+          <p class="kicker">
+            PostgreSQL 16, 17 and 18 · PostgreSQL License ·
+            {{ SITE.releaseStage }} {{ SITE.version }}
+          </p>
+          <h1>
+            In-database embeddings, hybrid search and vector conversion
+            for PostgreSQL
+          </h1>
+          <p class="lede">
+            postvec makes a text column semantic. It keeps a
+            <code>pgvector</code> column beside your data, answers
+            full-text and semantic queries in one call, and converts
+            stored vectors from one model space into another.
+          </p>
+          <p class="lede lede--soft">
+            That last part is why it exists. A knowledge base held as
+            vectors is tied to the model that produced them. Providers
+            retire a generation every year or two. The usual answer is
+            to re-embed the corpus and rebuild the index. Then you do
+            it again at the next generation.
+          </p>
+          <nav class="links" aria-label="Primary documentation">
+            <a class="lead-link" :href="withBase('/docs/quickstart')">Quick start</a>
+            <a :href="withBase('/docs/install/')">Install</a>
+            <a :href="withBase('/docs/guides/starting')">Choose the SQL call</a>
+            <a :href="withBase('/download')">Downloads</a>
+          </nav>
+        </div>
+
+        <aside class="hero__aside" aria-label="Definitions and a first container">
+          <dl class="defs">
+            <div>
+              <dt>Vector lock-in</dt>
+              <dd>
+                The dependency between stored vectors and the model
+                that produced them.
+              </dd>
+            </div>
+            <div>
+              <dt>Embedding debt</dt>
+              <dd>The cost of changing that dependency later.</dd>
+            </div>
+          </dl>
+          <p class="follow">
+            postvec is how those two are operated on.
+          </p>
+          <div class="hero__try">
+            <p class="hero__try-label">A disposable container</p>
+            <PgSnippet
+              id="docker-quickstart"
+              caption="PostgreSQL, pgvector, postvec and MiniLM. Tabs pick the major."
+            />
+            <p class="note">
+              Then the
+              <a :href="withBase('/docs/quickstart')">quick start</a>.
+              Packages and source builds are on
+              <a :href="withBase('/docs/install/')">Install</a>.
+              RDS and Aurora cannot load the worker.
+            </p>
           </div>
-          <div>
-            <dt>Embedding debt</dt>
-            <dd>The cost of changing that dependency later.</dd>
-          </div>
-        </dl>
-        <p class="follow">
-          postvec is where both are handled, in the database that already
-          holds the text.
-        </p>
-        <nav class="links" aria-label="Primary documentation">
-          <a class="lead-link" :href="withBase('/docs/quickstart')">Quick start</a>
-          <a :href="withBase('/docs/install/')">Install</a>
-          <a :href="withBase('/docs/guides/starting')">Choose the SQL call</a>
-          <a :href="withBase('/download')">Downloads</a>
-        </nav>
+        </aside>
       </header>
 
-      <section aria-labelledby="snapshot-heading">
-        <h2 id="snapshot-heading">What it does</h2>
+      <section class="band band--facts" aria-labelledby="snapshot-heading">
+        <div class="band__head">
+          <h2 id="snapshot-heading">What it does</h2>
+        </div>
         <dl class="caps">
           <div>
             <dt>No API keys</dt>
             <dd>
-              Embedding runs on open-weight models, either inside PostgreSQL
-              or on inference nodes you operate. No provider credentials are
-              stored in the database, and in embedded mode no text leaves the
-              host.
+              Embedding runs on open-weight models, either inside
+              PostgreSQL or on inference nodes you operate. The
+              database never holds a provider credential. In embedded
+              mode the text stays on the host.
             </dd>
           </div>
           <div>
             <dt>Knowledge bases that outlast a model</dt>
             <dd>
               Stored vectors convert between embedding spaces through a
-              catalogue of {{ SITE.conversionPairs }} UniVec conversion
-              pairs. The conversion reads the vectors, not the documents that
-              produced them —
-              <a :href="withBase('/docs/guides/migrate')">migrate in place</a>.
+              catalogue of {{ SITE.conversionPairs }} UniVec pairs.
+              Conversion reads the vectors.
+              <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>.
             </dd>
           </div>
           <div>
             <dt>Retired spaces stay searchable</dt>
             <dd>
-              A column of <code>ada-002</code> vectors can be left exactly as
-              it is. postvec embeds the query with a model that is still
-              available and converts that single vector into the stored
-              space —
-              <a :href="withBase('/docs/guides/bridge')">bridge search</a>,
-              no migration required.
+              A column of <code>ada-002</code> vectors can stay exactly
+              as it is. postvec embeds the query with a model that is
+              still around and converts that one vector into the stored
+              space.
+              <a :href="withBase('/docs/guides/bridge')">Bridge search</a>.
             </dd>
           </div>
         </dl>
       </section>
 
-      <section aria-labelledby="figure-heading">
-        <h2 id="figure-heading">Three paths through the extension</h2>
-        <p>
-          Writes are asynchronous and driven by a background worker. Queries
-          are synchronous. Model changes operate on the vectors, not on the
-          corpus.
-        </p>
+      <section class="band" aria-labelledby="figure-heading">
+        <div class="band__head band__head--row">
+          <h2 id="figure-heading">How a request moves</h2>
+          <p>
+            Writes go through a background worker. Search embeds the
+            query on the spot. Changing model works on the stored
+            vectors.
+          </p>
+        </div>
 
         <figure class="figure">
           <svg
@@ -170,7 +189,6 @@ const active = ref(tabs[0].id);
               </marker>
             </defs>
 
-            <!-- lane 1: write path -->
             <text class="lane" x="26" y="10">Write path</text>
             <rect class="b" x="26" y="22" width="132" height="38" />
             <text class="t" x="92" y="39">docs.body</text>
@@ -196,7 +214,6 @@ const active = ref(tabs[0].id);
             <text class="t" x="668" y="39">body_semantic</text>
             <text class="s" x="668" y="52">vector(384)</text>
 
-            <!-- lane 2: read path -->
             <text class="lane" x="26" y="86">Read path</text>
             <rect class="b" x="26" y="112" width="132" height="38" />
             <text class="t" x="92" y="129">query text</text>
@@ -224,7 +241,6 @@ const active = ref(tabs[0].id);
             <text class="t" x="668" y="129">ranked rows</text>
             <text class="s" x="668" y="142">primary keys</text>
 
-            <!-- lane 3: model change -->
             <text class="lane" x="30" y="188">Model change</text>
             <rect class="b" x="30" y="200" width="180" height="38" />
             <text class="t" x="120" y="217">stored vectors</text>
@@ -235,7 +251,7 @@ const active = ref(tabs[0].id);
 
             <rect class="b" x="290" y="200" width="180" height="38" />
             <text class="t" x="380" y="217">UniVec converter</text>
-            <text class="s" x="380" y="230">source text not read</text>
+            <text class="s" x="380" y="230">source text stays put</text>
 
             <line class="arrow" x1="470" y1="219" x2="546" y2="219" />
 
@@ -250,146 +266,120 @@ const active = ref(tabs[0].id);
             <dt>Write path</dt>
             <dd>
               A committed row is enqueued by a trigger, embedded by the
-              worker, and written back to the vector column.
+              worker and written back to the vector column.
             </dd>
           </div>
           <div>
             <dt>Read path</dt>
             <dd>
-              One call embeds the query, ranks semantic and full-text
-              candidates, and fuses the two rankings.
+              One call embeds the query, ranks both legs and fuses the
+              two rankings.
             </dd>
           </div>
           <div>
             <dt>Model change</dt>
             <dd>
-              Stored vectors are converted into the new model's space in
-              place. The source text is not read.
+              Stored vectors convert into the new model's space in
+              place. The source text stays put.
             </dd>
           </div>
         </dl>
 
-        <p class="note">
-          <a :href="withBase('/docs/concepts/')">How it works</a> covers the
-          worker, the queue and the consistency window in detail.
+        <p class="note note--after-grid">
+          <a :href="withBase('/docs/concepts/')">How it works</a> covers
+          the worker, the queue and the consistency window.
         </p>
       </section>
 
-      <section aria-labelledby="example-heading">
-        <h2 id="example-heading">The SQL surface</h2>
-        <p>
-          Application work is SQL, in the <code>postvec</code> schema. The CLI
-          configures the cluster and, in embedded mode, the models. Each tab
-          below is a starting state.
-        </p>
-
-        <div class="tabs">
-          <div class="tabs__bar" role="tablist" aria-label="Starting state">
-            <button
-              v-for="tab in tabs"
-              :key="tab.id"
-              type="button"
-              role="tab"
-              class="tabs__tab"
-              :class="{ 'is-active': active === tab.id }"
-              :aria-selected="active === tab.id"
-              @click="active = tab.id"
-            >
-              {{ tab.label }}
-            </button>
-          </div>
-
-          <div
-            v-for="tab in tabs"
-            v-show="active === tab.id"
-            :key="tab.id"
-            class="tabs__panel"
-            role="tabpanel"
-          >
-            <p class="tabs__state">{{ tab.state }}</p>
-            <div class="example-code vp-doc">
-              <slot :name="tab.id" />
-            </div>
-            <p class="tabs__note">
-              {{ tab.note }}
-              <a :href="withBase(tab.href)">{{ tab.linkText }}</a>
-            </p>
-          </div>
+      <section class="band" aria-labelledby="example-heading">
+        <div class="band__head band__head--row">
+          <h2 id="example-heading">The SQL surface</h2>
+          <p>
+            Application work is SQL, in the <code>postvec</code> schema.
+            The CLI configures the cluster and, in embedded mode, the
+            models. Each tab is a starting state.
+          </p>
         </div>
 
-        <p class="note">
-          Long documents are split into passages by
-          <a :href="withBase('/docs/guides/chunking')">recursive chunking</a>;
-          <a :href="withBase('/docs/guides/templates')">templates</a> control
-          what text is sent for embedding.
-          <a :href="withBase('/docs/reference/sql')">The SQL reference</a>
-          lists every function and argument.
-        </p>
+          <div class="tabs">
+            <div class="tabs__bar" role="tablist" aria-label="Starting state">
+              <button
+                v-for="tab in tabs"
+                :key="tab.id"
+                type="button"
+                role="tab"
+                class="tabs__tab"
+                :class="{ 'is-active': active === tab.id }"
+                :aria-selected="active === tab.id"
+                @click="active = tab.id"
+              >
+                {{ tab.label }}
+              </button>
+            </div>
+
+            <div
+              v-for="tab in tabs"
+              v-show="active === tab.id"
+              :key="tab.id"
+              class="tabs__panel"
+              role="tabpanel"
+            >
+              <p class="tabs__state">{{ tab.state }}</p>
+              <div class="example-code vp-doc">
+                <slot :name="tab.id" />
+              </div>
+              <p class="tabs__note">
+                {{ tab.note }}
+                <a :href="withBase(tab.href)">{{ tab.linkText }}</a>
+              </p>
+            </div>
+          </div>
+
+          <p class="note note--after-block">
+            Long documents go through
+            <a :href="withBase('/docs/guides/chunking')">recursive chunking</a>.
+            <a :href="withBase('/docs/guides/templates')">Templates</a>
+            control what text is sent for embedding.
+            <a :href="withBase('/docs/reference/sql')">SQL reference</a>
+            lists every function.
+          </p>
       </section>
 
-      <section aria-labelledby="start-heading">
-        <h2 id="start-heading">Try it on this machine</h2>
-        <p>
-          A disposable container is enough for a first look: PostgreSQL,
-          pgvector, postvec and one bundled model, with no external service
-          and no account. Tabs pick the PostgreSQL major, and the same
-          choice is remembered on the install pages.
-        </p>
-        <PgSnippet
-          id="docker-quickstart"
-          caption="Wait until the container is healthy, then follow the quick start."
-        />
-        <p>
-          For a real cluster there are
-          <a :href="withBase('/docs/install/packages')">packages</a> for
-          Debian, Ubuntu and EL9, a
-          <a :href="withBase('/docs/install/source')">source build</a>, and a
-          <a :href="withBase('/docs/install/setup')">one-command setup</a>
-          that edits the cluster configuration for you. RDS and Aurora cannot
-          load the worker.
-        </p>
-        <p class="note">
-          Images live on GHCR and packages are GitHub Release assets. The
-          <a :href="withBase('/download')">downloads page</a> lists the names
-          and reports whether they are published yet.
-        </p>
-      </section>
-
-      <section aria-labelledby="modes-heading">
+      <section class="band" aria-labelledby="modes-heading">
         <h2 id="modes-heading">Two inference modes, one SQL surface</h2>
         <div class="modes">
           <article>
             <h3>Embedded</h3>
             <p>
-              The engine runs inside the PostgreSQL launcher process. Text
-              and model weights stay on the database host, and nothing else
-              has to be deployed. The trade is deliberate: inference shares
-              CPU, memory and the failure domain with PostgreSQL.
+              The engine runs inside the PostgreSQL launcher. Text and
+              weights stay on the database host, and you don't have to
+              deploy anything else. Inference shares CPU, memory and
+              failures with PostgreSQL. That's the trade.
             </p>
           </article>
           <article>
             <h3>Remote</h3>
             <p>
-              Backends call ninference over gRPC, so inference scales across
-              CPU or GPU nodes and keeps its own failure domain. This is the
-              shape for production at size. The mode is one cluster-wide
-              setting; the SQL does not change.
+              Backends call ninference over gRPC, so inference can sit
+              on its own CPU or GPU nodes. That's the shape for
+              production at size. Mode is one cluster-wide setting. The
+              SQL stays the same.
             </p>
           </article>
         </div>
-        <p class="note">
-          The extension, the CLI and their packages are under the PostgreSQL
-          License. ninference is licensed separately, under community
-          (non-commercial) and organisation (commercial) terms. Converter
-          weights are a UniVec product: the public catalogue is a subset, and
-          a verified account sees the private superset. The bundled MiniLM
-          model needs neither an account nor a network.
-          <a :href="withBase('/docs/concepts/modes')">Embedded vs remote</a>
-          compares the two.
+        <p class="note note--after-grid">
+          The extension, the CLI and their packages are under the
+          PostgreSQL License. ninference is licensed separately, under
+          community (non-commercial) and organisation (commercial)
+          terms. Converter weights are a UniVec product: the public
+          catalogue is a subset, and a verified account sees the
+          private superset. The bundled MiniLM model needs neither an
+          account nor a network.
+          <a :href="withBase('/docs/concepts/modes')">Embedded vs remote</a>.
         </p>
       </section>
 
-      <section aria-labelledby="docs-heading">
+      <section class="band band--docs" aria-labelledby="docs-heading">
         <h2 id="docs-heading">Documentation</h2>
         <div class="index">
           <div>
@@ -424,8 +414,8 @@ const active = ref(tabs[0].id);
           </div>
         </div>
         <p class="note">
-          Release {{ SITE.version }} is {{ SITE.releaseStage }}. Search in
-          the header jumps straight to a function, GUC or topic.
+          Release {{ SITE.version }} is {{ SITE.releaseStage }}. Search
+          in the header jumps to a function, GUC or topic.
         </p>
       </section>
     </div>
@@ -438,13 +428,13 @@ const active = ref(tabs[0].id);
 }
 
 .wrap {
-  width: min(50rem, calc(100% - 3rem));
+  width: min(72rem, calc(100% - 3.5rem));
   margin: 0 auto;
-  padding: 4.25rem 0 5rem;
+  padding: 3.75rem 0 5rem;
 }
 
 .kicker {
-  margin: 0 0 1.1rem;
+  margin: 0 0 1.05rem;
   font-family: var(--vp-font-family-mono);
   font-size: 0.72rem;
   letter-spacing: 0.04em;
@@ -453,9 +443,9 @@ const active = ref(tabs[0].id);
 
 h1 {
   margin: 0;
-  max-width: 22ch;
+  max-width: 18ch;
   font-family: var(--pv-font-display);
-  font-size: clamp(2rem, 4.6vw, 2.85rem);
+  font-size: clamp(2.05rem, 3.6vw, 2.85rem);
   font-weight: 500;
   letter-spacing: -0.03em;
   line-height: 1.12;
@@ -467,51 +457,58 @@ h1::after {
   display: block;
   width: 2.4rem;
   height: 2px;
-  margin-top: 1.15rem;
+  margin-top: 1.1rem;
   background: var(--pv-mark);
 }
 
-.lede,
-.follow {
-  max-width: 42rem;
-  margin: 1.15rem 0 0;
+.lede {
+  max-width: 38rem;
+  margin: 1.1rem 0 0;
   font-size: 1.05rem;
   line-height: 1.65;
 }
 
-.lede + .lede {
+.lede--soft {
   color: var(--vp-c-text-2);
   font-size: 1rem;
 }
 
 .follow {
-  color: var(--vp-c-text-2);
-  font-size: 1rem;
+  margin: 0.95rem 0 0;
+  color: var(--vp-c-text-1);
+  font-size: 0.98rem;
+  font-family: var(--pv-font-display);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
+  gap: 3.25rem;
+  align-items: start;
+  padding-bottom: 3.2rem;
+}
+
+.hero__aside {
+  margin-top: 2.55rem;
+  padding-left: 1.85rem;
+  border-left: 1px solid var(--vp-c-divider);
 }
 
 .defs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
-  margin: 1.6rem 0 0;
-  border-top: 1px solid var(--vp-c-divider);
-  border-bottom: 1px solid var(--vp-c-divider);
+  margin: 0;
 }
 
 .defs > div {
-  padding: 0.95rem 1.15rem 1rem 0;
-}
-
-.defs > div + div {
-  padding-left: 1.15rem;
-  padding-right: 0;
-  border-left: 1px solid var(--vp-c-divider);
+  padding: 1.05rem 0 1.1rem;
+  border-bottom: 1px solid var(--vp-c-divider);
 }
 
 .defs dt {
   font-family: var(--pv-font-display);
   font-weight: 500;
-  margin-bottom: 0.3rem;
+  margin-bottom: 0.28rem;
 }
 
 .defs dd {
@@ -521,22 +518,30 @@ h1::after {
   line-height: 1.55;
 }
 
+.hero__try {
+  padding-top: 1.15rem;
+}
+
+.hero__try-label {
+  margin: 0 0 0.45rem;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+}
+
 .links {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.4rem 1.35rem;
-  margin-top: 1.6rem;
+  margin-top: 1.55rem;
   font-size: 0.95rem;
 }
 
 .lead-link {
   font-weight: 600;
-}
-
-.lead-link::after {
-  content: " →";
-  font-family: var(--vp-font-family-mono);
 }
 
 a {
@@ -550,35 +555,40 @@ a:focus-visible {
   text-underline-offset: 0.18em;
 }
 
-section {
-  padding: 2.6rem 0;
+.band {
+  padding: 2.5rem 0;
   border-top: 1px solid var(--vp-c-divider);
 }
 
-.intro {
-  padding-bottom: 2.4rem;
-}
-
 h2 {
-  margin: 0 0 0.85rem;
+  margin: 0 0 0.75rem;
   font-family: var(--pv-font-display);
-  font-size: 1.35rem;
+  font-size: 1.32rem;
   font-weight: 500;
   letter-spacing: -0.02em;
 }
 
 h3 {
-  margin: 0 0 0.45rem;
+  margin: 0 0 0.4rem;
   font-family: var(--pv-font-display);
   font-size: 1.02rem;
   font-weight: 500;
 }
 
-section > p {
-  margin: 0.65rem 0;
-  max-width: 44rem;
+.band__head--row {
+  margin-bottom: 0.25rem;
+}
+
+.band__head--row h2 {
+  margin: 0 0 0.5rem;
+}
+
+.band__head--row p,
+.band > p {
+  margin: 0;
+  max-width: 42rem;
   color: var(--vp-c-text-2);
-  line-height: 1.68;
+  line-height: 1.65;
 }
 
 code {
@@ -595,28 +605,46 @@ dd code {
 }
 
 .note {
+  margin: 0.85rem 0 0;
   font-size: 0.9rem;
   color: var(--vp-c-text-3);
+  line-height: 1.55;
+  max-width: none;
 }
 
-.caps {
-  margin: 0.4rem 0 0;
-}
-
-.caps > div {
-  display: grid;
-  grid-template-columns: 14.5rem minmax(0, 1fr);
-  gap: 1.1rem;
-  padding: 0.85rem 0;
+.note--after-grid,
+.note--after-block {
+  margin-top: 1.65rem;
+  padding-top: 1.2rem;
   border-top: 1px solid var(--vp-c-divider);
 }
 
+.caps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 0.35rem 0 0;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+.caps > div {
+  padding: 1.15rem 1.5rem 0.25rem;
+  border-right: 1px solid var(--vp-c-divider);
+}
+
+.caps > div:first-child {
+  padding-left: 0;
+}
+
 .caps > div:last-child {
-  border-bottom: 1px solid var(--vp-c-divider);
+  padding-right: 0;
+  border-right: 0;
 }
 
 .caps dt {
-  font-weight: 600;
+  font-family: var(--pv-font-display);
+  font-weight: 500;
+  margin-bottom: 0.45rem;
 }
 
 .caps dd {
@@ -626,10 +654,8 @@ dd code {
   line-height: 1.6;
 }
 
-/* diagram */
-
 .figure {
-  margin: 1.4rem 0 0.4rem;
+  margin: 1.35rem 0 0.15rem;
 }
 
 .figure svg {
@@ -689,14 +715,27 @@ dd code {
 }
 
 .fig-list {
-  display: none;
-  margin: 0.4rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem 2rem;
+  margin: 1.15rem 0 0;
 }
 
-/* tabs */
+.fig-list dt {
+  font-family: var(--pv-font-display);
+  font-weight: 500;
+  margin-bottom: 0.3rem;
+}
+
+.fig-list dd {
+  margin: 0;
+  color: var(--vp-c-text-2);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
 
 .tabs {
-  margin: 1.1rem 0 0.4rem;
+  margin: 0.85rem 0 0.15rem;
 }
 
 .tabs__bar {
@@ -713,8 +752,8 @@ dd code {
   margin-bottom: -1px;
   background: transparent;
   color: var(--vp-c-text-3);
-  padding: 0.5rem 0.9rem 0.5rem 0;
-  margin-right: 0.9rem;
+  padding: 0.5rem 0.85rem 0.5rem 0;
+  margin-right: 0.85rem;
   font-family: var(--vp-font-family-mono);
   font-size: 0.74rem;
   letter-spacing: 0.03em;
@@ -732,13 +771,13 @@ dd code {
 }
 
 .tabs__state {
-  margin: 0.9rem 0 0;
+  margin: 0.85rem 0 0;
   color: var(--vp-c-text-2);
   font-size: 0.95rem;
 }
 
 .tabs__note {
-  margin: 0.15rem 0 0;
+  margin: 1.05rem 0 0;
   color: var(--vp-c-text-3);
   font-size: 0.9rem;
   line-height: 1.6;
@@ -751,8 +790,8 @@ dd code {
 .modes {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1.75rem;
-  margin-top: 0.6rem;
+  gap: 1.75rem 2.5rem;
+  margin-top: 0.85rem;
 }
 
 .modes p {
@@ -766,7 +805,7 @@ dd code {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1.75rem;
-  margin: 0.85rem 0 1.1rem;
+  margin: 0.85rem 0 0.35rem;
 }
 
 .index ul {
@@ -783,59 +822,59 @@ dd code {
   font-size: 0.92rem;
 }
 
-@media (max-width: 760px) {
-  .figure {
-    display: none;
+@media (max-width: 980px) {
+  .hero,
+  .band__head--row {
+    grid-template-columns: 1fr;
+    gap: 1.6rem;
   }
 
-  .fig-list {
-    display: block;
-  }
-
-  .fig-list > div {
-    padding: 0.8rem 0;
+  .hero__aside {
+    margin-top: 0.4rem;
+    padding-left: 0;
+    border-left: 0;
     border-top: 1px solid var(--vp-c-divider);
+    padding-top: 1.2rem;
   }
 
-  .fig-list > div:last-child {
+  .caps,
+  .fig-list {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .caps > div,
+  .caps > div:first-child,
+  .caps > div:last-child {
+    padding: 0.95rem 0;
+    border-right: 0;
     border-bottom: 1px solid var(--vp-c-divider);
   }
 
-  .fig-list dt {
-    font-weight: 600;
-    margin-bottom: 0.25rem;
-  }
-
-  .fig-list dd {
-    margin: 0;
-    color: var(--vp-c-text-2);
-    font-size: 0.95rem;
-    line-height: 1.6;
+  .fig-list > div {
+    padding: 0.85rem 0;
+    border-top: 1px solid var(--vp-c-divider);
   }
 }
 
 @media (max-width: 720px) {
   .wrap {
-    width: min(100% - 2rem, 50rem);
-    padding-top: 3rem;
+    width: min(100% - 2rem, 72rem);
+    padding-top: 2.75rem;
   }
 
-  .defs,
-  .caps > div,
+  h1 {
+    max-width: none;
+  }
+
   .modes,
   .index {
     grid-template-columns: 1fr;
-    gap: 0.85rem;
+    gap: 1.15rem;
   }
 
-  .defs > div,
-  .defs > div + div {
-    padding: 0.85rem 0;
-    border-left: 0;
-  }
-
-  .defs > div + div {
-    border-top: 1px solid var(--vp-c-divider);
+  .figure {
+    display: none;
   }
 }
 </style>
