@@ -27,7 +27,7 @@ SELECT postvec.refresh_models();
 ```
 
 ```bash [CLI]
-sudo postvec model ls
+postvec model ls
 sudo postvec doctor --database app --deep
 ```
 

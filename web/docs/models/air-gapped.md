@@ -15,7 +15,7 @@ tar -C /tmp/postvec-stage -czf postvec-models.tgz models/
 
 # Isolated host
 sudo tar -C /opt/postvec/ninference -xzf postvec-models.tgz
-sudo postvec model show --path /opt/postvec/ninference baai-bge-m3 --verify
+postvec model show --path /opt/postvec/ninference baai-bge-m3 --verify
 sudo postvec model activate
 ```
 

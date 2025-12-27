@@ -36,7 +36,7 @@ mode.
 sudo postvec setup --database app \
   --embedded --path /opt/postvec/ninference
 
-sudo postvec model ls
+postvec model ls
 sudo postvec doctor --database app --deep
 ```
 

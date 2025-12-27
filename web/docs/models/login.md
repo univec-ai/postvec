@@ -32,11 +32,15 @@ would otherwise also authorize billable UniVec API calls.
 ## Commands
 
 ```bash
-sudo postvec login
-sudo postvec whoami
-sudo postvec model ls --available
-sudo postvec logout
+postvec login
+postvec whoami
+postvec model ls --available
+postvec logout
 ```
+
+None of these need `sudo`. If the next step is `sudo model pull`, log
+in again as root (`sudo postvec login`) or pass `--api-key-file`:
+credentials are stored per effective user.
 
 `login`, `whoami`, `ls --available`, `pull` and `upgrade` accept
 `--api-key-file FILE`. Pass the secret that way, or via

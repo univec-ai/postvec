@@ -38,9 +38,19 @@ The CLI has no extension-upgrade command. See [upgrade](/docs/install/upgrade).
 Auto-select runs only when exactly one supported online cluster is present.
 Zero or several candidates produce a listing and an error.
 
-`sudo postvec ...` keeps root for filesystem work and drops to the cluster
-owner for database work. Peer authentication as the invoking non-cluster
-role usually fails. That is expected.
+`sudo` is only required for host writes and for a peer-authenticated
+database session. Read-only model commands do not need it:
+
+| Need | Commands |
+|---|---|
+| Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm` |
+| Cluster owner (`postgres`) | `doctor`, `model activate`, `setup` / `uninstall` |
+| Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show` |
+
+`sudo postvec ...` covers the first two at once: the parent keeps root
+for the filesystem and a child drops to the cluster owner for database
+work. `model ls` and `model show` fall back to the owned
+`99-postvec.conf` snippet if that login fails.
 
 `--database-url` alone does not authorize local configuration writes. Add
 `--cluster` only after both connections prove they are the same

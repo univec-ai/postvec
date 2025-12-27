@@ -128,7 +128,7 @@ An executable route needs all three parts:
 On an **embedded** host, inspect the catalogue and pull the converter's inventory name. Dependencies bring the companion embed model and executor:
 
 ```bash
-sudo postvec model ls --available
+postvec model ls --available
 converter_name='replace-with-catalogue-name'
 sudo postvec model pull "$converter_name" --dry-run
 sudo postvec model pull "$converter_name" --yes

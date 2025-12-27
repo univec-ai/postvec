@@ -84,7 +84,7 @@ sudo postvec model activate --yes
 ## Remote mode
 
 ```bash
-sudo postvec --cluster 18/main model ls          # advertised by nodes
+postvec --cluster 18/main model ls          # advertised by nodes
 sudo postvec --cluster 18/main model pull baai-bge-m3 --dry-run
 ```
 
