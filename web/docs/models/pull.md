@@ -90,20 +90,32 @@ restart. No GUC and no catalogue is involved.
   unless `--force`. Deactivating does **not** cascade to a model's own
   dependencies — they stay active, and turning them off too is your call.
 
-### Columns that still use the model
+### Columns that would lose their embedding route
 
-Deactivating or removing a model a managed column still declares is **allowed,
-never silent**:
+Deactivating or removing a model that managed columns still depend on is
+**allowed, never silent**:
 
 ```text
-- WARNING: baai-bge-m3 is the declared model for:
-      app: public.docs.body (active)
+- WARNING: convert-bge-to-ada is the declared model for:
+      app: public.docs.body (active) — declared on openai-text-embedding-ada-002,
+           served through it
     search(), embed() and the worker will fail for those entries until
-    baai-bge-m3 is activated again, or the column is migrated to another model
-    or disabled. Stored vectors are not touched.
+    convert-bge-to-ada is activated again, or the column is migrated to another
+    model or disabled. Stored vectors are not touched.
 ```
 
-Interactively, type the model names back. Non-interactively, pass
+The question is **not** "does a column name this model" but "can this column
+still be embedded afterwards". A column on `openai-text-embedding-ada-002` is
+served by a *converter* into that space plus `embed-bridge` — neither carries
+the target's name — so a name match alone would miss the migration story
+postvec exists for. The check mirrors the extension's two-tier resolution
+against the inventory with the models removed: a direct embed model named for
+the space, or a converter into it whose own source space is embeddable, through
+`embed-bridge`. Deactivating any leg of that route trips the acknowledgement;
+none of them does when a second route into the same space survives.
+
+Interactively, type the model names back exactly as the prompt prints them
+(separators and quotes are normalized). Non-interactively, pass
 `--acknowledge-in-use` **together with** `--yes`. `--yes` confirms the change
 you asked for; `--force` covers breaking other *models*; neither stands in for
 the other. A configured database that cannot be inspected is reported as
