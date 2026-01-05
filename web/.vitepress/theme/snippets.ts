@@ -489,6 +489,8 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         "sudo postvec model pull baai-bge-m3 --dry-run",
         "sudo postvec model pull baai-bge-m3 --yes",
         "postvec model show baai-bge-m3 --verify",
+        "# pull installs; it does not serve. Turn the model on:",
+        "sudo postvec model activate baai-bge-m3 --yes",
         `sudo postvec --cluster ${t.cluster} doctor --database app --deep`,
       ].join("\n"),
   },

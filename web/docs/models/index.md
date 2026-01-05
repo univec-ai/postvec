@@ -56,14 +56,19 @@ bundled MiniLM package works without the registry. The
 
 ## Model installation by mode
 
-| Mode | Install / remove / upgrade |
+| Mode | Install / activate / remove / upgrade |
 |---|---|
-| Embedded | `postvec model pull / upgrade / rm / activate` on this host |
+| Embedded | `postvec model pull / activate / deactivate / upgrade / rm` on this host |
 | Remote | The ninference fleet (`nin`). Local mutation is **refused** |
 | Either | `model ls` - local inventory, or node-advertised names in remote |
 
-`--path DIR` manages a standalone engine root as **files only**: no
-hot-load, no SQL refresh.
+Installing and serving are separate steps: `pull` lands a model
+**deactivated**, and `model activate` turns it on. Both that and
+`model deactivate` persist across a PostgreSQL restart, because they rewrite
+the installed descriptor's own `enabled` field.
+
+`--path DIR` manages a standalone engine root as **files only**: it flips
+descriptors, but performs no engine load and no SQL refresh.
 
 ## Bundled model
 

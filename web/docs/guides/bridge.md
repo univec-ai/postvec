@@ -131,9 +131,15 @@ On an **embedded** host, inspect the catalogue and pull the converter's inventor
 postvec model ls --available
 converter_name='replace-with-catalogue-name'
 sudo postvec model pull "$converter_name" --dry-run
-sudo postvec model pull "$converter_name" --yes
+sudo postvec model pull "$converter_name" --yes          # installed, deactivated
+sudo postvec model activate "$converter_name" --yes      # enables the whole chain
 sudo postvec doctor --database app --deep
 ```
+
+`pull` installs the closure deactivated; `activate` on the converter enables
+its deactivated dependencies with it — the embed model and the `embed-bridge`
+executor — because the engine refuses to load a chain containing a deactivated
+member, and a restart would not make one resident either.
 
 Not every source/target pair is present in the public subset. The private catalogue contains the broader conversion inventory.
 

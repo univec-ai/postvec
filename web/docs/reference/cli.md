@@ -44,14 +44,15 @@ database session. Read-only model commands do not need it:
 | Need | Commands |
 |---|---|
 | Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm` |
-| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, and cluster-targeted `model pull` / `upgrade` / `rm` / `activate` |
+| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, and cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` |
 | Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show` |
 
 `sudo postvec ...` covers the first two at once: the parent keeps root
 for the filesystem and a child drops to the cluster owner for database
 work. `model ls` and `model show` fall back to the owned
 `99-postvec.conf` snippet if that login fails. Cluster-targeted
-`model pull` / `rm` / `activate` refuse that fallback: without a login
+`model pull` / `upgrade` / `rm` / `activate` / `deactivate` refuse that
+fallback: without a login
 they would write files as you and then be unable to refresh
 `postvec.models`. Use `--path DIR` for files only.
 
@@ -128,9 +129,17 @@ model show NAME [--verify] [--path DIR]
 model pull NAME... [--path DIR] [--api-key-file FILE]
             [--accept-license ID@VERSION] [--dry-run] [--yes]
 model upgrade NAME...|--all   (same credential / path flags)
-model rm NAME... [--path DIR] [--force] [--dry-run] [--yes]
-model activate [--yes]
+model rm NAME... [--path DIR] [--force] [--acknowledge-in-use]
+            [--dry-run] [--yes]
+model activate [NAME...|--all] [--path DIR] [--dry-run] [--yes]
+model deactivate NAME... [--path DIR] [--force] [--acknowledge-in-use]
+            [--dry-run] [--yes]
 ```
+
+`pull` installs **deactivated**; `activate` / `deactivate` are the only verbs
+that change serving state, and both persist across a PostgreSQL restart.
+`--acknowledge-in-use` is required (with `--yes`) when a managed column still
+declares the model; `--yes` and `--force` never stand in for it.
 
 ## Exit codes
 
