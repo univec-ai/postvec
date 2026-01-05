@@ -138,8 +138,9 @@ model deactivate NAME... [--path DIR] [--force] [--acknowledge-in-use]
 
 `pull` installs **deactivated**; `activate` / `deactivate` are the only verbs
 that change serving state, and both persist across a PostgreSQL restart.
-`--acknowledge-in-use` is required (with `--yes`) when a managed column still
-declares the model; `--yes` and `--force` never stand in for it.
+`--acknowledge-in-use` is required (with `--yes`) when managed columns would
+lose their embedding route — directly, or through a converter/bridge chain the
+model is part of; `--yes` and `--force` never stand in for it.
 
 ## Exit codes
 

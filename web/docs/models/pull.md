@@ -96,7 +96,7 @@ Deactivating or removing a model that managed columns still depend on is
 **allowed, never silent**:
 
 ```text
-- WARNING: convert-bge-to-ada is the declared model for:
+- WARNING: convert-bge-to-ada is the embedding route for these columns:
       app: public.docs.body (active) — declared on openai-text-embedding-ada-002,
            served through it
     search(), embed() and the worker will fail for those entries until
