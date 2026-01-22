@@ -1,0 +1,101 @@
+# The extension itself, for one PostgreSQL major.
+#
+# Contents are exactly the three assets PostgreSQL needs — the loadable
+# library, the control file, and the install/upgrade SQL — placed where that
+# major's pg_config says they belong. No binary, no service, no maintainer
+# script that touches a cluster or a database (see README §"What the packages
+# may not do").
+#
+# One universal build: compiled with `--features pgNN,embedded`, so it serves
+# remote gRPC mode by default and embedded mode when configured. Publishing a
+# separate thin package would put two different libraries at the same path.
+
+name: ${EXTENSION_PACKAGE}
+arch: ${PKG_ARCH}
+platform: linux
+version: ${POSTVEC_VERSION}
+release: ${PKG_RELEASE}
+section: database
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+homepage: ${SOURCE_REPOSITORY}
+license: PostgreSQL
+description: |
+  Transparent auto-embedding, hybrid search and embedding-model migration for
+  PostgreSQL ${PG_MAJOR}, backed by UniVec inference.
+  .
+  Declare a text column semantic and postvec keeps a pgvector shadow column in
+  sync as rows change, answers hybrid (full-text + vector) search in one call,
+  and migrates stored vectors between embedding models in place — without
+  re-embedding the source text.
+  .
+  Inference runs either on remote ninference nodes (the default) or inside the
+  database host's background worker (embedded mode; add postvec-extras).
+  .
+  Installing this package changes no configuration and no database. Run
+  `postvec setup` to configure a cluster, and `postvec doctor` to diagnose one.
+
+contents:
+  - src: ${CELL_DIR}/stage${PKGLIBDIR}/postvec.so
+    dst: ${PKGLIBDIR}/postvec.so
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${CELL_DIR}/stage${EXTENSIONDIR}/postvec.control
+    dst: ${EXTENSIONDIR}/postvec.control
+    file_info: { mode: 0644, owner: root, group: root }
+  # The install script for this version plus every upgrade script that ships
+  # with it — ALTER EXTENSION postvec UPDATE needs the chain present on disk.
+  - src: ${CELL_DIR}/stage${EXTENSIONDIR}/postvec--*.sql
+    dst: ${EXTENSIONDIR}/
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${REPO_ROOT}/postvec/README.md
+    dst: /usr/share/doc/${EXTENSION_PACKAGE}/README.md
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${REPO_ROOT}/postvec/LICENSE
+    dst: ${LICENSE_DST}/${EXTENSION_PACKAGE}/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # See postvec-cli.yaml: one changelog per release, shipped by every package.
+  - src: ${CHANGELOG_FILE}
+    dst: /usr/share/doc/${EXTENSION_PACKAGE}/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+
+# Dependencies are per-packager: PGDG's Debian and RPM lines name PostgreSQL
+# and pgvector differently, and the version-relation syntax differs too. An
+# `overrides` block replaces rather than extends, so each is stated in full.
+#
+# The postvec-cli bounds are the interesting pair: the lower bound keeps an
+# older CLI from claiming to manage a newer extension, and the upper bound is
+# the next version allowed to break compatibility, so a CLI from a future
+# incompatible line cannot satisfy this dependency either.
+#
+# The SHLIB_DEPENDS splice below is filled by scripts/build-packages.sh from
+# the target distribution's own dependency generator (dpkg-shlibdeps / rpmdeps).
+# nFPM runs neither, so without that step the package would declare no libc
+# dependency at all and install happily on a host that cannot load it.
+overrides:
+  deb:
+    depends:
+      - postgresql-${PG_MAJOR}
+      - postgresql-${PG_MAJOR}-pgvector (>= ${PGVECTOR_MIN_VERSION})
+      - postvec-cli (>= ${POSTVEC_VERSION})
+      - postvec-cli (<< ${NEXT_BREAKING_VERSION})
+${SHLIB_DEPENDS}
+    suggests:
+      - ${EXTRAS_METAPACKAGE}
+  rpm:
+    depends:
+      - postgresql${PG_MAJOR}-server
+      - pgvector_${PG_MAJOR} >= ${PGVECTOR_MIN_VERSION}
+      - postvec-cli >= ${POSTVEC_VERSION}
+      - postvec-cli < ${NEXT_BREAKING_VERSION}
+${SHLIB_DEPENDS}
+
+scripts:
+  postremove: ${PKG_DIR}/nfpm/scripts/extension-postremove.sh
+
+rpm:
+  group: Applications/Databases
+
+umask: 0022
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# explicit `mtime:` here would be parsed before environment expansion.

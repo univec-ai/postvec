@@ -1,0 +1,1504 @@
+# postvec release: build, test and publish the installation artifacts for one
+# tag. Dispatch only — see the `on:` block.
+#
+# Two properties shape the whole file.
+#
+# **Publishing is never a side effect.** This workflow is dispatch-only, and the
+# `mode` input decides what a run may do: `rehearse` pushes nothing anywhere,
+# `publish` goes to the pinned repositories and refuses any override, and
+# `disposable-publication` requires both throwaway repository overrides. There
+# is no path where an ordinary git command publishes anything.
+#
+# **Nothing reachable is published outside the protected environment.** Every
+# job that can push to GHCR — including the per-architecture image staging tags
+# — runs in `postvec-release`. A build the release gate rejects must leave no
+# trace a user could pull.
+#
+# `rehearse` is the exception, and it is one because it cannot publish: every
+# push, attestation and release step is skipped, so those jobs request no
+# environment and a rehearsal does not queue behind an approval that guards
+# nothing. See the `gate` step.
+#
+# **Publication is ordered so a failure cannot leave a half-release.** Images
+# become immutable versioned manifests first, then are attested; the GitHub
+# release is created as a *draft*, verified by downloading its own assets,
+# published, and only then are the moving tags (`pg18`, `pg18-complete`)
+# advanced. A failure at any step leaves the previous release as the one users
+# reach.
+#
+# The jobs run the same scripts a developer runs locally, in the same order, so
+# a release can be rehearsed before it is tagged:
+#
+#     packaging/postvec/scripts/release.sh
+#
+# `ubuntu-24.04-arm` is GitHub's hosted arm64 runner label. Substitute a
+# self-hosted label if this organisation uses one — but never replace it with
+# QEMU on an amd64 runner: a pgrx extension is loaded into a live PostgreSQL
+# process, and an emulated run is not evidence that the published artifact
+# works.
+name: postvec-release
+
+on:
+  # **Dispatch only. There is deliberately no tag-push trigger.**
+  #
+  # Publishing on `git push --tags` reads as convenient and makes the one thing
+  # this workflow must never do — publish something nobody meant to publish —
+  # the default consequence of an ordinary git command. It also made the
+  # documented disposable-publication rehearsal unsafe: pushing a scratch tag
+  # started a *production* publication against the pinned repositories, and the
+  # rehearsal dispatch then queued behind the run you were busy cancelling.
+  #
+  # Creating the tag and publishing it are now two acts. The tag still has to
+  # exist, still has to point at the commit being built, and is still checked
+  # against the crate versions — nothing is weaker, one accident is gone.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          What to build. `rehearse` takes any ref — a branch or a commit — so
+          the full matrix can be exercised before a tag exists. `publish`
+          requires a postvec-v* tag; `disposable-publication` requires a
+          postvec-rehearsal-v* tag. Either must exist, point at the commit
+          built, and be the ref this workflow was dispatched from.
+        required: true
+        type: string
+      mode:
+        description: >-
+          rehearse: build and test everything, push nothing.
+          publish: the real release, to the pinned repositories.
+          disposable-publication: a full publication rehearsal, which REQUIRES
+          both throwaway repository overrides below.
+        required: true
+        default: rehearse
+        type: choice
+        options:
+          - rehearse
+          - publish
+          - disposable-publication
+      image_repository:
+        description: >-
+          Throwaway IMAGE_REPOSITORY. Required by — and permitted only in —
+          disposable-publication.
+        type: string
+        default: ""
+      image_staging_repository:
+        description: "Throwaway IMAGE_STAGING_REPOSITORY (see image_repository)."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed by ref and by *class*, and deliberately not cancel-in-progress:
+  # interrupting a release half-way is the state the ordering above exists to
+  # avoid.
+  #
+  # Two classes, not three. A rehearsal pushes nothing and may run alongside a
+  # publication of the same ref, so it gets its own group. Both publishing modes
+  # create, delete and edit GitHub releases, so they share one — keying on the
+  # exact mode would let two publications of one ref race over the same draft.
+  group: postvec-release-${{ inputs.ref }}-${{ inputs.mode == 'rehearse' && 'rehearse' || 'publication' }}
+  cancel-in-progress: false
+
+env:
+  # Every job checks out this ref. Publishing additionally requires it to be a
+  # release tag pointing at the commit built — see the `validate` job — while a
+  # rehearsal may name any ref.
+  RELEASE_REF: ${{ inputs.ref }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Read-only: this job looks at the registry, it never writes to it.
+      packages: read
+    outputs:
+      version: ${{ steps.pins.outputs.version }}
+      release_id: ${{ steps.pins.outputs.release_id }}
+      repository: ${{ steps.pins.outputs.repository }}
+      staging: ${{ steps.pins.outputs.staging }}
+      publish: ${{ steps.gate.outputs.publish }}
+      # `postvec-release` for a real release, empty for a rehearsal. An empty
+      # environment name means the job requests no environment at all — see the
+      # `gate` step for why a rehearsal should not queue for approval.
+      environment: ${{ steps.gate.outputs.environment }}
+    steps:
+      # **The dispatch ref, deliberately — no `ref:`.**
+      #
+      # This checkout is the same ref the workflow file itself came from, which
+      # an input cannot change. The gate below decides whether this run may
+      # publish, whether it requests the protected environment, and which
+      # repositories become job outputs; running it from `inputs.ref` would let
+      # a modified branch supply the code that authorises its own publication.
+      # The check would be asking the suspect.
+      #
+      # The ref being *built* is checked out immediately after the gate accepts
+      # the request — for publishing modes the two are the same commit, because
+      # that is exactly what the gate enforces.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # What this run is allowed to do. The rules, and the accident each one
+      # prevents, are in the script; tests/unit-test.sh drives the whole
+      # mode × tag × override cross-product through it.
+      - id: gate
+        env:
+          POSTVEC_MODE: ${{ inputs.mode }}
+          POSTVEC_RELEASE_REF: ${{ inputs.ref }}
+          # The ref the *workflow file* came from. Absent is fatal for a
+          # publishing mode, not a skipped check.
+          POSTVEC_DISPATCH_REF: ${{ github.ref_name }}
+          POSTVEC_IMAGE_REPOSITORY: ${{ inputs.image_repository }}
+          POSTVEC_IMAGE_STAGING_REPOSITORY: ${{ inputs.image_staging_repository }}
+        run: packaging/postvec/scripts/release-mode.sh >> "$GITHUB_OUTPUT"
+
+      # Only now the thing being released. For a rehearsal this is a different
+      # ref, which is the point of a rehearsal; for either publishing mode the
+      # gate has already required it to be the ref above.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+
+      # `git describe --exact-match` proves *some* tag points at HEAD, which is
+      # not the question. The question is whether refs/tags/$RELEASE_REF exists
+      # and dereferences to this commit.
+      - name: RELEASE_REF must be a tag pointing at this commit
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          git rev-parse --verify "refs/tags/${RELEASE_REF}" >/dev/null \
+            || { echo "::error::refs/tags/${RELEASE_REF} does not exist"; exit 1; }
+          tagged="$(git rev-list -n 1 "refs/tags/${RELEASE_REF}")"
+          head="$(git rev-parse HEAD)"
+          test "${tagged}" = "${head}" \
+            || { echo "::error::${RELEASE_REF} points at ${tagged}, not HEAD (${head})"; exit 1; }
+
+      # assert-versions.sh compares the tag with both crate versions and the
+      # pins, and refuses placeholder publication metadata. The tag is passed
+      # only when publishing; on a rehearsal of a branch there is no tag to
+      # agree with, and the script says so rather than inventing one.
+      - name: Release version consistency
+        env:
+          POSTVEC_RELEASE_TAG: ${{ steps.gate.outputs.publish == 'true' && inputs.ref || '' }}
+        run: packaging/postvec/scripts/assert-versions.sh
+
+      # The closure checks, against fixtures. Everything after this job proves
+      # that packages build and work; this is the only thing that proves a bad
+      # release would be *refused*. Seconds, before two hours of compilation.
+      - name: Release-closure regression tests
+        run: |
+          pip install --quiet --require-hashes \
+            -r packaging/postvec/requirements-schema.txt
+          packaging/postvec/tests/unit-test.sh
+
+      # These four become job outputs that later jobs put into registry
+      # commands while holding `packages: write`. `assert-versions.sh` above has
+      # already run `load_versions`, which enforces the grammar — this repeats
+      # the shape check at the point the values leave the file, because a job
+      # output is the boundary and a boundary that trusts an earlier step is one
+      # refactor away from trusting nothing.
+      - id: pins
+        env:
+          # Overrides for the disposable end-to-end publication rehearsal: the
+          # one criterion that cannot be met without publishing something
+          # somewhere. The gate has already established that they appear only in
+          # that mode and only as a pair; this validates their *shape* with the
+          # same grammar as the pinned values, and requires them to be somewhere
+          # other than production — a "disposable" publication into the real
+          # repository is the accident the mode exists to prevent.
+          REPOSITORY_OVERRIDE: ${{ inputs.image_repository }}
+          STAGING_OVERRIDE: ${{ inputs.image_staging_repository }}
+        run: |
+          pin() { sed -n "s/^$1=//p" packaging/postvec/versions.env; }
+          version="$(pin POSTVEC_VERSION)"
+          revision="$(pin PACKAGE_RELEASE)"
+          pinned_repository="$(pin IMAGE_REPOSITORY)"
+          pinned_staging="$(pin IMAGE_STAGING_REPOSITORY)"
+          repository="${REPOSITORY_OVERRIDE:-${pinned_repository}}"
+          staging="${STAGING_OVERRIDE:-${pinned_staging}}"
+
+          if [ -n "${REPOSITORY_OVERRIDE}" ]; then
+            for value in "${repository}" "${staging}"; do
+              case "${value}" in
+              "${pinned_repository}"|"${pinned_staging}")
+                echo "::error::${value} is a production repository; a disposable"
+                echo "::error::publication must go somewhere disposable."
+                exit 1 ;;
+              esac
+            done
+            echo "::warning::disposable publication: images go to ${repository} (staging ${staging}),"
+            echo "::warning::not to the pinned ${pinned_repository}. Delete both afterwards."
+          fi
+
+          [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::POSTVEC_VERSION is not MAJOR.MINOR.PATCH: '${version}'"; exit 1; }
+          [[ "${revision}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::PACKAGE_RELEASE is not a positive integer: '${revision}'"; exit 1; }
+          oci='^([a-z0-9]+([.-][a-z0-9]+)*(:[0-9]{1,5})?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$'
+          for value in "${repository}" "${staging}"; do
+            [[ "${value}" =~ ${oci} ]] \
+              || { echo "::error::not a plain container repository reference: '${value}'"; exit 1; }
+          done
+          [ "${repository}" != "${staging}" ] \
+            || { echo "::error::the staging repository must differ from the release repository"; exit 1; }
+
+          {
+            echo "version=${version}"
+            echo "release_id=${version}-${revision}"
+            echo "repository=${repository}"
+            echo "staging=${staging}"
+          } >> "$GITHUB_OUTPUT"
+
+      # A release is published once. If any part of this one already exists,
+      # the correct action is a new packaging revision, not a rerun that
+      # silently replaces what users may already be running.
+      # A *published* release is final. This checks that one does not already
+      # exist, and — just as importantly — that the answer is knowable: an
+      # expired token and an absent tag fail the same command, and treating
+      # "cannot tell" as "does not exist" is how a release overwrites itself.
+      #
+      # Existing *image* tags are deliberately not fatal here. Six versioned
+      # manifests are created in parallel, so an interrupted run can leave some
+      # published; blocking on them would make the documented resumption
+      # impossible. Each manifest job compares digests and reuses a tag only
+      # when it is bit-identical, which is the check that actually protects an
+      # immutable tag. This step reports what it found so the log says plainly
+      # whether this is a fresh release or a resumption.
+      #
+      # Logging in first matters: an anonymous inspection of a private
+      # repository returns "denied", which is an authorization failure, not
+      # evidence of absence.
+      - name: Log in to GHCR
+        if: steps.gate.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: This release must not already be published
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.pins.outputs.release_id }}
+          REPOSITORY: ${{ steps.pins.outputs.repository }}
+        run: |
+          release_id="${RELEASE_ID}"
+          repo="${REPOSITORY}"
+          fail=0
+
+          # `gh release view` exits non-zero both for "no such release" and for
+          # "cannot talk to GitHub". Only the former is absence.
+          if output="$(gh release view "${RELEASE_REF}" --repo "${{ github.repository }}" \
+                        --json isDraft --jq .isDraft 2>&1)"; then
+            if [ "${output}" = true ]; then
+              echo "::notice::a draft release exists for ${RELEASE_REF}; it will be replaced"
+            else
+              echo "::error::${RELEASE_REF} is already published. Bump PACKAGE_RELEASE and tag a new release."
+              fail=1
+            fi
+          elif ! grep -qiE 'release not found|not found' <<<"${output}"; then
+            echo "::error::could not determine whether a release exists: ${output}"
+            fail=1
+          fi
+
+          resuming=0
+          for major in 16 17 18; do
+            for suffix in "" "-complete"; do
+              tag="${repo}:${release_id}-pg${major}${suffix}"
+              if output="$(docker buildx imagetools inspect "${tag}" \
+                            --format '{{.Manifest.Digest}}' 2>&1)"; then
+                echo "::notice::${tag} already exists (${output}); this run must reproduce it exactly"
+                resuming=1
+              elif ! grep -qiE 'manifest unknown|not found|MANIFEST_UNKNOWN' <<<"${output}"; then
+                # `denied` lands here on purpose: it is an authorization
+                # failure, and unknown is not permission.
+                echo "::error::could not determine whether ${tag} exists: ${output}"
+                fail=1
+              fi
+            done
+          done
+          [ "${resuming}" = 1 ] && echo "::notice::resuming an interrupted publication"
+
+          if [ "$fail" = 1 ]; then
+            cat >&2 <<'MSG'
+
+          Publishing is refused.
+
+          If the release is already published, it is final: bump PACKAGE_RELEASE in
+          packaging/postvec/versions.env and tag postvec-v<version>-<new revision>.
+
+          If a check could not reach GitHub or the registry, that is a transient
+          failure and rerunning is safe — this job never guesses that something is
+          absent because it failed to look.
+          MSG
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: "1.96.0"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with: { workspaces: ". -> target" }
+
+      - name: CLI lint and tests
+        run: |
+          cargo fmt -p postvec-cli -- --check
+          cargo clippy -p postvec-cli --all-targets -- -D warnings
+          cargo test --locked -p postvec-cli --all-targets
+
+      # Blocking. A known vulnerability stops the release; a reviewed, dated
+      # exception in packaging/postvec/audit-exceptions.toml is how one is
+      # accepted, and an expired exception fails just as the advisory would.
+      - name: Advisory check
+        run: |
+          cargo install cargo-audit --version 0.21.1 --locked
+          packaging/postvec/scripts/audit.sh
+
+      - name: Entrypoint tests
+        run: |
+          cargo build -p postvec-cli
+          packaging/postvec/tests/entrypoint-test.sh target/debug/postvec
+
+  # The extension's own gate: rustfmt, clippy and the full #[pg_test] suite in
+  # both the thin and the embedded build. A release must not publish a commit
+  # that has not passed it.
+  extension-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libclang-dev clang pkg-config \
+            libssl-dev flex bison libreadline-dev zlib1g-dev libicu-dev \
+            protobuf-compiler
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with: { workspaces: postvec }
+      - name: cargo-pgrx
+        run: |
+          version="$(sed -n 's/^PGRX_VERSION=//p' packaging/postvec/versions.env)"
+          cargo install cargo-pgrx --version "$version" --locked
+          cargo pgrx init --pg18 download
+      - name: pgvector into the test cluster
+        run: |
+          # An exact tag, not one inferred from the minimum version: what the
+          # suite runs against is a decision, not a guess.
+          PG_CONFIG="$(echo "$HOME"/.pgrx/18.*/pgrx-install/bin/pg_config)"
+          git clone --branch v0.8.2 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+          make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG"
+          make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG" install
+      - run: ./postvec/ci.sh
+
+  # Architecture- and PG-independent inputs, built exactly once. The model
+  # bundle is one portable FP32 graph; rebuilding it per cell would create
+  # nothing but opportunities for two copies to differ.
+  #
+  # It is acquired with `postvec model pull` from the registry's public
+  # channel — the same command a user runs — so this job needs a postvec
+  # binary. A debug build of one small crate, with the cache the workflow
+  # already uses; this is still the shortest job in the graph.
+  model-bundle:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with: { workspaces: ". -> target" }
+      - run: cargo build -p postvec-cli
+      - run: packaging/postvec/scripts/build-model-bundle.sh --cli target/debug/postvec
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: model-bundle
+          path: packaging/postvec/build/payload-common/
+          retention-days: 7
+
+  # ----------------------------------------------------------------- packages
+  #
+  # The matrix is split in two deliberately. `postvec-cli`, the engine assets
+  # and the metapackage are identical for every PostgreSQL major, so building
+  # them per major would produce several files with the same name — and,
+  # because an RPM records its build host, not necessarily the same bytes. The
+  # release manifest refuses that, and rightly.
+
+  common-packages:
+    needs: [validate, extension-gate, model-bundle]
+    environment: ${{ needs.validate.outputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian12, ubuntu2204, ubuntu2404, el9]
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      - uses: ./.github/actions/postvec-buildx
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: model-bundle, path: packaging/postvec/build/payload-common/ }
+
+      - name: ONNX Runtime payload
+        run: packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch ${{ matrix.arch }}
+
+      # The CLI is PostgreSQL-independent but comes out of the same builder as
+      # the extension, so one major is compiled to obtain it.
+      - name: Compile
+        run: |
+          packaging/postvec/scripts/build-extension-stage.sh \
+            --distro ${{ matrix.distro }} --pg 18 --arch ${{ matrix.arch }}
+
+      # Architecture-specific shared packages only. The model bundle and the
+      # metapackage are noarch and are built once per distribution by
+      # `noarch-packages`; building them here too would produce two files with
+      # one name and two SBOMs describing the same bytes.
+      - name: Package the shared components
+        env:
+          POSTVEC_RELEASE: "1"
+        run: |
+          packaging/postvec/scripts/build-packages.sh \
+            --distro ${{ matrix.distro }} --pg 18 --arch ${{ matrix.arch }} \
+            --only cli,onnxruntime
+
+      - name: Verify
+        run: |
+          packaging/postvec/scripts/verify-package.sh \
+            packaging/postvec/dist/common/${{ matrix.distro }}-${{ matrix.arch }}/*
+
+      # Attested here, in the job that compiled them. Provenance produced by a
+      # later aggregation job describes that job's environment, not the
+      # builder's — which is the thing provenance is for.
+      - name: Attest
+        if: needs.validate.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: packaging/postvec/dist/common/${{ matrix.distro }}-${{ matrix.arch }}/*
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: common-${{ matrix.distro }}-${{ matrix.arch }}
+          path: packaging/postvec/dist/common/
+          retention-days: 7
+
+      # This job compiles its own PG 18 cell, so it has its own builder record.
+      # Without it the manifest would describe the CLI with the environment of a
+      # *different* PG 18 build in the extension matrix.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-info-common-${{ matrix.distro }}-${{ matrix.arch }}
+          path: packaging/postvec/build/${{ matrix.distro }}-pg18-${{ matrix.arch }}/build-info.txt
+          retention-days: 7
+
+  # The architecture-independent packages: one build per distribution, because
+  # that is what they are. `all`/`noarch` content built per architecture would
+  # be two files with one name, kept honest only by a byte-equality check.
+  noarch-packages:
+    needs: [validate, extension-gate, model-bundle]
+    environment: ${{ needs.validate.outputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian12, ubuntu2204, ubuntu2404, el9]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      - uses: ./.github/actions/postvec-buildx
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: model-bundle, path: packaging/postvec/build/payload-common/ }
+
+      # No compile step: these packages contain no compiled output, so
+      # build-packages.sh does not ask for a staged cell. `--pg 18 --arch amd64`
+      # satisfies the argument parser and names nothing about the output: these
+      # land in `dist/noarch/<distro>/`, which is what they are.
+      - name: Package the architecture-independent components
+        env:
+          POSTVEC_RELEASE: "1"
+        run: |
+          packaging/postvec/scripts/build-packages.sh \
+            --distro ${{ matrix.distro }} --pg 18 --arch amd64 --only model
+
+      - name: Verify
+        run: |
+          packaging/postvec/scripts/verify-package.sh \
+            packaging/postvec/dist/noarch/${{ matrix.distro }}/*
+
+      - name: Attest
+        if: needs.validate.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: packaging/postvec/dist/noarch/${{ matrix.distro }}/*
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: noarch-${{ matrix.distro }}
+          path: packaging/postvec/dist/noarch/
+          retention-days: 7
+
+  extension-packages:
+    needs: [validate, extension-gate]
+    environment: ${{ needs.validate.outputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian12, ubuntu2204, ubuntu2404, el9]
+        pg: [16, 17, 18]
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      - uses: ./.github/actions/postvec-buildx
+
+      - name: Compile
+        run: |
+          packaging/postvec/scripts/build-extension-stage.sh \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
+      - name: Package
+        env:
+          POSTVEC_RELEASE: "1"
+        run: |
+          packaging/postvec/scripts/build-packages.sh \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }} \
+            --only extension
+
+      - name: Verify
+        run: |
+          packaging/postvec/scripts/verify-package.sh \
+            packaging/postvec/dist/extension/${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}/*
+
+      - name: Attest
+        if: needs.validate.outputs.publish == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: packaging/postvec/dist/extension/${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}/*
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: extension-${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}
+          path: packaging/postvec/dist/extension/
+          retention-days: 7
+
+      # What this builder actually resolved: PostgreSQL version, compiler,
+      # glibc, and the full installed-package inventory. PGDG publishes no
+      # snapshots, so this is the only record of what the artifact was built
+      # against — and the release manifest is where it has to end up.
+      #
+      # One artifact per extension cell, and none from the common-package jobs:
+      # those build PG 18 too, and a duplicate would make the cell set
+      # ambiguous.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-info-${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}
+          path: packaging/postvec/build/${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}/build-info.txt
+          retention-days: 7
+
+  # Install on a clean target OS and prove the library loads into *that*
+  # distribution's PostgreSQL, that setup/doctor/uninstall work, and that the
+  # bundled model embeds. Both package families, both architectures.
+  install-tests:
+    needs: [validate, common-packages, noarch-packages, extension-packages]
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian12, ubuntu2204, ubuntu2404, el9]
+        pg: [16, 17, 18]
+        arch: [amd64, arm64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      # The two roots are downloaded separately, because they are two roots:
+      # `common/<distro>-<arch>` holds the CLI and engine assets that every
+      # major shares, `extension/<distro>-pg<major>-<arch>` holds this major's
+      # extension. Merging them into one directory is what previously made
+      # PG 16 and 17 silently test nothing.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: common-${{ matrix.distro }}-${{ matrix.arch }}
+          path: packaging/postvec/dist/common/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: noarch-${{ matrix.distro }}
+          path: packaging/postvec/dist/noarch/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: extension-${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}
+          path: packaging/postvec/dist/extension/
+
+      # The dependency boundary a remote-mode user actually has. Installing the
+      # engine assets every time would let a missing dependency in the
+      # extension package hide behind something the metapackage pulled in.
+      - name: Minimal install (CLI + extension only)
+        run: |
+          packaging/postvec/tests/package-install-test.sh --minimal \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
+      - name: Full install, with inference
+        run: |
+          packaging/postvec/tests/package-install-test.sh \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
+  coexistence:
+    needs: [validate, common-packages, noarch-packages, extension-packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: common-debian12-amd64
+          path: packaging/postvec/dist/common/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: noarch-debian12
+          path: packaging/postvec/dist/noarch/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: extension-debian12-pg1[68]-amd64
+          path: packaging/postvec/dist/extension/
+          merge-multiple: true
+      # The property the split CLI package exists for.
+      - run: |
+          packaging/postvec/tests/package-install-test.sh --minimal \
+            --distro debian12 --pg 16 --pg 18 --arch amd64
+
+  # ------------------------------------------------------------------- images
+  #
+  # Built and tested natively per architecture, then pushed under an
+  # architecture-suffixed staging tag *inside the protected environment*.
+
+  images:
+    needs: [validate, common-packages, noarch-packages, extension-packages, install-tests, model-bundle]
+    environment: ${{ needs.validate.outputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [16, 17, 18]
+        arch: [amd64, arm64]
+        variant: [remote, complete]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+      - uses: ./.github/actions/postvec-buildx
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: common-debian12-${{ matrix.arch }}
+          path: packaging/postvec/dist/common/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: noarch-debian12
+          path: packaging/postvec/dist/noarch/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: extension-debian12-pg${{ matrix.pg }}-${{ matrix.arch }}
+          path: packaging/postvec/dist/extension/
+      # The ninference fixture serves the same model bundle the complete image
+      # carries, so the remote and complete tests mean the same thing about it.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: model-bundle
+          path: packaging/postvec/build/payload-common/
+
+      # `--repository` is passed explicitly, so a rehearsal that overrides the
+      # namespace builds, tests and pushes the *same* reference. Without it the
+      # image would be tagged from versions.env and the smoke test would look
+      # for a tag nothing created.
+      - name: Build
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+        run: |
+          packaging/postvec/scripts/build-image.sh \
+            --pg ${{ matrix.pg }} --variant ${{ matrix.variant }} --arch ${{ matrix.arch }} \
+            --repository "${REPOSITORY}" --load
+
+      # The remote image is tested against a *real* ninference serving the same
+      # engine and the same bundled model, built from this commit. Without it
+      # the remote path is only ever exercised in its degraded state, which
+      # proves the failure mode and says nothing about the success one.
+      - name: ninference fixture
+        if: matrix.variant == 'remote'
+        run: |
+          packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch ${{ matrix.arch }}
+          packaging/postvec/scripts/build-ninference-fixture.sh --arch ${{ matrix.arch }}
+
+      # Native, on the architecture the image is for. This is what makes the
+      # manifest list assembled later meaningful.
+      # Repository names reach these commands through the environment rather
+      # than by textual substitution into the script. They are reviewed content
+      # and validated by `load_versions`, but this job holds `packages: write`,
+      # and GitHub's own guidance is to pass context data through env wherever
+      # it lands in executable code.
+      - name: Smoke test
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+          PG: ${{ matrix.pg }}
+        run: |
+          suffix=""
+          fixture=""
+          if [ "${VARIANT}" = complete ]; then
+            suffix="-complete"
+          else
+            fixture="--ninference-image postvec-ninference-fixture:${ARCH}"
+          fi
+          # shellcheck disable=SC2086
+          packaging/postvec/tests/image-smoke-test.sh \
+            --variant "${VARIANT}" ${fixture} \
+            "${REPOSITORY}:${RELEASE_ID}-pg${PG}${suffix}"
+
+      # Per architecture, because this is exactly where ONNX Runtime could
+      # differ: the bundle must produce the embeddings it was published with on
+      # both, within the recorded tolerance.
+      - name: Golden embeddings
+        if: matrix.variant == 'complete'
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+          PG: ${{ matrix.pg }}
+        run: |
+          packaging/postvec/tests/model-golden-test.sh \
+            "${REPOSITORY}:${RELEASE_ID}-pg${PG}-complete"
+
+      - name: Log in to GHCR
+        if: needs.validate.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed to a *staging* repository, under a run-scoped tag. Nothing a
+      # user could mistake for a release ever lands in the real repository, and
+      # a rerun cannot collide with an earlier run's staging images.
+      - name: Push the per-architecture staging image
+        if: needs.validate.outputs.publish == 'true'
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+          STAGING: ${{ needs.validate.outputs.staging }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+          RUN_ID: ${{ github.run_id }}
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+          PG: ${{ matrix.pg }}
+        run: |
+          suffix=""
+          [ "${VARIANT}" = complete ] && suffix="-complete"
+          local_tag="${REPOSITORY}:${RELEASE_ID}-pg${PG}${suffix}"
+          staging="${STAGING}:run${RUN_ID}-pg${PG}${suffix}-${ARCH}"
+          docker tag "${local_tag}" "${staging}"
+          docker push "${staging}"
+
+  # --------------------------------------------------------------- manifests
+  #
+  # One job per published image (three majors × two variants). Each creates its
+  # own multi-architecture manifest from the two staging images, attests *that
+  # one digest*, and produces an SBOM for it.
+  #
+  # One job per image and not one loop, because an attestation covers exactly
+  # one subject: `subject-digest` takes a single `sha256:…`, and pushing the
+  # attestation to the registry needs to know which image it belongs to.
+
+  manifests:
+    needs: [validate, images]
+    if: needs.validate.outputs.publish == 'true'
+    environment: postvec-release
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [16, 17, 18]
+        variant: [remote, complete]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      # Required for the linked-artifact storage records the attestation API
+      # now writes alongside each attestation.
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Creating the versioned manifest is the first irreversible act of a
+      # release, and six of them happen in parallel: if one cell fails, the
+      # others have already published. That is survivable only if a rerun is
+      # *resumable*, so an existing tag is accepted when — and only when — it
+      # is bit-identical to what this run would create. A tag that exists with
+      # a different digest is fatal: it is already immutable and already
+      # published, and quietly replacing it is the thing all of this exists to
+      # prevent.
+      - name: Create the versioned manifest
+        id: manifest
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+          STAGING: ${{ needs.validate.outputs.staging }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+          RUN_ID: ${{ github.run_id }}
+          VARIANT: ${{ matrix.variant }}
+          PG: ${{ matrix.pg }}
+        run: |
+          suffix=""
+          [ "${VARIANT}" = complete ] && suffix="-complete"
+          repo="${REPOSITORY}"
+          staging="${STAGING}"
+          tag="${RELEASE_ID}-pg${PG}${suffix}"
+          sources=(
+            "${staging}:run${RUN_ID}-pg${PG}${suffix}-amd64"
+            "${staging}:run${RUN_ID}-pg${PG}${suffix}-arm64"
+          )
+
+          existing=""
+          if output="$(docker buildx imagetools inspect "${repo}:${tag}" \
+                        --format '{{.Manifest.Digest}}' 2>&1)"; then
+            existing="${output}"
+          elif ! grep -qiE 'manifest unknown|not found|MANIFEST_UNKNOWN' <<<"${output}"; then
+            echo "::error::could not determine whether ${repo}:${tag} exists: ${output}"
+            exit 1
+          fi
+
+          # Create into a throwaway tag first, so the digest can be compared
+          # before anything under the release tag is touched.
+          probe="${staging}:run${RUN_ID}-probe-pg${PG}${suffix}"
+          docker buildx imagetools create --tag "${probe}" "${sources[@]}"
+          digest="$(docker buildx imagetools inspect "${probe}" --format '{{.Manifest.Digest}}')"
+
+          if [ -n "${existing}" ]; then
+            if [ "${existing}" != "${digest}" ]; then
+              echo "::error::${repo}:${tag} already exists as ${existing}, but this run produces ${digest}."
+              echo "::error::That tag is immutable. Bump PACKAGE_RELEASE and tag a new release."
+              exit 1
+            fi
+            echo "${repo}:${tag} already published as ${digest}; reusing it"
+          else
+            docker buildx imagetools create --tag "${repo}:${tag}" "${sources[@]}"
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "digest=${digest}"
+          } >> "$GITHUB_OUTPUT"
+
+      # One subject, one digest — the shape the action actually accepts.
+      - name: Attest the image
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ needs.validate.outputs.repository }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true
+
+      # One SBOM per *child* manifest, not one per index.
+      #
+      # A scanner pointed at a multi-architecture index documents whichever
+      # child it defaults to — linux/amd64 — so a single document attested
+      # against the index digest is a claim about the arm64 image that nothing
+      # ever produced. The children are enumerated from the index itself, so the
+      # set cannot drift from what was actually published, and each document is
+      # attested against the digest it describes.
+      - name: Per-platform software bills of materials
+        id: sboms
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+          INDEX_DIGEST: ${{ steps.manifest.outputs.digest }}
+          IMAGE_TAG: ${{ steps.manifest.outputs.tag }}
+        run: |
+          # Version and digest are reviewed pins like everything else, so they
+          # live in versions.env rather than in a repository variable nobody
+          # reviews with the release.
+          SYFT_VERSION="$(sed -n 's/^SYFT_VERSION=//p' packaging/postvec/versions.env)"
+          SYFT_SHA256="$(sed -n 's/^SYFT_LINUX_AMD64_SHA256=//p' packaging/postvec/versions.env)"
+          curl -fsSL -o /tmp/syft.tar.gz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  /tmp/syft.tar.gz" | sha256sum --check --strict -
+          tar -xzf /tmp/syft.tar.gz -C /tmp syft
+          mkdir -p /tmp/descriptors
+
+          repo="${REPOSITORY}"
+          index="${INDEX_DIGEST}"
+          tag="${IMAGE_TAG}"
+
+          # `platform.architecture == "unknown"` is how attestation manifests
+          # appear inside an index; they are not images and have no SBOM.
+          docker buildx imagetools inspect "${repo}@${index}" --raw \
+            | jq -c '[.manifests[]
+                      | select(.platform.os == "linux")
+                      | select(.platform.architecture == "amd64"
+                               or .platform.architecture == "arm64")
+                      | {platform: (.platform.os + "/" + .platform.architecture),
+                         digest: .digest}]
+                     | sort_by(.platform)' > /tmp/children.json
+          test "$(jq length /tmp/children.json)" = 2 || {
+            echo "::error::expected two linux children in ${repo}@${index}"
+            cat /tmp/children.json
+            exit 1
+          }
+
+          platforms='[]'
+          for index_in_list in 0 1; do
+            platform="$(jq -r ".[${index_in_list}].platform" /tmp/children.json)"
+            child="$(jq -r ".[${index_in_list}].digest" /tmp/children.json)"
+            slug="${platform//\//-}"
+            file="image-${tag}-${slug}.spdx.json"
+
+            # By child digest, and from the registry explicitly: this runner's
+            # daemon holds none of these images, and letting the source be
+            # auto-detected is how a scan silently reads something else.
+            /tmp/syft --from registry "${repo}@${child}" -o spdx-json \
+              > "/tmp/descriptors/${file}"
+
+            sha="$(sha256sum "/tmp/descriptors/${file}" | awk '{print $1}')"
+            platforms="$(jq -c \
+              --arg p "${platform}" --arg d "${child}" --arg f "${file}" --arg s "${sha}" \
+              '. + [{platform: $p, digest: $d, sbom: $f, sbom_sha256: $s}]' \
+              <<<"${platforms}")"
+
+            {
+              echo "digest_${slug//-/_}=${child}"
+              echo "sbom_${slug//-/_}=${file}"
+            } >> "$GITHUB_OUTPUT"
+          done
+          printf '%s' "${platforms}" > /tmp/platforms.json
+          jq . /tmp/platforms.json
+
+      # actions/attest, not actions/attest-sbom: the latter is being retired in
+      # favour of the unified action with an explicit predicate type.
+      #
+      # Two steps rather than a loop because an attestation covers exactly one
+      # subject digest, and the action is an action.
+      - name: Attest the linux/amd64 SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ needs.validate.outputs.repository }}
+          subject-digest: ${{ steps.sboms.outputs.digest_linux_amd64 }}
+          predicate-type: https://spdx.dev/Document/v2.3
+          predicate-path: /tmp/descriptors/${{ steps.sboms.outputs.sbom_linux_amd64 }}
+          push-to-registry: true
+
+      - name: Attest the linux/arm64 SBOM
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ needs.validate.outputs.repository }}
+          subject-digest: ${{ steps.sboms.outputs.digest_linux_arm64 }}
+          predicate-type: https://spdx.dev/Document/v2.3
+          predicate-path: /tmp/descriptors/${{ steps.sboms.outputs.sbom_linux_arm64 }}
+          push-to-registry: true
+
+      # The descriptor the release manifest is assembled from.
+      - name: Record the descriptor
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+          INDEX_DIGEST: ${{ steps.manifest.outputs.digest }}
+          IMAGE_TAG: ${{ steps.manifest.outputs.tag }}
+          VARIANT: ${{ matrix.variant }}
+          PG: ${{ matrix.pg }}
+        run: |
+          base_digest="$(sed -n "s/^POSTGRES_IMAGE_PG${PG}_DIGEST=//p" packaging/postvec/versions.env)"
+          jq -n \
+            --arg name "${REPOSITORY}" \
+            --arg tag "${IMAGE_TAG}" \
+            --arg digest "${INDEX_DIGEST}" \
+            --arg variant "${VARIANT}" \
+            --arg base "${base_digest}" \
+            --argjson pg "${PG}" \
+            --slurpfile platforms /tmp/platforms.json \
+            '{name: $name, tag: $tag, digest: $digest, variant: $variant,
+              pg_major: $pg, base_digest: $base,
+              platforms: $platforms[0]}' \
+            > "/tmp/descriptors/${{ matrix.pg }}-${{ matrix.variant }}.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-descriptor-pg${{ matrix.pg }}-${{ matrix.variant }}
+          path: /tmp/descriptors/
+          retention-days: 7
+
+  # ------------------------------------------------------------------ publish
+
+  publish:
+    needs: [validate, common-packages, noarch-packages, extension-packages, install-tests, coexistence, images, manifests]
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # **Shared with postvec-moving-tags' `advance` job.**
+    #
+    # The workflow-level group above keys on the ref, which stops one release
+    # racing itself; it does not stop *two* releases racing each other, and both
+    # end by advancing the same six moving tags. Add the recovery workflow, which
+    # advances them too, and the last writer decides where `pg18` points — a
+    # published release can be moved backwards by an unrelated run finishing
+    # late. One group per image repository serialises all three, and keying on
+    # the repository keeps a disposable rehearsal from serialising against
+    # production.
+    concurrency:
+      group: postvec-moving-tags-${{ needs.validate.outputs.repository }}
+      cancel-in-progress: false
+    environment: postvec-release
+    permissions:
+      contents: write          # the GitHub release
+      packages: write          # GHCR
+      id-token: write          # keyless signing
+      attestations: write      # build provenance and SBOM predicates
+      artifact-metadata: write # the linked-artifact storage records
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.RELEASE_REF }}" }
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: common-*
+          path: packaging/postvec/dist/common/
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: extension-*
+          path: packaging/postvec/dist/extension/
+          merge-multiple: true
+      # The third root. Without it the manifest is missing the model bundle and
+      # the metapackage entirely, and the package-closure check is the thing
+      # that says so — which is only useful if this download exists to fail.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: noarch-*
+          path: packaging/postvec/dist/noarch/
+          merge-multiple: true
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: model-bundle
+          path: packaging/postvec/build/payload-common/
+
+      # The 32 build-info files, restored into the layout
+      # write-release-manifest.sh reads them from.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: build-info-*
+          path: /tmp/build-info/
+
+      # 24 extension cells plus 8 shared-package builders. The latter are
+      # recorded separately because they compile their own PG 18 cell: without
+      # them the manifest would describe the CLI with the environment of a
+      # different PG 18 build.
+      - name: Restore the build cells
+        run: |
+          shopt -s nullglob
+          extension=0 common=0
+          for dir in /tmp/build-info/build-info-*; do
+            cell="${dir#/tmp/build-info/build-info-}"
+            case "${cell}" in
+            common-*)
+              # <distro>-<arch> -> the cell it compiled, tagged as the shared
+              # builder so the two PG 18 records stay distinguishable.
+              mkdir -p "packaging/postvec/build/common-${cell#common-}"
+              cp "${dir}/build-info.txt" "packaging/postvec/build/common-${cell#common-}/"
+              common=$((common + 1)) ;;
+            *)
+              mkdir -p "packaging/postvec/build/${cell}"
+              cp "${dir}/build-info.txt" "packaging/postvec/build/${cell}/"
+              extension=$((extension + 1)) ;;
+            esac
+          done
+          echo "restored ${extension} extension cell(s) and ${common} shared-package builder(s)"
+          test "${extension}" -eq 24 || { echo "::error::expected 24 extension build records"; exit 1; }
+          test "${common}" -eq 8 || { echo "::error::expected 8 shared-package build records"; exit 1; }
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-descriptor-*
+          path: /tmp/descriptors/
+          merge-multiple: true
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect the image descriptors
+        run: |
+          jq -s . /tmp/descriptors/*-remote.json /tmp/descriptors/*-complete.json \
+            > /tmp/images.json
+          test "$(jq length /tmp/images.json)" = 6 \
+            || { echo "::error::expected 6 image descriptors"; cat /tmp/images.json; exit 1; }
+          cat /tmp/images.json
+
+      - name: Package SBOMs
+        run: |
+          SYFT_VERSION="$(sed -n 's/^SYFT_VERSION=//p' packaging/postvec/versions.env)"
+          SYFT_SHA256="$(sed -n 's/^SYFT_LINUX_AMD64_SHA256=//p' packaging/postvec/versions.env)"
+          curl -fsSL -o /tmp/syft.tar.gz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  /tmp/syft.tar.gz" | sha256sum --check --strict -
+          tar -xzf /tmp/syft.tar.gz -C /tmp syft
+          for artifact in packaging/postvec/dist/*/*/*.deb packaging/postvec/dist/*/*/*.rpm; do
+            [ -e "$artifact" ] || continue
+            /tmp/syft "$artifact" -o spdx-json > "${artifact}.spdx.json"
+          done
+
+      # The flat release directory: built fresh, validated against the exact
+      # expected package closure, and only then moved into place.
+      # The manifest is validated against its own schema before publication, so
+      # the validator is a release dependency like any other: pinned by content,
+      # and present by construction rather than by whatever the runner happens
+      # to ship. jsonschema 3.x silently treats a Draft 2020-12 schema as
+      # Draft 7.
+      #
+      # `--require-hashes` covers the transitive set too. Pinning jsonschema's
+      # version and letting attrs, referencing and rpds-py resolve to whatever
+      # PyPI serves that minute pins the name of the validator, not the code.
+      - name: Schema validator
+        run: |
+          pip install --quiet --require-hashes \
+            -r packaging/postvec/requirements-schema.txt
+
+      - name: Release manifest and checksums
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+        run: |
+          packaging/postvec/scripts/write-release-manifest.sh \
+            --images /tmp/images.json --require-images --require-schema \
+            --git-tag "${RELEASE_REF}" \
+            --expect-distros "debian12 ubuntu2204 ubuntu2404 el9" \
+            --expect-majors "16 17 18" \
+            --expect-arches "amd64 arm64" \
+            --expect-images "${REPOSITORY}"
+          cp packaging/postvec/dist/*/*/*.spdx.json packaging/postvec/release/
+          cp /tmp/descriptors/*.spdx.json packaging/postvec/release/
+          cd packaging/postvec/release
+          sha256sum ./*.spdx.json postvec-release.json | sed 's|\./||' >> SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      # The manifest reads a release out of file names, which is the right
+      # primary source — a file name is what a user holding a download has. This
+      # asks the packages themselves instead: it reconstructs each file name
+      # from the name, version, release and architecture the package declares
+      # internally, and requires it to be the name the file actually has. A
+      # package renamed after it was built satisfies every filename-based check
+      # and is caught here, at the boundary, immediately before publication.
+      - name: The packages must agree with the manifest
+        run: |
+          packaging/postvec/scripts/verify-release-metadata.sh \
+            packaging/postvec/release
+
+      # Packages are *not* re-attested here: they were attested by the jobs that
+      # compiled them, whose provenance describes the actual builder. What this
+      # job produces — the manifest, the checksums, the SBOMs — is attested by
+      # this job, which is likewise the thing that produced them.
+      - name: Attest the release assets
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            packaging/postvec/release/*.spdx.json
+            packaging/postvec/release/postvec-release.json
+            packaging/postvec/release/SHA256SUMS
+            packaging/postvec/release/postvec-prerequisites.sh
+
+      # An existing draft is *replaced*, never updated.
+      #
+      # `overwrite_files` replaces an asset of the same name and promises
+      # nothing about an asset this release does not have. An interrupted run
+      # can therefore leave a package from an abandoned attempt attached, and
+      # `sha256sum --check SHA256SUMS` passes happily on a directory with an
+      # extra file in it — it verifies what is listed, not that nothing else is
+      # there. Deleting the draft first (the tag is kept) makes "the release's
+      # assets" mean exactly "the release directory", which the verification
+      # step below then asserts.
+      - name: Remove any leftover draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if state="$(gh release view "${RELEASE_REF}" --repo "${{ github.repository }}" \
+                        --json isDraft --jq .isDraft 2>&1)"; then
+            if [ "${state}" = true ]; then
+              echo "::notice::replacing the existing draft for ${RELEASE_REF}"
+              gh release delete "${RELEASE_REF}" --repo "${{ github.repository }}" --yes
+            else
+              echo "::error::${RELEASE_REF} is already published; this run must not touch it"
+              exit 1
+            fi
+          elif ! grep -qiE 'release not found|not found' <<<"${state}"; then
+            # "cannot tell" is not "does not exist".
+            echo "::error::could not determine whether a release exists: ${state}"
+            exit 1
+          fi
+
+      # A draft first: a release that fails verification must never have been
+      # visible.
+      - name: Draft GitHub release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ env.RELEASE_REF }}
+          draft: true
+          files: packaging/postvec/release/*
+          body: |
+            postvec ${{ needs.validate.outputs.release_id }}
+
+            ### 1. Download, then verify — before running anything
+
+            Download `SHA256SUMS`, `postvec-prerequisites.sh` and the packages
+            for your platform, then:
+
+            Verification needs the **GitHub CLI 2.49 or newer** — `gh
+            attestation` does not exist before that, and a distribution-packaged
+            `gh` is usually older. Check with `gh --version`; if it is missing or
+            old, install it from
+            [GitHub's repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md).
+
+            ```bash
+            # --signer-workflow narrows "signed by something in this repository"
+            # to "signed by this repository's release workflow".
+            SIGNER=${{ github.repository }}/.github/workflows/postvec-release.yml
+
+            # The bootstrap is the one asset these instructions ask you to
+            # *execute*, so verify it first and on its own.
+            gh attestation verify postvec-prerequisites.sh \
+               --repo ${{ github.repository }} --signer-workflow "$SIGNER"
+            gh attestation verify SHA256SUMS \
+               --repo ${{ github.repository }} --signer-workflow "$SIGNER"
+
+            # --ignore-missing, because SHA256SUMS lists every asset in the
+            # release and you downloaded a few. Drop it if you fetched the whole
+            # release and want to verify it *is* the whole release.
+            sha256sum --ignore-missing --check SHA256SUMS
+
+            gh attestation verify postgresql-18-postvec_*.deb \
+               --repo ${{ github.repository }} --signer-workflow "$SIGNER"
+            ```
+
+            ### 2. Read it, then run it (once per host)
+
+            Runs on Debian 12, Ubuntu 22.04/24.04, AlmaLinux 9 and Rocky 9. On
+            CentOS Stream 9 and subscribed RHEL 9 it prints the correct commands
+            for those systems and stops, because postvec has not rehearsed them.
+
+            These packages need an exact PostgreSQL major and pgvector 0.8,
+            which no supported distribution ships in its own archives — so the
+            PostgreSQL project's own repository has to be configured first,
+            exactly as [its instructions](https://www.postgresql.org/download/linux/)
+            say. `postvec-prerequisites.sh` does that and nothing else: no
+            postvec package, no cluster, no PostgreSQL configuration.
+
+            ```bash
+            less postvec-prerequisites.sh          # reads it; runs nothing
+
+            # `bash ./…`, not `./…`: a GitHub release asset does not keep its
+            # executable bit, so `./postvec-prerequisites.sh` is "permission
+            # denied" on a fresh download.
+            sudo bash ./postvec-prerequisites.sh --pg 18
+            ```
+
+            ### 3. Install
+
+            ```bash
+            # Debian / Ubuntu
+            sudo apt install ./postvec-cli_*.deb ./postgresql-18-postvec_*.deb
+            sudo postvec setup --database app --grpc <host>:33333 --http https://<host>:22222
+
+            # RHEL family
+            sudo dnf install ./postvec-cli-*.rpm ./postgresql18-postvec-*.rpm
+
+            # Or one container, with no external service and no API key —
+            # nothing above applies, the image carries everything:
+            docker run -e POSTGRES_PASSWORD=… -p 127.0.0.1:5432:5432 \
+              ${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-complete
+            ```
+
+            ```bash
+            gh attestation verify oci://${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-complete \
+              --repo ${{ github.repository }} \
+              --signer-workflow ${{ github.repository }}/.github/workflows/postvec-release.yml
+            ```
+
+            ---
+
+            `postvec-release.json` records every artifact and image with its
+            digest, the bootstrap under `release_assets`, every pinned input,
+            and what each builder actually resolved. Image SBOMs are attested
+            per architecture, against the index's child manifests — see the
+            `platforms` array.
+
+      # Verify by downloading the release's own assets rather than trusting the
+      # workflow's artifacts: what a user gets is what must be correct.
+      - name: Verify the draft's assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+        run: |
+          release_dir="${GITHUB_WORKSPACE}/packaging/postvec/release"
+          mkdir -p /tmp/verify && cd /tmp/verify
+          gh release download "${RELEASE_REF}" --repo "${{ github.repository }}" --clobber
+
+          # Exactly the release directory, no more and no less. `sha256sum
+          # --check` verifies the files it was told about and is silent about an
+          # extra one, so the asset *set* is compared separately — that is the
+          # only thing that catches a leftover from an abandoned run.
+          #
+          # `find -printf`, not `ls`: release asset names come from package
+          # metadata, and a name with a newline in it would make `ls` output
+          # two entries that compare equal to two different files.
+          names() { find "$1" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort; }
+          diff <(names "${release_dir}") <(names .) \
+            || { echo "::error::the release's assets are not exactly the release directory"; exit 1; }
+
+          sha256sum --check SHA256SUMS
+          for artifact in ./*.deb ./*.rpm; do
+            [ -e "$artifact" ] || continue
+            gh attestation verify "$artifact" --repo "${{ github.repository }}"
+          done
+          gh attestation verify postvec-release.json --repo "${{ github.repository }}"
+          gh attestation verify SHA256SUMS --repo "${{ github.repository }}"
+          # The one asset the instructions tell a user to *execute*. "It hashes
+          # to what an attested checksum file says" is a chain with a step the
+          # user has to be told to walk; a signature of its own is not.
+          gh attestation verify postvec-prerequisites.sh --repo "${{ github.repository }}"
+
+          # …and the manifest must describe it, so a consumer reading
+          # postvec-release.json alone knows the bootstrap exists and what it
+          # should hash to.
+          jq -e '[.release_assets[] | select(.role == "prerequisites")] | length == 1' \
+            postvec-release.json
+          test "$(jq -r '.release_assets[] | select(.role == "prerequisites") | .sha256' \
+                    postvec-release.json)" = "$(sha256sum postvec-prerequisites.sh | cut -d" " -f1)" \
+            || { echo "::error::the manifest's bootstrap hash is not the published file"; exit 1; }
+
+          # The manifest must describe exactly what was published. The package
+          # closure is already enforced by write-release-manifest.sh; these are
+          # the release-level totals.
+          jq -e --arg id "${RELEASE_ID}" '.release_id == $id' postvec-release.json
+          # …and the tag, not only the identity. `release_id` is shared between
+          # a release and its disposable rehearsal; the tag is what tells them
+          # apart, and it is the field a consumer would use to find the source.
+          jq -e --arg t "${RELEASE_REF}" '.git_tag == $t' postvec-release.json
+          jq -e '.images | length == 6' postvec-release.json
+          jq -e '.postgresql_majors == [16,17,18]' postvec-release.json
+          jq -e '.architectures == ["amd64","arm64"]' postvec-release.json
+          # 32 build records: 24 extension cells (distro × major × arch) plus the
+          # 8 shared-package builders, which compile their own PG 18 cell and are
+          # recorded separately so the two PG 18 environments stay
+          # distinguishable. Both halves are asserted, not just the total — a
+          # total can be reached by the wrong mixture.
+          jq -e '.build_cells | length == 32' postvec-release.json
+          jq -e '[.build_cells[] | select(.cell | startswith("common-"))] | length == 8' postvec-release.json
+          jq -e '[.build_cells[] | select(.cell | startswith("common-") | not)] | length == 24' postvec-release.json
+          jq -e '[.build_cells[].cell] | unique | length == 32' postvec-release.json
+          jq -e '[.build_cells[] | select(.cell | startswith("common-") | not) | .pg_major] | unique == [16,17,18]' postvec-release.json
+          jq -e '[.artifacts[] | select(.format=="deb")] | length > 0' postvec-release.json
+          jq -e '[.artifacts[] | select(.format=="rpm")] | length > 0' postvec-release.json
+
+          # Every published image resolves and carries build provenance against
+          # the index digest a tag resolves to.
+          for image in $(jq -r '.images[] | "\(.name)@\(.digest)"' postvec-release.json); do
+            docker buildx imagetools inspect "${image}" >/dev/null
+            gh attestation verify "oci://${image}" --repo "${{ github.repository }}"
+          done
+
+          # The SBOMs are attested against the *child* manifests, because a
+          # document produced against an index describes one child. Verifying
+          # only the provenance would leave the contents an unchecked claim, and
+          # verifying an index-level SBOM would leave arm64 unchecked.
+          for child in $(jq -r '.images[] as $i | $i.platforms[] | "\($i.name)@\(.digest)"' \
+                           postvec-release.json); do
+            gh attestation verify "oci://${child}" --repo "${{ github.repository }}" \
+              --predicate-type https://spdx.dev/Document/v2.3
+          done
+
+          # …and each recorded child must actually be a member of the index it
+          # is recorded under. An SBOM attested against an image the published
+          # tag does not resolve to describes nothing a user can reach.
+          fail=0
+          while IFS=$'\t' read -r name index expected; do
+            actual="$(docker buildx imagetools inspect "${name}@${index}" --raw \
+              | jq -r '[.manifests[]
+                        | select(.platform.os == "linux")
+                        | select(.platform.architecture == "amd64"
+                                 or .platform.architecture == "arm64")
+                        | .platform.os + "/" + .platform.architecture + "=" + .digest]
+                       | sort | join(",")')"
+            if [ "${actual}" != "${expected}" ]; then
+              echo "::error::${name}@${index} resolves to ${actual}; the manifest records ${expected}"
+              fail=1
+            fi
+          done < <(jq -r '.images[]
+                          | [.name, .digest,
+                             ([.platforms[] | .platform + "=" + .digest] | sort | join(","))]
+                          | @tsv' postvec-release.json)
+          test "${fail}" = 0
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${RELEASE_REF}" --repo "${{ github.repository }}" --draft=false
+
+      # Moving tags last. Until this point `pg18` still points at the previous
+      # release — which is the correct thing for it to do if any step above
+      # failed.
+      # By digest, from the manifest that was just verified — not by retagging
+      # the versioned tag. A tag is a mutable pointer, and this job shares a
+      # concurrency group with the recovery workflow precisely because something
+      # else may be writing these names; sourcing from an immutable digest makes
+      # the write mean the same thing whenever it lands.
+      #
+      # The same helper the recovery workflow uses: every write attempted, every
+      # tag then inspected, and the result decided by what the registry holds.
+      # Until this point `pg18` still pointed at the previous release, which is
+      # the correct thing for it to do if anything above failed.
+      - name: Advance the moving tags
+        run: |
+          jq -r '.images[]
+                 | [ (.name + ":pg" + (.pg_major|tostring)
+                      + (if .variant == "complete" then "-complete" else "" end)),
+                     (.name + "@" + .digest),
+                     .digest ]
+                 | @tsv' packaging/postvec/release/postvec-release.json > /tmp/moving-tags.plan
+          test "$(wc -l < /tmp/moving-tags.plan)" = 6 \
+            || { echo "::error::expected six moving tags"; cat /tmp/moving-tags.plan; exit 1; }
+
+          packaging/postvec/scripts/advance-moving-tags.sh /tmp/moving-tags.plan \
+            --recovery-hint "The release itself is published and correct — only the moving tags are behind. Finish with the postvec-moving-tags workflow, which is idempotent and verifies all six."

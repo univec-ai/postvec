@@ -1,0 +1,842 @@
+//! The public command-line contract.
+//!
+//! Everything here is declarative: parsing, value validation, and the flag
+//! relationships Clap can express. Semantic validation that needs the host
+//! (cluster discovery, filesystem, endpoints) lives in `commands/`.
+
+use crate::error::{CliError, Result};
+use crate::validate;
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::time::Duration;
+
+/// Install, configure and diagnose postvec against an existing PostgreSQL
+/// cluster.
+///
+/// The package manager owns the extension files (`postvec.so`, the control
+/// file, the SQL scripts) and this binary; the CLI never copies or deletes
+/// package-owned files.
+#[derive(Debug, Parser)]
+#[command(
+    name = "postvec",
+    version,
+    about = "Install and diagnose postvec",
+    long_about = None,
+    disable_help_subcommand = true
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Command,
+
+    /// Cluster identity as reported by pg_lsclusters, e.g. 18/main.
+    #[arg(long, global = true, value_name = "MAJOR/NAME")]
+    pub cluster: Option<String>,
+
+    /// Explicit pg_config for a non-postgresql-common installation.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub pg_config: Option<PathBuf>,
+
+    /// Configuration directory already included by postgresql.conf.
+    /// Only meaningful together with --pg-config.
+    #[arg(long, global = true, requires = "pg_config", value_name = "DIR")]
+    pub config_dir: Option<PathBuf>,
+
+    /// Connection URI. Prefer POSTVEC_DATABASE_URL: an URI on the command
+    /// line is visible in process listings.
+    #[arg(
+        long,
+        global = true,
+        env = "POSTVEC_DATABASE_URL",
+        hide_env_values = true,
+        value_name = "URI"
+    )]
+    pub database_url: Option<String>,
+
+    /// Output format. JSON is a versioned object on stdout; human progress
+    /// then goes to stderr.
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+
+    /// Disable ANSI styling (also honoured via NO_COLOR).
+    #[arg(long, global = true)]
+    pub no_color: bool,
+
+    /// Overall deadline for the command's network and subprocess work.
+    #[arg(long, global = true, value_parser = parse_duration, default_value = "30s")]
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Configure a cluster and install the extension into one or more
+    /// databases.
+    Setup(SetupArgs),
+    /// Remove postvec's database objects and extension, and stop serving the
+    /// database. Retains user data by default.
+    Uninstall(UninstallArgs),
+    /// Read-only diagnosis of an installation. Changes nothing.
+    Doctor(DoctorArgs),
+    /// Manage the models in an engine root: pull from the UniVec registry,
+    /// list, inspect, remove, activate, deactivate.
+    #[command(subcommand)]
+    Model(ModelCommand),
+    /// Store a UniVec API key for the authenticated model catalogue.
+    Login(LoginArgs),
+    /// Remove the stored credential; model commands become anonymous.
+    Logout,
+    /// Report which credential (if any) model commands would use.
+    Whoami(WhoamiArgs),
+    /// Internal: execute database work with dropped privileges. Speaks a
+    /// line-delimited JSON protocol on stdin/stdout and is not a stable
+    /// interface.
+    #[command(name = "__db-agent", hide = true)]
+    DbAgent,
+    /// Internal: merge postvec into a shared_preload_libraries value and print
+    /// the result. Used by the container entrypoint, which must apply exactly
+    /// the same list grammar the server does; not a stable interface.
+    #[command(name = "__preload-merge", hide = true)]
+    PreloadMerge(PreloadMergeArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ModelCommand {
+    /// Download models (and everything they need) from the registry into the
+    /// engine root and verify them. Installing is not activating: the models
+    /// land deactivated — `postvec model activate` turns them on.
+    Pull(ModelPullArgs),
+    /// Replace installed models with newer registry revisions of the same
+    /// name, in place. Never implicit: `pull` only ever installs.
+    Upgrade(ModelUpgradeArgs),
+    /// List installed models — or, with --available, the registry catalogue.
+    /// Neither form needs a database login when the engine root is readable.
+    Ls(ModelLsArgs),
+    /// Show one model: registry identity, licence, dependencies, disk and
+    /// load state.
+    Show(ModelShowArgs),
+    /// Remove a CLI-installed model from the engine root.
+    Rm(ModelRmArgs),
+    /// Turn models on: mark them enabled on disk (surviving restarts), load
+    /// them into a running embedded engine, and refresh the SQL model cache.
+    Activate(ModelActivateArgs),
+    /// Turn models off: unload them from a running embedded engine and mark
+    /// them disabled on disk, so a restart does not bring them back.
+    Deactivate(ModelDeactivateArgs),
+}
+
+impl ModelCommand {
+    /// The command name as it appears in output envelopes and error reports.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ModelCommand::Pull(_) => "model pull",
+            ModelCommand::Upgrade(_) => "model upgrade",
+            ModelCommand::Ls(_) => "model ls",
+            ModelCommand::Show(_) => "model show",
+            ModelCommand::Rm(_) => "model rm",
+            ModelCommand::Activate(_) => "model activate",
+            ModelCommand::Deactivate(_) => "model deactivate",
+        }
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelPullArgs {
+    /// Registry model name. Repeatable; dependencies and postvec companions
+    /// are added automatically.
+    #[arg(value_name = "NAME", required = true)]
+    pub names: Vec<String>,
+
+    /// Manage this engine root directly instead of the selected cluster's.
+    /// Filesystem management only: no activation, no database refresh.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Read the API key from this file instead of the credential store.
+    #[arg(long, value_name = "FILE")]
+    pub api_key_file: Option<PathBuf>,
+
+    /// Acknowledge a notice-policy terms document non-interactively, as the
+    /// exact <ID>@<VERSION> the plan names (repeatable). Version-specific:
+    /// a token for a document this run does not need is refused as stale.
+    /// `--yes` never stands in for it.
+    #[arg(long = "accept-license", value_name = "ID@VERSION")]
+    pub accept_license: Vec<String>,
+
+    /// Skip the confirmation prompt. Required for mutation without a TTY.
+    /// Answers only the ordinary mutation confirmation — never a terms
+    /// acknowledgement.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show the plan and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+impl ModelPullArgs {
+    pub fn validated(&self) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        for raw in &self.names {
+            crate::registry::index::valid_model_name(raw).map_err(CliError::usage)?;
+            if !names.contains(raw) {
+                names.push(raw.clone());
+            }
+        }
+        if let Some(path) = &self.path {
+            validate::absolute_path(path, "--path")?;
+        }
+        Ok(names)
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelUpgradeArgs {
+    /// Installed model name. Repeatable; new dependencies the replacement
+    /// needs are installed alongside it.
+    #[arg(value_name = "NAME")]
+    pub names: Vec<String>,
+
+    /// Upgrade every CLI-installed model the registry offers a newer
+    /// revision of.
+    #[arg(long, conflicts_with = "names")]
+    pub all: bool,
+
+    /// Manage this engine root directly instead of the selected cluster's.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Read the API key from this file instead of the credential store.
+    #[arg(long, value_name = "FILE")]
+    pub api_key_file: Option<PathBuf>,
+
+    /// Acknowledge a notice-policy terms document non-interactively, as the
+    /// exact <ID>@<VERSION> the plan names (repeatable). Version-specific:
+    /// a token for a document this run does not need is refused as stale.
+    /// `--yes` never stands in for it.
+    #[arg(long = "accept-license", value_name = "ID@VERSION")]
+    pub accept_license: Vec<String>,
+
+    /// Skip the confirmation prompt. Required for mutation without a TTY.
+    /// Answers only the ordinary mutation confirmation — never a terms
+    /// acknowledgement.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show the plan and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+impl ModelUpgradeArgs {
+    pub fn validated(&self) -> Result<Vec<String>> {
+        if self.names.is_empty() && !self.all {
+            return Err(CliError::usage(
+                "name at least one installed model, or pass --all to upgrade every CLI-installed \
+                 model with a newer revision",
+            ));
+        }
+        let mut names = Vec::new();
+        for raw in &self.names {
+            crate::registry::index::valid_model_name(raw).map_err(CliError::usage)?;
+            if !names.contains(raw) {
+                names.push(raw.clone());
+            }
+        }
+        if let Some(path) = &self.path {
+            validate::absolute_path(path, "--path")?;
+        }
+        Ok(names)
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelLsArgs {
+    /// List the registry catalogue instead of installed models.
+    #[arg(long)]
+    pub available: bool,
+
+    /// Inspect this engine root instead of the selected cluster's.
+    #[arg(long, value_name = "DIR", conflicts_with = "available")]
+    pub path: Option<PathBuf>,
+
+    /// Read the API key from this file instead of the credential store.
+    #[arg(long, requires = "available", value_name = "FILE")]
+    pub api_key_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelShowArgs {
+    /// Model name (registry name / directory name).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Inspect this engine root instead of the selected cluster's.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Hash every installed file against the receipt. Reads the whole model.
+    #[arg(long)]
+    pub verify: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelRmArgs {
+    /// Model to remove. Repeatable.
+    #[arg(value_name = "NAME", required = true)]
+    pub names: Vec<String>,
+
+    /// Manage this engine root directly instead of the selected cluster's.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show the plan and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Remove even when another installed model depends on this one. Does not
+    /// stand in for --acknowledge-in-use.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Acknowledge that managed columns lose their embedding route to this
+    /// model and will stop working — directly, or through a converter/bridge
+    /// chain it is part of. Required with --yes when any column is affected;
+    /// never implied by --yes or --force.
+    #[arg(long)]
+    pub acknowledge_in_use: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelActivateArgs {
+    /// Model to activate. Repeatable; a model's deactivated dependencies are
+    /// enabled with it, because the engine will not load one without them.
+    #[arg(value_name = "NAME")]
+    pub names: Vec<String>,
+
+    /// Activate every eligible CLI-installed model in the engine root. This
+    /// is also what a bare `postvec model activate` does.
+    #[arg(long, conflicts_with = "names")]
+    pub all: bool,
+
+    /// Manage this engine root directly instead of the selected cluster's.
+    /// Marks the models enabled on disk only: no engine load, no SQL refresh.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show what would change and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+impl ModelActivateArgs {
+    /// The requested names. Empty means every eligible model — a bare
+    /// `activate` kept its original catch-up meaning.
+    pub fn validated(&self) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        for raw in &self.names {
+            crate::registry::index::valid_model_name(raw).map_err(CliError::usage)?;
+            if !names.contains(raw) {
+                names.push(raw.clone());
+            }
+        }
+        if let Some(path) = &self.path {
+            validate::absolute_path(path, "--path")?;
+        }
+        Ok(names)
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelDeactivateArgs {
+    /// Model to deactivate. Repeatable. There is deliberately no `--all`:
+    /// turning every model off in one flag is how search goes down by
+    /// accident.
+    #[arg(value_name = "NAME", required = true)]
+    pub names: Vec<String>,
+
+    /// Manage this engine root directly instead of the selected cluster's.
+    /// Marks the model disabled on disk only: no engine unload, no SQL
+    /// refresh, and no database to check for columns still using it.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Deactivate even when another enabled installed model depends on this
+    /// one. Does not stand in for --acknowledge-in-use.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Acknowledge that managed columns lose their embedding route to this
+    /// model and will stop working — directly, or through a converter/bridge
+    /// chain it is part of. Required with --yes when any column is affected;
+    /// never implied by --yes or --force.
+    #[arg(long)]
+    pub acknowledge_in_use: bool,
+
+    /// Skip the ordinary confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show what would change and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+impl ModelDeactivateArgs {
+    pub fn validated(&self) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        for raw in &self.names {
+            crate::registry::index::valid_model_name(raw).map_err(CliError::usage)?;
+            if !names.contains(raw) {
+                names.push(raw.clone());
+            }
+        }
+        if let Some(path) = &self.path {
+            validate::absolute_path(path, "--path")?;
+        }
+        Ok(names)
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct LoginArgs {
+    /// Read the API key from this file instead of prompting. The key is
+    /// never accepted as a command-line value: argv is world-observable.
+    #[arg(long, value_name = "FILE")]
+    pub api_key_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct WhoamiArgs {
+    /// Also consider this key file, the way model commands would.
+    #[arg(long, value_name = "FILE")]
+    pub api_key_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct PreloadMergeArgs {
+    /// The operator-supplied list. Empty or absent yields just `postvec`.
+    #[arg(value_name = "LIST", default_value = "")]
+    pub value: String,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct SetupArgs {
+    /// Database to serve. Repeatable; a comma-separated list is also accepted.
+    #[arg(long, required = true, value_name = "NAME", value_delimiter = ',')]
+    pub database: Vec<String>,
+
+    /// Host the inference engine inside the launcher process instead of
+    /// calling remote ninference nodes.
+    #[arg(long, conflicts_with_all = ["grpc", "http"])]
+    pub embedded: bool,
+
+    /// Absolute engine root (contains libs/ and models/). Required with
+    /// --embedded.
+    #[arg(long, requires = "embedded", value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Model to preload. Repeatable. Omit to load every enabled model found
+    /// under <root>/models.
+    #[arg(
+        long,
+        requires = "embedded",
+        value_name = "NAME",
+        value_delimiter = ','
+    )]
+    pub model: Vec<String>,
+
+    /// Loopback address for the embedded gRPC listener (default
+    /// 127.0.0.1:33433).
+    #[arg(long, requires = "embedded", value_name = "ADDR")]
+    pub embedded_grpc_listen: Option<SocketAddr>,
+
+    /// Loopback address for the embedded GET /config listener (default
+    /// 127.0.0.1:33434).
+    #[arg(long, requires = "embedded", value_name = "ADDR")]
+    pub embedded_http_listen: Option<SocketAddr>,
+
+    /// ninference gRPC endpoint as host:port. Repeatable; order is preserved
+    /// (it drives round-robin).
+    #[arg(
+        long,
+        required_unless_present = "embedded",
+        value_name = "HOST:PORT",
+        value_delimiter = ','
+    )]
+    pub grpc: Vec<String>,
+
+    /// ninference HTTP base URL used for GET /config discovery. Repeatable.
+    #[arg(
+        long,
+        required_unless_present = "embedded",
+        value_name = "URL",
+        value_delimiter = ','
+    )]
+    pub http: Vec<String>,
+
+    /// Change the cluster-wide inference mode. Required to switch between
+    /// remote and embedded once databases are configured.
+    #[arg(long)]
+    pub switch_mode: bool,
+
+    /// Skip the confirmation prompt. Required for mutation without a TTY.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show the plan and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Apply everything but leave the restart (and therefore the POSTMASTER
+    /// settings) pending. Exits 4.
+    #[arg(long)]
+    pub no_restart: bool,
+
+    /// Finish with a warning instead of failing when the configured engine is
+    /// not reachable yet.
+    #[arg(long)]
+    pub allow_unreachable: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct UninstallArgs {
+    /// Database to stop serving. Repeatable.
+    #[arg(long, required = true, value_name = "NAME", value_delimiter = ',')]
+    pub database: Vec<String>,
+
+    /// Also drop the shadow vector columns postvec created. Destroys stored
+    /// embeddings.
+    #[arg(long)]
+    pub drop_columns: bool,
+
+    /// Required acknowledgement for --drop-columns.
+    #[arg(long, requires = "drop_columns")]
+    pub acknowledge_data_loss: bool,
+
+    /// Remove SQL state only; leave cluster configuration untouched.
+    #[arg(long)]
+    pub keep_config: bool,
+
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show the plan and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Apply SQL and configuration changes but leave the restart pending.
+    #[arg(long)]
+    pub no_restart: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DoctorArgs {
+    /// Database to inspect. Repeatable. Default: every configured database.
+    #[arg(long, value_name = "NAME", value_delimiter = ',')]
+    pub database: Vec<String>,
+
+    /// Run bounded active checks, notably heartbeat advancement. Still
+    /// read-only.
+    #[arg(long)]
+    pub deep: bool,
+
+    /// Exit non-zero for WARN as well as FAIL.
+    #[arg(long)]
+    pub strict: bool,
+
+    /// Engine root to diagnose when postvec.ninference_path is unset and the
+    /// server inherited NINFERENCE_PATH from its environment. Never written
+    /// to any configuration file.
+    #[arg(long, value_name = "DIR")]
+    pub ninference_path: Option<PathBuf>,
+
+    /// TLS policy for the HTTP discovery probes.
+    #[arg(long, value_enum, default_value_t = TlsPolicy::ExtensionCompatible)]
+    pub tls: TlsPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TlsPolicy {
+    /// Match the extension: accept invalid/self-signed certificates, but
+    /// report when verification would have failed.
+    ExtensionCompatible,
+    /// Require a verifiable certificate chain.
+    Strict,
+}
+
+fn parse_duration(raw: &str) -> std::result::Result<Duration, String> {
+    humantime::parse_duration(raw).map_err(|e| format!("{e}"))
+}
+
+/// Inference deployment mode, as selected on the command line. Mirrors
+/// `postvec.mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    Grpc,
+    Embedded,
+}
+
+impl Mode {
+    pub fn as_guc(self) -> &'static str {
+        match self {
+            Mode::Grpc => "grpc",
+            Mode::Embedded => "embedded",
+        }
+    }
+}
+
+impl std::fmt::Display for Mode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_guc())
+    }
+}
+
+impl SetupArgs {
+    pub fn mode(&self) -> Mode {
+        if self.embedded {
+            Mode::Embedded
+        } else {
+            Mode::Grpc
+        }
+    }
+
+    /// Validate and normalize every user-supplied value. Runs before any
+    /// host access so a typo costs nothing.
+    pub fn validated(&self) -> Result<ValidatedSetup> {
+        let databases = validate::database_list(&self.database)?;
+        match self.mode() {
+            Mode::Grpc => {
+                let grpc = validate::grpc_endpoints(&self.grpc)?;
+                let http = validate::http_endpoints(&self.http)?;
+                Ok(ValidatedSetup {
+                    databases,
+                    target: ModeTarget::Grpc { grpc, http },
+                })
+            }
+            Mode::Embedded => {
+                let path = self
+                    .path
+                    .clone()
+                    .ok_or_else(|| CliError::usage("--embedded requires --path <DIR>"))?;
+                // Syntax only: existence and readability are checked from the
+                // PostgreSQL account's perspective during engine preflight.
+                let path = validate::absolute_path(&path, "--path")?;
+                let models = validate::model_list(&self.model)?;
+                let grpc_listen = self.embedded_grpc_listen;
+                let http_listen = self.embedded_http_listen;
+                if let (Some(a), Some(b)) = (grpc_listen, http_listen) {
+                    if a == b {
+                        return Err(CliError::usage(
+                            "--embedded-grpc-listen and --embedded-http-listen must differ",
+                        ));
+                    }
+                }
+                for (addr, flag) in [
+                    (grpc_listen, "--embedded-grpc-listen"),
+                    (http_listen, "--embedded-http-listen"),
+                ] {
+                    if let Some(addr) = addr {
+                        validate::loopback_listener(addr, flag)?;
+                    }
+                }
+                Ok(ValidatedSetup {
+                    databases,
+                    target: ModeTarget::Embedded {
+                        path,
+                        models,
+                        grpc_listen,
+                        http_listen,
+                    },
+                })
+            }
+        }
+    }
+}
+
+impl UninstallArgs {
+    pub fn validated(&self) -> Result<Vec<String>> {
+        validate::database_list(&self.database)
+    }
+}
+
+impl DoctorArgs {
+    pub fn validated(&self) -> Result<Vec<String>> {
+        validate::database_list_allow_empty(&self.database)
+    }
+}
+
+/// Normalized `setup` input.
+#[derive(Debug, Clone)]
+pub struct ValidatedSetup {
+    pub databases: Vec<String>,
+    pub target: ModeTarget,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModeTarget {
+    Grpc {
+        grpc: Vec<crate::validate::GrpcEndpoint>,
+        http: Vec<crate::validate::HttpEndpoint>,
+    },
+    Embedded {
+        path: PathBuf,
+        models: Vec<String>,
+        grpc_listen: Option<SocketAddr>,
+        http_listen: Option<SocketAddr>,
+    },
+}
+
+impl ModeTarget {
+    pub fn mode(&self) -> Mode {
+        match self {
+            ModeTarget::Grpc { .. } => Mode::Grpc,
+            ModeTarget::Embedded { .. } => Mode::Embedded,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("postvec").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn setup_requires_endpoints_in_remote_mode() {
+        assert!(parse(&["setup", "--database", "d"]).is_err());
+        assert!(parse(&["setup", "--database", "d", "--grpc", "h:1"]).is_err());
+        assert!(parse(&[
+            "setup",
+            "--database",
+            "d",
+            "--grpc",
+            "h:1",
+            "--http",
+            "http://h"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn embedded_conflicts_with_endpoints() {
+        assert!(parse(&["setup", "--database", "d", "--embedded", "--grpc", "h:1"]).is_err());
+        assert!(parse(&["setup", "--database", "d", "--embedded", "--path", "/x"]).is_ok());
+    }
+
+    #[test]
+    fn embedded_only_flags_require_embedded() {
+        assert!(parse(&["setup", "--database", "d", "--path", "/x"]).is_err());
+        assert!(parse(&["setup", "--database", "d", "--model", "m"]).is_err());
+    }
+
+    #[test]
+    fn embedded_path_is_required_semantically() {
+        let cli = parse(&["setup", "--database", "d", "--embedded"]).unwrap();
+        let Command::Setup(args) = cli.command else {
+            unreachable!()
+        };
+        let err = args.validated().unwrap_err();
+        assert!(err.to_string().contains("--path"));
+    }
+
+    #[test]
+    fn drop_columns_gates_acknowledgement() {
+        assert!(parse(&["uninstall", "--database", "d", "--acknowledge-data-loss"]).is_err());
+        assert!(parse(&[
+            "uninstall",
+            "--database",
+            "d",
+            "--drop-columns",
+            "--acknowledge-data-loss"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn comma_separated_lists_normalize() {
+        let cli = parse(&[
+            "setup",
+            "--database",
+            "a,b",
+            "--grpc",
+            "h:1,h:2",
+            "--http",
+            "http://h",
+        ])
+        .unwrap();
+        let Command::Setup(args) = cli.command else {
+            unreachable!()
+        };
+        assert_eq!(args.database, ["a", "b"]);
+        assert_eq!(args.grpc, ["h:1", "h:2"]);
+    }
+
+    #[test]
+    fn config_dir_requires_pg_config() {
+        assert!(parse(&["doctor", "--config-dir", "/etc/x"]).is_err());
+        assert!(parse(&["doctor", "--config-dir", "/etc/x", "--pg-config", "/p"]).is_ok());
+    }
+
+    #[test]
+    fn equal_embedded_listeners_are_rejected() {
+        let cli = parse(&[
+            "setup",
+            "--database",
+            "d",
+            "--embedded",
+            "--path",
+            "/x",
+            "--embedded-grpc-listen",
+            "127.0.0.1:1",
+            "--embedded-http-listen",
+            "127.0.0.1:1",
+        ])
+        .unwrap();
+        let Command::Setup(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(args.validated().unwrap_err().to_string().contains("differ"));
+    }
+
+    #[test]
+    fn non_loopback_embedded_listener_is_rejected() {
+        let cli = parse(&[
+            "setup",
+            "--database",
+            "d",
+            "--embedded",
+            "--path",
+            "/x",
+            "--embedded-grpc-listen",
+            "192.0.2.2:33433",
+        ])
+        .unwrap();
+        let Command::Setup(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(args
+            .validated()
+            .unwrap_err()
+            .to_string()
+            .contains("loopback"));
+    }
+}

@@ -1,0 +1,517 @@
+# Packaging CI: keep the release pipeline honest on every change to it,
+# without paying for the full matrix on every pull request.
+#
+# One reference cell — Debian 12, PostgreSQL 18, amd64 — is built, packaged,
+# installed on a clean host, turned into both images, and smoke-tested. That is
+# enough to catch the failures that actually happen (a package description that
+# no longer renders, a dependency that stopped resolving, an entrypoint that
+# broke, a healthcheck that lies). The full distribution × major × architecture
+# matrix runs nightly and at release time.
+#
+# Nothing here publishes anything: artifacts built in a pull-request security
+# context are for inspection only.
+name: postvec-packaging-ci
+
+on:
+  push:
+    paths:
+      - "packaging/postvec/**"
+      - "postvec/**"
+      - "postvec-cli/**"
+      # The embedded extension links these workspace crates; the remote-image
+      # test additionally builds the inference fixture from this commit. A
+      # change to any of them changes what these packages and images contain,
+      # and the extension's own CI does not rebuild either.
+      - "engine/**"
+      - "shared/**"
+      - "proto/**"
+      # The builder every job here sets up.
+      - ".github/actions/postvec-buildx/**"
+      # Linted by the actionlint gate below, and it drives registry writes.
+      - ".github/workflows/postvec-moving-tags.yml"
+      # A change to the release workflow is a change to the packaging chain it
+      # drives, so it has to run this suite too.
+      - ".github/workflows/postvec-release.yml"
+      - ".github/workflows/postvec-packaging-ci.yml"
+  pull_request:
+    paths:
+      - "packaging/postvec/**"
+      - "postvec/**"
+      - "postvec-cli/**"
+      # The embedded extension links these workspace crates; the remote-image
+      # test additionally builds the inference fixture from this commit. A
+      # change to any of them changes what these packages and images contain,
+      # and the extension's own CI does not rebuild either.
+      - "engine/**"
+      - "shared/**"
+      - "proto/**"
+      # The builder every job here sets up.
+      - ".github/actions/postvec-buildx/**"
+      # Linted by the actionlint gate below, and it drives registry writes.
+      - ".github/workflows/postvec-moving-tags.yml"
+      - ".github/workflows/postvec-release.yml"
+      - ".github/workflows/postvec-packaging-ci.yml"
+  schedule:
+    # Nightly: the full matrix, so a distribution's package rename or a PGDG
+    # change is found by CI rather than by a release.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: postvec-packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast, hermetic checks. Everything below this is minutes of compilation, so
+  # anything that can fail in seconds fails here first.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Release version consistency
+        run: packaging/postvec/scripts/assert-versions.sh
+
+      - name: Shell syntax
+        run: |
+          for script in packaging/postvec/scripts/*.sh \
+                        packaging/postvec/tests/*.sh \
+                        packaging/postvec/docker/*.sh \
+                        packaging/postvec/nfpm/scripts/*.sh; do
+            bash -n "$script" || exit 1
+          done
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning --external-sources \
+            packaging/postvec/scripts/*.sh \
+            packaging/postvec/tests/*.sh \
+            packaging/postvec/docker/*.sh \
+            packaging/postvec/nfpm/scripts/*.sh
+
+      # These workflows are the release. Parsing them as YAML proves they are
+      # YAML — not that an expression is valid, that an action's inputs exist,
+      # that a context is available where it is used, or that the shell embedded
+      # in a `run:` block is sound. actionlint checks all of that, and (with
+      # shellcheck already installed above) runs shellcheck over every `run:`.
+      #
+      # Pinned by version and digest like every other tool this project
+      # downloads.
+      - name: actionlint
+        run: |
+          version="$(sed -n 's/^ACTIONLINT_VERSION=//p' packaging/postvec/versions.env)"
+          digest="$(sed -n 's/^ACTIONLINT_LINUX_AMD64_SHA256=//p' packaging/postvec/versions.env)"
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/actionlint_${version}_linux_amd64.tar.gz"
+          echo "${digest}  /tmp/actionlint.tar.gz" | sha256sum --check --strict -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -color .github/workflows/*.yml
+
+      # Scripts the documentation tells someone to run must be runnable. A
+      # release asset loses its mode bit, which is why the instructions say
+      # `bash ./postvec-prerequisites.sh` — but a file in the repository that
+      # the README invokes as `scripts/release.sh` has no such excuse.
+      - name: Executable scripts are executable
+        run: |
+          fail=0
+          for script in packaging/postvec/scripts/*.sh \
+                        packaging/postvec/tests/*.sh \
+                        packaging/postvec/docker/*.sh; do
+            case "${script}" in */lib.sh) continue ;; esac
+            [ -x "${script}" ] || { echo "::error::${script} is not executable"; fail=1; }
+          done
+          test "${fail}" = 0
+
+      # The nfpm descriptions are templates — `${SHLIB_DEPENDS}` expands to a
+      # block of list items, so they are deliberately not valid YAML until
+      # rendered. Render with stubs, then parse.
+      - name: Package descriptions render and parse
+        run: |
+          pip install --quiet pyyaml
+          packaging/postvec/scripts/lint-nfpm-configs.sh
+
+      - name: Compose examples are valid YAML
+        run: |
+          python3 - <<'PY'
+          import pathlib, yaml
+          for path in sorted(pathlib.Path("packaging/postvec/docker/compose").glob("*.yml")):
+              yaml.safe_load(path.read_text())
+              print("ok", path)
+          PY
+
+      # Goldens are keyed by model name, so this reads the reviewed pin and
+      # looks for that model's file. A bundled-model change that forgets to
+      # record goldens must fail here — in the one-minute lint job — rather
+      # than in the twenty-minute image job, and never by silently comparing
+      # against the previous model's vectors.
+      - name: The golden embeddings are recorded for the pinned model
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, re, sys
+
+          pkg = pathlib.Path("packaging/postvec")
+          match = re.search(r"^BUNDLED_MODEL_NAME=(.+)$",
+                            (pkg / "versions.env").read_text(), re.M)
+          if not match:
+              sys.exit("no BUNDLED_MODEL_NAME in versions.env")
+          name = match.group(1).strip()
+
+          path = pkg / "model" / "golden" / f"{name}.json"
+          if not path.is_file():
+              sys.exit(f"no goldens recorded for {name!r} — expected "
+                       f"{path.relative_to(pkg)}. Record them once from a "
+                       f"reviewed complete image:\n"
+                       f"    tests/model-golden-test.sh --record <image>")
+          golden = json.loads(path.read_text())
+          if golden.get("model") != name:
+              sys.exit(f"{path.relative_to(pkg)} records model "
+                       f"{golden.get('model')!r}, not {name!r}")
+          if not golden["cases"]:
+              sys.exit(f"{path.relative_to(pkg)} has no recorded cases; "
+                       f"run tests/model-golden-test.sh --record <image>")
+          for case in golden["cases"]:
+              if len(case["vector"]) != golden["dimensions"]:
+                  sys.exit(f"{case['text']!r} has {len(case['vector'])} dimensions, "
+                           f"expected {golden['dimensions']}")
+          print(f"{len(golden['cases'])} golden case(s) recorded for {name}")
+          PY
+
+      - name: The release manifest schema is valid JSON Schema
+        run: |
+          # The same hash-locked validator the release uses, so a lock that no
+          # longer installs is found by a pull request rather than by a release.
+          pip install --quiet --require-hashes \
+            -r packaging/postvec/requirements-schema.txt
+          python3 - <<'PY'
+          import json, jsonschema
+          schema = json.load(open("packaging/postvec/release-manifest.schema.json"))
+          jsonschema.Draft202012Validator.check_schema(schema)
+          print("release-manifest.schema.json is a valid Draft 2020-12 schema")
+          PY
+
+      # The release's *refusals*, against fixtures. The expensive matrix proves
+      # that packages build and work; it cannot prove that the closure checks
+      # catch anything, because nothing in a passing matrix is ever deliberately
+      # wrong. Two real defects survived a green matrix for exactly that reason.
+      # Seconds, no Docker.
+      - name: Release-closure regression tests
+        run: packaging/postvec/tests/unit-test.sh
+
+  # The entrypoint's logic, against a real CLI binary. Seconds, no container.
+  entrypoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # `stable` on purpose here, unlike the release workflow's pinned
+      # toolchain: this job's value is catching a future compiler breaking the
+      # CLI before a release has to deal with it.
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ". -> target"
+      - run: cargo build -p postvec-cli
+      - run: packaging/postvec/tests/entrypoint-test.sh target/debug/postvec
+
+  # The evidence behind `postvec-prerequisites.sh`'s own claim.
+  #
+  # That script refuses to execute on a distribution this project has not
+  # rehearsed. The refusal is only honest if "rehearsed" means something, and
+  # this is the thing it means: the bootstrap ran on that distribution and the
+  # packages postvec depends on resolved afterwards. Five containers, no build,
+  # a couple of minutes — and it is the only thing that notices when a PGDG or
+  # EPEL change breaks a user's very first command.
+  bootstrap:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian12, ubuntu2204, ubuntu2404, almalinux9, rocky9]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: packaging/postvec/tests/bootstrap-test.sh --distro ${{ matrix.distro }}
+
+  # The reference cell, end to end: Debian 12 / PG 18 / amd64. This is the one
+  # combination every pull request pays for, and it exercises every step of the
+  # pipeline at least once.
+  packages:
+    needs: [lint, entrypoint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/postvec-buildx
+
+      - name: Engine assets
+        run: |
+          packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch amd64
+
+      # The compile comes first now: the model bundle is pulled from the
+      # registry with `postvec model pull`, and this stage already produces the
+      # postvec binary that does it. Adding a Rust toolchain and a second CLI
+      # build to every call site would be a duplicate compiler path for a
+      # binary the job already has.
+      - name: Compile
+        run: |
+          packaging/postvec/scripts/build-extension-stage.sh \
+            --distro debian12 --pg 18 --arch amd64
+
+      - name: Bundled model, from the registry's public channel
+        run: |
+          packaging/postvec/scripts/build-model-bundle.sh \
+            --cli packaging/postvec/build/debian12-pg18-amd64/cli/postvec
+
+      - name: Package
+        run: |
+          packaging/postvec/scripts/build-packages.sh \
+            --distro debian12 --pg 18 --arch amd64
+
+      - name: Verify
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lintian
+          packaging/postvec/scripts/verify-package.sh \
+            packaging/postvec/dist/common/debian12-amd64/*.deb \
+            packaging/postvec/dist/noarch/debian12/*.deb \
+            packaging/postvec/dist/extension/debian12-pg18-amd64/*.deb
+
+      # Minimal first: the dependency boundary a remote-mode user has. Then the
+      # full install, which also starts a cluster and embeds with the bundled
+      # model.
+      - name: Install on a clean host (minimal)
+        run: |
+          packaging/postvec/tests/package-install-test.sh --minimal \
+            --distro debian12 --pg 18 --arch amd64
+
+      - name: Install on a clean host (full, with inference)
+        run: |
+          packaging/postvec/tests/package-install-test.sh \
+            --distro debian12 --pg 18 --arch amd64
+
+      # A build that silently produced fewer packages than it should is a
+      # build whose artifacts nobody will notice are missing.
+      - name: The expected artifacts exist in the right roots
+        run: |
+          common=packaging/postvec/dist/common/debian12-amd64
+          noarch=packaging/postvec/dist/noarch/debian12
+          extension=packaging/postvec/dist/extension/debian12-pg18-amd64
+
+          # Named packages, not a count. A count says nothing about *which*
+          # package is missing, and breaks the moment a debug package appears —
+          # which it now does, because the release profile emits line tables.
+          #
+          # And the root matters as much as the name: an `all` package written
+          # into an architecture's cell is invisible to the other architecture,
+          # which is a failure that looks exactly like success on amd64.
+          for package in postvec-cli postvec-onnxruntime; do
+            ls "$common/${package}"_*.deb >/dev/null 2>&1 \
+              || { echo "::error::missing $package"; ls "$common"; exit 1; }
+          done
+          # The model package's name follows the reviewed pin, so it is read
+          # from the facts the bundle step derived rather than repeated here.
+          model_pkg="$(sed -n 's/^MODEL_PKG_NAME=//p' \
+            packaging/postvec/build/payload-common/model-facts.env)"
+          test -n "$model_pkg" || { echo "::error::no MODEL_PKG_NAME"; exit 1; }
+          for package in "$model_pkg" postvec-extras; do
+            ls "$noarch/${package}"_*_all.deb >/dev/null 2>&1 \
+              || { echo "::error::missing $package in the noarch root"; ls "$noarch"; exit 1; }
+            ! ls "$common/${package}"_*.deb >/dev/null 2>&1 \
+              || { echo "::error::$package is in an architecture's cell"; exit 1; }
+          done
+          ls "$extension"/postgresql-18-postvec_*.deb >/dev/null 2>&1 \
+            || { echo "::error::missing the extension package"; ls "$extension"; exit 1; }
+
+          # Detached symbols are expected, and they must accompany the right
+          # package: the CLI's belong with the CLI, not with a PostgreSQL major.
+          ls "$common"/postvec-cli-dbgsym_*.deb >/dev/null 2>&1 \
+            || { echo "::error::no CLI debug package"; ls "$common"; exit 1; }
+          ls "$extension"/postgresql-18-postvec-dbgsym_*.deb >/dev/null 2>&1 \
+            || { echo "::error::no extension debug package"; ls "$extension"; exit 1; }
+          ! ls "$extension"/postvec-cli-dbgsym_*.deb >/dev/null 2>&1 \
+            || { echo "::error::CLI symbols in a per-major package"; exit 1; }
+          # The model bundle is ~80 MB; anything tiny means an empty payload.
+          model=$(stat -c %s "$noarch"/postvec-model-*.deb)
+          test "$model" -gt 50000000 || { echo "::error::model package is only $model bytes"; exit 1; }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-debian12-pg18-amd64
+          path: packaging/postvec/dist/
+          retention-days: 7
+
+      # The later image and fixture jobs need the model facts this payload
+      # carries (package name, backend, dimension), and reusing it means one
+      # registry acquisition per workflow run rather than one per job.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: model-bundle
+          path: packaging/postvec/build/payload-common/
+          retention-days: 7
+
+      - name: Release manifest, with the closure enforced
+        run: |
+          packaging/postvec/scripts/write-release-manifest.sh \
+            --expect-distros debian12 --expect-majors 18 --expect-arches amd64
+          ( cd packaging/postvec/release && sha256sum --check SHA256SUMS )
+
+  # The rest of the supported matrix, nightly. A distribution's package rename,
+  # a PGDG repository change or a pg16-only build break should be found by a
+  # scheduled run, not by a release.
+  packages-matrix:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [lint, entrypoint]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian12, ubuntu2204, ubuntu2404, el9]
+        pg: [16, 17, 18]
+        # Both architectures: the nightly run is the only place the arm64
+        # packages are exercised outside a release, and claiming coverage the
+        # matrix does not have is worse than not claiming it.
+        arch: [amd64, arm64]
+        exclude:
+          # Already covered by the per-PR reference cell above.
+          - distro: debian12
+            pg: 18
+            arch: amd64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/postvec-buildx
+
+      - name: Engine assets
+        run: |
+          packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch ${{ matrix.arch }}
+
+      # The extension stage produces the postvec binary the model pull needs,
+      # so it runs first and the bundle reuses it — no second compiler path.
+      - name: Compile and package
+        run: |
+          cell="${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}"
+          packaging/postvec/scripts/build-extension-stage.sh \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+          packaging/postvec/scripts/build-model-bundle.sh \
+            --cli "packaging/postvec/build/${cell}/cli/postvec"
+          packaging/postvec/scripts/build-packages.sh \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
+      - name: Verify
+        run: |
+          packaging/postvec/scripts/verify-package.sh \
+            packaging/postvec/dist/common/${{ matrix.distro }}-${{ matrix.arch }}/* \
+            packaging/postvec/dist/noarch/${{ matrix.distro }}/* \
+            packaging/postvec/dist/extension/${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}/*
+
+      # Both families: the install test drives dnf as readily as apt, installs
+      # the packages, starts a real cluster, creates the extension and embeds.
+      - name: Install on a clean host
+        run: |
+          packaging/postvec/tests/package-install-test.sh \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
+  # Dual-major coexistence: the property the split CLI package exists for.
+  # It needs two majors built, so it runs after the nightly matrix.
+  coexistence:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: packages-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/postvec-buildx
+      - name: Build PG 16 and PG 18 packages
+        run: |
+          packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch amd64
+          for major in 16 18; do
+            packaging/postvec/scripts/build-extension-stage.sh \
+              --distro debian12 --pg "$major" --arch amd64
+            # Once, with the first cell's own CLI. The bundle is
+            # architecture- and PostgreSQL-independent.
+            if [ ! -f packaging/postvec/build/payload-common/model-facts.env ]; then
+              packaging/postvec/scripts/build-model-bundle.sh \
+                --cli "packaging/postvec/build/debian12-pg${major}-amd64/cli/postvec"
+            fi
+            packaging/postvec/scripts/build-packages.sh \
+              --distro debian12 --pg "$major" --arch amd64
+          done
+      - name: PG 16 and PG 18 coexist, and one package owns the CLI
+        run: |
+          packaging/postvec/tests/package-install-test.sh --minimal \
+            --distro debian12 --pg 16 --pg 18 --arch amd64
+
+  # Both image variants, exercised the way a user would exercise them.
+  images:
+    needs: packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [18]
+        variant: [remote, complete]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/postvec-buildx
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packages-debian12-pg${{ matrix.pg }}-amd64
+          path: packaging/postvec/dist/
+
+      # The model payload the `packages` job already acquired, rather than a
+      # second pull from the registry. The complete image reads its facts
+      # (name, backend, dimension) from it, and the remote variant's ninference
+      # fixture serves the same model bytes the complete image carries.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: model-bundle
+          path: packaging/postvec/build/payload-common/
+
+      - name: Build
+        run: |
+          packaging/postvec/scripts/build-image.sh \
+            --pg ${{ matrix.pg }} --variant ${{ matrix.variant }} --arch amd64 --load
+
+      - name: ninference fixture
+        if: matrix.variant == 'remote'
+        run: |
+          packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch amd64
+          packaging/postvec/scripts/build-ninference-fixture.sh --arch amd64
+
+      - name: Smoke test
+        run: |
+          suffix=""
+          fixture=""
+          if [ "${{ matrix.variant }}" = complete ]; then
+            suffix="-complete"
+          else
+            fixture="--ninference-image postvec-ninference-fixture:amd64"
+          fi
+          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
+          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
+          repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
+          # shellcheck disable=SC2086
+          packaging/postvec/tests/image-smoke-test.sh \
+            --variant ${{ matrix.variant }} ${fixture} \
+            "${repo}:${version}-${revision}-pg${{ matrix.pg }}${suffix}"
+
+      # The complete image must still produce the embeddings the bundle was
+      # published with — a drifted model is a new model, not a new build.
+      - name: Golden embeddings
+        if: matrix.variant == 'complete'
+        run: |
+          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
+          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
+          repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
+          packaging/postvec/tests/model-golden-test.sh \
+            "${repo}:${version}-${revision}-pg${{ matrix.pg }}-complete"

@@ -1,0 +1,24 @@
+postvec — https://github.com/univec-ai/postvec
+
+Copyright (c) UniVec.
+
+Licensed under the PostgreSQL License; see LICENSE.
+
+The published packages and container images embed or depend on third-party
+work under its own terms:
+
+- ONNX Runtime (MIT). Bundled by the `postvec-onnxruntime` package and the
+  complete container image; its license text ships with the bundle.
+- sentence-transformers/all-MiniLM-L6-v2 (Apache License 2.0). The default
+  model bundled by the `postvec-model-*` package and the complete image; its
+  LICENSE travels inside the model archive, and the Debian package renders it
+  into /usr/share/doc/<package>/copyright
+  (packaging/postvec/model/copyright.in).
+- pgvector (PostgreSQL License). A runtime dependency of the extension,
+  installed from its own packages; not bundled here.
+- The Rust dependency tree, under the licenses its crates declare
+  (`cargo license` in this repository enumerates them). The release pipeline's
+  audit gate (packaging/postvec/scripts/audit.sh) runs against both lockfiles.
+
+The `engine/` and `shared/` crates are a trimmed fork of UniVec's internal
+inference engine; see engine/FORK.md for provenance and the deletion record.

@@ -1,0 +1,24 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: @UPSTREAM_NAME@
+Upstream-Contact: @SOURCE@
+Source: @SOURCE@
+
+Comment:
+ This package redistributes, unmodified, the model archive published in the
+ postvec model registry's public channel under the name
+ @MODEL_NAME@.
+ .
+ The registry revision, the archive digest and a SHA-256 digest of every
+ packaged file are recorded in SOURCE.json and model-files.sha256 beside this
+ file, in @DOC_DIR@.
+ .
+ A verbatim copy of the licence travels with the weights themselves, under
+ /opt/postvec/ninference/models/, which is what a redistribution licence
+ requires and what a reader of the installed model directory will look for.
+
+Files: *
+Copyright: (C) the @UPSTREAM_NAME@ authors and contributors
+License: @LICENSE@
+
+License: @LICENSE@
+@LICENSE_BLOCK@

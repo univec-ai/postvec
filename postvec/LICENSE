@@ -1,0 +1,38 @@
+PostgreSQL License
+
+Copyright (c) 2026, the UniVec authors
+
+Permission to use, copy, modify, and distribute this software and its
+documentation for any purpose, without fee, and without a written agreement is
+hereby granted, provided that the above copyright notice and this paragraph and
+the following two paragraphs appear in all copies.
+
+IN NO EVENT SHALL THE UNIVEC AUTHORS BE LIABLE TO ANY PARTY FOR DIRECT,
+INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS,
+ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF THE
+UNIVEC AUTHORS HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+THE UNIVEC AUTHORS SPECIFICALLY DISCLAIM ANY WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS, AND
+THE UNIVEC AUTHORS HAVE NO OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES,
+ENHANCEMENTS, OR MODIFICATIONS.
+
+
+This license covers the postvec PostgreSQL extension (postvec/), the postvec
+command-line tool (postvec-cli/) and their packaging (packaging/postvec/) — the
+components published as postvec release artifacts. It is deliberately *not* a
+repository-root license: the rest of this repository is a separate product with
+its own terms.
+
+Third-party components redistributed alongside postvec keep their own licenses,
+which ship in the packages and images that carry them:
+
+  * pgvector                — PostgreSQL License (a package dependency, never
+                              vendored)
+  * ONNX Runtime            — MIT (postvec-onnxruntime package / embedded image;
+                              see /usr/share/doc/postvec-onnxruntime/)
+  * bundled embedding model — see the model package's own LICENSE, NOTICE and
+                              SOURCE.json under
+                              /usr/share/doc/postvec-model-*/ and
+                              /opt/postvec/ninference/models/

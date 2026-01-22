@@ -1,0 +1,267 @@
+# Point the moving image tags at a published release, and prove all six landed.
+#
+# The release workflow advances `pg16`…`pg18-complete` as its last act, after
+# the GitHub release is public. Those are six separate registry writes with no
+# transaction around them: a failure part-way leaves some majors advanced and
+# some not, and the release itself is already published and correct.
+#
+# This is the repair. It is idempotent — pointing a moving tag at a digest it
+# already has is a no-op — so it is also the safe thing to run when nobody is
+# sure what state the tags are in. It verifies every tag afterwards rather than
+# assuming the writes took.
+#
+# Two jobs, split on read versus write. Resolving the plan and reporting it
+# (`dry_run: true`, the default) needs no environment, no approval and no write
+# permission; only the job that actually moves a tag is protected. The safe
+# thing to run should not be the thing that asks for production approval.
+#
+# It never builds, never publishes a versioned tag, and can only point a moving
+# tag at a release that already exists — production or disposable rehearsal
+# alike. The rehearsal path matters: a disposable publication that fails after
+# its GitHub release exists but before all six of its moving tags have advanced
+# needs exactly this repair, and criterion 2 covers that path.
+#
+# The image repositories and versioned tags come from the release's own
+# manifest, so a rehearsal's moving tags land in the throwaway namespace it
+# published to without this workflow knowing anything about it.
+#
+# What it points *at* comes from that release's own attested
+# `postvec-release.json`, not from this workflow's checkout: the checkout is the
+# default branch, whose versions.env may have moved on since the release, and
+# "which images does 0.1.0-1 consist of" is a question the release already
+# answered and signed.
+name: postvec-moving-tags
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: >-
+          Published release tag to point the moving tags at:
+          postvec-v0.1.0-1, or postvec-rehearsal-v0.1.0-9001 for a disposable
+          publication rehearsal. The whole tag, because the namespace is what
+          says which kind of release it is — and the resumption path this
+          workflow exists for applies to a rehearsal exactly as it does to a
+          release.
+        required: true
+        type: string
+      dry_run:
+        description: "Report what would change and change nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per release tag, so two runs for the same release cannot interleave. What
+  # stops runs for *different* releases from fighting over the same moving tags
+  # is the job-level group on `advance`, which the release workflow's `publish`
+  # job shares — see there.
+  group: postvec-moving-tags-run-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  # Resolution and the dry run are **read-only**, and are a separate job for
+  # that reason. They need no environment, no approval and no write permission
+  # — so `dry_run: true`, which is the safe thing to run when nobody is sure
+  # what state the tags are in, no longer queues behind a production approval or
+  # holds `packages: write` while doing nothing but looking.
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      # `gh attestation verify` reads the repository's attestations before the
+      # release manifest is trusted enough to be turned into registry writes.
+      attestations: read
+    outputs:
+      # base64, because a job output is a single string and this is six lines.
+      plan: ${{ steps.resolve.outputs.plan }}
+      # Keys the concurrency group the write job shares with the release
+      # workflow, so production and a disposable namespace stay independent.
+      repository: ${{ steps.resolve.outputs.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Every registry read below goes through `docker buildx imagetools`;
+      # installing it explicitly beats relying on what the runner image happens
+      # to ship.
+      - uses: ./.github/actions/postvec-buildx
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `inputs.release_tag` is a string a human typed, and GitHub interpolates
+      # workflow inputs into `run:` bodies *before* the shell sees them — so a
+      # value containing shell metacharacters would be shell, not data. It
+      # arrives through the environment instead, and is checked against the
+      # release-identity grammar before anything uses it.
+      - name: The release tag must be a release tag
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "${TAG}" =~ ^postvec(-rehearsal)?-v[0-9]+\.[0-9]+\.[0-9]+-[1-9][0-9]*$ ]] || {
+            echo "::error::'${TAG}' is not a postvec release tag."
+            echo "::error::Expected postvec-vX.Y.Z-R or postvec-rehearsal-vX.Y.Z-R."
+            exit 1
+          }
+          # The identity is the part after `-v`, in either namespace. Derived
+          # rather than asked for separately, so the two cannot disagree — and
+          # cross-checked against the release's own manifest below.
+          echo "RELEASE_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "RELEASE_ID=${TAG##*-v}" >> "$GITHUB_ENV"
+        shell: bash
+
+      # What the moving tags follow is the *published release*, not this
+      # workflow's checkout. The checkout is the default branch — a versions.env
+      # edited since the release would silently point these tags at a different
+      # repository, and the six digests would come from the registry rather than
+      # from anything the release itself attested to.
+      #
+      # So the plan is read out of the release's own manifest, and the manifest
+      # is only trusted after its attestation verifies.
+      - name: Read the plan from the published release
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          draft="$(gh release view "${RELEASE_TAG}" --repo "${{ github.repository }}" \
+                     --json isDraft --jq .isDraft)"
+          test "${draft}" = false \
+            || { echo "::error::${RELEASE_TAG} is a draft; moving tags follow published releases only"; exit 1; }
+
+          mkdir -p /tmp/release && cd /tmp/release
+          gh release download "${RELEASE_TAG}" --repo "${{ github.repository }}" \
+            --pattern postvec-release.json --clobber
+          # `--signer-workflow`, for the same reason users are told to use it:
+          # "signed by something in this repository" is a much weaker claim than
+          # "signed by this repository's release workflow", and this workflow
+          # turns that manifest into registry mutations.
+          gh attestation verify postvec-release.json \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/postvec-release.yml"
+
+          # The manifest must agree about both halves of the identity: the id
+          # derived from the tag, and the tag itself — a release and its
+          # disposable rehearsal share an id and differ only by namespace.
+          jq -e --arg id "${RELEASE_ID}" '.release_id == $id' postvec-release.json \
+            || { echo "::error::the release manifest is not for ${RELEASE_ID}"; exit 1; }
+          jq -e --arg t "${RELEASE_TAG}" '.git_tag == $t' postvec-release.json \
+            || { echo "::error::the release manifest names $(jq -r .git_tag postvec-release.json), not ${RELEASE_TAG}"; exit 1; }
+          test "$(jq '.images | length' postvec-release.json)" = 6 \
+            || { echo "::error::the release manifest does not describe six images"; exit 1; }
+
+          # moving-tag  immutable-source  expected-digest  current-digest-when-planned
+          #
+          # Column 2 is `<repository>@<digest>`, not the versioned *tag*. The
+          # write job runs after an environment approval that can take as long
+          # as it takes, and a tag is a mutable pointer: retagging from one
+          # would let a versioned tag that moved in the meantime decide where a
+          # moving tag lands. A digest cannot move, so the plan carries the
+          # digest and the write is the same write whenever it happens.
+          #
+          # Column 4 is recorded for the human reading the dry run and is *not*
+          # a decision input, for the mirror-image reason: a moving tag that
+          # already matched when the plan was made can have changed by the time
+          # it is applied, and skipping on that stale value would leave the tag
+          # wrong and the repair unmade.
+          : > /tmp/plan
+          while IFS=$'\t' read -r name tag digest variant major; do
+            suffix=""
+            [ "${variant}" = complete ] && suffix="-complete"
+            versioned="${name}:${tag}"
+            moving="${name}:pg${major}${suffix}"
+
+            # The registry must agree with the manifest. A versioned tag that no
+            # longer resolves to the digest the release recorded is not a tag to
+            # point anything at. Checked here, at plan time, because it is a
+            # statement about the release rather than about the write.
+            actual="$(docker buildx imagetools inspect "${versioned}" \
+                        --format '{{.Manifest.Digest}}')" \
+              || { echo "::error::${versioned} does not exist"; exit 1; }
+            test "${actual}" = "${digest}" || {
+              echo "::error::${versioned} is ${actual}, but the release recorded ${digest}"
+              exit 1
+            }
+
+            current="$(docker buildx imagetools inspect "${moving}" \
+                         --format '{{.Manifest.Digest}}' 2>/dev/null || echo '<none>')"
+            printf '%s %s %s %s\n' "${moving}" "${name}@${digest}" "${digest}" "${current}" >> /tmp/plan
+          done < <(jq -r '.images[] | [.name, .tag, .digest, .variant, (.pg_major|tostring)] | @tsv' \
+                     postvec-release.json)
+
+          test "$(wc -l < /tmp/plan)" = 6 \
+            || { echo "::error::the plan does not cover six images"; cat /tmp/plan; exit 1; }
+          echo "plan:"; cat /tmp/plan
+
+          # The repository every image in this release lives in, for the
+          # concurrency group the write job shares with the release workflow.
+          repository="$(jq -r '[.images[].name] | unique | .[0]' postvec-release.json)"
+          test "$(jq -r '[.images[].name] | unique | length' postvec-release.json)" = 1 \
+            || { echo "::error::the release spans more than one image repository"; exit 1; }
+          echo "repository=${repository}" >> "$GITHUB_OUTPUT"
+          # Handed to the write job as a job output rather than recomputed
+          # there: the plan the human read on a dry run is the plan that is
+          # applied, and the resolution logic runs once.
+          {
+            echo "plan<<PLAN_EOF"
+            base64 -w0 < /tmp/plan
+            echo
+            echo "PLAN_EOF"
+          } >> "$GITHUB_OUTPUT"
+        shell: bash
+
+  # The only writes, behind the protected environment. Skipped entirely on a
+  # dry run, so an approval is requested exactly when something is about to
+  # change.
+  advance:
+    needs: plan
+    if: inputs.dry_run == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # **Shared with postvec-release's `publish` job.** Three operations mutate
+    # the same six moving tags — publishing release A, publishing release B, and
+    # this repair — and whichever finished last would decide where `pg18` points,
+    # which is how users get moved backwards. One group per image repository
+    # serialises them without coupling production to a disposable rehearsal.
+    concurrency:
+      group: postvec-moving-tags-${{ needs.plan.outputs.repository }}
+      cancel-in-progress: false
+    environment: postvec-release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/postvec-buildx
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore the plan
+        env:
+          PLAN: ${{ needs.plan.outputs.plan }}
+        run: |
+          printf '%s' "${PLAN}" | base64 -d > /tmp/plan
+          test "$(wc -l < /tmp/plan)" = 6 \
+            || { echo "::error::the plan does not cover six images"; cat /tmp/plan; exit 1; }
+          cat /tmp/plan
+
+      # One helper, shared with the release workflow's own advance step.
+      #
+      # It attempts every write, then inspects every tag, and decides the result
+      # from what the registry actually holds. Inline under `set -e`, a failed
+      # write aborted the step: the remaining tags were never attempted, the
+      # verification never ran, and this guidance never printed — leaving an
+      # operator with a red step and no idea which tags moved.
+      - name: Advance and verify
+        run: |
+          packaging/postvec/scripts/advance-moving-tags.sh /tmp/plan \
+            --recovery-hint "Rerun this workflow. It is idempotent: it rewrites every tag from the release's own recorded digests, so a partial advance is repaired by running it again rather than by working out which tags are missing."

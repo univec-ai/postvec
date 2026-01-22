@@ -1,0 +1,50 @@
+# The remote-mode test fixture: a real inference node serving the canonical
+# ninference proto over gRPC plus the `/config` discovery envelope over HTTPS,
+# so the packaging pipeline's remote image is tested against something that
+# actually answers.
+#
+# Test-only. Never published, never referenced by a release manifest, and it
+# carries no compatibility promise. The gRPC handler bodies and the error
+# taxonomy are lifted from postvec's embedded loopback server
+# (postvec/src/client/embedded/server.rs), so behavior matches what postvec
+# was tested against byte for byte.
+[package]
+name = "inference-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Test-only inference node for postvec's remote-mode packaging tests"
+license = "PostgreSQL"
+repository = "https://github.com/univec-ai/postvec"
+publish = false
+
+[[bin]]
+name = "inference-fixture"
+path = "src/main.rs"
+
+[dependencies]
+engine = { path = "../../engine", features = ["onnx"] }
+shared = { path = "../../shared" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tonic = "0.13"
+prost = "0.13"
+prost-types = "0.13"
+tower = { version = "0.5", features = ["limit"] }
+http-body = "1"
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
+# TLS for /config: ninference serves it over HTTPS with a self-signed
+# certificate and postvec's discovery accepts that on a trusted network, so
+# the fixture must exercise the same path. OpenSSL rather than rustls because
+# the pinned builder image already carries libssl-dev.
+axum-server = { version = "0.7", default-features = false, features = ["tls-openssl"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = "0.4"
+env_logger = "0.11"
+
+[build-dependencies]
+tonic-build = "0.13"
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"

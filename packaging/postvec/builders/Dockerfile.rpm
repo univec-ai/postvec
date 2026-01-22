@@ -1,0 +1,138 @@
+# syntax=docker/dockerfile:1.7
+#
+# RHEL-family (EL9) builder. Same contract as Dockerfile.deb — pinned inputs,
+# a clean /out, no packaging — but a different PostgreSQL layout: PGDG RPMs
+# install under /usr/pgsql-<major>/ rather than /usr/lib/postgresql/<major>/,
+# so the staging tree cargo-pgrx produces is shaped differently and the package
+# descriptions read it through pg_config rather than assuming paths.
+#
+# Build it through scripts/build-extension-stage.sh.
+
+ARG BUILD_BASE
+FROM ${BUILD_BASE} AS builder
+
+ARG PG_MAJOR
+ARG RUST_VERSION
+ARG RUSTUP_VERSION
+ARG RUSTUP_INIT_SHA256
+ARG RUST_TRIPLE
+ARG PGRX_VERSION
+ARG SOURCE_DATE_EPOCH
+# Declared here, not next to the step that verifies with it: a build argument is
+# only in scope from its ARG onwards, so declaring it later would have the
+# checksum compared against an empty string.
+ARG PGDG_EL9_REPO_RPM_SHA256
+
+ENV TZ=UTC \
+    LC_ALL=C.UTF-8 \
+    CARGO_INCREMENTAL=0 \
+    CARGO_TERM_COLOR=never \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/pgsql-common/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+# `curl` is deliberately absent: the base image ships `curl-minimal`, which
+# provides the same binary and conflicts with the full package.
+RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
+    set -eux; \
+    dnf -y install \
+        gcc gcc-c++ make clang clang-devel pkgconf-pkg-config \
+        openssl-devel \
+        ca-certificates gnupg2 xz unzip zstd git file binutils findutils; \
+    dnf clean all
+
+# PGDG for EL9. The repository RPM carries its own signing key; `dnf` verifies
+# it against the key the repository RPM installs, which is the documented flow.
+# The distribution's own `postgresql` module has to be disabled first or it
+# shadows the PGDG packages.
+# PGDG's EL9 packages depend on EPEL and CRB (postgresqlNN-devel needs
+# perl(IPC::Run), which lives there). This is the documented PGDG-on-EL9
+# prerequisite, not an optimisation — without it the install simply fails.
+RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
+    set -eux; \
+    arch="$(uname -m)"; \
+    dnf -y install dnf-plugins-core epel-release; \
+    dnf config-manager --set-enabled crb; \
+    curl --fail --silent --show-error --location \
+        -o /tmp/pgdg-repo.rpm \
+        "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-${arch}/pgdg-redhat-repo-latest.noarch.rpm"; \
+    echo "${PGDG_EL9_REPO_RPM_SHA256}  /tmp/pgdg-repo.rpm" | sha256sum --check --strict -; \
+    dnf -y install /tmp/pgdg-repo.rpm; \
+    rm -f /tmp/pgdg-repo.rpm; \
+    dnf -qy module disable postgresql || true; \
+    dnf -y install "postgresql${PG_MAJOR}-devel" "postgresql${PG_MAJOR}-server"; \
+    dnf clean all
+
+# protoc, pinned by version and digest. Distribution packages range from 3.14
+# (EL9, and only in a non-default repository) to 3.21+ here, and generated
+# code should not depend on which builder ran.
+ARG PROTOC_VERSION
+ARG PROTOC_ARCH
+ARG PROTOC_SHA256
+RUN set -eux; \
+    curl --fail --silent --show-error --location --retry 3 \
+        -o /tmp/protoc.zip \
+        "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip"; \
+    echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum --check --strict -; \
+    mkdir -p /usr/local/protoc; \
+    unzip -q -o /tmp/protoc.zip -d /usr/local/protoc; \
+    rm -f /tmp/protoc.zip; \
+    ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc; \
+    protoc --version
+
+RUN set -eux; \
+    curl --fail --silent --show-error --location --retry 3 \
+        -o /tmp/rustup-init \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TRIPLE}/rustup-init"; \
+    echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum --check --strict -; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --no-modify-path --profile minimal \
+        --default-toolchain "${RUST_VERSION}" --component rustfmt; \
+    rm -f /tmp/rustup-init; \
+    test "$(rustc --version | cut -d' ' -f2)" = "${RUST_VERSION}"
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo install cargo-pgrx --version "${PGRX_VERSION}" --locked
+
+WORKDIR /src
+COPY . .
+
+# Whatever the build context happened to include, the build starts from source
+# only. A host `postvec/target/` carrying a staging tree from another
+# distribution would otherwise be copied into /out alongside this one's, and
+# the packaging step would pick whichever `postvec.so` it found first.
+RUN rm -rf /src/target /src/postvec/target
+
+RUN cargo pgrx init "--pg${PG_MAJOR}" "/usr/pgsql-${PG_MAJOR}/bin/pg_config"
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/postvec/target,sharing=locked,id=postvec-target-el9-${PG_MAJOR} \
+    --mount=type=cache,target=/src/target,sharing=locked,id=workspace-target-el9 \
+    set -eux; \
+    export RUSTFLAGS="--remap-path-prefix=/src=/postvec --remap-path-prefix=${CARGO_HOME}=/cargo"; \
+    export PGRX_BUILD_FLAGS=--locked; \
+    cd /src/postvec; \
+    cargo pgrx package --no-default-features \
+        --features "pg${PG_MAJOR},embedded" \
+        --pg-config "/usr/pgsql-${PG_MAJOR}/bin/pg_config"; \
+    cd /src; \
+    CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+        cargo build --locked --release -p postvec-cli; \
+    mkdir -p /out/stage /out/cli; \
+    cp -a "/src/postvec/target/release/postvec-pg${PG_MAJOR}/." /out/stage/; \
+    cp -a /src/target/release/postvec /out/cli/postvec
+
+RUN set -eux; \
+    { \
+      echo "rustc=$(rustc --version)"; \
+      echo "cargo_pgrx=$(cargo pgrx --version)"; \
+      echo "pg_major=${PG_MAJOR}"; \
+      echo "pg_version=$(/usr/pgsql-${PG_MAJOR}/bin/pg_config --version)"; \
+      echo "base=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")"; \
+      echo "glibc=$(getconf GNU_LIBC_VERSION)"; \
+      echo "[packages]"; \
+      rpm -qa --qf '%{NAME}=%{VERSION}-%{RELEASE}\n' | LC_ALL=C sort; \
+    } > /out/build-info.txt
+
+FROM scratch AS export
+COPY --from=builder /out/ /

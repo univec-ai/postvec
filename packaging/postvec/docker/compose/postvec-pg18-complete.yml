@@ -1,0 +1,56 @@
+# All-in-one postvec: PostgreSQL, pgvector, the CLI, ONNX Runtime and the
+# default model, in one container. Defaults to in-process inference; set
+# POSTVEC_MODE=grpc to use remote ninference instead. No API key required.
+#
+#   mkdir -p secrets && head -c 32 /dev/urandom | base64 > secrets/postgres-password
+#   docker compose -f postvec-pg18-complete.yml up -d
+#   docker compose -f postvec-pg18-complete.yml exec db \
+#       psql -U app -d app -c "SELECT vector_dims(postvec.embed('hello','sentence-transformers-all-minilm-l6-v2')::vector)"
+#
+# First start is slow: the engine loads the model before it serves. Wait for
+# the container to report healthy rather than for the port to open.
+
+services:
+  db:
+    # Pin a digest in production. A tag identifies the extension *and* the
+    # bundled model manifest, and neither should move under a running system:
+    #   ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete@sha256:<digest>
+    image: ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+      # Every database postvec should serve. The extension is created
+      # automatically only in POSTGRES_DB, and only on first initialisation.
+      POSTVEC_DATABASES: app
+    secrets:
+      - postgres-password
+    ports:
+      # Localhost only. PostgreSQL on a public interface is a decision, not a
+      # default — and the embedded inference listeners are loopback-only inside
+      # the container by design.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # PostgreSQL 18's official image stores data under a major-specific
+      # directory inside /var/lib/postgresql. Mounting /var/lib/postgresql/data
+      # here (the PG 16/17 path) silently loses your data on restart.
+      - postvec-data:/var/lib/postgresql
+    shm_size: 1gb
+    # Model loading plus PostgreSQL. Below this the engine will still work but
+    # start slowly; ONNX inference competes with the database for CPU.
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+        reservations:
+          memory: 2g
+    # Give PostgreSQL time to checkpoint on the way down.
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+secrets:
+  postgres-password:
+    file: ./secrets/postgres-password
+
+volumes:
+  postvec-data:

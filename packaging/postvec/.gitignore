@@ -1,0 +1,22 @@
+# Everything under these is produced by the scripts and reproducible from a
+# commit plus versions.env. Nothing here belongs in the repository — a
+# checked-in artifact is an artifact nobody can trace to a build.
+build/
+dist/
+
+# The repository root ignores *.txt; these are release contracts, not scratch
+# files — the hash-locked dependency set of the manifest schema validator, and
+# the reviewed list of lintian tags the packages are allowed to trip.
+#
+# Forgetting one of these negations does not fail on the machine that wrote the
+# file: it fails in CI, where the file simply is not there. tests/unit-test.sh
+# asserts each of them is committable, so that failure lands in the fast lint
+# job instead of a twenty-minute packaging job.
+!requirements-schema.txt
+!lintian-exceptions.txt
+
+# The flat release staging directory, assembled by write-release-manifest.sh.
+release/
+
+# Python bytecode from the helper scripts.
+__pycache__/

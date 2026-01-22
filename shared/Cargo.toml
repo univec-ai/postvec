@@ -1,0 +1,26 @@
+[package]
+name = "shared"
+version = "0.1.0"
+edition = "2021"
+# A shared library containing common modules like vector and tensor operations.
+description = "A shared library for vector and tensor operations."
+license = "PostgreSQL"
+repository = "https://github.com/univec-ai/postvec"
+
+[dependencies]
+byteorder = "1.5"
+itertools = "0.13"
+num-traits = "0.2"
+once_cell = "1.19"
+parking_lot = "0.12"
+rand = { version = "0.8", features = ["std_rng"] }
+rand_distr = "0.4"
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+# Using ndarray for efficient, multi-dimensional array operations.
+[dependencies.ndarray]
+version = "0.16.1"
+features = ["serde", "rayon"]

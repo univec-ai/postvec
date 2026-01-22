@@ -1,0 +1,31 @@
+# Build context for the postvec release builders (BuildKit reads the
+# `<dockerfile>.dockerignore` next to the Dockerfile, so this file — not the
+# repository-root .dockerignore — governs these builds).
+#
+# The context is the repository root because postvec's `embedded` feature is a
+# path dependency on the workspace crates (engine, shared) and postvec-cli is
+# a workspace member. Everything below is either enormous, irrelevant to a
+# Rust build, or actively unwanted inside a release image.
+
+.git
+.github
+.claude
+.codex
+.agents
+.gstack
+
+# Build output: hundreds of gigabytes, and a release must never reuse a host
+# build tree — the builder compiles from source into its own cache mounts.
+target
+*/target
+postvec/target
+
+packaging/postvec/build
+packaging/postvec/dist
+
+# Local state, secrets and scratch.
+.env
+.env.*
+*.log
+requests
+discovery

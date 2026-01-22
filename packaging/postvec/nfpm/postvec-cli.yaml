@@ -1,0 +1,81 @@
+# The `postvec` command, packaged separately from the per-major extension
+# packages.
+#
+# Why separate: a host may legitimately run PostgreSQL 16 and 18 side by side
+# and install both extension packages. If each carried /usr/bin/postvec, dpkg
+# and RPM would refuse the second install with a file-conflict. One CLI package,
+# owned by exactly one package, and each extension package depends on a
+# compatible version of it.
+#
+# Environment is supplied by scripts/build-packages.sh.
+
+name: postvec-cli
+arch: ${PKG_ARCH}
+platform: linux
+version: ${POSTVEC_VERSION}
+release: ${PKG_RELEASE}
+section: database
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+homepage: ${SOURCE_REPOSITORY}
+license: PostgreSQL
+description: |
+  Install, configure and diagnose the postvec PostgreSQL extension.
+  postvec setup configures a cluster and installs the extension into one or
+  more databases; postvec doctor is a read-only diagnosis of an installation;
+  postvec uninstall reverses setup, retaining data by default.
+  .
+  This package contains only the command. The extension itself is in the
+  per-PostgreSQL-major packages (postgresql-NN-postvec).
+
+contents:
+  - src: ${CELL_DIR}/cli/postvec
+    dst: /usr/bin/postvec
+    file_info: { mode: 0755, owner: root, group: root }
+  - src: ${REPO_ROOT}/postvec-cli/README.md
+    dst: /usr/share/doc/postvec-cli/README.md
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${REPO_ROOT}/postvec/LICENSE
+    dst: ${LICENSE_DST}/postvec-cli/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # Debian Policy §12.7 requires a changelog in every non-native package. One
+  # release, one changelog, shipped by every package it produced; rendered by
+  # scripts/build-packages.sh (see render_changelog in scripts/lib.sh for why
+  # nfpm's own `changelog:` field is not used).
+  - src: ${CHANGELOG_FILE}
+    dst: /usr/share/doc/postvec-cli/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+
+# The SHLIB_DEPENDS splice below carries the ELF dependencies the target
+# distribution's own generator found; see scripts/elf-depends.sh for why that
+# is a separate step. Only the block matching the packager in use is read, so
+# the same list appearing under both is expected.
+# No `recommends` on a PostgreSQL client.
+#
+# The CLI never shells out to psql — it speaks the wire protocol itself — so a
+# client package buys nothing, and both spellings actively cause harm on the
+# hosts this package targets. `postgresql-client` on Debian is a metapackage for
+# whichever major the *distribution* considers default, which on a PGDG host is
+# generally not the major postvec was installed for; `postgresql` on EL9 is the
+# distribution module that the PGDG instructions have you disable. A
+# recommendation that installs the wrong major by default is worse than no
+# recommendation, and there is no major-aware spelling to prefer instead,
+# because the CLI is deliberately not tied to one major.
+overrides:
+  deb:
+    # postgresql-common provides pg_lsclusters and pg_conftool, which the CLI
+    # uses to discover clusters and locate their configuration.
+    depends:
+      - postgresql-common
+${SHLIB_DEPENDS}
+  rpm:
+    depends:
+${SHLIB_DEPENDS}
+
+rpm:
+  group: Applications/Databases
+
+umask: 0022
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# explicit `mtime:` here would be parsed before environment expansion.

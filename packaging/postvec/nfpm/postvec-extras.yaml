@@ -1,0 +1,59 @@
+# Convenience metapackage: the extra packages in-process mode needs on the
+# database host, beyond the extension and the CLI.
+#
+# It carries no files. Its whole content is the dependency set, pinned to the
+# exact reviewed asset versions this release was tested against — a model
+# bundle and an ONNX Runtime are database-compatibility material, not
+# interchangeable libraries, so "any newer version" is not an acceptable bound.
+#
+# This is not a complete postvec install. It does not depend on postvec-cli or
+# postgresql-NN-postvec (it is all/noarch and cannot pick a PostgreSQL major).
+# Installing it still changes nothing. In-process mode is selected by
+# `postvec setup --embedded --path /opt/postvec/ninference`.
+
+name: ${EXTRAS_METAPACKAGE}
+arch: ${NOARCH}
+platform: linux
+version: ${POSTVEC_VERSION}
+release: ${PKG_RELEASE}
+section: database
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+homepage: ${SOURCE_REPOSITORY}
+license: PostgreSQL
+description: |
+  Extra packages for in-process postvec inference (metapackage).
+  .
+  Pulls in the pinned CPU ONNX Runtime and the bundled ${MODEL_TARGET_DIM}-dimensional
+  embedding model. This is not a complete postvec install: you still need
+  postvec-cli and postgresql-NN-postvec. It does not change postvec.mode.
+  .
+  After the extension is installed, enable in-process inference with:
+  postvec setup --database <name> --embedded --path /opt/postvec/ninference
+
+contents:
+  - src: ${REPO_ROOT}/postvec/LICENSE
+    dst: ${LICENSE_DST}/${EXTRAS_METAPACKAGE}/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # See postvec-cli.yaml: one changelog per release, shipped by every package.
+  - src: ${CHANGELOG_FILE}
+    dst: /usr/share/doc/${EXTRAS_METAPACKAGE}/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+
+overrides:
+  deb:
+    depends:
+      - postvec-onnxruntime (= ${ORT_VERSION}-${PKG_RELEASE})
+      - ${MODEL_PKG_NAME} (= ${MODEL_PKG_VERSION}-${PKG_RELEASE})
+  rpm:
+    depends:
+      - postvec-onnxruntime = ${ORT_VERSION}-${PKG_RELEASE}
+      - ${MODEL_PKG_NAME} = ${MODEL_PKG_VERSION}-${PKG_RELEASE}
+
+rpm:
+  group: Applications/Databases
+
+umask: 0022
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# explicit `mtime:` here would be parsed before environment expansion.

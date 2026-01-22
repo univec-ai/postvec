@@ -1,0 +1,68 @@
+# CPU ONNX Runtime for embedded mode, laid out where the engine looks for it.
+#
+# postvec never links this library: engine::initialize_onnx() searches
+# <postvec.ninference_path>/libs recursively and dlopen()s what it finds. So
+# this package is optional — remote-mode installations neither need nor load
+# it — and installing it changes nothing until postvec.mode = 'embedded'.
+#
+# Version and release track ONNX Runtime, not postvec: the two upgrade
+# independently, and the release manifest pins both.
+
+name: postvec-onnxruntime
+arch: ${PKG_ARCH}
+platform: linux
+version: ${ORT_VERSION}
+release: ${PKG_RELEASE}
+section: libs
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+homepage: https://onnxruntime.ai/
+license: MIT
+description: |
+  ONNX Runtime ${ORT_VERSION} (CPU) for postvec embedded mode.
+  .
+  Installs the runtime under /opt/postvec/ninference/libs/onnxruntime, where
+  postvec's in-process inference engine finds and loads it. Not required for
+  the default remote-inference mode.
+  .
+  ONNX Runtime is redistributed under the MIT licence; see
+  /usr/share/doc/postvec-onnxruntime/.
+
+# The dependencies below come from the target distribution's own generator.
+# This package is why that step exists: ONNX Runtime needs libstdc++ as well as
+# libc, and a package that declares neither installs cleanly on a minimal host
+# and then fails to dlopen at the first embedding.
+overrides:
+  deb:
+    depends:
+${SHLIB_DEPENDS}
+  rpm:
+    depends:
+${SHLIB_DEPENDS}
+
+contents:
+  - src: ${ORT_PAYLOAD_DIR}/opt/postvec/ninference/libs/onnxruntime
+    dst: /opt/postvec/ninference/libs/onnxruntime
+    type: tree
+    file_info: { owner: root, group: root }
+  - src: ${ORT_PAYLOAD_DIR}/usr/share/doc/postvec-onnxruntime/LICENSE
+    dst: ${LICENSE_DST}/postvec-onnxruntime/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # See postvec-cli.yaml: one changelog per release, shipped by every package.
+  - src: ${CHANGELOG_FILE}
+    dst: /usr/share/doc/postvec-onnxruntime/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${ORT_PAYLOAD_DIR}/usr/share/doc/postvec-onnxruntime/ThirdPartyNotices.txt
+    dst: /usr/share/doc/postvec-onnxruntime/ThirdPartyNotices.txt
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${ORT_PAYLOAD_DIR}/usr/share/doc/postvec-onnxruntime/SOURCE.json
+    dst: /usr/share/doc/postvec-onnxruntime/SOURCE.json
+    file_info: { mode: 0644, owner: root, group: root }
+
+rpm:
+  group: System Environment/Libraries
+
+umask: 0022
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# explicit `mtime:` here would be parsed before environment expansion.

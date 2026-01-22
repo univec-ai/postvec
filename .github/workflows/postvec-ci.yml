@@ -1,0 +1,145 @@
+# postvec CI (plan task 1.9). Scoped to the paths that feed postvec.so —
+# plus proto/**, because the proto-drift test compares against the canonical
+# proto and must run when *that* side changes too. Installs cargo-pgrx + a managed PG per matrix major,
+# builds pgvector into the PG 18 cluster, then runs fmt / clippy / tests.
+#
+# Matrix: the thin test suite runs on every advertised major (16/17/18) —
+# P4's adopt()/migration-safety code reads version-sensitive catalog state
+# (attstattarget, attcompression, pg_depend/pg_partition_tree shapes), so
+# compiling alone does not validate it. The embedded suite and the packaging
+# smoke stay PG 18-only (the release target; their behavior is
+# PG-version-independent).
+name: postvec-ci
+
+on:
+  push:
+    paths:
+      - "postvec/**"
+      - "proto/**"
+      # embedded mode compiles these workspace crates into postvec.so
+      - "engine/**"
+      - "shared/**"
+      - ".github/workflows/postvec-ci.yml"
+  pull_request:
+    paths:
+      - "postvec/**"
+      - "proto/**"
+      - "engine/**"
+      - "shared/**"
+      - ".github/workflows/postvec-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pgver: [16, 17, 18]
+    env:
+      PGRX_VERSION: "0.18.1"
+      PGVER: ${{ matrix.pgver }}
+      PGVECTOR_TAG: "v0.8.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libclang-dev clang \
+            pkg-config libssl-dev flex bison libreadline-dev zlib1g-dev \
+            libicu-dev protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: postvec
+          key: pg${{ matrix.pgver }}
+
+      - name: Install cargo-pgrx
+        run: cargo install cargo-pgrx --version "${PGRX_VERSION}" --locked
+
+      - name: Init pgrx PG ${{ matrix.pgver }}
+        run: cargo pgrx init "--pg${PGVER}" download
+
+      - name: Build pgvector into the pgrx cluster
+        run: |
+          # The glob is the point — pgrx installs under a full version it
+          # chooses (18.4), not under the major. Unquoted so it expands, then
+          # captured so nothing downstream re-splits it.
+          PG_CONFIG="$(echo "$HOME"/.pgrx/"${PGVER}".*/pgrx-install/bin/pg_config)"
+          git clone --branch "${PGVECTOR_TAG}" --depth 1 \
+            https://github.com/pgvector/pgvector.git /tmp/pgvector
+          make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG"
+          make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG" install
+
+      - name: rustfmt
+        working-directory: postvec
+        run: cargo fmt --check
+
+      - name: clippy
+        working-directory: postvec
+        run: cargo clippy --all-targets --no-default-features --features "pg${PGVER},pg_test" -- -D warnings
+
+      - name: cargo pgrx test
+        working-directory: postvec
+        run: cargo pgrx test "pg${PGVER}"
+
+      # Cross-session concurrency suite: its own invocation (and therefore its
+      # own cluster), because it commits fixtures that the parallel suite above
+      # would otherwise observe. Proves lock/waiter behaviour a
+      # single-transaction #[pg_test] cannot reach.
+      - name: cargo pgrx test (cross-session concurrency)
+        working-directory: postvec
+        run: cargo pgrx test "pg${PGVER}" --features pg_test_concurrency tests_concurrency
+
+      # Embedded mode (Arch B): lint + full suite with the in-process engine
+      # compiled in. Adds the embedded marshalling / error-taxonomy /
+      # loopback-server tests; needs no model assets. The clippy step runs on
+      # every matrix major (pg_sys bindings differ per major — a pg16-only
+      # embedded build break must not ship undetected); the test run is
+      # PG 18 only, as the embedded behavior is PG-version-independent.
+      - name: clippy (embedded)
+        working-directory: postvec
+        run: cargo clippy --all-targets --no-default-features --features "pg${PGVER},pg_test,embedded" -- -D warnings
+
+      - name: cargo pgrx test (embedded)
+        if: matrix.pgver == 18
+        working-directory: postvec
+        run: cargo pgrx test "pg${PGVER}" --features embedded
+
+      # P5 dump/restore smoke: a chunked entry with ready/pending/dead work
+      # survives pg_dump/restore — destination + sequence position + trigger
+      # attachments to the shared functions + markers + post-restore
+      # lifecycle. Uses the extension the test step installed into the pgrx
+      # dir; PG 18 only (dump format behavior is PG-version-independent).
+      - name: dump/restore smoke (P5)
+        if: matrix.pgver == 18
+        working-directory: postvec
+        run: ./dump_restore_smoke.sh
+
+      # Smoke-test the packaging path (control-file @CARGO_VERSION@
+      # substitution, install-SQL generation, staging-tree layout) so it isn't
+      # first exercised at release time. --debug: the fat-LTO release profile
+      # is too slow for CI and adds nothing to this check.
+      - name: cargo pgrx package (smoke)
+        if: matrix.pgver == 18
+        working-directory: postvec
+        run: |
+          cargo pgrx package --debug --no-default-features --features "pg${PGVER}" \
+            --pg-config "$(echo "$HOME"/.pgrx/"${PGVER}".*/pgrx-install/bin/pg_config)"
+          STAGE="target/debug/postvec-pg${PGVER}"
+          so="$(find "$STAGE" -name postvec.so)"
+          ctl="$(find "$STAGE" -name postvec.control)"
+          sql="$(find "$STAGE" -name 'postvec--*.sql')"
+          for f in "$so" "$ctl" "$sql"; do
+            # `if`, not `A && B || C`: with the latter, C runs whenever B fails
+            # too, which here would be the right answer for the wrong reason.
+            if [ -z "$f" ] || [ ! -s "$f" ]; then
+              echo "missing packaged asset"; exit 1
+            fi
+          done
+          grep -q "default_version = '0.1.0'" "$ctl"

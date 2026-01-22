@@ -1,0 +1,8 @@
+comment = 'transparent auto-embedding, hybrid search and embedding-model migration via UniVec ninference'
+default_version = '@CARGO_VERSION@'
+module_pathname = 'postvec'
+relocatable = false
+superuser = true
+trusted = false
+schema = 'postvec'
+requires = 'vector'

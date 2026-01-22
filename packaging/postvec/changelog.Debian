@@ -1,0 +1,10 @@
+postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
+
+  * First packaged release of postvec: the extension for one PostgreSQL
+    major, the `postvec` command, a pinned CPU ONNX Runtime, one reviewed
+    embedding model, and the metapackage that pins those two together.
+  * Installing a package installs files and changes nothing else. Use
+    `postvec setup` to configure a cluster and `postvec doctor` to diagnose
+    one.
+
+ -- ${MAINTAINER}  Fri, 31 Jul 2026 00:00:00 +0000

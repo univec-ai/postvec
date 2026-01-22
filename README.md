@@ -1,0 +1,101 @@
+# postvec
+
+Make a text column semantic — and keep it that way when your embedding model
+changes.
+
+postvec is a PostgreSQL extension (Rust, [pgrx](https://github.com/pgcentralfoundation/pgrx))
+that creates or adopts a [pgvector](https://github.com/pgvector/pgvector)
+column, keeps it synchronized as rows change, serves hybrid full-text/vector
+search in one call, and — the part nothing else does — **migrates stored
+vectors between embedding models in place**, converting the vectors themselves
+instead of re-embedding the source text.
+
+```console
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postvec \
+  ghcr.io/univec-ai/postvec:latest-pg18-complete
+```
+
+No API key, no external service — the complete image carries the inference
+engine and a bundled embedding model in-process:
+
+```sql
+CREATE TABLE docs (id bigserial PRIMARY KEY, body text);
+
+SELECT postvec.enable('public.docs', 'body',
+                      model => 'sentence-transformers-all-minilm-l6-v2');
+
+INSERT INTO docs (body) VALUES
+  ('quarterly revenue guidance was raised'),
+  ('embedding model migration without source re-embedding');
+
+SELECT d.*, s.rrf_score
+  FROM postvec.search('public.docs', 'body', 'switching vector models') AS s
+  JOIN docs AS d ON d.id = s.pk_value::bigint
+ ORDER BY s.rrf_score DESC;
+```
+
+And when the model that produced your vectors is deprecated, expensive, or
+simply worse than what you want next:
+
+```sql
+SELECT postvec.migrate('public.docs', 'body', 'baai-bge-m3');
+```
+
+Old rows are converted in place through an embedding-space translator; fresh
+writes route to the new model; the columns swap at finalization. No corpus
+re-embedding, no shadow index rebuild.
+
+## What's here
+
+| Directory | |
+|---|---|
+| `postvec/` | The extension (pgrx, PostgreSQL 16–18, pgvector ≥ 0.8) |
+| `postvec-cli/` | The `postvec` command: `setup`, `doctor`, `model pull/…`, `uninstall` |
+| `engine/`, `shared/` | The in-process inference engine embedded mode uses — a trimmed fork of UniVec's engine ([engine/FORK.md](engine/FORK.md)) |
+| `proto/` | The canonical gRPC contract between postvec and inference nodes |
+| `packaging/postvec/` | The `.deb`/`.rpm`/container release pipeline |
+| `fixtures/inference-server/` | Test-only inference node for the remote-mode packaging tests |
+| `docs/` | Operator documentation — start at [docs/postvec-description.md](docs/postvec-description.md) |
+
+## Two deployment modes
+
+- **Remote** (`postvec.mode = 'grpc'`, the default): inference runs on separate
+  nodes; PostgreSQL stays a thin client. The availability-first production
+  shape.
+- **Embedded** (`postvec.mode = 'embedded'`): one engine hosted inside the
+  PostgreSQL launcher process, CPU-only, models on local disk, no text leaves
+  the host. The right shape for evaluation, offline installs, and low-friction
+  adoption — traded against a shared CPU/memory/failure domain with
+  PostgreSQL.
+
+Same SQL, same queue, same wire contract in both modes.
+
+## Honest boundaries
+
+- Requires `shared_preload_libraries`, so no RDS/Aurora or other managed
+  services that do not allow it.
+- The extension is PostgreSQL-licensed and phones nothing home: no telemetry,
+  no provider API keys in the database.
+- `postvec model pull` fetches models from UniVec's model registry: an
+  anonymous public channel for open models, and an authenticated channel
+  (an account at https://univec.ai) for the commercial conversion models that
+  power `migrate()` between proprietary embedding spaces. Those two compiled-in
+  URLs are the only origins the CLI contacts.
+- Embedded mode is CPU-only; use remote mode for GPU inference.
+
+## Building
+
+```console
+cargo build --workspace                    # CLI, engine, shared, registry schema
+cd postvec && cargo pgrx test pg18         # the extension test suite
+cd postvec && ./ci.sh                      # the full local gate
+```
+
+Prerequisites: Rust, cargo-pgrx 0.18.1, a pgrx-managed PostgreSQL 18 with
+pgvector built into it, protoc. Packaging and images:
+[packaging/postvec/README.md](packaging/postvec/README.md).
+
+## Provenance
+
+postvec was developed inside UniVec's private monorepo and published as a
+squashed initial commit. Development history before v0.1.0 is not public.

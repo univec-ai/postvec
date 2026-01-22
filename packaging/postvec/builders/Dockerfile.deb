@@ -1,0 +1,169 @@
+# syntax=docker/dockerfile:1.7
+#
+# Debian-family builder for one (distribution × PostgreSQL major × architecture)
+# release cell. It compiles the extension and the CLI, and emits a clean /out
+# tree; it does not build packages — packaging is nfpm's job, on the host.
+#
+# Every input is pinned: the base image by digest, PostgreSQL by PGDG's own
+# repository and key, Rust by a digest-verified rustup-init plus an exact
+# toolchain version, cargo-pgrx by an exact `--locked` version. Nothing here
+# resolves "latest" or pipes an unverified download into a shell.
+#
+# Build it through scripts/build-extension-stage.sh; the build arguments below
+# come from packaging/postvec/versions.env.
+
+ARG BUILD_BASE
+FROM ${BUILD_BASE} AS builder
+
+ARG PG_MAJOR
+ARG RUST_VERSION
+ARG RUSTUP_VERSION
+ARG RUSTUP_INIT_SHA256
+ARG RUST_TRIPLE
+ARG PGRX_VERSION
+ARG SOURCE_DATE_EPOCH
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=UTC \
+    LC_ALL=C.UTF-8 \
+    CARGO_INCREMENTAL=0 \
+    CARGO_TERM_COLOR=never \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+# Base build dependencies. clang/libclang is required by pgrx's bindgen pass
+# over the PostgreSQL headers; protoc (needed by postvec's build.rs for the
+# vendored ninference proto) is installed separately and pinned.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates clang libclang-dev pkg-config \
+        curl gnupg xz-utils unzip zstd git file binutils \
+        libssl-dev
+
+# PGDG, through its documented signed-by mechanism — never apt-key, never an
+# unauthenticated repository. This is what makes postgresql-server-dev-${PG_MAJOR}
+# resolvable for majors the distribution itself does not ship.
+ARG PGDG_KEY_FINGERPRINT
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -eux; \
+    codename="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
+    curl --fail --silent --show-error --location \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /tmp/pgdg.asc; \
+    # Downloading a key over TLS proves who served it, not what it is. The
+    # fingerprint is the pin, and it is reviewed in versions.env.
+    actual="$(gpg --show-keys --with-colons /tmp/pgdg.asc | awk -F: '/^fpr:/ { print $10; exit }')"; \
+    test "${actual}" = "${PGDG_KEY_FINGERPRINT}" \
+        || { echo "PGDG key fingerprint ${actual} != ${PGDG_KEY_FINGERPRINT}" >&2; exit 1; }; \
+    gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg < /tmp/pgdg.asc; \
+    rm -f /tmp/pgdg.asc; \
+    echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg]" \
+         "https://apt.postgresql.org/pub/repos/apt ${codename}-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends "postgresql-server-dev-${PG_MAJOR}"
+
+# protoc, pinned by version and digest. Distribution packages range from 3.14
+# (EL9, and only in a non-default repository) to 3.21+ here, and generated
+# code should not depend on which builder ran.
+ARG PROTOC_VERSION
+ARG PROTOC_ARCH
+ARG PROTOC_SHA256
+RUN set -eux; \
+    curl --fail --silent --show-error --location --retry 3 \
+        -o /tmp/protoc.zip \
+        "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip"; \
+    echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum --check --strict -; \
+    mkdir -p /usr/local/protoc; \
+    unzip -q -o /tmp/protoc.zip -d /usr/local/protoc; \
+    rm -f /tmp/protoc.zip; \
+    ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc; \
+    protoc --version
+
+# Rust, from a digest-verified rustup-init.
+RUN set -eux; \
+    curl --fail --silent --show-error --location --retry 3 \
+        -o /tmp/rustup-init \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TRIPLE}/rustup-init"; \
+    echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum --check --strict -; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --no-modify-path --profile minimal \
+        --default-toolchain "${RUST_VERSION}" --component rustfmt; \
+    rm -f /tmp/rustup-init; \
+    rustc --version; \
+    test "$(rustc --version | cut -d' ' -f2)" = "${RUST_VERSION}"
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo install cargo-pgrx --version "${PGRX_VERSION}" --locked
+
+WORKDIR /src
+COPY . .
+
+# Whatever the build context happened to include, the build starts from source
+# only. A host `postvec/target/` carrying a staging tree from another
+# distribution would otherwise be copied into /out alongside this one's, and
+# the packaging step would pick whichever `postvec.so` it found first.
+RUN rm -rf /src/target /src/postvec/target
+
+# pgrx wants a registered pg_config before it will build against a Postgres.
+# `--base-testing-port 0` keeps this from reserving ports it never uses.
+RUN cargo pgrx init "--pg${PG_MAJOR}" "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+
+# The public package is the embedded-capable build: it still defaults to remote
+# gRPC mode, so one artifact serves both deployment shapes and a user can never
+# select embedded mode against a library that cannot do it.
+#
+# --locked on both builds: a release job never regenerates a lockfile.
+# --remap-path-prefix strips build paths out of the artifacts.
+#
+# Line tables for the CLI: enough for a backtrace to name a file and a line,
+# split into a detached debug package below and stripped from the shipped
+# binary.
+#
+# Via CARGO_PROFILE_RELEASE_DEBUG rather than a profile or RUSTFLAGS: Cargo
+# ignores `[profile.release]` in a workspace member, the workspace root belongs
+# to the servers' own build pipeline, and a `-C debuginfo=` in RUSTFLAGS is
+# overridden by the `-C debuginfo=0` Cargo derives from the profile and passes
+# afterwards. The environment variable overrides the profile itself, which is
+# the only one of the three that actually takes effect.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/postvec/target,sharing=locked,id=postvec-target-${PG_MAJOR} \
+    --mount=type=cache,target=/src/target,sharing=locked,id=workspace-target \
+    set -eux; \
+    export RUSTFLAGS="--remap-path-prefix=/src=/postvec --remap-path-prefix=${CARGO_HOME}=/cargo"; \
+    export PGRX_BUILD_FLAGS=--locked; \
+    cd /src/postvec; \
+    cargo pgrx package --no-default-features \
+        --features "pg${PG_MAJOR},embedded" \
+        --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"; \
+    cd /src; \
+    CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+        cargo build --locked --release -p postvec-cli; \
+    mkdir -p /out/stage /out/cli; \
+    cp -a "/src/postvec/target/release/postvec-pg${PG_MAJOR}/." /out/stage/; \
+    cp -a /src/target/release/postvec /out/cli/postvec
+
+# Record what actually built this, for the release manifest and for anyone
+# holding an artifact and wondering. The package inventory is the important
+# part: the repositories these came from are mutable, so the list of what was
+# actually installed is the only durable description of the build environment.
+RUN set -eux; \
+    { \
+      echo "rustc=$(rustc --version)"; \
+      echo "cargo_pgrx=$(cargo pgrx --version)"; \
+      echo "pg_major=${PG_MAJOR}"; \
+      echo "pg_version=$(/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config --version)"; \
+      echo "base=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")"; \
+      echo "glibc=$(getconf GNU_LIBC_VERSION)"; \
+      echo "[packages]"; \
+      dpkg-query -W -f='${Package}=${Version}\n' | LC_ALL=C sort; \
+    } > /out/build-info.txt
+
+# A scratch final stage: `docker build --output` copies exactly /out and
+# nothing else, so no toolchain, cargo cache or source tree can leak into a
+# release artifact.
+FROM scratch AS export
+COPY --from=builder /out/ /

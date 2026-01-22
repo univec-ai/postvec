@@ -1,0 +1,90 @@
+# One reviewed embedding model, so the embedded image and an embedded-mode
+# package install are useful with no API key and no external service.
+#
+# The bytes come from the postvec model registry's public channel, pulled by
+# the same `postvec model pull` a user runs and pinned to the archive's
+# SHA-256 digest. Everything below that varies with the model — its name, its
+# package name, its version, its licence and its dimension — is derived from
+# that verified archive by scripts/build-model-bundle.sh and read from
+# build/payload-common/model-facts.env, so changing which model is bundled is
+# five reviewed values in versions.env rather than an edit here.
+#
+# Architecture-independent: the packaged graph is portable FP32 ONNX, identical
+# on amd64 and arm64. Which files the archive contains is the publisher's
+# `exclude` decision, recorded in the registry; packaging ships exactly the
+# archive-owned set its install receipt lists and prunes nothing.
+#
+# The version is <registry revision>.<bundle version>.0, not postvec's: model
+# content and extension code upgrade independently. Changing weights,
+# tokenizer, pooling, normalisation or sequence length behind the same model
+# name would silently make new vectors incomparable with stored ones, so that
+# is a new name — never a rebuild of this one.
+
+name: ${MODEL_PKG_NAME}
+arch: ${NOARCH}
+platform: linux
+version: ${MODEL_PKG_VERSION}
+release: ${PKG_RELEASE}
+section: database
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+# The registry's `source` is free-form provenance, not a homepage: it may name
+# an exact upstream commit, which is not a page anyone should be sent to as
+# "the project". It is recorded verbatim in SOURCE.json and in the copyright
+# file instead.
+homepage: ${SOURCE_REPOSITORY}
+license: ${MODEL_LICENSE}
+# Every line of the extended description must stay under 80 characters *after*
+# substitution, which is why the long values (the model name, the archive
+# digest, the doc path) each start a line of their own.
+description: |
+  ${MODEL_NAME} as a postvec engine model bundle.
+  .
+  A ${MODEL_TARGET_DIM}-dimensional sentence-embedding model with a
+  ${MODEL_SEQUENCE_LEN}-token context, installed under
+  /opt/postvec/ninference/models where postvec's embedded inference engine
+  loads it. Licensed ${MODEL_LICENSE}.
+  .
+  Taken from the postvec model registry's public channel, revision
+  ${MODEL_REGISTRY_REVISION}, archive sha256:
+  ${MODEL_ARCHIVE_SHA256}
+  .
+  The upstream source, the per-file digests and that pin are recorded in
+  ${MODEL_DOC_DIR}/SOURCE.json
+  .
+  The model name postvec knows this by is
+  ${MODEL_NAME}
+  Vectors stored under that name are only comparable to vectors produced by
+  this model.
+
+contents:
+  - src: ${MODEL_PAYLOAD_DIR}/opt/postvec/ninference/models
+    dst: /opt/postvec/ninference/models
+    type: tree
+    file_info: { owner: root, group: root }
+  - src: ${MODEL_PAYLOAD_DIR}${MODEL_DOC_DIR}/SOURCE.json
+    dst: ${MODEL_DOC_DIR}/SOURCE.json
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${MODEL_PAYLOAD_DIR}${MODEL_DOC_DIR}/model-files.sha256
+    dst: ${MODEL_DOC_DIR}/model-files.sha256
+    file_info: { mode: 0644, owner: root, group: root }
+  # Per family, and deliberately not the same file. A Debian copyright must
+  # reference /usr/share/common-licenses/<id> rather than repeat the text; an
+  # RPM's /usr/share/licenses has no such common copy and wants the full
+  # licence. Either way the verbatim licence travels with the weights under
+  # /opt, which is what a redistribution licence requires.
+  - src: ${MODEL_LICENSE_SRC}
+    dst: ${LICENSE_DST}/${MODEL_PKG_NAME}/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # See postvec-cli.yaml: one changelog per release, shipped by every package.
+  - src: ${CHANGELOG_FILE}
+    dst: ${MODEL_DOC_DIR}/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+
+rpm:
+  group: Applications/Databases
+
+umask: 0022
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# explicit `mtime:` here would be parsed before environment expansion.

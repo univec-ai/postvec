@@ -1,0 +1,42 @@
+# postvec against remote ninference nodes — the default deployment shape, and
+# the one to use when inference is shared between services or needs models the
+# bundled one does not cover.
+#
+# Note the volume path: PostgreSQL 16 and 17 images store data in
+# /var/lib/postgresql/data, PostgreSQL 18 in /var/lib/postgresql. This file is
+# for 17; see postvec-pg18-complete.yml for the 18 layout. Changing the image
+# tag from pg17 to pg18 against the same volume does *not* upgrade anything —
+# a PostgreSQL major upgrade needs pg_upgrade or dump/restore.
+
+services:
+  db:
+    image: ghcr.io/univec-ai/postvec:0.1.0-1-pg17
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+      POSTVEC_DATABASES: app
+      POSTVEC_MODE: grpc
+      # Comma-separated; order drives round-robin. gRPC is plaintext, so these
+      # endpoints must be inside the same trusted private network as
+      # ninference itself — this is not a way to reach inference over the
+      # internet.
+      POSTVEC_GRPC_ENDPOINTS: "ninference.example:33333"
+      # Used for GET /config model discovery.
+      POSTVEC_HTTP_ENDPOINTS: "https://ninference.example:22222"
+    secrets:
+      - postgres-password
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postvec-data:/var/lib/postgresql/data
+    shm_size: 1gb
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+secrets:
+  postgres-password:
+    file: ./secrets/postgres-password
+
+volumes:
+  postvec-data:

@@ -1,0 +1,54 @@
+# Detached debug information for the extension library of one PostgreSQL major.
+#
+# Named the way each ecosystem names such packages so the usual tooling finds
+# it: `-dbgsym` on Debian, `-debuginfo` on RPM.
+#
+# The files sit at /usr/lib/debug<full path of the stripped object>, which is
+# where gdb, `coredumpctl` and `debuginfod` look — a debug file placed anywhere
+# else is a debug file nobody loads. The build also attaches a GNU debug link,
+# so the lookup does not depend on a build-id index existing.
+#
+# The CLI's symbols are deliberately *not* here: /usr/bin/postvec belongs to one
+# package for every major, so its symbols do too (postvec-cli-dbgsym).
+
+name: ${DEBUG_PACKAGE}
+arch: ${PKG_ARCH}
+platform: linux
+version: ${POSTVEC_VERSION}
+release: ${PKG_RELEASE}
+section: debug
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+homepage: ${SOURCE_REPOSITORY}
+license: PostgreSQL
+description: |
+  Debug symbols for the postvec extension library (PostgreSQL ${PG_MAJOR}).
+  .
+  Install alongside ${EXTENSION_PACKAGE} to get readable backtraces from a
+  crash inside the extension. Never needed to run postvec.
+
+contents:
+  - src: ${CELL_DIR}/debug/postvec.so.debug
+    dst: /usr/lib/debug${PKGLIBDIR}/postvec.so.debug
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${REPO_ROOT}/postvec/LICENSE
+    dst: ${LICENSE_DST}/${DEBUG_PACKAGE}/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # See postvec-cli.yaml: one changelog per release, shipped by every package.
+  - src: ${CHANGELOG_FILE}
+    dst: /usr/share/doc/${DEBUG_PACKAGE}/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+
+overrides:
+  deb:
+    depends:
+      - ${EXTENSION_PACKAGE} (= ${POSTVEC_VERSION}-${PKG_RELEASE})
+  rpm:
+    depends:
+      - ${EXTENSION_PACKAGE} = ${POSTVEC_VERSION}-${PKG_RELEASE}
+
+rpm:
+  group: Development/Debug
+
+umask: 0022

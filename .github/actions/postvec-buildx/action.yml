@@ -1,0 +1,49 @@
+# Set up a Buildx builder pinned to this commit's reviewed pins.
+#
+# Pinning `docker/setup-buildx-action` to a commit pins the *action*, not the
+# tools it provisions: on a runner without buildx it downloads whichever release
+# it considers current, and the container driver pulls `moby/buildkit:<tag>`,
+# which is a pointer somebody else can move. Both build every package and every
+# image in this release, so both are pins like the compiler — and they live in
+# packaging/postvec/versions.env with the rest of them.
+#
+# This exists as a composite action so the pins are read in one place: a
+# workflow that set them up itself would eventually set one of the eight up
+# differently.
+name: postvec buildx
+description: Buildx and BuildKit, pinned from packaging/postvec/versions.env.
+
+runs:
+  using: composite
+  steps:
+    - id: pins
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        pin() { sed -n "s/^$1=//p" packaging/postvec/versions.env; }
+
+        buildx="$(pin BUILDX_VERSION)"
+        buildkit="$(pin BUILDKIT_IMAGE)"
+
+        # Fail closed on a pin that is absent or is not one. An empty `version`
+        # means "whatever is current", and an image reference without a full
+        # digest is a tag — either would silently undo the pinning this action
+        # exists for.
+        [[ "${buildx}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+          || { echo "::error::BUILDX_VERSION is not an exact version: '${buildx}'"; exit 1; }
+        [[ "${buildkit}" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] \
+          || { echo "::error::BUILDKIT_IMAGE is not digest-pinned: '${buildkit}'"; exit 1; }
+
+        echo "buildx=${buildx}"     >> "$GITHUB_OUTPUT"
+        echo "buildkit=${buildkit}" >> "$GITHUB_OUTPUT"
+        echo "buildx ${buildx}, BuildKit ${buildkit}"
+
+    - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      with:
+        version: ${{ steps.pins.outputs.buildx }}
+        driver-opts: image=${{ steps.pins.outputs.buildkit }}
+
+    # What actually got provisioned, in the log next to what was asked for. A
+    # pin nobody can see take effect is a pin nobody notices stopped working.
+    - shell: bash
+      run: docker buildx version

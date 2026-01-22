@@ -1,0 +1,19 @@
+# Advisories accepted for one release, with an expiry.
+#
+# `cargo audit` is a release gate: a known vulnerability blocks publication.
+# That is only workable if there is a way to say "we looked at this one, it does
+# not apply, and here is when we will look again" — otherwise the gate gets
+# turned off the first time it is inconvenient, which is the failure mode this
+# file exists to prevent.
+#
+# Every entry needs the advisory id, why it does not apply *to postvec*, who
+# decided, and a review date. An expired entry fails the build exactly as the
+# advisory itself would.
+#
+#   [[accepted]]
+#   id = "RUSTSEC-0000-0000"
+#   reason = "the vulnerable code path is <...>; postvec never calls it because <...>"
+#   decided_by = "<name>"
+#   review_by = "2026-12-31"
+
+accepted = []

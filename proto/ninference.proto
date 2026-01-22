@@ -1,0 +1,81 @@
+// File: proto/ninference.proto
+syntax = "proto3";
+package ninference;
+import "google/protobuf/struct.proto";
+
+// The main gRPC service for the application.
+service NinferenceService {
+    // Generates embeddings for a batch of texts using a specified model.
+    rpc EmbedTexts(EmbedTextsRequest) returns (EmbedTextsResponse);
+
+    // Converts embeddings from one format to another using a specified model.
+    rpc ConvertEmbeddings(ConvertEmbeddingsRequest)
+            returns (ConvertEmbeddingsResponse);
+}
+
+// A message representing a single vector of floating-point numbers.
+message FloatVector {
+    repeated float vector = 1;
+}
+
+// Request message for the EmbedTexts method.
+message EmbedTextsRequest {
+    // A list of text strings to embed.
+    repeated string texts = 1;
+    // Field 2: The name of the model to use.
+    string model = 2;
+    // Field 3: The bridge model to use (optional, for bridge requests).
+    string bridge_model = 3;
+    // Field 4: The target model to use (optional, for bridge requests).
+    string target_model = 4;
+
+    // OpenAI-style request knobs (Task 2 / Task 4). All optional — empty
+    // string / zero means "use executor default" so old aphex builds remain
+    // wire-compatible.
+    // Field 5: "float" (default) or "base64".
+    string encoding_format = 5;
+    // Field 6: Matryoshka truncation. 0 means no truncation.
+    uint32 dimensions      = 6;
+    // Field 7: Template key (e.g. "search_query"). Empty means no template.
+    string input_type      = 7;
+    // Field 8: Stable end-user identifier (pass-through, for logging only).
+    string user            = 8;
+}
+
+// Response message for the EmbedTexts method.
+
+
+// Request message for the ConvertEmbeddings method.
+// The field numbers are updated to match the app-lib (server) definition.
+message ConvertEmbeddingsRequest {
+    // Field 1: The list of embedding vectors to convert.
+    repeated FloatVector embeddings = 1;
+    // Field 2: The name of the model to use.
+    string model = 2;
+    // Field 3: The source model (optional, for bridge requests).
+    string source_model = 3;
+    // Field 4: The bridge model (optional, for bridge requests).
+    string bridge_model = 4;
+    // Field 5: The target model (optional, for bridge requests).
+    string target_model = 5;
+}
+
+message TokenUsage {
+  uint32 prompt_tokens = 1;
+  uint32 completion_tokens = 2;
+  uint32 total_tokens = 3;
+}
+
+// Response message for the EmbedTexts method.
+message EmbedTextsResponse {
+    // This will serialize to "embeddings": [[...], [...]]
+    google.protobuf.ListValue embeddings = 1;
+    TokenUsage usage = 2;
+}
+
+// Response message for the ConvertEmbeddings method.
+message ConvertEmbeddingsResponse {
+    // This will serialize to "embeddings": [[...], [...]]
+    google.protobuf.ListValue embeddings = 1;
+    TokenUsage usage = 2;
+}

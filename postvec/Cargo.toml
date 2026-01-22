@@ -1,0 +1,96 @@
+[package]
+name = "postvec"
+version = "0.1.0"
+edition = "2021"
+description = "Transparent auto-embedding, hybrid search and embedding-model migration for PostgreSQL, backed by UniVec inference"
+# Release metadata: `packaging/postvec/scripts/assert-versions.sh` reads
+# `version` from here and refuses to build a release whose tag, control file
+# and CLI disagree with it. The licence text is postvec/LICENSE.
+license = "PostgreSQL"
+readme = "README.md"
+repository = "https://github.com/univec-ai/postvec"
+homepage = "https://github.com/univec-ai/postvec/tree/main/postvec"
+authors = ["the UniVec authors"]
+keywords = ["postgresql", "pgrx", "embeddings", "vector-search"]
+categories = ["database"]
+
+# Deliberately excluded from the repo root workspace (root Cargo.toml
+# `exclude`): pgrx cdylibs build via cargo-pgrx with per-PG feature flags and
+# would break `cargo build --workspace`.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["pg18"]
+pg16 = ["pgrx/pg16", "pgrx-tests/pg16"]
+pg17 = ["pgrx/pg17", "pgrx-tests/pg17"]
+pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
+pg_test = []
+# The cross-session concurrency suite (src/tests_concurrency.rs). It runs as
+# its OWN `cargo pgrx test` invocation because it must COMMIT fixtures for
+# other sessions to see, while the ordinary suite runs its tests in parallel
+# against one shared database and asserts on global counts. pgrx builds a
+# fresh cluster per invocation, so a separate run is complete isolation.
+# The `postgres` client opens the extra sessions; dev-dependencies do not
+# reach the pg_test cdylib, hence an optional dependency behind the feature.
+pg_test_concurrency = ["pg_test", "dep:postgres"]
+# Arch B (embedded mode): host the UniVec `engine` crate in-process inside the
+# background worker, behind a loopback gRPC server, selected at runtime by
+# `postvec.mode = 'embedded'`. Off by default: it drags the engine + ONNX/
+# AWS-SDK dependency tree into the cdylib. Add engine backend features
+# (ort-cuda, candle, ...) here as the deployment requires.
+embedded = ["dep:engine", "dep:shared", "dep:log", "dep:axum", "dep:tower", "dep:http-body", "tokio/rt-multi-thread"]
+
+[dependencies]
+pgrx = "=0.18.1"
+tonic = "0.13"
+tower = { version = "0.5", features = ["limit"], optional = true }
+http-body = { version = "1", optional = true }
+prost = "0.13"
+prost-types = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+once_cell = "1"
+tokio = { version = "1", features = ["rt", "time"] }
+thiserror = "1"
+postgres = { version = "0.19", optional = true }
+
+# Embedded mode (feature "embedded") only. `engine` is a path dependency into
+# the workspace tree; legal from this workspace-excluded crate — it resolves
+# against postvec's own Cargo.lock. ONNX Runtime is load-dynamic: nothing
+# links at build time, the .so is dlopen'ed from $NINFERENCE_PATH/libs at
+# worker start.
+engine = { path = "../engine", features = ["onnx"], optional = true }
+shared = { path = "../shared", optional = true }
+log = { version = "0.4", optional = true }
+# The engine host's loopback HTTP /config listener (embedded mode). Costs
+# nothing extra: `engine` already compiles axum 0.7 into the cdylib.
+axum = { version = "0.7", optional = true, default-features = false, features = ["http1", "json", "tokio"] }
+
+[build-dependencies]
+tonic-build = "0.13"
+
+[dev-dependencies]
+pgrx-tests = "=0.18.1"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# Line tables, not full debug info: enough for a crash backtrace to name a file
+# and a line, at a fraction of the size. They are *not* stripped here — the
+# packaging pipeline splits them into a detached -dbgsym/-debuginfo package and
+# strips the shipped library, which is how a distribution ships symbols without
+# shipping them to everyone (packaging/postvec/scripts/build-extension-stage.sh).
+#
+# A crash in this library takes a PostgreSQL backend down with it, so a
+# readable backtrace is worth the build time.
+debug = "line-tables-only"

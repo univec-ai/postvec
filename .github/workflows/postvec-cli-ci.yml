@@ -1,0 +1,77 @@
+# postvec-cli CI. Separate from postvec-ci.yml because the CLI is an ordinary
+# workspace crate: it needs no cargo-pgrx, no managed PostgreSQL and no pgvector,
+# so it runs in seconds instead of the extension suite's minutes.
+#
+# The tests here are hermetic by construction — the check logic is pure over
+# observed facts, and the endpoint probes use ephemeral local listeners — so
+# there is nothing to provision. The PostgreSQL 16/17/18 matrix that exercises
+# real setup/uninstall/doctor runs against live clusters lives outside CI; see
+# docs/postgres/install.md.
+name: postvec-cli-ci
+
+on:
+  push:
+    paths:
+      - "postvec-cli/**"
+      # The archive/descriptor/identity rules the CLI applies live here.
+      - "registry/schema/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/postvec-cli-ci.yml"
+  pull_request:
+    paths:
+      - "postvec-cli/**"
+      # The archive/descriptor/identity rules the CLI applies live here.
+      - "registry/schema/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/postvec-cli-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ". -> target"
+
+      - name: rustfmt
+        run: cargo fmt -p postvec-cli -p registry-schema -- --check
+
+      # registry-schema owns the format the CLI and UniVec's publisher must
+      # apply identically: the index schema, the descriptor and identity
+      # rules, and the archive writer/reader. Both configurations run — the
+      # default build (what an index-only consumer links) and `archive` (what
+      # the CLI links) — because a feature that only ever builds one way is a
+      # feature that breaks the other silently.
+      - name: registry-schema clippy + tests
+        run: |
+          cargo clippy -p registry-schema --all-targets -- -D warnings
+          cargo test -p registry-schema
+          cargo clippy -p registry-schema --features archive --all-targets -- -D warnings
+          cargo test -p registry-schema --features archive
+
+      - name: clippy
+        run: cargo clippy -p postvec-cli --all-targets -- -D warnings
+
+      - name: clippy (registry-test-overrides)
+        run: cargo clippy -p postvec-cli --all-targets --features registry-test-overrides -- -D warnings
+
+      # Two passes on purpose (audit-p3.md P3-R10): the default build proves
+      # the registry URL overrides do not exist (urls.rs's no-feature test),
+      # and the feature build runs the loopback registry_pull fixture suite,
+      # which needs the override compiled in.
+      - name: test (default features — overrides absent)
+        run: cargo test -p postvec-cli --all-targets
+
+      - name: test (registry-test-overrides — fixture suite)
+        run: cargo test -p postvec-cli --all-targets --features registry-test-overrides

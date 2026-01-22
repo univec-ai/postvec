@@ -1,0 +1,64 @@
+[package]
+name = "postvec-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Install, uninstall and diagnose the postvec PostgreSQL extension"
+# Released together with, and version-locked to, the extension — see
+# packaging/postvec/scripts/assert-versions.sh. The licence text is
+# postvec/LICENSE (one file for both halves of the same release).
+license = "PostgreSQL"
+readme = "README.md"
+repository = "https://github.com/univec-ai/postvec"
+homepage = "https://github.com/univec-ai/postvec/tree/main/postvec-cli"
+authors = ["the UniVec authors"]
+
+# The installed binary is `postvec` (the crate name is `postvec-cli` because
+# `postvec` is the pgrx extension crate, which lives outside this workspace).
+[[bin]]
+name = "postvec"
+path = "src/main.rs"
+
+[features]
+# Test-only trust bypass (audit-p3.md P3-R10): compiles in the
+# POSTVEC_REGISTRY_*_INDEX_URL environment overrides (and their relaxed
+# HTTP/loopback transport) so the integration suite can serve loopback
+# fixtures. NEVER enable this in a build that ships or that runs with real
+# credentials — packaging builds use the default feature set, which does not
+# contain it, whatever the profile. The registry_pull integration tests are
+# gated on it and compile to nothing without it.
+registry-test-overrides = []
+
+[dependencies]
+# Every version here is already resolved in the workspace lockfile; the CLI
+# deliberately introduces no second PostgreSQL driver and no second TLS stack.
+anyhow = { workspace = true }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+hex = "0.4"
+humantime = "2"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The shared registry index schema — one implementation for the CLI, the
+# publisher and the aphex gateway (registry-simplify.md §4.6).
+registry-schema = { path = "../registry/schema", features = ["archive"] }
+semver = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+sqlx = { version = "0.8.6", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "postgres",
+] }
+tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "signal", "time", "io-util", "io-std", "sync"] }
+url = "2"
+walkdir = "2"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = "3"
+
+[lints.clippy]
+# The CLI is a long linear orchestration; these two fire constantly on
+# check-producing functions and say nothing useful about them.
+too_many_arguments = "allow"
