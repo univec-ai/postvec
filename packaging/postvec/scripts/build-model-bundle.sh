@@ -172,7 +172,7 @@ BACKEND="${INSTALLED[0]%%/*}"
 INSTALLED_NAME="${INSTALLED[0]#*/}"
 [[ "${INSTALLED_NAME}" == "${BUNDLED_MODEL_NAME}" ]] \
     || die "the engine root holds ${INSTALLED_NAME}, not the pinned ${BUNDLED_MODEL_NAME}"
-SOURCE_MODEL_DIR="${SOURCE_ROOT}/models/${INSTALLED[0]}"
+SOURCE_MODEL_DIR="${SOURCE_ROOT}/models/${BACKEND}/${INSTALLED_NAME}"
 
 # ------------------------------------------------------------------ activation
 
@@ -247,7 +247,7 @@ if (( PROMOTE )); then
     fi
     rm -rf "${CACHE_ROOT}.replaced"
     SOURCE_ROOT="${CACHE_ROOT}"
-    SOURCE_MODEL_DIR="${SOURCE_ROOT}/models/${INSTALLED[0]}"
+    SOURCE_MODEL_DIR="${SOURCE_ROOT}/models/${BACKEND}/${INSTALLED_NAME}"
     log "cached at ${CACHE_ROOT}"
 fi
 

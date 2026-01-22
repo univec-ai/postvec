@@ -728,7 +728,7 @@ mod tests {
     /// but every one of them is a rejection, never a silent extraction.
     #[test]
     fn pax_and_gnu_control_entries_are_rejected() {
-        for typeflag in [b'x', b'g', b'L', b'K', b'S'] {
+        for typeflag in *b"xgLKS" {
             let dir = temp_root();
             let (archive, written) = sample_archive(dir.path());
             let mut bytes = fs::read(&archive).unwrap();
