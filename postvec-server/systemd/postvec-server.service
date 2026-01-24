@@ -1,0 +1,65 @@
+[Unit]
+Description=postvec inference node
+Documentation=https://github.com/univec-ai/postvec/tree/main/postvec-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=postvec-server
+Group=postvec-server
+
+# The engine root: libs/ (ONNX Runtime) and models/. Same layout embedded mode
+# uses, so a tree `postvec model pull` wrote into works unchanged.
+Environment=POSTVEC_SERVER_ROOT=/var/lib/postvec-server
+Environment=RUST_LOG=info
+
+# Everything else lives in the file. Peers, ports and certificates belong to
+# the host, not to a unit that is the same on every node — and a config file
+# can be templated without an ExecStart forty words long.
+ExecStart=/usr/bin/postvec-server --config /etc/postvec-server/config.json
+
+# SIGTERM starts the drain: /ready flips to 503 and the node announces its
+# departure, then it keeps serving for --drain-delay-ms (5s by default) so both
+# are observed before the socket closes, then in-flight requests finish. Allow
+# more than the drain delay plus the longest request budget.
+KillSignal=SIGTERM
+TimeoutStopSec=45
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening. This process reads model files, opens sockets and runs native
+# inference; it needs nothing else. Loosen deliberately, not pre-emptively.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# The model root is read-only at runtime: this process never writes there, and
+# `postvec model pull` runs as a different user. Drop ReadOnlyPaths (or move
+# the root to ReadWritePaths) only if you have a reason.
+ReadOnlyPaths=/var/lib/postvec-server /etc/postvec-server
+
+# An ONNX session maps model weights and runs a thread pool per session; the
+# ceiling that matters is --max-inflight and --max-resident-models, not a
+# cgroup. Set MemoryMax here if you would rather the kernel enforce it, but
+# know that an OOM kill loses in-flight requests a drain would have finished.
+#MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

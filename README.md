@@ -51,6 +51,7 @@ re-embedding, no shadow index rebuild.
 |---|---|
 | `postvec/` | The extension (pgrx, PostgreSQL 16–18, pgvector ≥ 0.8) |
 | `postvec-cli/` | The `postvec` command: `setup`, `doctor`, `model pull/…`, `uninstall` |
+| `postvec-server/` | The standalone inference node remote mode dials ([README](postvec-server/README.md)) — **Business Source License 1.1** (source-available), not the PostgreSQL License the rest uses |
 | `engine/`, `shared/` | The in-process inference engine embedded mode uses — a trimmed fork of UniVec's engine ([engine/FORK.md](engine/FORK.md)) |
 | `proto/` | The canonical gRPC contract between postvec and inference nodes |
 | `packaging/postvec/` | The `.deb`/`.rpm`/container release pipeline |
@@ -61,7 +62,10 @@ re-embedding, no shadow index rebuild.
 
 - **Remote** (`postvec.mode = 'grpc'`, the default): inference runs on separate
   nodes; PostgreSQL stays a thin client. The availability-first production
-  shape.
+  shape. Those nodes are [`postvec-server`](postvec-server/README.md) — same
+  engine, same wire contract, its own process, no model hub. It is the one
+  directory in this repository that is **not** PostgreSQL-licensed; see
+  [LICENSE](LICENSE).
 - **Embedded** (`postvec.mode = 'embedded'`): one engine hosted inside the
   PostgreSQL launcher process, CPU-only, models on local disk, no text leaves
   the host. The right shape for evaluation, offline installs, and low-friction
@@ -74,8 +78,10 @@ Same SQL, same queue, same wire contract in both modes.
 
 - Requires `shared_preload_libraries`, so no RDS/Aurora or other managed
   services that do not allow it.
-- The extension is PostgreSQL-licensed and phones nothing home: no telemetry,
-  no provider API keys in the database.
+- The extension is PostgreSQL-licensed — unconditionally, in either mode — and
+  phones nothing home: no telemetry, no provider API keys in the database, no
+  licence check. `postvec-server` is under the Business Source License 1.1 (source-available)
+  and does the same.
 - `postvec model pull` fetches models from UniVec's model registry: an
   anonymous public channel for open models, and an authenticated channel
   (an account at https://univec.ai) for the commercial conversion models that
@@ -86,13 +92,13 @@ Same SQL, same queue, same wire contract in both modes.
 ## Building
 
 ```console
-cargo build --workspace                    # CLI, engine, shared, registry schema
+cargo build --workspace                    # CLI, server, engine, shared, registry schema
 cd postvec && cargo pgrx test pg18         # the extension test suite
 cd postvec && ./ci.sh                      # the full local gate
 ```
 
 Prerequisites: Rust, cargo-pgrx 0.18.1, a pgrx-managed PostgreSQL 18 with
-pgvector built into it, protoc. Packaging and images:
+pgvector built into it, protoc, libssl-dev (the server's TLS listener). Packaging and images:
 [packaging/postvec/README.md](packaging/postvec/README.md).
 
 ## Provenance

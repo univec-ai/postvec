@@ -2,7 +2,13 @@ postvec — https://github.com/univec-ai/postvec
 
 Copyright (c) UniVec.
 
-Licensed under the PostgreSQL License; see LICENSE.
+This repository holds two products under two licenses. The postvec extension,
+its CLI, their packaging, and the crates they link (`engine`, `shared`,
+`proto`, `registry/schema`, `fixtures/`) are under the PostgreSQL License.
+`postvec-server/` — the standalone inference node for remote mode — is under
+the Business Source License 1.1 (source-available; production use by
+organizations needs a commercial license). See LICENSE for the per-directory
+index and postvec-server/LICENSE for its text.
 
 The published packages and container images embed or depend on third-party
 work under its own terms:
@@ -16,6 +22,9 @@ work under its own terms:
   (packaging/postvec/model/copyright.in).
 - pgvector (PostgreSQL License). A runtime dependency of the extension,
   installed from its own packages; not bundled here.
+- memberlist (MPL-2.0). The gossip implementation `postvec-server` uses for
+  cluster membership. Linked unmodified; the MPL's obligations attach to that
+  crate's own files, not to this repository's.
 - The Rust dependency tree, under the licenses its crates declare
   (`cargo license` in this repository enumerates them). The release pipeline's
   audit gate (packaging/postvec/scripts/audit.sh) runs against both lockfiles.

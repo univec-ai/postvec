@@ -1,0 +1,46 @@
+{
+  "//": "Every key is optional and every one has a default; a node starts with no file at all. Unknown keys are a hard error, so delete what you do not need rather than commenting it out. Precedence: defaults < this file < environment < flags.",
+
+  "bind_address": "0.0.0.0",
+  "http_port": 22222,
+  "grpc_port": 33333,
+  "gossip_port": 11111,
+  "admin_port": 22223,
+
+  "//peers": "Bare hosts (names or IPs). Every node uses the same gossip port, so no ports here; host:port is an escape hatch for one colliding entry. Including this node is fine — the self-join is skipped.",
+  "peers": ["10.0.0.10", "10.0.0.11", "10.0.0.12"],
+  "group": "postvec",
+
+  "//advertise": "The IP peers should dial. Set it on any host with more than one interface (WireGuard, Docker, a second NIC): autodetection picks the wrong one, and the symptom is a node that serves fine and sees only itself.",
+  "advertise": "10.0.0.10",
+
+  "//frontend": "Absolute URL at which this node's HTTP API is reachable, if it is not https://{advertise}:{http_port} — NAT, a load balancer, a name you would rather see printed. Decoration: nothing dials it.",
+  "frontend": null,
+
+  "//ssl": "Relative paths resolve against the engine root, not against this file. Omit the block and drop certs at <root>/certs/server.{crt,key}, or set \"insecure\": true for local development.",
+  "ssl": {
+    "cert": "certs/server.crt",
+    "key": "certs/server.key"
+  },
+
+  "//models": "Empty loads every enabled descriptor under <root>/models. A non-empty list is an allow-list, and it gates the admin load route too — not only the startup preload.",
+  "models": [],
+
+  "//predict_timeout_ms": "Ceiling on one request's execution budget. A smaller inbound grpc-timeout always wins; this only bounds callers that send none.",
+  "predict_timeout_ms": 30000,
+
+  "//max_inflight": "Concurrently executing predictions. Defaults to this machine's CPU count clamped to 4..=16. It bounds both CPU oversubscription and coexisting response trees, so raise it deliberately.",
+  "max_inflight": 8,
+
+  "//max_resident_models": "Ceiling on resident models, dependency closures included.",
+  "max_resident_models": 16,
+
+  "//drain_delay_ms": "How long to keep serving after a shutdown signal while /ready already answers 503, so load balancers and healthchecks observe the node leaving before its socket closes — and so the gossip departure reaches peers. 0 disables. A second signal skips it.",
+  "drain_delay_ms": 5000,
+
+  "//warmup": "Run one throwaway prediction per embedding model at boot, so /ready means 'answers at steady-state latency' rather than 'has finished loading'.",
+  "warmup": true,
+
+  "metrics": true,
+  "log_level": "info"
+}

@@ -9,6 +9,7 @@ members = [
     "shared",
     "registry/schema",
     "fixtures/inference-server",
+    "postvec-server",
 ]
 
 [workspace.dependencies]

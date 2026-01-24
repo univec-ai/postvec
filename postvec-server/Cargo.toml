@@ -1,0 +1,113 @@
+# postvec-server — the inference node postvec's remote (`grpc`) mode dials.
+#
+# The same `engine` crate the extension embeds, the same canonical
+# `proto/ninference.proto`, the same `/config` discovery envelope — running as
+# a process outside PostgreSQL. No model hub, no S3, no debug UI, no
+# configuration file required.
+#
+# LICENCE: this crate is **not** PostgreSQL-licensed like the rest of the
+# repository. See ./LICENSE and the root LICENSE index. Everything it links —
+# `engine`, `shared`, the proto — stays PostgreSQL-licensed and is usable
+# without reference to this crate's terms.
+[package]
+name = "postvec-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Standalone inference node for postvec's remote mode: gRPC embeddings/conversions plus /config discovery, with no model hub."
+license = "BUSL-1.1"
+repository = "https://github.com/univec-ai/postvec"
+homepage = "https://github.com/univec-ai/postvec/tree/main/postvec-server"
+readme = "README.md"
+keywords = ["postvec", "embeddings", "inference", "onnx", "grpc"]
+categories = ["science", "database"]
+
+[lib]
+name = "postvec_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "postvec-server"
+path = "src/main.rs"
+
+[dependencies]
+# The trimmed inference engine, exactly as postvec's embedded mode links it.
+# `onnx` is not optional here: a node with no backend is not a node.
+engine = { path = "../engine", features = ["onnx"] }
+# `ErrorCode` — the wire taxonomy postvec's retry/dead-letter policy reads.
+shared = { path = "../shared" }
+
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "net",
+    "sync",
+    "time",
+] }
+
+# gRPC. Versions match the fixture and postvec's own client so the three
+# speak one protobuf runtime.
+tonic = "0.13"
+prost = "0.13"
+prost-types = "0.13"
+tower = { version = "0.5", features = ["limit"] }
+http-body = "1"
+
+# HTTP surfaces. `axum-server` carries the TLS listener; OpenSSL rather than
+# rustls because the pinned packaging builder image already has libssl-dev and
+# the fixture established that path.
+axum = { version = "0.7", default-features = false, features = [
+    "http1",
+    "json",
+    "tokio",
+] }
+axum-server = { version = "0.7", default-features = false, features = [
+    "tls-openssl",
+] }
+
+# Cluster membership.
+#
+# 0.8, not the 0.6.6 UniVec's internal ninference pins: the entire 0.6 line is
+# yanked on crates.io, so a published crate cannot depend on it. The API
+# differences are small and noted in src/cluster.rs. Default features are off
+# because they pull QUIC, encryption and a DNS resolver this node does not
+# use — gossip here is plain TCP on a private network.
+memberlist = { version = "0.8", default-features = false, features = [
+    "tokio",
+    "tcp",
+] }
+local-ip-address = "0.6"
+uuid = { version = "1", features = ["v4"] }
+
+# The `status` / `load` / `unload` subcommands talk to the *local* node over
+# HTTP. Same client stack as postvec-cli.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
+
+# `derive` only: the environment layer is read explicitly in `config`, so
+# that the precedence `defaults < file < env < flags` is one testable
+# function rather than a property of clap's argument table.
+clap = { version = "4.5", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = "0.4"
+env_logger = "0.11"
+thiserror = "1.0"
+
+[build-dependencies]
+tonic-build = "0.13"
+
+[dev-dependencies]
+futures-util = "0.3"
+tempfile = "3"
+
+[features]
+default = []
+# Execution providers, forwarded to the engine. A GPU build is a second
+# artifact, never a different licence.
+ort-cuda = ["engine/ort-cuda"]
+ort-tensorrt = ["engine/ort-tensorrt"]

@@ -1,0 +1,581 @@
+//! The node-local subcommands: `status`, `load`, `unload`.
+//!
+//! All three talk to `127.0.0.1` on the **admin** port, which mirrors the
+//! read-only routes precisely so this client never has to negotiate TLS with
+//! a self-signed certificate against a machine it is already running on.
+//! They are node-local tools by design: nothing here gossip-scans, and
+//! nothing here mutates a peer.
+//!
+//! `status --fleet` is the one exception, and it is read-only. It reads each
+//! alive peer's `/config` and compares model inventories, because a fleet
+//! whose nodes carry different models is the failure remote mode actually
+//! produces: postvec round-robins its configured gRPC endpoints, so a
+//! converter present on two nodes out of three fails one request in three,
+//! intermittently, with a `MODEL_NOT_LOADED` that looks like a fluke.
+//!
+//! Exit codes: `0` healthy, `1` reachable but degraded (not ready, inventory
+//! drift, a failed model operation), `2` the node could not be reached.
+
+use crate::cli::DEFAULT_ADMIN_PORT;
+use crate::cli::{LocalArgs, ModelArgs, StatusArgs};
+use crate::models;
+use serde_json::{json, Value};
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+pub const EXIT_OK: i32 = 0;
+pub const EXIT_DEGRADED: i32 = 1;
+pub const EXIT_UNREACHABLE: i32 = 2;
+
+const DEFAULT_TIMEOUT_SECONDS: u64 = 10;
+
+fn admin_base(args: &LocalArgs) -> String {
+    format!(
+        "http://127.0.0.1:{}",
+        args.admin.unwrap_or(DEFAULT_ADMIN_PORT)
+    )
+}
+
+fn timeout(args: &LocalArgs) -> Duration {
+    Duration::from_secs(args.timeout.unwrap_or(DEFAULT_TIMEOUT_SECONDS).max(1))
+}
+
+/// One HTTP client for the whole invocation.
+///
+/// Invalid certificates are accepted for the same reason postvec's own
+/// discovery accepts them: peers serve `/config` with a self-signed
+/// certificate on a private network, and the trust boundary is the network,
+/// not the PKI. It only ever matters for `--fleet`; the local calls are
+/// plain loopback HTTP.
+fn http_client(args: &LocalArgs) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(timeout(args))
+        .build()?)
+}
+
+fn unreachable_hint(args: &LocalArgs, error: &dyn std::fmt::Display) -> String {
+    format!(
+        "cannot reach the local node at {}: {error}\n\
+         Is postvec-server running on this host? If it uses a different admin port, pass \
+         --admin <PORT>.",
+        admin_base(args)
+    )
+}
+
+// ---- status ------------------------------------------------------------
+
+/// The subset of `/config` this client reads.
+struct NodeReport {
+    models: Vec<String>,
+    server: Value,
+    cluster: Value,
+}
+
+fn parse_config(body: &Value) -> NodeReport {
+    let data = body.get("data").cloned().unwrap_or(Value::Null);
+    let models = data
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|m| m.get("name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    NodeReport {
+        models,
+        server: data.get("server").cloned().unwrap_or(Value::Null),
+        cluster: data.get("cluster").cloned().unwrap_or(Value::Null),
+    }
+}
+
+/// Peers worth querying: alive, in this group, and not this node.
+fn peer_addresses(cluster: &Value) -> Vec<String> {
+    cluster
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|n| {
+                    n.get("status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| s.eq_ignore_ascii_case("alive"))
+                        && !n.get("current").and_then(Value::as_bool).unwrap_or(false)
+                })
+                .filter_map(|n| n.get("address").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Names one node advertises but another does not, in both directions.
+///
+/// This is the check `postvec doctor` cannot do today: its own consistency
+/// check unions every node's models before comparing, which hides exactly
+/// this — a name missing from one node looks identical to a name present
+/// everywhere.
+fn inventory_drift(nodes: &[(String, Vec<String>)]) -> Vec<String> {
+    if nodes.len() < 2 {
+        return Vec::new();
+    }
+    let union: BTreeSet<&str> = nodes
+        .iter()
+        .flat_map(|(_, models)| models.iter().map(String::as_str))
+        .collect();
+    let mut drift = Vec::new();
+    for name in union {
+        let missing: Vec<&str> = nodes
+            .iter()
+            .filter(|(_, models)| !models.iter().any(|m| m == name))
+            .map(|(address, _)| address.as_str())
+            .collect();
+        if !missing.is_empty() {
+            drift.push(format!(
+                "{name}: absent from {} of {} node(s) — {}",
+                missing.len(),
+                nodes.len(),
+                missing.join(", ")
+            ));
+        }
+    }
+    drift
+}
+
+pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
+    let local = &args.local;
+    let client = http_client(local)?;
+    let base = admin_base(local);
+
+    let body: Value = match client.get(format!("{base}/config")).send().await {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => response.json().await?,
+            Err(e) => {
+                eprintln!("{}", unreachable_hint(local, &e));
+                return Ok(EXIT_UNREACHABLE);
+            }
+        },
+        Err(e) => {
+            eprintln!("{}", unreachable_hint(local, &e));
+            return Ok(EXIT_UNREACHABLE);
+        }
+    };
+    let report = parse_config(&body);
+
+    // `/ready` answers 503 when it is not ready and the body carries the
+    // reason, so the status code must not be allowed to discard it.
+    let ready_body: Value = match client.get(format!("{base}/ready")).send().await {
+        Ok(response) => response.json().await.unwrap_or(Value::Null),
+        Err(_) => Value::Null,
+    };
+    let ready = ready_body
+        .get("data")
+        .and_then(|d| d.get("ready"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // The on-disk half. The server reports its own root, so an operator does
+    // not have to remember which one this node was started with.
+    let root = local.root.clone().or_else(|| {
+        report
+            .server
+            .get("root")
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from)
+    });
+    let inventory = root.as_deref().map(models::inventory);
+
+    let loaded: BTreeSet<&str> = report.models.iter().map(String::as_str).collect();
+    let mut warnings: Vec<String> = Vec::new();
+    // Policy, not a problem: reported, but it does not make the node degraded.
+    let mut println_note: Option<String> = None;
+    let mut on_disk: Vec<(String, bool, bool)> = Vec::new(); // name, enabled, loaded
+    match &inventory {
+        Some(Ok(inv)) => {
+            for warning in &inv.warnings {
+                warnings.push(warning.clone());
+            }
+            for model in &inv.models {
+                on_disk.push((
+                    model.name.clone(),
+                    model.enabled,
+                    loaded.contains(model.name.as_str()),
+                ));
+            }
+            // A node started with `--models` excludes everything outside
+            // that list on purpose. Reporting those as "not loaded" would
+            // turn a deliberate policy into a page of warnings.
+            let allow_list: Vec<String> = report
+                .server
+                .get("models_allowed")
+                .and_then(Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let eligible =
+                |name: &str| allow_list.is_empty() || allow_list.iter().any(|a| a == name);
+
+            let pending: Vec<String> = inv
+                .loadable()
+                .into_iter()
+                .filter(|n| !loaded.contains(n.as_str()) && eligible(n))
+                .collect();
+            if !pending.is_empty() {
+                warnings.push(format!(
+                    "{} enabled model(s) are on disk but not loaded: {} — run \
+                     `postvec-server load {}`",
+                    pending.len(),
+                    pending.join(", "),
+                    pending.join(" ")
+                ));
+            }
+            let excluded = inv.loadable().into_iter().filter(|n| !eligible(n)).count();
+            if excluded > 0 {
+                println_note = Some(format!(
+                    "{excluded} enabled model(s) on disk are outside this node's --models \
+                     allow-list and will not load"
+                ));
+            }
+            for name in &report.models {
+                match inv.get(name) {
+                    None => warnings.push(format!(
+                        "model {name:?} is loaded but has no descriptor on disk; it will not \
+                         come back after a restart"
+                    )),
+                    Some(model) if !model.enabled => warnings.push(format!(
+                        "model {name:?} is loaded but its descriptor is deactivated; it will \
+                         not come back after a restart"
+                    )),
+                    Some(_) => {}
+                }
+            }
+        }
+        Some(Err(e)) => warnings.push(format!("cannot read the model root: {e}")),
+        None => {}
+    }
+
+    // The fleet half.
+    let mut fleet: Vec<(String, Vec<String>)> = Vec::new();
+    let mut drift: Vec<String> = Vec::new();
+    if args.fleet {
+        let own = report
+            .server
+            .get("frontend")
+            .and_then(Value::as_str)
+            .unwrap_or("this node")
+            .to_string();
+        fleet.push((own, report.models.clone()));
+        for address in peer_addresses(&report.cluster) {
+            match client.get(format!("{address}/config")).send().await {
+                Ok(response) => match response.json::<Value>().await {
+                    Ok(body) => fleet.push((address, parse_config(&body).models)),
+                    Err(e) => warnings.push(format!("peer {address} served invalid /config: {e}")),
+                },
+                Err(e) => warnings.push(format!("peer {address} did not answer /config: {e}")),
+            }
+        }
+        drift = inventory_drift(&fleet);
+        for line in &drift {
+            warnings.push(format!("inventory drift — {line}"));
+        }
+    }
+
+    if local.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "ready": ready,
+                "server": report.server,
+                "cluster": report.cluster,
+                "loaded": report.models,
+                "on_disk": on_disk
+                    .iter()
+                    .map(|(name, enabled, loaded)| json!({
+                        "name": name, "enabled": enabled, "loaded": loaded
+                    }))
+                    .collect::<Vec<_>>(),
+                "fleet": fleet
+                    .iter()
+                    .map(|(address, models)| json!({"address": address, "models": models}))
+                    .collect::<Vec<_>>(),
+                "drift": drift,
+                "warnings": warnings,
+                "note": println_note,
+            }))?
+        );
+    } else {
+        print_status(&report, ready, &on_disk, &fleet, &warnings);
+        if let Some(note) = &println_note {
+            println!("\nnote\n  {note}");
+        }
+    }
+
+    Ok(if ready && warnings.is_empty() {
+        EXIT_OK
+    } else {
+        EXIT_DEGRADED
+    })
+}
+
+fn print_status(
+    report: &NodeReport,
+    ready: bool,
+    on_disk: &[(String, bool, bool)],
+    fleet: &[(String, Vec<String>)],
+    warnings: &[String],
+) {
+    let field = |key: &str| -> String {
+        report
+            .server
+            .get(key)
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_else(|| "?".to_string())
+    };
+    println!(
+        "postvec-server {}  ({})",
+        field("version"),
+        field("features")
+    );
+    println!("  ready       {}", if ready { "yes" } else { "NO" });
+    println!("  uptime      {}s", field("uptime_seconds"));
+    if report.server.get("draining").and_then(Value::as_bool) == Some(true) {
+        println!("  draining    yes — finishing in-flight work");
+    }
+    println!("  frontend    {}", field("frontend"));
+
+    println!("\nmodels");
+    if on_disk.is_empty() {
+        for name in &report.models {
+            println!("  {name}  loaded");
+        }
+        if report.models.is_empty() {
+            println!("  (none loaded)");
+        }
+    } else {
+        for (name, enabled, loaded) in on_disk {
+            println!(
+                "  {name:<40} {:<12} {}",
+                if *enabled { "enabled" } else { "deactivated" },
+                if *loaded { "loaded" } else { "not loaded" }
+            );
+        }
+    }
+
+    if let Some(nodes) = report.cluster.get("nodes").and_then(Value::as_array) {
+        println!("\ncluster ({})", field_of(&report.cluster, "group"));
+        if nodes.is_empty() {
+            println!("  (gossip reports no members)");
+        }
+        for node in nodes {
+            println!(
+                "  {:<34} {:<8} {}{}",
+                node.get("address").and_then(Value::as_str).unwrap_or("?"),
+                node.get("status").and_then(Value::as_str).unwrap_or("?"),
+                node.get("version").and_then(Value::as_str).unwrap_or("?"),
+                if node.get("current").and_then(Value::as_bool) == Some(true) {
+                    "  (this node)"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+
+    if fleet.len() > 1 {
+        println!("\nfleet inventory");
+        for (address, models) in fleet {
+            println!("  {:<34} {} model(s)", address, models.len());
+        }
+    }
+
+    if !warnings.is_empty() {
+        println!("\nwarnings");
+        for warning in warnings {
+            println!("  ! {warning}");
+        }
+    }
+}
+
+fn field_of(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_string()
+}
+
+// ---- load / unload -----------------------------------------------------
+
+pub async fn load(args: &ModelArgs) -> anyhow::Result<i32> {
+    admin_call(args, "load").await
+}
+
+pub async fn unload(args: &ModelArgs) -> anyhow::Result<i32> {
+    admin_call(args, "unload").await
+}
+
+async fn admin_call(args: &ModelArgs, action: &str) -> anyhow::Result<i32> {
+    for name in &args.models {
+        if let Err(e) = models::validate_model_name(name) {
+            eprintln!("{e}");
+            return Ok(EXIT_DEGRADED);
+        }
+    }
+    let client = http_client(&args.local)?;
+    let url = format!("{}/admin/{action}", admin_base(&args.local));
+    let response = match client
+        .post(&url)
+        .json(&json!({ "models": args.models }))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("{}", unreachable_hint(&args.local, &e));
+            return Ok(EXIT_UNREACHABLE);
+        }
+    };
+
+    let status = response.status();
+    let body: Value = response.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        eprintln!(
+            "{action} refused ({status}): {}",
+            body.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("no detail")
+        );
+        return Ok(EXIT_DEGRADED);
+    }
+
+    let results = body
+        .get("data")
+        .and_then(|d| d.get("results"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    if args.local.json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        for result in &results {
+            let name = result.get("model").and_then(Value::as_str).unwrap_or("?");
+            let outcome = result.get("status").and_then(Value::as_str).unwrap_or("?");
+            match result.get("error").and_then(Value::as_str) {
+                Some(error) => println!("{name}: {outcome} — {error}"),
+                None => println!("{name}: {outcome}"),
+            }
+        }
+    }
+
+    let failed = results
+        .iter()
+        .any(|r| r.get("status").and_then(Value::as_str) == Some("error"));
+    Ok(if failed { EXIT_DEGRADED } else { EXIT_OK })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn config(models: &[&str]) -> Value {
+        json!({
+            "success": true,
+            "data": {
+                "models": models.iter().map(|n| json!({
+                    "name": n, "status": "local", "configuration": {"enabled": true}
+                })).collect::<Vec<_>>(),
+                "server": {"version": "0.1.0", "uptime_seconds": 12, "draining": false},
+                "cluster": {"group": "postvec", "nodes": []},
+            }
+        })
+    }
+
+    #[test]
+    fn config_parsing_extracts_model_names() {
+        let report = parse_config(&config(&["a", "b"]));
+        assert_eq!(report.models, ["a", "b"]);
+        assert_eq!(report.server["version"], json!("0.1.0"));
+    }
+
+    #[test]
+    fn a_malformed_config_degrades_instead_of_panicking() {
+        let report = parse_config(&json!({}));
+        assert!(report.models.is_empty());
+        assert_eq!(report.server, Value::Null);
+    }
+
+    #[test]
+    fn only_alive_peers_that_are_not_this_node_are_queried() {
+        let cluster = json!({"nodes": [
+            {"address": "https://a:22222", "status": "alive", "current": true},
+            {"address": "https://b:22222", "status": "alive", "current": false},
+            {"address": "https://c:22222", "status": "dead",  "current": false},
+            {"address": "https://d:22222", "status": "suspect", "current": false},
+        ]});
+        assert_eq!(peer_addresses(&cluster), ["https://b:22222"]);
+    }
+
+    /// The check `postvec doctor` cannot make today, because its own
+    /// consistency check unions every node's models before comparing.
+    #[test]
+    fn drift_names_the_nodes_a_model_is_missing_from() {
+        let nodes = vec![
+            (
+                "a".to_string(),
+                vec!["embed".to_string(), "conv".to_string()],
+            ),
+            ("b".to_string(), vec!["embed".to_string()]),
+            (
+                "c".to_string(),
+                vec!["embed".to_string(), "conv".to_string()],
+            ),
+        ];
+        let drift = inventory_drift(&nodes);
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert!(drift[0].starts_with("conv:"), "{drift:?}");
+        assert!(drift[0].contains("absent from 1 of 3"), "{drift:?}");
+        assert!(drift[0].contains('b'), "{drift:?}");
+    }
+
+    #[test]
+    fn an_agreeing_fleet_has_no_drift() {
+        let nodes = vec![
+            ("a".to_string(), vec!["embed".to_string()]),
+            ("b".to_string(), vec!["embed".to_string()]),
+        ];
+        assert!(inventory_drift(&nodes).is_empty());
+    }
+
+    #[test]
+    fn a_single_node_is_never_drifted() {
+        let nodes = vec![("a".to_string(), vec!["embed".to_string()])];
+        assert!(inventory_drift(&nodes).is_empty());
+    }
+
+    #[test]
+    fn the_local_client_always_uses_the_loopback_admin_port() {
+        let args = LocalArgs {
+            admin: Some(9999),
+            ..Default::default()
+        };
+        assert_eq!(admin_base(&args), "http://127.0.0.1:9999");
+        assert_eq!(
+            admin_base(&LocalArgs::default()),
+            format!("http://127.0.0.1:{DEFAULT_ADMIN_PORT}")
+        );
+    }
+}

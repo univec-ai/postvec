@@ -1,0 +1,92 @@
+# postvec-server CI. Separate from postvec-ci.yml for the same reason
+# postvec-cli-ci.yml is: this is an ordinary workspace crate, so it needs no
+# cargo-pgrx, no managed PostgreSQL and no pgvector, and it runs in seconds.
+#
+# The tests are hermetic. Nothing here needs ONNX Runtime: every case is a
+# refusal or a rendering that happens before the engine would create a native
+# session, and the listeners bind ephemeral loopback ports. The suite that
+# does need real model assets is the packaging image smoke test.
+name: postvec-server-ci
+
+on:
+  push:
+    paths:
+      - "postvec-server/**"
+      # The engine it links and the wire contract it serves.
+      - "engine/**"
+      - "shared/**"
+      - "proto/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/postvec-server-ci.yml"
+  pull_request:
+    paths:
+      - "postvec-server/**"
+      - "engine/**"
+      - "shared/**"
+      - "proto/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/postvec-server-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ". -> target"
+
+      # protoc compiles ../proto/ninference.proto; libssl-dev is the TLS
+      # listener's backend (OpenSSL rather than rustls, matching the
+      # packaging builder image and the test fixture).
+      - name: Build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libssl-dev
+
+      - name: rustfmt
+        run: cargo fmt -p postvec-server -- --check
+
+      - name: clippy
+        run: cargo clippy -p postvec-server --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test -p postvec-server --all-targets
+
+      # The GPU feature changes which execution providers the engine compiles
+      # in. It is never exercised on a CI runner, so at least prove it still
+      # type-checks — a feature that only ever builds one way breaks the
+      # other silently.
+      - name: check (ort-cuda)
+        run: cargo check -p postvec-server --features ort-cuda
+
+      # This crate is BUSL-1.1 while the rest of the repository is
+      # PostgreSQL-licensed. The manifest and the directory LICENSE are what
+      # a downstream packager reads, and a copy-paste from a neighbouring
+      # crate would silently relicense it.
+      - name: license metadata
+        run: |
+          test -f postvec-server/LICENSE
+          grep -q '^license = "BUSL-1.1"$' postvec-server/Cargo.toml
+          grep -q 'postvec-server/ *BUSL-1.1' LICENSE
+
+      # The whole point of the two-listener design is that the socket
+      # published to the network carries no route that can mutate the engine.
+      # The integration suite asserts it at runtime; this catches a route
+      # added to the wrong router before the tests even run.
+      - name: no admin routes on the public listener
+        run: |
+          if grep -n '"/admin/' postvec-server/src/http.rs; then
+            echo "::error::/admin routes belong in admin.rs, on the loopback listener"
+            exit 1
+          fi

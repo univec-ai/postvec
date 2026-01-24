@@ -1,0 +1,91 @@
+License text copyright (c) 2020 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
+
+Parameters
+
+Licensor:             Univec Ltd, Dublin, Ireland (registered in Ireland,
+                      CRO number 812890).
+
+Licensed Work:        postvec-server, being the contents of the postvec-server/
+                      directory of the postvec repository
+                      (https://github.com/univec-ai/postvec) and the binaries,
+                      packages and container images built from it.
+                      The Licensed Work is (c) 2026 Univec Ltd.
+
+Additional Use Grant: You may make production use of the Licensed Work
+                      (a) as an individual, for personal purposes that are not
+                      directed toward commercial advantage; and
+                      (b) as an organization, for a single evaluation period of
+                      thirty (30) consecutive days per organization (including
+                      its affiliates under common control), to assess a
+                      commercial license.
+
+                      Any other production use, including production use by or
+                      for a business, public body or other organization, and
+                      offering the Licensed Work to third parties on a hosted,
+                      managed or embedded basis, requires a commercial license
+                      from Univec Ltd. Commercial licenses are available at
+                      https://univec.ai. Non-production use (development,
+                      testing, continuous integration, staging, teaching and
+                      research) needs no commercial license.
+
+                      This license covers the Licensed Work only. The postvec
+                      PostgreSQL extension, its command-line tool, the
+                      inference engine, the wire contract and the registry
+                      crates in the same repository are separately licensed
+                      under the PostgreSQL License and are not affected by
+                      this license. Models fetched by postvec carry their own
+                      terms.
+
+Change Date:          Four years from the date the Licensed Work is published.
+
+Change License:       PostgreSQL License
+                      (https://opensource.org/license/postgresql)
+
+For information about alternative licensing arrangements for the Licensed Work,
+please contact legal@univec.ai.
+
+Notice
+
+Business Source License 1.1
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative
+works, redistribute, and make non-production use of the Licensed Work. The
+Licensor may make an Additional Use Grant, above, permitting limited production use.
+
+Effective on the Change Date, or the fourth anniversary of the first publicly
+available distribution of a specific version of the Licensed Work under this
+License, whichever comes first, the Licensor hereby grants you rights under
+the terms of the Change License, and the rights granted in the paragraph
+above terminate.
+
+If your use of the Licensed Work does not comply with the requirements
+currently in effect as described in this License, you must purchase a
+commercial license from the Licensor, its affiliated entities, or authorized
+resellers, or you must refrain from using the Licensed Work.
+
+All copies of the original and modified Licensed Work, and derivative works
+of the Licensed Work, are subject to this License. This License applies
+separately for each version of the Licensed Work and the Change Date may vary
+for each version of the Licensed Work released by Licensor.
+
+You must conspicuously display this License on each original or modified copy
+of the Licensed Work. If you receive the Licensed Work in original or
+modified form from a third party, the terms and conditions set forth in this
+License apply to your use of that work.
+
+Any use of the Licensed Work in violation of this License will automatically
+terminate your rights under this License for the current and all other
+versions of the Licensed Work.
+
+This License does not grant you any right in any trademark or logo of
+Licensor or its affiliates (provided that you may use a trademark or logo of
+Licensor as expressly required by this License).
+
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
+AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
+EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
+TITLE.
