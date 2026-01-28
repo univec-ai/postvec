@@ -55,8 +55,7 @@ re-embedding, no shadow index rebuild.
 | `engine/`, `shared/` | The in-process inference engine embedded mode uses — a trimmed fork of UniVec's engine ([engine/FORK.md](engine/FORK.md)) |
 | `proto/` | The canonical gRPC contract between postvec and inference nodes |
 | `packaging/postvec/` | The `.deb`/`.rpm`/container release pipeline |
-| `fixtures/inference-server/` | Test-only inference node for the remote-mode packaging tests |
-| `docs/` | Operator documentation — start at [docs/postvec-description.md](docs/postvec-description.md) |
+| `docs/` | Operator documentation — start at [docs/postvec-description.md](docs/postvec-description.md), or [docs/postvec-server.md](docs/postvec-server.md) to run the inference nodes |
 
 ## Two deployment modes
 

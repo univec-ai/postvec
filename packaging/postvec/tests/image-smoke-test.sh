@@ -4,7 +4,7 @@
 #
 #   tests/image-smoke-test.sh ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
 #   tests/image-smoke-test.sh --variant remote \
-#       --ninference-image postvec-ninference-fixture:amd64 \
+#       --server-image postvec-server:amd64 \
 #       ghcr.io/univec-ai/postvec:0.1.0-1-pg18
 #
 # Everything runs against the exact image reference given — pass a digest in a
@@ -38,7 +38,7 @@ HEALTH_TIMEOUT=300
 IMAGE=""
 REMOTE_GRPC=""
 REMOTE_HTTP=""
-NINFERENCE_IMAGE=""
+SERVER_IMAGE=""
 while (($#)); do
     case "$1" in
     --variant) VARIANT="$2"; shift 2 ;;
@@ -47,8 +47,8 @@ while (($#)); do
     --timeout) HEALTH_TIMEOUT="$2"; shift 2 ;;
     --grpc)    REMOTE_GRPC="$2"; shift 2 ;;
     --http)    REMOTE_HTTP="$2"; shift 2 ;;
-    # A locally built ninference fixture image; the test starts it itself.
-    --ninference-image) NINFERENCE_IMAGE="$2"; shift 2 ;;
+    # A locally built postvec-server image; the test starts it itself.
+    --server-image) SERVER_IMAGE="$2"; shift 2 ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *)         IMAGE="$1"; shift ;;
     esac
@@ -73,7 +73,7 @@ exit 2; }
 RUN_ID="postvec-smoke-$$"
 VOLUME="${RUN_ID}-data"
 NETWORK="${RUN_ID}-net"
-FIXTURE="${RUN_ID}-nin"
+SERVER="${RUN_ID}-server"
 PASSWORD_FILE="$(mktemp)"
 printf 'smoke-%s' "$$" > "${PASSWORD_FILE}"
 
@@ -82,7 +82,7 @@ ok()  { printf '  \033[32mok\033[0m    %s\n' "$*"; passed=$((passed + 1)); }
 bad() { printf '  \033[1;31mFAIL\033[0m  %s\n' "$*" >&2; failed=$((failed + 1)); }
 
 cleanup() {
-    docker rm --force "${RUN_ID}" "${FIXTURE}" >/dev/null 2>&1 || true
+    docker rm --force "${RUN_ID}" "${SERVER}" >/dev/null 2>&1 || true
     docker volume rm "${VOLUME}" >/dev/null 2>&1 || true
     docker network rm "${NETWORK}" >/dev/null 2>&1 || true
     rm -f "${PASSWORD_FILE}"
@@ -280,22 +280,25 @@ SQL
         || bad "${dead} dead-lettered job(s) — an unreachable engine must not burn attempts"
 
     # Degradation is half the contract; the other half is that it works when
-    # an engine *is* reachable. That needs a real ninference — either one the
-    # caller names, or the fixture image, which the test brings up itself on a
-    # private network.
-    if [[ -n "${NINFERENCE_IMAGE}" ]]; then
+    # an engine *is* reachable. That needs a real inference node — either one
+    # the caller names, or a postvec-server image, which the test brings up
+    # itself on a private network.
+    if [[ -n "${SERVER_IMAGE}" ]]; then
         echo
-        echo "remote inference against a live ninference"
+        echo "remote inference against a live postvec-server"
 
         docker network create "${NETWORK}" >/dev/null
-        docker run --detach --name "${FIXTURE}" --network "${NETWORK}" \
-            --network-alias ninference "${NINFERENCE_IMAGE}" >/dev/null
+        docker run --detach --name "${SERVER}" --network "${NETWORK}" \
+            --network-alias postvec-server "${SERVER_IMAGE}" >/dev/null
 
+        # postvec-server's healthcheck is /ready, which is 503 until a model
+        # can actually answer — so "healthy" here means it can serve, not
+        # merely that it is listening.
         deadline=$(( SECONDS + 300 ))
-        until [[ "$(docker inspect --format '{{.State.Health.Status}}' "${FIXTURE}" 2>/dev/null)" == healthy ]]; do
+        until [[ "$(docker inspect --format '{{.State.Health.Status}}' "${SERVER}" 2>/dev/null)" == healthy ]]; do
             if (( SECONDS >= deadline )); then
-                docker logs --tail 30 "${FIXTURE}" >&2
-                bad "the ninference fixture never became healthy"
+                docker logs --tail 30 "${SERVER}" >&2
+                bad "postvec-server never became ready"
                 break
             fi
             sleep 3
@@ -305,9 +308,13 @@ SQL
         docker volume rm "${VOLUME}" >/dev/null 2>&1 || true
         NETWORK_ARGS="--network ${NETWORK}"
         start_container \
-            --env "POSTVEC_GRPC_ENDPOINTS=ninference:33333" \
-            --env "POSTVEC_HTTP_ENDPOINTS=https://ninference:22222"
-        if wait_healthy; then ok "healthy against a live engine"; else bad "unhealthy against the fixture"; fi
+            --env "POSTVEC_GRPC_ENDPOINTS=postvec-server:33333" \
+            --env "POSTVEC_HTTP_ENDPOINTS=https://postvec-server:22222"
+        if wait_healthy; then
+            ok "healthy against a live engine"
+        else
+            bad "unhealthy against postvec-server"
+        fi
 
         if models="$(wait_for_model)"; then
             ok "the remote model catalogue was discovered over /config"
@@ -367,8 +374,8 @@ SQL
             && ok "remote embed() returns ${DIMS} values" \
             || bad "remote embed() returned '${dims}'"
     else
-        bad "remote inference was not tested: pass --ninference-image (or --grpc/--http)"
-        printf '        build the fixture: scripts/build-ninference-fixture.sh\n' >&2
+        bad "remote inference was not tested: pass --server-image (or --grpc/--http)"
+        printf '        build one: scripts/build-server-image.sh\n' >&2
     fi
 fi
 

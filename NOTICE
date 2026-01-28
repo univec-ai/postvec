@@ -4,7 +4,7 @@ Copyright (c) UniVec.
 
 This repository holds two products under two licenses. The postvec extension,
 its CLI, their packaging, and the crates they link (`engine`, `shared`,
-`proto`, `registry/schema`, `fixtures/`) are under the PostgreSQL License.
+`proto`, `registry/schema`) are under the PostgreSQL License.
 `postvec-server/` — the standalone inference node for remote mode — is under
 the Business Source License 1.1 (source-available; production use by
 organizations needs a commercial license). See LICENSE for the per-directory

@@ -13,7 +13,6 @@ license covers which directory; the full texts are where the table points.
   shared/                           PostgreSQL     below
   proto/                            PostgreSQL     below
   registry/schema/                  PostgreSQL     below
-  fixtures/inference-server/        PostgreSQL     below
   docs/                             PostgreSQL     below
   postvec-server/                   BUSL-1.1       postvec-server/LICENSE
 

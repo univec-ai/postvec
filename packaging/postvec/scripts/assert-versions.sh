@@ -55,6 +55,21 @@ for manifest in postvec postvec-cli engine shared registry/schema; do
     check "${manifest} license" "PostgreSQL" "${licence}"
 done
 
+# postvec-server is the exception, and asserting it is the point: it is a
+# separate program under a separate grant, sitting in a tree where every
+# neighbour is PostgreSQL-licensed. A copy-paste from one of them would
+# relicense it silently, and the root LICENSE index would then be wrong about
+# a file nobody re-read. All three statements of the fact have to agree.
+[[ -f "${REPO_ROOT}/postvec-server/LICENSE" ]] \
+    || { echo "  FAIL  postvec-server/LICENSE is missing"; fail=1; }
+check "postvec-server license" "BUSL-1.1" \
+    "$(grep -E '^license = ' "${REPO_ROOT}/postvec-server/Cargo.toml" | head -1 | cut -d'"' -f2)"
+if grep -qE '^ +postvec-server/ +BUSL-1\.1' "${REPO_ROOT}/LICENSE"; then
+    check "LICENSE index" "postvec-server: BUSL-1.1" "postvec-server: BUSL-1.1"
+else
+    check "LICENSE index" "postvec-server: BUSL-1.1" "<not listed in the root LICENSE>"
+fi
+
 # Tag discipline, when running in a tag build. A local run has no tag and skips
 # this check rather than inventing one.
 #

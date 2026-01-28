@@ -174,11 +174,12 @@ if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
                 tag="${IMAGE_REPOSITORY}:${RELEASE_ID}-pg${major}${tag_suffix}"
                 if [[ "${variant}" == remote ]]; then
                     # The remote image is only meaningfully tested against a
-                    # real engine; the fixture is what provides one.
-                    step "image: ninference fixture"
-                    "${PKG_DIR}/scripts/build-ninference-fixture.sh" --arch "${ARCH}"
+                    # real engine, so build the real one: postvec-server, from
+                    # this commit, carrying the same payloads.
+                    step "image: postvec-server"
+                    "${PKG_DIR}/scripts/build-server-image.sh" --arch "${ARCH}"
                     "${PKG_DIR}/tests/image-smoke-test.sh" --variant remote \
-                        --ninference-image "postvec-ninference-fixture:${ARCH}" "${tag}"
+                        --server-image "postvec-server:${ARCH}" "${tag}"
                 else
                     "${PKG_DIR}/tests/image-smoke-test.sh" \
                         --variant "${COMPLETE_IMAGE_VARIANT}" "${tag}"

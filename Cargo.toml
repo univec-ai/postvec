@@ -8,7 +8,6 @@ members = [
     "engine",
     "shared",
     "registry/schema",
-    "fixtures/inference-server",
     "postvec-server",
 ]
 

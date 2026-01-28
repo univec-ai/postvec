@@ -177,7 +177,10 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
 
     // --- 1. Identity ---------------------------------------------------
     let advertise = net::resolve_advertise(&settings)?;
-    if advertise.source == AdvertiseSource::Autodetected {
+    // The guess only matters to peers. A single-node deployment — the common
+    // container case — would otherwise be warned, on every boot, about a NIC
+    // choice that affects nothing it does.
+    if advertise.source == AdvertiseSource::Autodetected && !settings.peers.is_empty() {
         log::warn!(
             "advertising {} to the cluster, autodetected from the routing table. On a host \
              with more than one interface (WireGuard, Docker, a second NIC) this is the \

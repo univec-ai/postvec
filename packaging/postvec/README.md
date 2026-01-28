@@ -597,7 +597,7 @@ model/                         the DEP-5 copyright template, and golden/
 nfpm/                          one package description per package
 builders/                      hermetic compile environments (deb, rpm families)
 docker/                        image, entrypoint, healthcheck, init, compose
-                               examples, and the ninference test fixture
+                               examples, and the postvec-server image
 scripts/                       the pipeline
 tests/                         entrypoint unit tests, live package and image tests
 ```
@@ -622,7 +622,7 @@ a user downloads) are generated and git-ignored.
 | `write-release-manifest.sh` | computes `postvec-release.json` and `SHA256SUMS` from the artifacts |
 | `lint-nfpm-configs.sh` | renders every package description with stubs and parses the result |
 | `audit.sh` | blocking `cargo audit` over both lockfiles, with dated exceptions |
-| `build-ninference-fixture.sh` | builds a real ninference node for the remote-image test |
+| `build-server-image.sh` | builds a postvec-server image from this commit, for the remote-image test |
 | `verify-release-metadata.sh` | reads each package's own metadata and requires the release directory to agree with it |
 | `release-mode.sh` | decides what a release run may do — mode, tag namespace, overrides, dispatch ref — and refuses the rest |
 | `advance-moving-tags.sh` | points the moving tags at recorded digests, attempts every write, verifies every tag, and reports what actually landed |
@@ -948,11 +948,17 @@ project will not pretend otherwise.
 | `tests/model-golden-test.sh` | Docker, an embedded image | the bundled model still produces the embeddings it was published with |
 
 The remote image test needs a real engine to be meaningful:
-`scripts/build-ninference-fixture.sh` builds one from this commit, serving the
-same ONNX Runtime and the same model bundle the embedded image carries, and
-`--ninference-image` makes the test bring it up on a private network and drive
-embed → sync → search through it. Without a fixture the test now *fails* rather
-than skipping: "the remote image works" is not something to assert by omission.
+`scripts/build-server-image.sh` builds a **postvec-server** image from this
+commit, serving the same ONNX Runtime and the same model bundle the embedded
+image carries, and `--server-image` makes the test bring it up on a private
+network and drive embed → sync → search through it. Without one the test
+*fails* rather than skipping: "the remote image works" is not something to
+assert by omission.
+
+Until 2026-08 this was a stand-in — `fixtures/inference-server`, an imitation
+node written because no real server existed. It is gone; the test now runs
+against the artifact a fleet actually runs. The image is local: nothing
+publishes it and no release manifest references it.
 
 `package-install-test.sh --minimal` installs only the CLI and the extension.
 That is the dependency boundary a remote-mode user actually has, and running

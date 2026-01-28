@@ -47,8 +47,8 @@ jobs:
           workspaces: ". -> target"
 
       # protoc compiles ../proto/ninference.proto; libssl-dev is the TLS
-      # listener's backend (OpenSSL rather than rustls, matching the
-      # packaging builder image and the test fixture).
+      # listener's backend (OpenSSL rather than rustls, matching the pinned
+      # packaging builder image).
       - name: Build prerequisites
         run: |
           sudo apt-get update
@@ -73,7 +73,10 @@ jobs:
       # This crate is BUSL-1.1 while the rest of the repository is
       # PostgreSQL-licensed. The manifest and the directory LICENSE are what
       # a downstream packager reads, and a copy-paste from a neighbouring
-      # crate would silently relicense it.
+      # crate would silently relicense it. The release gate
+      # (packaging/postvec/scripts/assert-versions.sh) asserts the same three
+      # facts; this repeats them in the cheap workflow so the failure is
+      # seconds away rather than a Docker matrix away.
       - name: license metadata
         run: |
           test -f postvec-server/LICENSE

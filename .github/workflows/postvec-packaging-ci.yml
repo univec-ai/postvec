@@ -18,10 +18,12 @@ on:
       - "packaging/postvec/**"
       - "postvec/**"
       - "postvec-cli/**"
-      # The embedded extension links these workspace crates; the remote-image
-      # test additionally builds the inference fixture from this commit. A
-      # change to any of them changes what these packages and images contain,
-      # and the extension's own CI does not rebuild either.
+      # The remote-image test builds a postvec-server image from this commit
+      # and runs the image against it.
+      - "postvec-server/**"
+      # The embedded extension links these workspace crates, and so does
+      # postvec-server. A change to any of them changes what these packages and
+      # images contain, and the extension's own CI does not rebuild either.
       - "engine/**"
       - "shared/**"
       - "proto/**"
@@ -38,10 +40,12 @@ on:
       - "packaging/postvec/**"
       - "postvec/**"
       - "postvec-cli/**"
-      # The embedded extension links these workspace crates; the remote-image
-      # test additionally builds the inference fixture from this commit. A
-      # change to any of them changes what these packages and images contain,
-      # and the extension's own CI does not rebuild either.
+      # The remote-image test builds a postvec-server image from this commit
+      # and runs the image against it.
+      - "postvec-server/**"
+      # The embedded extension links these workspace crates, and so does
+      # postvec-server. A change to any of them changes what these packages and
+      # images contain, and the extension's own CI does not rebuild either.
       - "engine/**"
       - "shared/**"
       - "proto/**"
@@ -348,7 +352,7 @@ jobs:
           path: packaging/postvec/dist/
           retention-days: 7
 
-      # The later image and fixture jobs need the model facts this payload
+      # The later image and postvec-server jobs need the model facts this payload
       # carries (package name, backend, dimension), and reusing it means one
       # registry acquisition per workflow run rather than one per job.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -470,8 +474,8 @@ jobs:
 
       # The model payload the `packages` job already acquired, rather than a
       # second pull from the registry. The complete image reads its facts
-      # (name, backend, dimension) from it, and the remote variant's ninference
-      # fixture serves the same model bytes the complete image carries.
+      # (name, backend, dimension) from it, and the remote variant's
+      # postvec-server serves the same model bytes the complete image carries.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: model-bundle
@@ -482,27 +486,27 @@ jobs:
           packaging/postvec/scripts/build-image.sh \
             --pg ${{ matrix.pg }} --variant ${{ matrix.variant }} --arch amd64 --load
 
-      - name: ninference fixture
+      - name: postvec-server image
         if: matrix.variant == 'remote'
         run: |
           packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch amd64
-          packaging/postvec/scripts/build-ninference-fixture.sh --arch amd64
+          packaging/postvec/scripts/build-server-image.sh --arch amd64
 
       - name: Smoke test
         run: |
           suffix=""
-          fixture=""
+          engine=""
           if [ "${{ matrix.variant }}" = complete ]; then
             suffix="-complete"
           else
-            fixture="--ninference-image postvec-ninference-fixture:amd64"
+            engine="--server-image postvec-server:amd64"
           fi
           version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
           revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
           repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
           # shellcheck disable=SC2086
           packaging/postvec/tests/image-smoke-test.sh \
-            --variant ${{ matrix.variant }} ${fixture} \
+            --variant ${{ matrix.variant }} ${engine} \
             "${repo}:${version}-${revision}-pg${{ matrix.pg }}${suffix}"
 
       # The complete image must still produce the embeddings the bundle was

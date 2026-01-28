@@ -213,10 +213,6 @@ pub struct ServeArgs {
 /// node-local tools, not fleet orchestration.
 #[derive(Debug, Args, Default)]
 pub struct LocalArgs {
-    /// Discovery port of the local node. [default: 22222]
-    #[arg(long, value_name = "PORT")]
-    pub http: Option<u16>,
-
     /// Admin port of the local node. [default: 22223]
     #[arg(long = "admin", value_name = "PORT")]
     pub admin: Option<u16>,

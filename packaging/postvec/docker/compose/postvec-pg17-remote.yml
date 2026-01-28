@@ -1,6 +1,12 @@
-# postvec against remote ninference nodes — the default deployment shape, and
-# the one to use when inference is shared between services or needs models the
-# bundled one does not cover.
+# postvec against remote inference nodes — the default deployment shape, and
+# the one to use when inference is shared between services, needs a GPU, or
+# must not share a crash domain with PostgreSQL.
+#
+# The nodes are `postvec-server`, which this repository ships. Build an image
+# from a checkout with `packaging/postvec/scripts/build-server-image.sh`, or
+# run the binary directly on the inference hosts; see
+# docs/postvec-server.md. There is no published server image yet, so this file
+# points at hosts you operate rather than pulling one.
 #
 # Note the volume path: PostgreSQL 16 and 17 images store data in
 # /var/lib/postgresql/data, PostgreSQL 18 in /var/lib/postgresql. This file is
@@ -17,13 +23,18 @@ services:
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
       POSTVEC_DATABASES: app
       POSTVEC_MODE: grpc
-      # Comma-separated; order drives round-robin. gRPC is plaintext, so these
-      # endpoints must be inside the same trusted private network as
-      # ninference itself — this is not a way to reach inference over the
-      # internet.
-      POSTVEC_GRPC_ENDPOINTS: "ninference.example:33333"
-      # Used for GET /config model discovery.
-      POSTVEC_HTTP_ENDPOINTS: "https://ninference.example:22222"
+      # Comma-separated; order drives round-robin. List every node — the same
+      # enabled models must be loaded on all of them, or a conversion routed
+      # at a node that lacks its converter fails intermittently. Check with
+      # `postvec-server status --fleet` on any node.
+      #
+      # gRPC is plaintext, so these endpoints must be inside the same trusted
+      # private network as the nodes themselves. This is not a way to reach
+      # inference over the internet.
+      POSTVEC_GRPC_ENDPOINTS: "inference-1.internal:33333,inference-2.internal:33333"
+      # Used for GET /config model discovery. postvec accepts a node's
+      # self-signed certificate on a trusted network.
+      POSTVEC_HTTP_ENDPOINTS: "https://inference-1.internal:22222,https://inference-2.internal:22222"
     secrets:
       - postgres-password
     ports:

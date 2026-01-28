@@ -1,0 +1,125 @@
+# syntax=docker/dockerfile:1.7
+#
+# postvec-server: the inference node postvec's remote mode dials, with the
+# same ONNX Runtime and the same bundled model the complete image runs
+# in-process. A container of this and a container of the complete image load
+# byte-identical model assets, which is what makes a passing remote test and a
+# passing embedded test mean the same thing about the model.
+#
+# This replaces the test fixture that used to live at fixtures/inference-server.
+# It is a real node — the binary a fleet runs — rather than a stand-in, so the
+# remote-mode smoke test now exercises the artifact instead of an imitation of
+# it. It is not published today; the release manifest does not reference it.
+#
+# LICENSE: the `postvec-server` binary inside this image is BUSL-1.1, not the
+# PostgreSQL License that covers the extension and its packages. See the
+# repository's LICENSE index.
+
+ARG BUILD_BASE
+ARG RUST_VERSION
+ARG RUSTUP_VERSION
+ARG RUSTUP_INIT_SHA256
+ARG RUST_TRIPLE
+ARG PROTOC_VERSION
+ARG PROTOC_ARCH
+ARG PROTOC_SHA256
+
+FROM ${BUILD_BASE} AS builder
+
+ARG RUST_VERSION
+ARG RUSTUP_VERSION
+ARG RUSTUP_INIT_SHA256
+ARG RUST_TRIPLE
+ARG PROTOC_VERSION
+ARG PROTOC_ARCH
+ARG PROTOC_SHA256
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_TERM_COLOR=never \
+    PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates clang libclang-dev pkg-config \
+        curl unzip git openssl libssl-dev
+
+# The same pinned protoc and toolchain the release builders use, so the server
+# is built from the same inputs as the thing it is tested against.
+RUN set -eux; \
+    curl --fail --silent --show-error --location --retry 3 -o /tmp/protoc.zip \
+        "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip"; \
+    echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum --check --strict -; \
+    mkdir -p /usr/local/protoc; \
+    unzip -q -o /tmp/protoc.zip -d /usr/local/protoc; \
+    ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc; \
+    rm -f /tmp/protoc.zip
+
+RUN set -eux; \
+    curl --fail --silent --show-error --location --retry 3 -o /tmp/rustup-init \
+        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TRIPLE}/rustup-init"; \
+    echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum --check --strict -; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --no-modify-path --profile minimal \
+        --default-toolchain "${RUST_VERSION}"; \
+    rm -f /tmp/rustup-init
+
+WORKDIR /src
+COPY . .
+RUN rm -rf /src/target /src/postvec/target
+
+# `--locked`: the server speaks exactly the protocol this commit's postvec was
+# compiled against, and the proto-drift test guarantees the vendored and
+# canonical copies agree. Building from the same tree keeps that true.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked,id=postvec-server-target \
+    set -eux; \
+    cargo build --locked --release -p postvec-server; \
+    mkdir -p /out; \
+    cp /src/target/release/postvec-server /out/postvec-server
+
+# ---------------------------------------------------------------------- serve
+
+FROM ${BUILD_BASE} AS server
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    POSTVEC_SERVER_ROOT=/ninference \
+    RUST_LOG=info
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates openssl libgomp1 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/postvec-server /usr/local/bin/postvec-server
+COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
+
+# The same ONNX Runtime and the same model bundle the complete image carries,
+# staged by the caller from the verified payloads. The engine root layout is
+# identical to embedded mode's, so this tree is portable between the two.
+COPY payload/ /ninference/
+
+# Run unprivileged. The server reads model files and opens sockets; it needs
+# nothing a root process would have.
+RUN set -eux; \
+    useradd --system --create-home --home-dir /var/lib/postvec-server \
+        --shell /usr/sbin/nologin postvec-server; \
+    chown -R postvec-server:postvec-server /ninference
+USER postvec-server
+
+# 22222 discovery (HTTPS), 33333 gRPC (plaintext), 11111 gossip. The admin port
+# (22223) is deliberately NOT exposed: it is loopback-only and its routes
+# mutate the engine.
+EXPOSE 11111 22222 33333
+
+# `/ready` rather than `/config`: it is 503 until a model can actually answer,
+# so a container is only healthy once it can serve, not merely once it listens.
+HEALTHCHECK --interval=5s --timeout=5s --start-period=180s --retries=24 \
+    CMD curl --fail --silent --insecure https://127.0.0.1:22222/ready >/dev/null || exit 1
+
+ENTRYPOINT ["postvec-server-entrypoint"]
+CMD ["postvec-server"]

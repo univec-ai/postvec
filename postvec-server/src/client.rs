@@ -192,7 +192,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
     let loaded: BTreeSet<&str> = report.models.iter().map(String::as_str).collect();
     let mut warnings: Vec<String> = Vec::new();
     // Policy, not a problem: reported, but it does not make the node degraded.
-    let mut println_note: Option<String> = None;
+    let mut policy_note: Option<String> = None;
     let mut on_disk: Vec<(String, bool, bool)> = Vec::new(); // name, enabled, loaded
     match &inventory {
         Some(Ok(inv)) => {
@@ -240,7 +240,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
             }
             let excluded = inv.loadable().into_iter().filter(|n| !eligible(n)).count();
             if excluded > 0 {
-                println_note = Some(format!(
+                policy_note = Some(format!(
                     "{excluded} enabled model(s) on disk are outside this node's --models \
                      allow-list and will not load"
                 ));
@@ -309,12 +309,12 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
                     .collect::<Vec<_>>(),
                 "drift": drift,
                 "warnings": warnings,
-                "note": println_note,
+                "note": policy_note,
             }))?
         );
     } else {
         print_status(&report, ready, &on_disk, &fleet, &warnings);
-        if let Some(note) = &println_note {
+        if let Some(note) = &policy_note {
             println!("\nnote\n  {note}");
         }
     }

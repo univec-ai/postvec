@@ -595,7 +595,7 @@ cargo pgrx run pg18        # opens psql against a dev cluster
 
 Tests need no live inference service: `#[pg_test]`s use `/config` fixtures
 and an in-process mock `InferenceClient`. Worker/live end-to-end runs use a
-real inference node — `packaging/postvec/scripts/build-ninference-fixture.sh`
+real inference node — `packaging/postvec/scripts/build-server-image.sh`
 builds one — with the endpoint GUCs set. CI is defined in
 [`.github/workflows/postvec-ci.yml`](../.github/workflows/postvec-ci.yml) and
 mirrored by `ci.sh`.

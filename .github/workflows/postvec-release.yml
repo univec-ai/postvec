@@ -731,8 +731,8 @@ jobs:
         with:
           name: extension-debian12-pg${{ matrix.pg }}-${{ matrix.arch }}
           path: packaging/postvec/dist/extension/
-      # The ninference fixture serves the same model bundle the complete image
-      # carries, so the remote and complete tests mean the same thing about it.
+      # postvec-server serves the same model bundle the complete image carries,
+      # so the remote and complete tests mean the same thing about it.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: model-bundle
@@ -750,15 +750,16 @@ jobs:
             --pg ${{ matrix.pg }} --variant ${{ matrix.variant }} --arch ${{ matrix.arch }} \
             --repository "${REPOSITORY}" --load
 
-      # The remote image is tested against a *real* ninference serving the same
-      # engine and the same bundled model, built from this commit. Without it
-      # the remote path is only ever exercised in its degraded state, which
-      # proves the failure mode and says nothing about the success one.
-      - name: ninference fixture
+      # The remote image is tested against a *real* inference node — the
+      # postvec-server this repository ships, serving the same engine and the
+      # same bundled model, built from this commit. Without it the remote path
+      # is only ever exercised in its degraded state, which proves the failure
+      # mode and says nothing about the success one.
+      - name: postvec-server image
         if: matrix.variant == 'remote'
         run: |
           packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch ${{ matrix.arch }}
-          packaging/postvec/scripts/build-ninference-fixture.sh --arch ${{ matrix.arch }}
+          packaging/postvec/scripts/build-server-image.sh --arch ${{ matrix.arch }}
 
       # Native, on the architecture the image is for. This is what makes the
       # manifest list assembled later meaningful.
@@ -776,15 +777,15 @@ jobs:
           PG: ${{ matrix.pg }}
         run: |
           suffix=""
-          fixture=""
+          engine=""
           if [ "${VARIANT}" = complete ]; then
             suffix="-complete"
           else
-            fixture="--ninference-image postvec-ninference-fixture:${ARCH}"
+            engine="--server-image postvec-server:${ARCH}"
           fi
           # shellcheck disable=SC2086
           packaging/postvec/tests/image-smoke-test.sh \
-            --variant "${VARIANT}" ${fixture} \
+            --variant "${VARIANT}" ${engine} \
             "${REPOSITORY}:${RELEASE_ID}-pg${PG}${suffix}"
 
       # Per architecture, because this is exactly where ONNX Runtime could
