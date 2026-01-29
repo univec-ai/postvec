@@ -2,12 +2,12 @@
 
 The inference node postvec's **remote** mode dials.
 
-postvec has two shapes. In embedded mode the extension hosts an inference
-engine inside the PostgreSQL launcher process — one container, no API key,
-nothing to operate. In remote mode (`postvec.mode = 'grpc'`, the default) that
-engine lives somewhere else and PostgreSQL is a thin client, which is what you
-want once inference should not share a crash domain, a CPU budget or a memory
-budget with the database, or once several databases should share one GPU.
+postvec has two shapes. Embedded mode — the default — hosts an inference
+engine inside the PostgreSQL launcher process: one container, no API key,
+nothing to operate. In remote mode (`postvec.mode = 'grpc'`) that engine lives
+somewhere else and PostgreSQL is a thin client, which is what you want once
+inference should not share a crash domain, a CPU budget or a memory budget
+with the database, or once several databases should share one GPU.
 
 `postvec-server` is that somewhere else.
 

@@ -3,10 +3,13 @@
 #
 # Two targets:
 #
-#   remote    PostgreSQL + pgvector + postvec, talking to ninference nodes.
-#   complete  the same, plus ONNX Runtime and one embedding model. Defaults
-#             to in-process inference; POSTVEC_MODE=grpc still works. One
-#             container, both modes.
+#   remote    PostgreSQL + pgvector + postvec, talking to postvec-server nodes.
+#             It carries no engine assets, so it pins POSTVEC_MODE=grpc — the
+#             extension's own default is `embedded`, which this image cannot
+#             serve.
+#   complete  the same, plus ONNX Runtime and one embedding model. In-process
+#             inference; POSTVEC_MODE=grpc still works. One container, both
+#             modes.
 #
 # The build consumes the *already built and verified* release packages for this
 # commit; it never compiles anything. That is what makes the image and the
@@ -58,6 +61,10 @@ RUN chmod 0755 \
         /usr/local/bin/postvec-healthcheck \
         /docker-entrypoint-initdb.d/20-create-postvec.sh
 
+# Load-bearing, not decoration: the extension defaults to `embedded`, and this
+# variant deliberately ships without ONNX Runtime or a model. Pinning grpc is
+# what makes an unconfigured `docker run` of this tag fail with "no endpoints"
+# rather than with a missing engine root.
 ENV POSTVEC_MODE=grpc \
     POSTVEC_CREATE_EXTENSION=1
 

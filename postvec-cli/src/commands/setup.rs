@@ -378,8 +378,8 @@ fn activation(desired: &DesiredConfig, snapshot: &SettingsSnapshot) -> Activatio
                 config::guc::parse_library_list(active)
                     != config::guc::parse_library_list(&expected)
             }
-            // An unset postvec.mode *is* 'grpc' to the extension, so writing it
-            // out explicitly must not cost a restart.
+            // An unset postvec.mode *is* 'embedded' to the extension, so
+            // writing that out explicitly must not cost a restart.
             "postvec.mode" => normalized_mode(active) != normalized_mode(&expected),
             _ => active != expected,
         };
@@ -397,11 +397,12 @@ fn activation(desired: &DesiredConfig, snapshot: &SettingsSnapshot) -> Activatio
     activation
 }
 
-/// `postvec.mode` unset, empty and `grpc` all mean the same thing to the
-/// extension (`postvec/src/gucs.rs::parse_mode`).
+/// `postvec.mode` unset, empty and `embedded` all mean the same thing to the
+/// extension (`postvec/src/gucs.rs::parse_mode`), so writing the default out
+/// explicitly is not a change and must not cost a restart.
 fn normalized_mode(value: &str) -> &str {
     match value.trim() {
-        "" => "grpc",
+        "" => "embedded",
         other => other,
     }
 }
@@ -1405,25 +1406,63 @@ mod tests {
         assert_eq!(activation(&desired, &database_changed), Activation::Restart);
     }
 
-    /// An unset `postvec.mode` already means grpc, so rendering it explicitly
-    /// must not manufacture an outage.
+    /// An unset `postvec.mode` means the extension's default, which is
+    /// **embedded**, so rendering that explicitly must not manufacture an
+    /// outage — while switching an unconfigured cluster to remote genuinely
+    /// is a change and must cost the restart it needs.
     #[test]
     fn writing_the_default_mode_explicitly_does_not_cost_a_restart() {
-        let desired = desired_for(&snapshot(&[], None), &Ownership::Unmanaged, &["univec"]);
-        let mode_unset = snapshot(
-            &[
+        let unset = |extra: &[(&str, &str)]| {
+            let mut settings: Vec<(&str, &str)> = vec![
                 ("shared_preload_libraries", "postvec"),
                 ("postvec.database", "univec"),
                 ("postvec.mode", ""),
-                ("postvec.ninference_grpc_endpoints", "192.0.2.2:33333"),
-                (
-                    "postvec.ninference_http_endpoints",
-                    "https://192.0.2.2:22222",
-                ),
-            ],
-            None,
+            ];
+            settings.extend_from_slice(extra);
+            snapshot(&settings, None)
+        };
+
+        let embedded = build_desired(
+            &snapshot(&[], None),
+            &Ownership::Unmanaged,
+            &ModeTarget::Embedded {
+                path: PathBuf::from("/opt/postvec/ninference"),
+                models: vec![],
+                grpc_listen: None,
+                http_listen: None,
+            },
+            &["univec".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            activation(
+                &embedded,
+                &unset(&[
+                    ("postvec.ninference_path", "/opt/postvec/ninference"),
+                    ("postvec.embedded_models", ""),
+                    ("postvec.embedded_listen", "127.0.0.1:33433"),
+                    ("postvec.embedded_http_listen", "127.0.0.1:33434"),
+                ])
+            ),
+            Activation::None,
+            "an unset mode already *is* embedded"
         );
-        assert_eq!(activation(&desired, &mode_unset), Activation::None);
+
+        let remote = desired_for(&snapshot(&[], None), &Ownership::Unmanaged, &["univec"]);
+        assert_eq!(
+            activation(
+                &remote,
+                &unset(&[
+                    ("postvec.ninference_grpc_endpoints", "192.0.2.2:33333"),
+                    (
+                        "postvec.ninference_http_endpoints",
+                        "https://192.0.2.2:22222",
+                    ),
+                ])
+            ),
+            Activation::Restart,
+            "moving an unconfigured cluster to remote inference is a real change"
+        );
     }
 
     #[test]

@@ -14,7 +14,18 @@ set -Eeuo pipefail
 
 user="${POSTGRES_USER:-postgres}"
 database="${POSTVEC_HEALTHCHECK_DATABASE:-${POSTGRES_DB:-${user}}}"
-mode="${POSTVEC_MODE:-grpc}"
+# `${VAR-grpc}`, matching the entrypoint: an empty POSTVEC_MODE is user error,
+# not a request for remote inference. Reading it as grpc here would skip the
+# capability and model checks and report an embedded container healthy while
+# its engine did nothing.
+mode="${POSTVEC_MODE-grpc}"
+case "${mode}" in
+grpc | embedded) ;;
+*)
+    echo "unhealthy: POSTVEC_MODE is '${mode}', which is neither 'grpc' nor 'embedded'" >&2
+    exit 1
+    ;;
+esac
 # The first configured model is the one the image promises. This release
 # bundles exactly one; if that ever changes, compare sets here.
 #
@@ -40,6 +51,15 @@ pg_isready --quiet --username "${user}" --dbname "${database}" || exit 1
 
 # One round trip, one boolean per property, so a failure names itself instead
 # of arriving as a bare "unhealthy".
+#
+# The status is captured rather than inherited. Under `set -e` a failing
+# command substitution in an assignment ends the script *with psql's own exit
+# code* — 2 for a connection that dropped mid-check — which is the one value
+# Docker reserves in the health-check contract, and which skips every
+# diagnostic below. A health check that cannot connect is unhealthy, and it
+# should say why.
+report=""
+psql_status=0
 report="$(
     psql --no-psqlrc --tuples-only --no-align --field-separator=' ' \
          --username "${user}" --dbname "${database}" \
@@ -51,12 +71,23 @@ report="$(
 -- rendering is 't'/'f', and a shell contract built on that is one output
 -- format change away from reporting every container healthy.
 SELECT
-    format('extension=%s versions=%s capability=%s heartbeat=%s model=%s',
+    format('extension=%s versions=%s mode=%s capability=%s heartbeat=%s model=%s',
         ((SELECT count(*) FROM pg_extension WHERE extname = 'postvec') = 1)::text,
         -- The library actually loaded into this backend against the SQL
         -- installed in this database. A mismatch parks the worker.
         ((SELECT extversion FROM pg_extension WHERE extname = 'postvec')
             IS NOT DISTINCT FROM postvec.version())::text,
+        -- The mode the *server* is running, against the one this container was
+        -- told to run. They diverge when POSTVEC_MODE is changed without a
+        -- restart, or when a mounted configuration file overrides the
+        -- entrypoint's `-c postvec.mode=` — states in which every other check
+        -- below is answering about the wrong half of the installation.
+        -- An unset or empty setting is the extension's default, embedded.
+        (:'mode' = CASE
+                       WHEN COALESCE(NULLIF(current_setting('postvec.mode', true), ''), 'embedded')
+                            = 'grpc' THEN 'grpc'
+                       ELSE 'embedded'
+                   END)::text,
         -- An embedded-mode image whose library cannot do embedded mode would
         -- start, warn once, and never embed anything.
         (:'mode' <> 'embedded'
@@ -78,12 +109,18 @@ SELECT
                         WHERE name = split_part(:'model', ',', 1)))::text
     );
 SQL
-)"
+)" || psql_status=$?
+
+if (( psql_status != 0 )); then
+    printf 'postvec: unhealthy — psql exited %d: %s\n' \
+        "${psql_status}" "${report:-no output}" >&2
+    exit 1
+fi
 
 # Every property must say true. `false` fails, and so does an empty value —
 # which is what a NULL renders as, and what "no heartbeat row exists at all"
 # looks like.
-for property in extension versions capability heartbeat model; do
+for property in extension versions mode capability heartbeat model; do
     if [[ "${report}" != *"${property}=true"* ]]; then
         printf 'postvec: unhealthy — %s\n' "${report:-no answer from ${database}}" >&2
         exit 1

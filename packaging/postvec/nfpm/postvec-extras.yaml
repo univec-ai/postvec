@@ -8,8 +8,10 @@
 #
 # This is not a complete postvec install. It does not depend on postvec-cli or
 # postgresql-NN-postvec (it is all/noarch and cannot pick a PostgreSQL major).
-# Installing it still changes nothing. In-process mode is selected by
-# `postvec setup --embedded --path /opt/postvec/ninference`.
+# Installing it still changes nothing by itself — the extension has to be
+# preloaded and a database enrolled, which `postvec setup --embedded` does.
+# The payload lands where postvec.ninference_path already points by default,
+# so no --path is needed.
 
 name: ${EXTRAS_METAPACKAGE}
 arch: ${NOARCH}
@@ -30,7 +32,10 @@ description: |
   postvec-cli and postgresql-NN-postvec. It does not change postvec.mode.
   .
   After the extension is installed, enable in-process inference with:
-  postvec setup --database <name> --embedded --path /opt/postvec/ninference
+  postvec setup --database <name> --embedded
+  .
+  The payload installs where postvec.ninference_path already points, so no
+  --path is needed. Embedded is also the extension's default mode.
 
 contents:
   - src: ${REPO_ROOT}/postvec/LICENSE

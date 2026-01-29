@@ -48,7 +48,12 @@ BEGIN
             library->>'version', catalog_version;
     END IF;
 
-    IF current_setting('postvec.mode', true) = 'embedded'
+    -- Normalised the way the extension normalises it: unset and empty both
+    -- mean the default, which is `embedded`. The images always pass
+    -- `-c postvec.mode=`, so this only matters for a hand-built image or a
+    -- hand-run script — but reading an unset setting as "not embedded" would
+    -- skip exactly the check that catches the build it applies to.
+    IF COALESCE(NULLIF(current_setting('postvec.mode', true), ''), 'embedded') = 'embedded'
        AND NOT (library->'features'->>'embedded')::boolean THEN
         RAISE EXCEPTION
             'this image is configured for embedded mode but its postvec.so was '

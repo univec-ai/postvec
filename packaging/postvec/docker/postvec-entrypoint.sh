@@ -60,9 +60,20 @@ file_env POSTGRES_DB "${POSTGRES_USER}"
 file_env POSTVEC_DATABASES "${POSTGRES_DB}"
 file_env POSTVEC_SHARED_PRELOAD_LIBRARIES ""
 
-mode="${POSTVEC_MODE:-grpc}"
+# `${VAR-default}`, not `${VAR:-default}`: an *empty* POSTVEC_MODE is user
+# error and must say so, not quietly become grpc. Compose renders an
+# undefined interpolation as the empty string, so `POSTVEC_MODE: "${MODE}"`
+# with MODE unset would otherwise disable the engine a complete image was
+# built around — silently, and only visibly as "search returns FTS only".
+#
+# The unset fallback stays grpc rather than following the extension's own
+# default (`embedded`), because the image knows something the extension does
+# not: whether it carries engine assets. Both variants pin POSTVEC_MODE
+# explicitly, so this is a net, not a policy.
+mode="${POSTVEC_MODE-grpc}"
 case "${mode}" in
 grpc|embedded) ;;
+"") usage "POSTVEC_MODE is set but empty — use 'grpc' or 'embedded', or unset it" ;;
 *) usage "POSTVEC_MODE must be 'grpc' or 'embedded', not '${mode}'" ;;
 esac
 

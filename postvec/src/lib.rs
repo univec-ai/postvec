@@ -134,8 +134,18 @@ mod tests {
 pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {}
 
+    /// The suite runs against a mock inference client and `/config` fixtures —
+    /// no engine, no model assets, no reachable node. `postvec.mode` is pinned
+    /// to that reality rather than inherited from the extension's default,
+    /// which is `embedded`: a thin build would park its workers, and an
+    /// `--features embedded` build would spend every test retrying an engine
+    /// init against a root the test cluster does not have.
+    ///
+    /// Pinning it also decouples the suite from the default, so changing the
+    /// default is a decision about products rather than a decision about
+    /// whether several hundred tests still pass.
     #[must_use]
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec![]
+        vec!["postvec.mode = 'grpc'"]
     }
 }

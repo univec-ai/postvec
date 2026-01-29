@@ -59,17 +59,17 @@ re-embedding, no shadow index rebuild.
 
 ## Two deployment modes
 
-- **Remote** (`postvec.mode = 'grpc'`, the default): inference runs on separate
-  nodes; PostgreSQL stays a thin client. The availability-first production
-  shape. Those nodes are [`postvec-server`](postvec-server/README.md) — same
-  engine, same wire contract, its own process, no model hub. It is the one
-  directory in this repository that is **not** PostgreSQL-licensed; see
-  [LICENSE](LICENSE).
-- **Embedded** (`postvec.mode = 'embedded'`): one engine hosted inside the
-  PostgreSQL launcher process, CPU-only, models on local disk, no text leaves
-  the host. The right shape for evaluation, offline installs, and low-friction
-  adoption — traded against a shared CPU/memory/failure domain with
-  PostgreSQL.
+- **Embedded** (`postvec.mode = 'embedded'`, the default): one engine hosted
+  inside the PostgreSQL launcher process, CPU-only, models on local disk, no
+  text leaves the host. Install the packages, preload the library, restart —
+  `search()` works with nothing else configured. Traded against a shared
+  CPU/memory/failure domain with PostgreSQL.
+- **Remote** (`postvec.mode = 'grpc'`): inference runs on separate nodes and
+  PostgreSQL stays a thin client — the shape to move to when inference should
+  not share a crash domain, a CPU budget or a GPU with the database. Those
+  nodes are [`postvec-server`](postvec-server/README.md): same engine, same
+  wire contract, its own process, no model hub. It is the one directory in
+  this repository that is **not** PostgreSQL-licensed; see [LICENSE](LICENSE).
 
 Same SQL, same queue, same wire contract in both modes.
 

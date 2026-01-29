@@ -176,10 +176,10 @@ RPM names follow the PGDG-RPM convention (`postgresql18-postvec`) and depend on
 `pgvector_18`; Debian names follow the Debian convention
 (`postgresql-18-postvec`, `postgresql-18-pgvector`).
 
-| Image | Default mode | Extra content |
+| Image | Mode | Extra content |
 |---|---|---|
-| `<repo>:0.1.0-1-pg18` | `grpc` | extension, pgvector, CLI |
-| `<repo>:0.1.0-1-pg18-complete` | `embedded` (default; `grpc` still works) | + ONNX Runtime + the bundled model |
+| `<repo>:0.1.0-1-pg18` | `grpc` (pinned — carries no engine assets) | extension, pgvector, CLI |
+| `<repo>:0.1.0-1-pg18-complete` | `embedded` (`grpc` still works) | + ONNX Runtime + the bundled model |
 
 Moving tags `pg18` / `pg18-complete` also exist. There is deliberately **no
 `latest`**: it hides the PostgreSQL major, and a major-version image change
@@ -942,6 +942,7 @@ project will not pretend otherwise.
 |---|---|---|
 | `tests/unit-test.sh` | `python3` | the release's *refusals*: package and debug closure, artifact identity, architecture canonicalisation, build-cell set and recorded facts, image and per-platform-SBOM closure, base-image pins, release-tag identity per mode, the `versions.env` parser and publication grammar, the bootstrap's generated commands for every declared distribution, the bundled-model trust gate (pins, channel, licence policy, closure, descriptor facts) and the payload the bundle step produces — 132 assertions, no Docker, no network, seconds |
 | `tests/bootstrap-test.sh` | Docker | the published bootstrap, run twice in a clean container of each of the five distributions it will execute on: fingerprint verified, repository RPM signature checked (EL), PostgreSQL and pgvector resolve afterwards, second run idempotent |
+| `tests/healthcheck-test.sh` | nothing | the container health verdict, against stubbed `pg_isready`/`psql`: every property false in turn, an empty or truncated report, a NULL heartbeat, a psql that cannot connect, an empty or unknown `POSTVEC_MODE`, and that the SQL it runs writes nothing — 23 assertions, well under a second |
 | `tests/entrypoint-test.sh` | a `postvec` binary | delegation, preload merge and validation, `_FILE` secrets, loopback contract, and that a relative binary path works (CI passes one) — 36 assertions, under a second |
 | `tests/package-install-test.sh` | Docker | both families, 46 assertions: the **published prerequisite bootstrap** (and its idempotency), dependency resolution, layout, dual-major coexistence, "the install changed nothing", a **real cluster** with `CREATE EXTENSION`, `setup`/`uninstall`, detached symbols, inference with the bundled model, removal — and `doctor`'s actual verdicts: which checks pass with no engine reachable, that it exits 1 and names the endpoint, and that it reports **healthy (exit 0)** once embedded configuration completes |
 | `tests/image-smoke-test.sh` | Docker, a built image | health, PID 1, published ports, embed → sync → search, remote-mode degradation, persistence, clean SIGTERM, startup failure modes |

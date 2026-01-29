@@ -32,8 +32,24 @@ pub static HEARTBEAT_INTERVAL_MS: GucSetting<i32> = GucSetting::<i32>::new(30_00
 // swapped in later. Like postvec.database they are only defined under
 // shared_preload_libraries (a POSTMASTER GUC cannot be created from a
 // plain backend load). Backends of a preloaded cluster inherit the values.
-pub static MODE: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
-pub static NINFERENCE_PATH: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
+/// `embedded` by default: an install that carries the engine and a model
+/// should serve `search()` after `CREATE EXTENSION` and a restart, with
+/// nothing else configured. Remote deployments say `postvec.mode = 'grpc'`
+/// alongside the endpoints they must configure anyway.
+///
+/// A real string rather than an unset GUC, so `SHOW postvec.mode` and
+/// `postvec doctor` report the mode the worker will actually use.
+pub static MODE: GucSetting<Option<CString>> =
+    GucSetting::<Option<CString>>::new(Some(c"embedded"));
+
+/// Where the packages install the engine root, so a package install needs no
+/// path configuration either. A source build on a host without that tree
+/// fails engine init with an error naming the path, which is the right
+/// answer — it is exactly what is missing.
+pub const DEFAULT_NINFERENCE_PATH: &str = "/opt/postvec/ninference";
+
+pub static NINFERENCE_PATH: GucSetting<Option<CString>> =
+    GucSetting::<Option<CString>>::new(Some(c"/opt/postvec/ninference"));
 pub static EMBEDDED_MODELS: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static EMBEDDED_LISTEN: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static EMBEDDED_HTTP_LISTEN: GucSetting<Option<CString>> =
@@ -52,9 +68,9 @@ pub const DEFAULT_EMBEDDED_HTTP_LISTEN: &str = "127.0.0.1:33434";
 /// The deployment mode selected by `postvec.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Default: thin client to remote ninference nodes.
+    /// Thin client to remote inference nodes (postvec-server).
     Grpc,
-    /// The background worker hosts the engine in-process.
+    /// Default: the launcher hosts the engine in-process.
     Embedded,
 }
 
@@ -62,8 +78,12 @@ pub enum Mode {
 /// value; `mode()` is the lenient read used on hot paths.
 pub fn parse_mode(raw: Option<&str>) -> Result<Mode, String> {
     match raw.map(str::trim) {
-        None | Some("") | Some("grpc") => Ok(Mode::Grpc),
-        Some("embedded") => Ok(Mode::Embedded),
+        // Unset and empty both mean "the default", which is embedded. The GUC
+        // carries a real default string, so `None` is only reachable from a
+        // direct call; keeping both arms means the two spellings can never
+        // disagree.
+        None | Some("") | Some("embedded") => Ok(Mode::Embedded),
+        Some("grpc") => Ok(Mode::Grpc),
         Some(other) => Err(format!(
             "invalid postvec.mode {other:?} (expected 'grpc' or 'embedded')"
         )),
@@ -76,12 +96,12 @@ pub fn mode_checked() -> Result<Mode, String> {
     parse_mode(raw.as_deref())
 }
 
-/// Current mode; unknown values fall back to `Grpc`. Backends stay lenient
-/// so a typo does not fail every `search()`. The worker, which is the only
-/// actor that drains row text, validates strictly at startup and parks on a
-/// bad value.
+/// Current mode; unknown values fall back to the default. Backends stay
+/// lenient so a typo does not fail every `search()`. The worker, which is the
+/// only actor that drains row text, validates strictly at startup and parks
+/// on a bad value.
 pub fn mode() -> Mode {
-    mode_checked().unwrap_or(Mode::Grpc)
+    mode_checked().unwrap_or(Mode::Embedded)
 }
 
 /// The embedded listen address (with default applied).
@@ -135,11 +155,13 @@ pub fn register() {
         );
         GucRegistry::define_string_guc(
             c"postvec.mode",
-            c"Inference deployment mode: 'grpc' (remote ninference) or 'embedded'",
+            c"Inference deployment mode: 'embedded' (default, in-process) or 'grpc' (remote)",
             c"'embedded' hosts the UniVec engine in-process (build with --features embedded): \
               the launcher hosts one shared engine and serves the per-database workers and \
               connection backends over loopback listeners; \
-              postvec.ninference_*_endpoints are then ignored.",
+              postvec.ninference_*_endpoints are then ignored. \
+              'grpc' makes this a thin client to postvec-server nodes named by \
+              postvec.ninference_grpc_endpoints and postvec.ninference_http_endpoints.",
             &MODE,
             GucContext::Postmaster,
             GucFlags::default(),
@@ -147,7 +169,9 @@ pub fn register() {
         GucRegistry::define_string_guc(
             c"postvec.ninference_path",
             c"Engine root path for embedded mode (libs/, models/)",
-            c"Falls back to the NINFERENCE_PATH environment variable when unset.",
+            c"Defaults to /opt/postvec/ninference, where the postvec-onnxruntime and \
+              postvec-model-* packages install their payloads. Falls back to the \
+              NINFERENCE_PATH environment variable when set to the empty string.",
             &NINFERENCE_PATH,
             GucContext::Postmaster,
             GucFlags::default(),
@@ -433,15 +457,43 @@ mod tests {
     use super::{parse_endpoint_list, parse_mode, Mode};
     use std::ffi::CString;
 
+    /// The default is **embedded**, and both spellings of "unset" have to
+    /// agree with it: the GUC carries a real default string, but a hand-written
+    /// `postvec.mode = ''` must not mean something different from omitting the
+    /// line. postvec-cli encodes the same rule (`facts::Snapshot::mode`,
+    /// `setup::normalized_mode`) and the two must not drift — a CLI that
+    /// believes an unconfigured cluster is remote reports it healthy while the
+    /// worker runs in-process.
     #[test]
     fn mode_parsing() {
-        assert_eq!(parse_mode(None), Ok(Mode::Grpc));
-        assert_eq!(parse_mode(Some("")), Ok(Mode::Grpc));
-        assert_eq!(parse_mode(Some("grpc")), Ok(Mode::Grpc));
+        assert_eq!(parse_mode(None), Ok(Mode::Embedded), "unset is embedded");
+        assert_eq!(
+            parse_mode(Some("")),
+            Ok(Mode::Embedded),
+            "empty is embedded"
+        );
         assert_eq!(parse_mode(Some("embedded")), Ok(Mode::Embedded));
         assert_eq!(parse_mode(Some(" embedded ")), Ok(Mode::Embedded));
+        assert_eq!(parse_mode(Some("grpc")), Ok(Mode::Grpc));
+        assert_eq!(parse_mode(Some(" grpc ")), Ok(Mode::Grpc));
         assert!(parse_mode(Some("local")).is_err());
         assert!(parse_mode(Some("Embedded")).is_err(), "case-sensitive");
+    }
+
+    /// The boot defaults are what an unconfigured install runs on, so they are
+    /// worth asserting rather than reading.
+    #[test]
+    fn boot_defaults_are_embedded_and_the_packaged_root() {
+        assert_eq!(
+            super::MODE.get().map(|c| c.to_string_lossy().to_string()),
+            Some("embedded".to_string())
+        );
+        assert_eq!(
+            super::NINFERENCE_PATH
+                .get()
+                .map(|c| c.to_string_lossy().to_string()),
+            Some(super::DEFAULT_NINFERENCE_PATH.to_string())
+        );
     }
 
     #[test]

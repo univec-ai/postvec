@@ -140,14 +140,18 @@ jobs:
           pip install --quiet pyyaml
           packaging/postvec/scripts/lint-nfpm-configs.sh
 
-      - name: Compose examples are valid YAML
+      # Valid YAML is the weaker half. These files are shipped as the
+      # documented way to run postvec, so they are also parsed as *compose* —
+      # which is what catches an unknown top-level key, a `secrets:` entry no
+      # service can resolve, or a `depends_on` naming a service that is not
+      # there. All of those are valid YAML and none of them run.
+      - name: Compose examples are valid compose
         run: |
-          python3 - <<'PY'
-          import pathlib, yaml
-          for path in sorted(pathlib.Path("packaging/postvec/docker/compose").glob("*.yml")):
-              yaml.safe_load(path.read_text())
-              print("ok", path)
-          PY
+          for path in packaging/postvec/docker/compose/*.yml; do
+            python3 -c "import sys, yaml; yaml.safe_load(open(sys.argv[1]))" "${path}"
+            docker compose -f "${path}" config >/dev/null
+            echo "ok ${path}"
+          done
 
       # Goldens are keyed by model name, so this reads the reviewed pin and
       # looks for that model's file. A bundled-model change that forgets to
@@ -206,6 +210,13 @@ jobs:
       # Seconds, no Docker.
       - name: Release-closure regression tests
         run: packaging/postvec/tests/unit-test.sh
+
+      # The health check decides whether a container counts as up, and it is
+      # otherwise only exercised end to end — where the only observable is
+      # "it went healthy", which says nothing about the cases where it must
+      # refuse. Stubs for pg_isready and psql; no PostgreSQL, no container.
+      - name: Health-check regression tests
+        run: packaging/postvec/tests/healthcheck-test.sh
 
   # The entrypoint's logic, against a real CLI binary. Seconds, no container.
   entrypoint:

@@ -134,11 +134,21 @@ impl SettingsSnapshot {
         crate::config::guc::parse_extension_list(self.value("postvec.database").unwrap_or(""))
     }
 
+    /// The mode the extension will actually use.
+    ///
+    /// An empty value means the default, and the default is **embedded**
+    /// (`postvec/src/gucs.rs::parse_mode`). Reading it as remote would let
+    /// `doctor` check the wrong half of the installation and call an
+    /// unconfigured cluster healthy.
+    ///
+    /// `None` here means "the setting was not observed at all" — a cluster
+    /// that has not loaded the library — which is different from an
+    /// unconfigured one and is reported as such.
     pub fn mode(&self) -> Option<Mode> {
         match self.value("postvec.mode").map(str::trim) {
             None => None,
-            Some("") | Some("grpc") => Some(Mode::Grpc),
-            Some("embedded") => Some(Mode::Embedded),
+            Some("") | Some("embedded") => Some(Mode::Embedded),
+            Some("grpc") => Some(Mode::Grpc),
             Some(_) => None,
         }
     }
@@ -764,9 +774,14 @@ mod tests {
     }
 
     #[test]
-    fn mode_defaults_to_grpc_and_rejects_garbage() {
+    fn mode_defaults_to_embedded_and_rejects_garbage() {
+        // Not observed at all — a cluster that has not loaded the library.
         assert_eq!(snapshot(&[]).mode(), None);
-        assert_eq!(snapshot(&[("postvec.mode", "")]).mode(), Some(Mode::Grpc));
+        // Observed and empty means the extension's default, which is embedded.
+        assert_eq!(
+            snapshot(&[("postvec.mode", "")]).mode(),
+            Some(Mode::Embedded)
+        );
         assert_eq!(
             snapshot(&[("postvec.mode", "grpc")]).mode(),
             Some(Mode::Grpc)

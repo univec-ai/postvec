@@ -438,8 +438,8 @@ pub struct SetupArgs {
     #[arg(long, conflicts_with_all = ["grpc", "http"])]
     pub embedded: bool,
 
-    /// Absolute engine root (contains libs/ and models/). Required with
-    /// --embedded.
+    /// Absolute engine root (contains libs/ and models/). Defaults to
+    /// /opt/postvec/ninference, where the packages install theirs.
     #[arg(long, requires = "embedded", value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -630,10 +630,16 @@ impl SetupArgs {
                 })
             }
             Mode::Embedded => {
+                // The packaged engine root, which is also what
+                // `postvec.ninference_path` defaults to — so on a package
+                // install `--embedded` needs no path at all. A root that is
+                // not there is caught by the engine preflight below, from the
+                // PostgreSQL account's perspective, which is the only vantage
+                // point that can answer the question.
                 let path = self
                     .path
                     .clone()
-                    .ok_or_else(|| CliError::usage("--embedded requires --path <DIR>"))?;
+                    .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_ENGINE_ROOT));
                 // Syntax only: existence and readability are checked from the
                 // PostgreSQL account's perspective during engine preflight.
                 let path = validate::absolute_path(&path, "--path")?;
@@ -748,14 +754,45 @@ mod tests {
         assert!(parse(&["setup", "--database", "d", "--model", "m"]).is_err());
     }
 
+    /// `--embedded` alone is a complete instruction on a package install:
+    /// the path defaults to where the packages put the engine root, which is
+    /// also what the extension's `postvec.ninference_path` defaults to.
     #[test]
-    fn embedded_path_is_required_semantically() {
+    fn embedded_defaults_the_path_to_the_packaged_engine_root() {
         let cli = parse(&["setup", "--database", "d", "--embedded"]).unwrap();
         let Command::Setup(args) = cli.command else {
             unreachable!()
         };
-        let err = args.validated().unwrap_err();
-        assert!(err.to_string().contains("--path"));
+        let validated = args.validated().expect("--embedded needs no --path");
+        match validated.target {
+            ModeTarget::Embedded { path, .. } => assert_eq!(
+                path,
+                PathBuf::from("/opt/postvec/ninference"),
+                "must match postvec/src/gucs.rs::DEFAULT_NINFERENCE_PATH"
+            ),
+            other => panic!("expected embedded, got {other:?}"),
+        }
+    }
+
+    /// An explicit path still wins, and still has to be absolute.
+    #[test]
+    fn an_explicit_embedded_path_overrides_the_default() {
+        let cli = parse(&["setup", "--database", "d", "--embedded", "--path", "/srv/e"]).unwrap();
+        let Command::Setup(args) = cli.command else {
+            unreachable!()
+        };
+        match args.validated().unwrap().target {
+            ModeTarget::Embedded { path, .. } => assert_eq!(path, PathBuf::from("/srv/e")),
+            other => panic!("expected embedded, got {other:?}"),
+        }
+        let cli = parse(&["setup", "--database", "d", "--embedded", "--path", "rel"]).unwrap();
+        let Command::Setup(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(
+            args.validated().is_err(),
+            "a relative --path is still refused"
+        );
     }
 
     #[test]

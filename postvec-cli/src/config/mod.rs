@@ -41,6 +41,14 @@ pub const MANAGED_SETTINGS: &[&str] = &[
 pub const DEFAULT_EMBEDDED_LISTEN: &str = "127.0.0.1:33433";
 pub const DEFAULT_EMBEDDED_HTTP_LISTEN: &str = "127.0.0.1:33434";
 
+/// Where the packages install the engine root, and what
+/// `postvec.ninference_path` defaults to
+/// (`postvec/src/gucs.rs::DEFAULT_NINFERENCE_PATH`).
+///
+/// Duplicated rather than shared because the extension is a pgrx crate this
+/// one cannot link. The pair is asserted in `cli.rs`; change both together.
+pub const DEFAULT_ENGINE_ROOT: &str = "/opt/postvec/ninference";
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RemoteSettings {
     pub grpc: Vec<GrpcEndpoint>,
