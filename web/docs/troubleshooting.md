@@ -21,7 +21,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `CREATE EXTENSION` cannot find pgvector | Install pgvector ≥ 0.8 for the **same** major |
 | `CREATE EXTENSION` is denied | Superuser; postvec is untrusted |
 | No advancing `worker_last_beat` | Preload, `postvec.database`, restart finished, worker slots, server log |
-| Jobs pile up with endpoint errors | Restore ninference; an empty endpoint list does not burn attempts |
+| Jobs pile up with endpoint errors | Restore the inference nodes; an empty endpoint list does not burn attempts |
 | Embedded engine will not start | Engine path, unversioned `libonnxruntime.so`, readable descriptors, loopback ports |
 | Search returns FTS only | Query embedding failed while degradation was enabled; restore inference or disable degradation |
 | Search is slow | No usable ANN index for the entry's distance |
@@ -36,7 +36,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `DROP DATABASE` is blocked | Worker holds a connection. `uninstall` then `dropdb --force` |
 | `sudo model pull` is anonymous | Credentials are per user. `sudo postvec login` |
 | `model pull` says package/manual owned | Pull through the package manager or as the original owner. |
-| Remote `model pull` returns an error | Expected; models are administered on the ninference host |
+| Remote `model pull` returns an error | Expected; models are administered on each `postvec-server` node |
 | Uninstall exits 3 | SQL changed; config left alone. Follow the printed file/line |
 | Exit 4 | Restart the selected cluster, then `doctor --deep` |
 

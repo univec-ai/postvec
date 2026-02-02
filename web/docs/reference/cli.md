@@ -64,7 +64,7 @@ instance.
 
 ```bash
 sudo postvec setup --database app \
-  --embedded --path /opt/postvec/ninference
+  --embedded
 
 sudo postvec setup --database app \
   --grpc HOST:PORT --http https://HOST:PORT
@@ -74,7 +74,8 @@ sudo postvec setup --database app \
 |---|---|
 | `--database NAME` | Repeatable / comma-separated |
 | `--grpc`, `--http` | Remote endpoints. gRPC order is round-robin |
-| `--embedded --path DIR` | Absolute engine root |
+| `--embedded` | In-process inference |
+| `--path DIR` | Absolute engine root. Defaults to `/opt/postvec/ninference` |
 | `--model NAME` | Embedded preload allow-list; omit to scan-load |
 | `--embedded-grpc-listen`, `--embedded-http-listen` | Loopback only |
 | `--switch-mode` | Acknowledge remote <-> embedded; name every database |

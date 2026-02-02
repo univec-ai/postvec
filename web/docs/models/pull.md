@@ -167,7 +167,7 @@ sudo postvec --cluster 18/main model pull baai-bge-m3 --dry-run
 :::: tip Expected
 The second command returns an error because files on the database host
 would not change the remote fleet. Model changes must occur through
-ninference or through `--path` on a standalone root.
+a `postvec-server` node, or through `--path` on a standalone root.
 ::::
 
 ## Credential scope

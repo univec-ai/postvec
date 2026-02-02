@@ -10,8 +10,8 @@ column. It also provides hybrid full-text and vector search. Stored vectors
 can be converted to another model in place, or each query can be
 [bridged](/docs/guides/bridge) into the space that already exists.
 
-Inference runs in-process ([embedded](/docs/concepts/modes)) or on separately
-operated ninference nodes. Models are local or on-prem.
+Inference runs in-process by default ([embedded](/docs/concepts/modes)), or on
+`postvec-server` nodes you operate. Models are local or on-prem.
 
 [Vector lock-in](/docs/concepts/lock-in) is the dependency between stored
 vectors and the model that produced them. [Embedding debt](/docs/concepts/lock-in)
@@ -52,7 +52,7 @@ The same table, with a short walkthrough for each row, lives on
    [packages](/docs/install/packages) or [source](/docs/install/source).
    Then configure the cluster.
 2. **Configure** - `postvec setup --embedded` for local inference, or
-   remote ninference endpoints. See
+   `--grpc` / `--http` for remote nodes. See
    [cluster configuration](/docs/install/setup).
 3. **Enable or adopt** a column. New vectors fill in the background.
    Adopted vectors stay as they are.
@@ -68,14 +68,16 @@ container.
 
 | | Embedded | Remote (`grpc`) |
 |---|---|---|
-| Where inference runs | Inside the PostgreSQL launcher | Separately operated ninference nodes |
-| Text leaves the DB host | No | Only to the configured ninference service |
-| Models | `postvec model ...` on this host | Administered on that fleet |
-| Catalogue | Public subset; private after `login` | Same channels, served by the fleet |
+| Where inference runs | Inside the PostgreSQL launcher | `postvec-server` nodes you operate |
+| Text leaves the DB host | No | Only to the configured nodes |
+| Models | `postvec model ...` on this host | Administered on each node |
+| Catalogue | Public subset; private after `login` | Same channels, pulled onto each node |
 | Same SQL? | Yes | Yes |
 
-This site leads with embedded mode. Remote mode is the shape for
-distributed or GPU inference and for organisation ninference deployments.
+Embedded is the default and this site leads with it. Remote mode is the
+shape for keeping engine faults off the database host, for GPU inference,
+and for one engine serving several databases; the nodes are
+`postvec-server`, shipped in the postvec repository.
 [Embedded vs remote](/docs/concepts/modes) has the differences.
 
 ## Out of scope
@@ -91,3 +93,6 @@ The extension, CLI and their packages are under the **PostgreSQL License**.
 Converter weights are a separate UniVec product. The public registry is a
 subset; a verified account sees the private superset. The bundled open-weight
 MiniLM model works offline and does not need registry access.
+
+Terms for `postvec-server`, the remote-mode inference node, are not settled
+yet and are deliberately not stated here.

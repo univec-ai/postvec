@@ -39,7 +39,7 @@ No. Models already present on disk run in the launcher. `model pull` and
 ## Where do OpenAI / Gemini keys go?
 
 Embedded mode uses local models. Remote mode talks to the configured
-ninference nodes. Provider credentials stay off the database.
+`postvec-server` nodes. Provider credentials stay off the database.
 
 ## Why is the vector NULL right after INSERT?
 
@@ -70,9 +70,9 @@ No. Only [`migrate()`](/docs/guides/migrate) or a re-embed does that.
 
 ## Is the extension AGPL?
 
-No. The extension, CLI and packages use the PostgreSQL License. Remote
-ninference is licensed separately, under community (non-commercial) and
-organisation terms.
+No. The extension, CLI and packages use the PostgreSQL License, in either
+inference mode and whatever you build with it. Terms for `postvec-server`,
+the remote-mode inference node, are not settled yet and are not stated here.
 
 ## Which PostgreSQL versions are supported?
 

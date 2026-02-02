@@ -13,7 +13,7 @@ as ONNX Runtime from the install.
 
 ## Credentials stay on the host
 
-Remote inference authenticates to the configured ninference fleet on the
+Remote inference reaches the configured `postvec-server` nodes on the
 deployment network. UniVec API keys are used only by `postvec login` /
 `model pull` on the host. They are stored `0600` per effective user and
 never written into PostgreSQL GUCs.

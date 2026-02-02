@@ -358,3 +358,93 @@ html:not(.dark) .vp-doc div[class*="language-"] code {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Diagrams
+   ---------------------------------------------------------------------------
+   Inline SVG figures. Colours come from the VitePress semantic variables, all
+   of which already flip with the light/dark toggle, so one drawing serves both
+   themes — no second asset, no image swap, and the label text stays selectable
+   and searchable.
+   
+   Only `--pvd-link` and the low-opacity washes are stated per theme: the site
+   names no link colour, and an ink wash cannot be derived from a variable
+   whose own value changes.
+--------------------------------------------------------------------------- */
+
+:root {
+  --pvd-paper: var(--vp-c-bg);
+  --pvd-ink: var(--vp-c-text-1);
+  --pvd-muted: var(--vp-c-text-2);
+  --pvd-soft: var(--vp-c-text-3);
+  --pvd-rule: var(--vp-c-divider);
+  --pvd-accent: var(--vp-c-brand-1);
+  --pvd-accent-tint: var(--vp-c-brand-soft);
+
+  --pvd-link: #2f6690;
+  --pvd-wash: rgb(26 35 48 / 4%);
+  --pvd-store: rgb(26 35 48 / 6%);
+  --pvd-zone: rgb(26 35 48 / 2.5%);
+  --pvd-zone-rule: rgb(26 35 48 / 14%);
+}
+
+.dark {
+  --pvd-link: #79aed4;
+  --pvd-wash: rgb(230 234 223 / 5%);
+  --pvd-store: rgb(230 234 223 / 8%);
+  --pvd-zone: rgb(230 234 223 / 3.5%);
+  --pvd-zone-rule: rgb(230 234 223 / 16%);
+}
+
+.pvd {
+  margin: 1.75rem 0;
+}
+
+.pvd svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Surfaces. `s-mask` is the opaque underlay that keeps connectors from
+   bleeding through a translucent fill, and the backing for arrow labels. */
+.pvd .s-mask { fill: var(--pvd-paper); }
+.pvd .s-node { fill: var(--pvd-paper); stroke: var(--pvd-ink); stroke-width: 1; }
+.pvd .s-store { fill: var(--pvd-store); stroke: var(--pvd-muted); stroke-width: 1; }
+.pvd .s-ext { fill: var(--pvd-wash); stroke: var(--pvd-rule); stroke-width: 1; }
+.pvd .s-focal { fill: var(--pvd-accent-tint); stroke: var(--pvd-accent); stroke-width: 1; }
+.pvd .s-async {
+  fill: var(--pvd-wash);
+  stroke: var(--pvd-rule);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.pvd .s-zone { fill: var(--pvd-zone); stroke: var(--pvd-zone-rule); stroke-width: 0.8; }
+.pvd .s-tag { fill: none; stroke-width: 0.8; }
+.pvd .s-tag-muted { stroke: var(--pvd-muted); opacity: 0.5; }
+.pvd .s-tag-ink { stroke: var(--pvd-ink); opacity: 0.4; }
+.pvd .s-tag-accent { stroke: var(--pvd-accent); opacity: 0.6; }
+
+/* Type. Sans for names a human reads, mono for anything technical. */
+.pvd text { font-family: var(--vp-font-family-base); }
+.pvd .t-name { font-size: 12px; font-weight: 600; fill: var(--pvd-ink); }
+.pvd .t-sub,
+.pvd .t-tag,
+.pvd .t-arrow,
+.pvd .t-zone { font-family: var(--vp-font-family-mono); }
+.pvd .t-sub { font-size: 9px; fill: var(--pvd-muted); }
+.pvd .t-tag { font-size: 7px; letter-spacing: 0.08em; fill: var(--pvd-muted); }
+.pvd .t-arrow { font-size: 8px; letter-spacing: 0.06em; fill: var(--pvd-soft); }
+.pvd .t-zone { font-size: 7px; letter-spacing: 0.14em; fill: var(--pvd-soft); }
+.pvd .t-accent { fill: var(--pvd-accent); }
+.pvd .t-ink { fill: var(--pvd-ink); }
+
+/* Connectors. Drawn before nodes so z-order puts them behind. */
+.pvd .c { fill: none; stroke: var(--pvd-muted); stroke-width: 1.2; }
+.pvd .c-accent { stroke: var(--pvd-accent); }
+.pvd .c-link { stroke: var(--pvd-link); }
+.pvd .c-dash { stroke-dasharray: 4 3; stroke-width: 1; }
+.pvd .c-rule { stroke: var(--pvd-zone-rule); stroke-width: 0.8; }
+.pvd .head { fill: var(--pvd-muted); }
+.pvd .head-accent { fill: var(--pvd-accent); }
+.pvd .head-link { fill: var(--pvd-link); }

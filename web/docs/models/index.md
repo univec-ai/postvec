@@ -6,7 +6,7 @@ description: Discovery, embed versus convert and which CLI commands apply in eac
 # How models work
 
 On an embedded host, add models with `postvec model pull`. In remote
-mode, administer them on the ninference fleet. Package install,
+mode, administer them on the `postvec-server` nodes. Package install,
 `setup` and `search()` use the inventory that is already present.
 
 A name in `postvec.models` is a cache of what the engine currently
@@ -59,7 +59,7 @@ bundled MiniLM package works without the registry. The
 | Mode | Install / activate / remove / upgrade |
 |---|---|
 | Embedded | `postvec model pull / activate / deactivate / upgrade / rm` on this host |
-| Remote | The ninference fleet (`nin`). Local mutation is **refused** |
+| Remote | Each `postvec-server` node. Local mutation is **refused** |
 | Either | `model ls` - local inventory, or node-advertised names in remote |
 
 Installing and serving are separate steps: `pull` lands a model

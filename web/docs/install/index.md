@@ -16,8 +16,9 @@ worker. An existing cluster can receive the files and stay up until
 that setup step.
 
 **Embedded mode** (`setup --embedded`) runs inference on the host. No
-third-party embedding API is involved. Remote mode talks to ninference
-nodes operated separately. See [embedded vs remote](/docs/concepts/modes).
+third-party embedding API is involved. Remote mode talks to
+`postvec-server` nodes you operate; the postvec repository ships one. See
+[embedded vs remote](/docs/concepts/modes).
 
 :::: info Release status
 Commands in these guides use the planned `0.1.0-1` artifact identity.

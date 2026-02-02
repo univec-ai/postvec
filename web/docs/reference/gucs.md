@@ -32,8 +32,8 @@ includes `postvec`.
 | `max_batch_total_bytes` | 16 MiB | SIGHUP - remaining rows stay pending |
 | `ddl_lock_timeout_ms` | 60000 | USERSET - applied `SET LOCAL` in lifecycle verbs |
 | `heartbeat_interval_ms` | 30000 | SIGHUP - idle workers write no WAL between beats |
-| `mode` | `grpc` | **POSTMASTER** |
-| `ninference_path` | - | **POSTMASTER** (else `$NINFERENCE_PATH`) |
+| `mode` | `embedded` | **POSTMASTER** |
+| `ninference_path` | `/opt/postvec/ninference` | **POSTMASTER** (else `$NINFERENCE_PATH`) |
 | `embedded_models` | - | **POSTMASTER** (empty = scan-load) |
 | `embedded_listen` | `127.0.0.1:33433` | **POSTMASTER** |
 | `embedded_http_listen` | `127.0.0.1:33434` | **POSTMASTER** |

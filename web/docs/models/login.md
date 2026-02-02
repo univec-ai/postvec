@@ -15,7 +15,7 @@ The CLI uses two compiled-in catalogue channels.
 Public entries retain their public download URLs after authentication.
 Authentication does not move public models to the private channel.
 
-The private catalogue is the same inventory a ninference fleet can
+The private catalogue is the same inventory a fleet of nodes can
 serve. Organisation accounts and support around that fleet are
 documented at [univec.ai](https://univec.ai). The authenticated route
 itself is **identity-only**: the account must be active and verified,

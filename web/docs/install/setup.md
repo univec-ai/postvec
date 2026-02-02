@@ -22,7 +22,14 @@ sudo postvec setup --database app ... --dry-run
 ## Embedded
 
 The engine runs in the launcher. No account or outbound embedding API is
-required.
+required. This is the extension's **default** mode, and
+`postvec.ninference_path` defaults to `/opt/postvec/ninference` — where
+the engine-asset packages install — so `setup --embedded` needs no
+`--path` on a package install.
+
+`setup` still has to run: it is what enrols the database in
+`postvec.database`, installs the extension and restarts. The defaults
+remove the *inference* configuration, not the enrolment.
 
 <PgSnippet id="setup-embedded" />
 
@@ -37,9 +44,14 @@ to scan-load every enabled descriptor.
 
 ## Remote gRPC
 
-Remote mode uses ninference nodes on the local network for distributed
-CPU or GPU inference and private catalogue access. The SQL surface is
-unchanged. See [embedded vs remote](/docs/concepts/modes).
+Remote mode uses `postvec-server` nodes on the local network — for GPU
+inference, for keeping engine faults off the database host, or for one
+engine shared by several databases. The SQL surface is unchanged. See
+[embedded vs remote](/docs/concepts/modes).
+
+Every node must carry the same enabled models: postvec round-robins the
+configured endpoints, so a converter present on two nodes out of three
+fails one request in three.
 
 ```bash
 sudo postvec setup --database app \
@@ -50,7 +62,7 @@ sudo postvec doctor --database app --deep
 ```
 
 `--allow-unreachable` is only for staging configuration before
-ninference exists. The worker starts, but inference remains unavailable.
+a node exists. The worker starts, but inference remains unavailable.
 
 ## Selecting the cluster
 
@@ -71,8 +83,7 @@ be restarted before running `doctor`.
 not remove the others.
 
 ```bash
-sudo postvec setup --database analytics \
-  --embedded --path /opt/postvec/ninference
+sudo postvec setup --database analytics --embedded
 ```
 
 Switching between remote and embedded requires `--switch-mode` and must

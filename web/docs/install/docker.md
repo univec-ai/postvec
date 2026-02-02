@@ -39,7 +39,7 @@ The first SQL steps live in the [quick start](/docs/quickstart).
 
 ## Remote image
 
-Omit `-complete` and point at ninference:
+Omit `-complete` and point at your `postvec-server` nodes:
 
 <PgSnippet id="docker-remote" />
 
@@ -65,7 +65,7 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `POSTVEC_MODE` | `grpc`; `embedded` in `*-complete` images | Inference mode |
+| `POSTVEC_MODE` | pinned by the image: `grpc` in the base tag, `embedded` in `*-complete` | Inference mode |
 | `POSTVEC_DATABASES` | `POSTGRES_DB` | Comma-separated worker databases |
 | `POSTVEC_GRPC_ENDPOINTS` | unset | Remote gRPC |
 | `POSTVEC_HTTP_ENDPOINTS` | unset | Remote `/config` |
@@ -74,9 +74,16 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 | `POSTVEC_SHARED_PRELOAD_LIBRARIES` | unset | Existing preloads; postvec is appended |
 | `POSTVEC_CREATE_EXTENSION` | `1` | `0` skips first-run `CREATE EXTENSION` |
 
-Invalid mode, an empty database list or a newline in a value exits **64**.
-Embedded mode with no engine assets exits **78**. Embedded listeners stay
-loopback-only.
+Both images pin `POSTVEC_MODE` rather than inheriting the extension's own
+default (`embedded`), because the base tag carries no engine assets and could
+not serve it.
+
+An invalid mode, an **empty** mode, an empty database list or a newline in a
+value exits **64**. An empty value is refused rather than treated as unset:
+Compose renders an undefined interpolation as the empty string, and reading
+that as `grpc` would silently disable the engine a `*-complete` image was
+built around. Embedded mode with no engine assets exits **78**. Embedded
+listeners stay loopback-only.
 
 ## Adding another database
 

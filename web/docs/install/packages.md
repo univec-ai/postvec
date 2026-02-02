@@ -41,7 +41,7 @@ API key. Installing this payload leaves embedded mode off.
 
 ## 3. Extension + CLI only
 
-This payload is for remote mode, where a ninference fleet performs
+This payload is for remote mode, where `postvec-server` nodes perform
 inference:
 
 <PgSnippet id="packages-remote" />

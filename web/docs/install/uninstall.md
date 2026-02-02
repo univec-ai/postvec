@@ -48,7 +48,7 @@ sudo postvec uninstall --database app --yes
 sudo -u postgres dropdb --force --if-exists app
 
 sudo postvec setup --database app \
-  --embedded --path /opt/postvec/ninference --yes
+  --embedded --yes
 sudo postvec doctor --database app --deep
 ```
 

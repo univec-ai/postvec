@@ -385,7 +385,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
     render: (t) =>
       [
         "sudo postvec setup --database app \\",
-        "  --embedded --path /opt/postvec/ninference",
+        "  --embedded",
         "",
         "postvec model ls",
         "sudo postvec doctor --database app --deep",
@@ -401,7 +401,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         render: (t) =>
           [
             `sudo postvec --cluster ${t.cluster} setup --database app \\`,
-            "  --embedded --path /opt/postvec/ninference",
+            "  --embedded",
             "",
             `sudo postvec --cluster ${t.cluster} doctor --database app --deep`,
           ].join("\n"),
@@ -415,7 +415,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
             `  --pg-config ${t.pgconfigel} \\`,
             "  --config-dir /path/included/by/postgresql.conf \\",
             "  --database app \\",
-            "  --embedded --path /opt/postvec/ninference \\",
+            "  --embedded \\",
             "  --no-restart",
             "",
             `sudo systemctl restart ${t.svcel}.service`,

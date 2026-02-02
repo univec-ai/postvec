@@ -45,7 +45,7 @@ do not run inference.
 |---|---|
 | `embed(text, model)` / `embed(text[], model)` | Confirm a model loads, or produce a vector for `search_with_vector()` |
 | `convert(embedding, source, target)` | Translate one vector without starting a column migration |
-| `refresh_models()` | Rebuild the SQL cache after a ninference inventory change |
+| `refresh_models()` | Rebuild the SQL cache after an inference-node inventory change |
 
 Grant explicitly if an application role must call them:
 

@@ -53,7 +53,7 @@ so it can be removed later.
 ## Embedded engine root
 
 A source build has no ONNX Runtime and no weights. Install the
-engine-asset packages, reuse an existing ninference root or copy the
+engine-asset packages, reuse an existing engine root or copy the
 packaging payloads:
 
 ```bash

@@ -52,9 +52,13 @@ description: Supported environments and explicit limitations.
 |---|---|
 | Extension, CLI, packages, images | **PostgreSQL License** |
 | Embedded inference on the database host | The same stack, running in-process |
-| Remote ninference server | Community (non-commercial) and organisation (commercial) terms |
+| `postvec-server` (remote-mode node) | To be announced |
 | Converter catalogue | UniVec, under a separate license |
 | Bundled MiniLM | Upstream license, shipped in the model package |
+
+Terms for `postvec-server` are not settled yet. The omission is
+deliberate rather than an oversight; it will be stated before the first
+release.
 
 A verified UniVec account sees the private catalogue superset. The
 public channel is a subset and does not require a key.

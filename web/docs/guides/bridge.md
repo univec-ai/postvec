@@ -143,7 +143,7 @@ member, and a restart would not make one resident either.
 
 Not every source/target pair is present in the public subset. The private catalogue contains the broader conversion inventory.
 
-On **remote**, the ninference fleet is administered separately; local `postvec model pull` is refused. At least one node must host the complete embed model, converter and bridge chain. Pieces discovered on different nodes do not form an executable route. Missing-chain errors are failover-eligible, so postvec can try another configured endpoint.
+On **remote**, models are administered on the `postvec-server` nodes; local `postvec model pull` is refused. At least one node must host the complete embed model, converter and bridge chain. Pieces discovered on different nodes do not form an executable route. Missing-chain errors are failover-eligible, so postvec can try another configured endpoint.
 
 After any inventory change:
 
