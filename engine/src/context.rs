@@ -432,9 +432,8 @@ impl Context {
                 // Find the value in the JSON object using the configured key.
                 let value = json_payload.get(&input_mapping.json_key).ok_or_else(|| {
                     EngineError::Prediction(format!(
-                        "Missing required key in
- input JSON: '{}' for input index {}.",
-                        &input_mapping.json_key, index
+                        "Missing required key in input JSON: '{}' for input index {}.",
+                        input_mapping.json_key, index
                     ))
                 })?;
                 Ok(InputValue::new(value))

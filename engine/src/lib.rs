@@ -762,7 +762,7 @@ impl InferenceEngine {
                 log::info!(
                     "Model '{}' has dependencies: {:?}. Ensuring they are loaded.",
                     model_name,
-                    &config.dependencies
+                    config.dependencies
                 );
                 for dep_name in &config.dependencies {
                     log::info!(
