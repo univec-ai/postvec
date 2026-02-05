@@ -166,95 +166,116 @@ const active = ref(tabs[0].id);
           </p>
         </div>
 
-        <figure class="figure">
-          <svg
-            viewBox="0 0 760 252"
-            role="img"
-            aria-label="Three diagrams: the write path from source text to a vector column, the read path fusing semantic and full-text ranks, and the migration path converting stored vectors into a new model space."
-          >
-            <defs>
-              <marker
-                id="pv-arrow"
-                viewBox="0 0 8 8"
-                refX="7"
-                refY="4"
-                markerWidth="6"
-                markerHeight="6"
-                orient="auto-start-reverse"
-              >
-                <path class="head" d="M0 0 L8 4 L0 8 z" />
-              </marker>
-            </defs>
+        <figure class="pvd">
+          <svg viewBox="0 0 1040 480" role="img" aria-labelledby="pvd-home-title pvd-home-desc">
+          <title id="pvd-home-title">The three paths through postvec</title>
+          <desc id="pvd-home-desc">Three panels. On the write path a committed row is enqueued by a trigger into postvec.jobs, embedded by the worker and written back to the vector column. On the read path one call embeds the query, ranks a semantic and a full-text leg and fuses the two rankings into ranked primary keys. On the model-change path stored vectors pass through the UniVec converter into a new model space while the source text stays put.</desc>
+          <defs>
+            <marker id="pvd-hm-head" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+              <polygon class="head" points="0 0, 8 3, 0 6"/>
+            </marker>
+          </defs>
 
-            <text class="lane" x="26" y="10">Write path</text>
-            <rect class="b" x="26" y="22" width="132" height="38" />
-            <text class="t" x="92" y="39">docs.body</text>
-            <text class="s" x="92" y="52">source text</text>
+          <rect class="s-mask" width="1040" height="480"/>
 
-            <text class="a" x="188" y="34">trigger</text>
-            <line class="arrow" x1="162" y1="41" x2="214" y2="41" />
+          <rect class="s-zone" x="16" y="40" width="320" height="408" rx="8"/>
+          <rect class="s-zone" x="360" y="40" width="320" height="408" rx="8"/>
+          <rect class="s-zone" x="704" y="40" width="320" height="408" rx="8"/>
 
-            <rect class="b" x="218" y="22" width="132" height="38" />
-            <text class="t" x="284" y="39">postvec.jobs</text>
-            <text class="s" x="284" y="52">queue</text>
+          <path class="c" d="M 176,128 V 168" marker-end="url(#pvd-hm-head)"/>
+          <path class="c" d="M 176,224 V 264" marker-end="url(#pvd-hm-head)"/>
+          <path class="c" d="M 176,320 V 360" marker-end="url(#pvd-hm-head)"/>
 
-            <text class="a" x="380" y="34">worker</text>
-            <line class="arrow" x1="354" y1="41" x2="406" y2="41" />
+          <path class="c" d="M 456,128 V 168" marker-end="url(#pvd-hm-head)"/>
+          <path class="c" d="M 584,128 V 168" marker-end="url(#pvd-hm-head)"/>
+          <path class="c" d="M 456,224 V 264" marker-end="url(#pvd-hm-head)"/>
+          <path class="c" d="M 584,224 V 264" marker-end="url(#pvd-hm-head)"/>
+          <path class="c" d="M 520,320 V 360" marker-end="url(#pvd-hm-head)"/>
 
-            <rect class="b" x="410" y="22" width="132" height="38" />
-            <text class="t" x="476" y="39">model</text>
-            <text class="s" x="476" y="52">local or on-prem</text>
+          <path class="c" d="M 864,128 V 216" marker-end="url(#pvd-hm-head)"/>
+          <path class="c" d="M 864,272 V 360" marker-end="url(#pvd-hm-head)"/>
 
-            <line class="arrow" x1="546" y1="41" x2="598" y2="41" />
+          <rect class="s-mask" x="48" y="34" width="64" height="12"/>
+          <text class="t-zone" x="80" y="43" text-anchor="middle">WRITE PATH</text>
+          <rect class="s-mask" x="392" y="34" width="60" height="12"/>
+          <text class="t-zone" x="422" y="43" text-anchor="middle">READ PATH</text>
+          <rect class="s-mask" x="736" y="34" width="76" height="12"/>
+          <text class="t-zone" x="774" y="43" text-anchor="middle">MODEL CHANGE</text>
 
-            <rect class="b accent" x="602" y="22" width="132" height="38" />
-            <text class="t" x="668" y="39">body_semantic</text>
-            <text class="s" x="668" y="52">vector(384)</text>
+          <rect class="s-mask" x="184" y="142" width="48" height="12"/>
+          <text class="t-arrow" x="208" y="151" text-anchor="middle">TRIGGER</text>
+          <rect class="s-mask" x="184" y="238" width="48" height="12"/>
+          <text class="t-arrow" x="208" y="247" text-anchor="middle">WORKER</text>
+          <rect class="s-mask" x="184" y="334" width="64" height="12"/>
+          <text class="t-arrow" x="216" y="343" text-anchor="middle">WRITE-BACK</text>
 
-            <text class="lane" x="26" y="86">Read path</text>
-            <rect class="b" x="26" y="112" width="132" height="38" />
-            <text class="t" x="92" y="129">query text</text>
-            <text class="s" x="92" y="142">one call</text>
+          <rect class="s-mask" x="464" y="142" width="40" height="12"/>
+          <text class="t-arrow" x="484" y="151" text-anchor="middle">EMBED</text>
 
-            <line class="arrow" x1="158" y1="127" x2="214" y2="115" />
-            <line class="arrow" x1="158" y1="135" x2="214" y2="147" />
+          <rect class="s-mask" x="872" y="166" width="56" height="12"/>
+          <text class="t-arrow" x="900" y="175" text-anchor="middle">migrate()</text>
+          <rect class="s-mask" x="872" y="310" width="92" height="12"/>
+          <text class="t-arrow" x="918" y="319" text-anchor="middle">FINALIZE · SWAP</text>
 
-            <rect class="b" x="218" y="98" width="132" height="30" />
-            <text class="t" x="284" y="117">semantic rank</text>
+          <rect class="s-mask" x="56" y="72" width="240" height="56" rx="6"/>
+          <rect class="s-store" x="56" y="72" width="240" height="56" rx="6"/>
+          <text class="t-name" x="176" y="96" text-anchor="middle">docs.body</text>
+          <text class="t-sub" x="176" y="110" text-anchor="middle">source text</text>
 
-            <rect class="b" x="218" y="134" width="132" height="30" />
-            <text class="t" x="284" y="153">full-text rank</text>
+          <rect class="s-mask" x="56" y="168" width="240" height="56" rx="6"/>
+          <rect class="s-store" x="56" y="168" width="240" height="56" rx="6"/>
+          <text class="t-name" x="176" y="192" text-anchor="middle">postvec.jobs</text>
+          <text class="t-sub" x="176" y="206" text-anchor="middle">coalesced per row</text>
 
-            <line class="arrow" x1="350" y1="113" x2="406" y2="127" />
-            <line class="arrow" x1="350" y1="149" x2="406" y2="135" />
+          <rect class="s-mask" x="56" y="264" width="240" height="56" rx="6"/>
+          <rect class="s-node" x="56" y="264" width="240" height="56" rx="6"/>
+          <text class="t-name" x="176" y="288" text-anchor="middle">Embedding model</text>
+          <text class="t-sub" x="176" y="302" text-anchor="middle">embedded or remote</text>
 
-            <rect class="b" x="410" y="112" width="132" height="38" />
-            <text class="t" x="476" y="129">fusion</text>
-            <text class="s" x="476" y="142">reciprocal rank</text>
+          <rect class="s-mask" x="56" y="360" width="240" height="56" rx="6"/>
+          <rect class="s-store" x="56" y="360" width="240" height="56" rx="6"/>
+          <text class="t-name" x="176" y="384" text-anchor="middle">docs.body_semantic</text>
+          <text class="t-sub" x="176" y="398" text-anchor="middle">vector(384)</text>
 
-            <line class="arrow" x1="542" y1="131" x2="598" y2="131" />
+          <rect class="s-mask" x="400" y="72" width="240" height="56" rx="6"/>
+          <rect class="s-node" x="400" y="72" width="240" height="56" rx="6"/>
+          <text class="t-name" x="520" y="96" text-anchor="middle">Query text</text>
+          <text class="t-sub" x="520" y="110" text-anchor="middle">one search() call</text>
 
-            <rect class="b accent" x="602" y="112" width="132" height="38" />
-            <text class="t" x="668" y="129">ranked rows</text>
-            <text class="s" x="668" y="142">primary keys</text>
+          <rect class="s-mask" x="400" y="168" width="112" height="56" rx="6"/>
+          <rect class="s-node" x="400" y="168" width="112" height="56" rx="6"/>
+          <text class="t-name" x="456" y="192" text-anchor="middle">Semantic</text>
+          <text class="t-sub" x="456" y="206" text-anchor="middle">pgvector rank</text>
 
-            <text class="lane" x="30" y="188">Model change</text>
-            <rect class="b" x="30" y="200" width="180" height="38" />
-            <text class="t" x="120" y="217">stored vectors</text>
-            <text class="s" x="120" y="230">old model space</text>
+          <rect class="s-mask" x="528" y="168" width="112" height="56" rx="6"/>
+          <rect class="s-node" x="528" y="168" width="112" height="56" rx="6"/>
+          <text class="t-name" x="584" y="192" text-anchor="middle">Full-text</text>
+          <text class="t-sub" x="584" y="206" text-anchor="middle">tsvector rank</text>
 
-            <text class="a" x="248" y="212">migrate()</text>
-            <line class="arrow" x1="210" y1="219" x2="286" y2="219" />
+          <rect class="s-mask" x="400" y="264" width="240" height="56" rx="6"/>
+          <rect class="s-node" x="400" y="264" width="240" height="56" rx="6"/>
+          <text class="t-name" x="520" y="288" text-anchor="middle">Fusion</text>
+          <text class="t-sub" x="520" y="302" text-anchor="middle">reciprocal rank</text>
 
-            <rect class="b" x="290" y="200" width="180" height="38" />
-            <text class="t" x="380" y="217">UniVec converter</text>
-            <text class="s" x="380" y="230">source text stays put</text>
+          <rect class="s-mask" x="400" y="360" width="240" height="56" rx="6"/>
+          <rect class="s-node" x="400" y="360" width="240" height="56" rx="6"/>
+          <text class="t-name" x="520" y="384" text-anchor="middle">Ranked rows</text>
+          <text class="t-sub" x="520" y="398" text-anchor="middle">primary keys</text>
 
-            <line class="arrow" x1="470" y1="219" x2="546" y2="219" />
+          <rect class="s-mask" x="744" y="72" width="240" height="56" rx="6"/>
+          <rect class="s-store" x="744" y="72" width="240" height="56" rx="6"/>
+          <text class="t-name" x="864" y="96" text-anchor="middle">Stored vectors</text>
+          <text class="t-sub" x="864" y="110" text-anchor="middle">old model space</text>
 
-            <rect class="b accent" x="550" y="200" width="180" height="38" />
-            <text class="t" x="640" y="217">stored vectors</text>
-            <text class="s" x="640" y="230">new model space</text>
+          <rect class="s-mask" x="744" y="216" width="240" height="56" rx="6"/>
+          <rect class="s-focal" x="744" y="216" width="240" height="56" rx="6"/>
+          <text class="t-name" x="864" y="240" text-anchor="middle">UniVec converter</text>
+          <text class="t-sub" x="864" y="254" text-anchor="middle">source text stays put</text>
+
+          <rect class="s-mask" x="744" y="360" width="240" height="56" rx="6"/>
+          <rect class="s-store" x="744" y="360" width="240" height="56" rx="6"/>
+          <text class="t-name" x="864" y="384" text-anchor="middle">Stored vectors</text>
+          <text class="t-sub" x="864" y="398" text-anchor="middle">new model space</text>
           </svg>
         </figure>
 
@@ -648,64 +669,8 @@ dd code {
   line-height: 1.6;
 }
 
-.figure {
+.pvd {
   margin: 1.35rem 0 0.15rem;
-}
-
-.figure svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  overflow: visible;
-}
-
-.figure .b {
-  fill: var(--vp-c-bg-soft);
-  stroke: var(--vp-c-divider);
-  stroke-width: 1;
-}
-
-.figure .b.accent {
-  stroke: var(--pv-mark);
-}
-
-.figure text {
-  font-family: var(--vp-font-family-mono);
-  text-anchor: middle;
-}
-
-.figure .lane {
-  text-anchor: start;
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  fill: var(--pv-mark);
-}
-
-.figure .t {
-  font-size: 12px;
-  fill: var(--vp-c-text-1);
-}
-
-.figure .s {
-  font-size: 10px;
-  fill: var(--vp-c-text-3);
-}
-
-.figure .a {
-  font-size: 9.5px;
-  letter-spacing: 0.04em;
-  fill: var(--vp-c-text-3);
-}
-
-.figure .arrow {
-  stroke: var(--vp-c-text-3);
-  stroke-width: 1;
-  marker-end: url(#pv-arrow);
-}
-
-.figure .head {
-  fill: var(--vp-c-text-3);
 }
 
 .fig-list {
@@ -867,7 +832,7 @@ dd code {
     gap: 1.15rem;
   }
 
-  .figure {
+  .pvd {
     display: none;
   }
 }
