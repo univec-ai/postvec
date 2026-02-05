@@ -5,11 +5,17 @@ description: Adopt vectors in a retired or provider-only model space and search 
 
 # Search a retired space
 
-If the column is already in a retired or provider-only space, postvec can create each new query vector locally and convert that vector into the stored space.
+If the column is already in a retired or provider-only space, postvec
+can create each new query vector locally and convert that vector into
+the stored space.
 
-For example, an `openai-text-embedding-ada-002` corpus can remain byte-for-byte unchanged. `search()` embeds the query with an available open model, converts that one vector to ada-002 space, then runs pgvector and full-text search against the existing table.
+An `openai-text-embedding-ada-002` corpus can stay byte-for-byte
+unchanged. `search()` embeds the query with an available open model,
+converts that one vector to ada-002 space, then runs pgvector and
+full-text search against the existing table.
 
-The bridge route is selected inside ordinary `search()`.
+The bridge route is selected inside ordinary `search()`. Nothing extra
+is called.
 
 ## Route resolution
 
@@ -23,14 +29,21 @@ query text
 Resolution is deterministic:
 
 1. A direct embed model for the declared target takes precedence.
-2. Otherwise postvec chooses the lexicographically first converter into that target whose source is directly embeddable, then uses an `embed-bridge` executor.
-3. If neither route exists, `search()` follows the configured FTS-degradation policy. Administrative and write paths fail or retry normally.
+2. Otherwise postvec chooses the lexicographically first converter into
+   that target whose source is directly embeddable, then uses an
+   `embed-bridge` executor.
+3. If neither route exists, `search()` follows the configured
+   FTS-degradation policy. Administrative and write paths fail or retry
+   normally.
 
-If a direct embed route becomes available later, it takes precedence after the next model refresh. The resolved route is inventory state, so postvec does not persist it in the table registry.
+If a direct embed route becomes available later, it takes precedence
+after the next model refresh. The resolved route is inventory state.
+postvec does not persist it in the table registry.
 
 ## 1. Verify the stored space
 
-The vector dimension is a fact. The model name is an operator-supplied provenance assertion. Both require verification before adoption:
+The vector dimension is a fact. The model name is an operator-supplied
+provenance assertion. Check both before adoption:
 
 ```sql
 SELECT vector_dims(embedding) AS stored_dim
@@ -46,9 +59,9 @@ SELECT name, model_type, source_model, target_model, target_dim
 ```
 
 :::: warning Provenance cannot be inferred from the bytes
-Matching `vector(1536)` only rules out models with another dimension. It does
-not prove that ada-002 produced the vectors. An incorrect model assertion yields
-plausible but invalid ranks.
+Matching `vector(1536)` only rules out models with another dimension.
+It does not prove that ada-002 produced the vectors. An incorrect
+model assertion yields plausible but invalid ranks.
 ::::
 
 ## 2. Adopt without rewriting
@@ -65,9 +78,12 @@ SELECT postvec.adopt(
 );
 ```
 
-`backfill => 'none'` leaves existing rows unchanged. `sync => true` writes future `INSERT` and `UPDATE` vectors in the same target space through the same bridge route.
+`backfill => 'none'` leaves existing rows unchanged. `sync => true`
+writes future `INSERT` and `UPDATE` vectors in the same target space
+through the same bridge route.
 
-For a frozen or `NOT NULL` legacy vector column, observe it without a write path:
+For a frozen or `NOT NULL` legacy vector column, observe it without a
+write path:
 
 ```sql
 SELECT postvec.adopt(
@@ -79,7 +95,8 @@ SELECT postvec.adopt(
 );
 ```
 
-Observed mode can search but does not synchronize future rows. See [`adopt()`](/docs/guides/adopt) before migrating an observed entry.
+Observed mode can search but does not synchronize future rows. See
+[`adopt()`](/docs/guides/adopt) before migrating an observed entry.
 
 ## 3. Search the adopted column
 
@@ -98,9 +115,9 @@ SELECT d.id, d.body,
 ```
 
 :::: tip Expected
-The adopted column is not rewritten and `owns_vector_column` remains false.
-Semantic ranks are present, and the query vector has the stored target
-dimension (1536 for classic ada-002).
+The adopted column is not rewritten and `owns_vector_column` remains
+false. Semantic ranks are present, and the query vector has the stored
+target dimension (1536 for classic ada-002).
 ::::
 
 To return an error for a missing route during validation:
@@ -115,7 +132,9 @@ SELECT *
        );
 ```
 
-With degradation on (the default), a route or inference failure emits a warning and returns lexical results. `semantic_rank IS NULL` on every result is the observable sign that the semantic leg did not run.
+With degradation on (the default), a route or inference failure emits a
+warning and returns lexical results. `semantic_rank IS NULL` on every
+result is the sign that the semantic leg did not run.
 
 ## Model requirements
 
@@ -125,7 +144,9 @@ An executable route needs all three parts:
 - one converter from that source to the stored target space
 - one `embed-bridge` executor
 
-On an **embedded** host, inspect the catalogue and pull the converter's inventory name. Dependencies bring the companion embed model and executor:
+On an **embedded** host, inspect the catalogue and pull the converter's
+inventory name. Dependencies bring the companion embed model and
+executor:
 
 ```bash
 postvec model ls --available
@@ -136,14 +157,20 @@ sudo postvec model activate "$converter_name" --yes      # enables the whole cha
 sudo postvec doctor --database app --deep
 ```
 
-`pull` installs the closure deactivated; `activate` on the converter enables
-its deactivated dependencies with it — the embed model and the `embed-bridge`
-executor — because the engine refuses to load a chain containing a deactivated
-member, and a restart would not make one resident either.
+`pull` installs the closure deactivated. `activate` on the converter
+enables its deactivated dependencies with it (the embed model and the
+`embed-bridge` executor). The engine refuses to load a chain that
+contains a deactivated member, and a restart would not make one
+resident either.
 
-Not every source/target pair is present in the public subset. The private catalogue contains the broader conversion inventory.
+Not every source/target pair is present in the public subset. The
+private catalogue holds the broader conversion inventory.
 
-On **remote**, models are administered on the `postvec-server` nodes; local `postvec model pull` is refused. At least one node must host the complete embed model, converter and bridge chain. Pieces discovered on different nodes do not form an executable route. Missing-chain errors are failover-eligible, so postvec can try another configured endpoint.
+On **remote**, models are administered on the `postvec-server` nodes;
+local `postvec model pull` is refused. At least one node must host the
+complete embed model, converter and bridge chain. Pieces discovered on
+different nodes do not form an executable route. Missing-chain errors
+are failover-eligible, so postvec can try another configured endpoint.
 
 After any inventory change:
 
@@ -155,13 +182,18 @@ SELECT name, model_type, source_model, target_model, target_dim
  ORDER BY model_type, name;
 ```
 
-`refresh_models()` is administrative and is not executable by PUBLIC without an explicit grant.
+`refresh_models()` is administrative and is not executable by PUBLIC
+without an explicit grant.
 
 ## Latency and timeouts
 
-Bridge search is one database-to-engine RPC, but two inference stages run inside the engine. The embedder, converter and bridge executor should remain warm. `postvec.query_timeout_ms` should reflect measured bridge latency.
+Bridge search is one database-to-engine RPC, but two inference stages
+run inside the engine. The embedder, converter and bridge executor
+should remain warm. `postvec.query_timeout_ms` should reflect measured
+bridge latency.
 
-FTS degradation can be disabled during timeout diagnosis. Warnings and returned rank columns also indicate whether the semantic leg ran.
+FTS degradation can be disabled during timeout diagnosis. Warnings and
+returned rank columns also indicate whether the semantic leg ran.
 
 ## Migration after bridge adoption
 
@@ -170,17 +202,17 @@ FTS degradation can be disabled during timeout diagnosis. Warnings and returned 
 | Bridge search | unchanged | embedded, then converted into old space | embedded, then converted into old space |
 | [`migrate()`](/docs/guides/migrate) | converted to the new space | embedded directly in new space | embedded directly in new space |
 
-A staged migration can adopt the existing column, validate search through the bridge and later migrate the stored vectors in place.
-
-## Validation constraints
+A staged migration can adopt the existing column, validate search
+through the bridge and later migrate the stored vectors in place.
 
 :::: danger Confirm the source model separately from the dimension
-An incorrect 1536-dimensional model still represents an incompatible vector
-space. Confirm the model that produced the column before synchronized writes
-or conversion.
+An incorrect 1536-dimensional model still represents an incompatible
+vector space. Confirm the model that produced the column before
+synchronized writes or conversion.
 ::::
 
 :::: danger Existing rows stay in the old space
-Bridge search produces new vectors (queries and synchronized future writes) in the old
-target space. Existing rows remain exactly as they were.
+Bridge search produces new vectors (queries and synchronized future
+writes) in the old target space. Existing rows remain exactly as they
+were.
 ::::

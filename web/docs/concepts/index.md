@@ -5,9 +5,9 @@ description: Runtime shape, write path and common operational constraints.
 
 # How it works
 
-Most operational surprises come from the same few facts: empty vectors
-right after `INSERT`, a worker that never started and `search()` that
-takes too long.
+Three facts cause most of the surprises: empty vectors right after
+`INSERT`, a worker that never started and `search()` that takes too
+long.
 
 ## Runtime
 
@@ -173,9 +173,9 @@ and `doctor`. [Backup](/docs/guides/backup) has the checklist.
 5. **`adopt()`'s `model` is an assertion.** The wrong name makes
    `search()` embed into an incompatible space.
 
-## Related documentation
+## Related
 
-- [Embedded vs remote](/docs/concepts/modes)
-- [Embedding debt and vector lock-in](/docs/concepts/lock-in)
 - [Eventual consistency](/docs/concepts/consistency)
+- [Embedded vs remote](/docs/concepts/modes)
+- [Vector lock-in](/docs/concepts/lock-in)
 - [Enable a column](/docs/guides/enable)

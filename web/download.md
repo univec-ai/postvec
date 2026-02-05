@@ -6,6 +6,9 @@ outline: deep
 
 # Downloads
 
+Packages and images for a given identity. Until a tag is published, the
+names below are the contract for a local build.
+
 Publication channels:
 
 | Channel | What it holds |

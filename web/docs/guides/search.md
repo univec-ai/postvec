@@ -5,7 +5,12 @@ description: Hybrid RRF search with postvec.search() and search_with_vector().
 
 # Search
 
-One function runs vector and full-text retrieval and combines the results with Reciprocal Rank Fusion. Matching primary keys are returned as text for a join to the source table.
+`search()` runs vector retrieval and full-text retrieval, then fuses the
+two with Reciprocal Rank Fusion. Matching primary keys come back as
+text, so the join works on any table shape.
+
+Wait until `pending_jobs = 0` before judging ranks. A row whose vector
+is still NULL can only match on the lexical leg.
 
 :::: code-group
 
@@ -43,6 +48,8 @@ Rows that mean the same thing rank above rows that merely share a word.
 can be NULL if that leg missed the row.
 ::::
 
+Cast `pk_value` back to the PK type (`::bigint`, `::uuid`, ...).
+
 ## Arguments
 
 | Argument | Default | Meaning |
@@ -53,37 +60,40 @@ can be NULL if that leg missed the row.
 | `candidates` | derived | Pool size per leg before fusion |
 | `filter` | none | [Typed metadata](/docs/guides/filters) |
 
-Chunked entries also return `chunk_seq`, `chunk_start`, `chunk_end`, `chunk_text` for the **winning** chunk: one row per document. Column-mode entries leave those NULL.
+Chunked entries also return `chunk_seq`, `chunk_start`, `chunk_end`,
+`chunk_text` for the **winning** chunk: one row per document.
+Column-mode entries leave those NULL.
 
 ## Search with a supplied vector
 
-The `search_with_vector` tab above is the same join, with a vector you
-already have. `query_text` still feeds the FTS leg. Omit it (default
-`''`) for a vector-only search. Grant `embed()` explicitly, or
-pass a vector computed elsewhere.
+The `search_with_vector` tab is the same join, with a vector you already
+have. `query_text` still feeds the FTS leg. Omit it (default `''`) for
+a vector-only search. Grant `embed()` explicitly, or pass a vector
+computed elsewhere.
 
-## Search performance
+## Search is slow
 
-The default `index_mode` is `manual`, so no ANN index exists until one is created.
+The default `index_mode` is `manual`, so no ANN index exists until one
+is created.
 
 ```sql
 SELECT has_vector_index, index_error FROM postvec.status();
 SELECT postvec.create_vector_index('public.docs', 'body');
 ```
 
-See [indexes](/docs/guides/indexes). A missing FTS index only hurts the lexical leg. `create_fts_index => true` at enable time builds one.
+See [indexes](/docs/guides/indexes). A missing FTS index only hurts the
+lexical leg. `create_fts_index => true` at enable time builds one.
 
 ## Lexical-only results
 
-When query embedding fails, `postvec.search_degrade_to_fts` is on by default and the search continues on the lexical leg. `semantic_rank` is NULL on every row. Correct the inference failure, or set `postvec.search_degrade_to_fts = off` so the same failure returns an error.
+When query embedding fails, `postvec.search_degrade_to_fts` is on by
+default and the search continues on the lexical leg. `semantic_rank` is
+NULL on every row. Fix the inference failure, or set
+`postvec.search_degrade_to_fts = off` so the same failure returns an
+error.
 
-## Result and transaction constraints
+## Query embedding is synchronous
 
-:::: info `search()` returns rank diagnostics
-The function returns rank columns. Join on `pk_value` and cast it back to the PK type (`::bigint`, `::uuid`, ...).
-::::
-
-:::: danger Vectors fill after the inserting transaction commits
-The worker writes back on a later transaction. See
-[eventual consistency](/docs/concepts/consistency).
-::::
+`search()` embeds the **query** inline. That is the only synchronous
+inference step on the search path. Document vectors still fill after
+commit. See [eventual consistency](/docs/concepts/consistency).

@@ -63,15 +63,13 @@ export default defineConfig({
     sidebar: {
       "/docs/": [
         {
-          text: "Start",
+          text: "Get started",
           collapsed: false,
           items: [
             { text: "Overview", link: "/docs/" },
             { text: "Quick start", link: "/docs/quickstart" },
-            { text: "Choose the SQL call", link: "/docs/guides/starting" },
+            { text: "Which SQL call", link: "/docs/guides/starting" },
             { text: "How it works", link: "/docs/concepts/" },
-            { text: "Vector lock-in", link: "/docs/concepts/lock-in" },
-            { text: "Embedded vs remote", link: "/docs/concepts/modes" },
           ],
         },
         {
@@ -92,20 +90,25 @@ export default defineConfig({
           collapsed: true,
           items: [
             { text: "Usage overview", link: "/docs/guides/" },
-            { text: "Choose the SQL call", link: "/docs/guides/starting" },
             { text: "Enable a column", link: "/docs/guides/enable" },
             { text: "Search", link: "/docs/guides/search" },
             { text: "Filters", link: "/docs/guides/filters" },
+            { text: "Indexes", link: "/docs/guides/indexes" },
             { text: "Templates", link: "/docs/guides/templates" },
             { text: "Chunk long documents", link: "/docs/guides/chunking" },
             { text: "Adopt existing vectors", link: "/docs/guides/adopt" },
             { text: "Search a retired space", link: "/docs/guides/bridge" },
             { text: "Migrate in place", link: "/docs/guides/migrate" },
-            { text: "Indexes", link: "/docs/guides/indexes" },
-            { text: "Retry dead jobs", link: "/docs/guides/retry" },
+          ],
+        },
+        {
+          text: "Operate",
+          collapsed: true,
+          items: [
             { text: "Status and health", link: "/docs/guides/status" },
-            { text: "One-shot helpers", link: "/docs/guides/helpers" },
+            { text: "Retry dead jobs", link: "/docs/guides/retry" },
             { text: "Backup and restore", link: "/docs/guides/backup" },
+            { text: "One-shot helpers", link: "/docs/guides/helpers" },
           ],
         },
         {
@@ -113,9 +116,18 @@ export default defineConfig({
           collapsed: true,
           items: [
             { text: "How models work", link: "/docs/models/" },
-            { text: "Pull, upgrade, remove", link: "/docs/models/pull" },
+            { text: "Pull, activate, remove", link: "/docs/models/pull" },
             { text: "Login and private catalogue", link: "/docs/models/login" },
             { text: "Air-gapped hosts", link: "/docs/models/air-gapped" },
+          ],
+        },
+        {
+          text: "Understand",
+          collapsed: true,
+          items: [
+            { text: "Eventual consistency", link: "/docs/concepts/consistency" },
+            { text: "Embedded vs remote", link: "/docs/concepts/modes" },
+            { text: "Vector lock-in", link: "/docs/concepts/lock-in" },
           ],
         },
         {

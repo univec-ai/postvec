@@ -8,7 +8,7 @@ description: Supported environments and explicit limitations.
 ## Supported
 
 - PostgreSQL **16, 17, 18**
-- pgvector **≥ 0.8**
+- pgvector **>= 0.8**
 - Debian 12, Ubuntu 22.04 / 24.04, EL9 (Alma, Rocky; RHEL/CentOS Stream
   with `--force-untested` on the bootstrap)
 - `amd64` and `arm64`

@@ -9,6 +9,10 @@ description: Administrative embed, convert and refresh_models calls.
 are revoked from PUBLIC. Application search uses
 [`search()`](/docs/guides/search).
 
+Use these to prove a model loads, to translate one vector or to rebuild
+the SQL model cache. They do not change a stored column. Use
+[`migrate()`](/docs/guides/migrate) for that.
+
 :::: code-group
 
 ```sql [SQL]

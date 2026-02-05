@@ -19,7 +19,7 @@ postvec model show --path /opt/postvec/ninference baai-bge-m3 --verify
 sudo postvec model activate baai-bge-m3        # or --all for everything staged
 ```
 
-The copied models arrive **deactivated** — that is how `pull` installs them —
+The copied models arrive **deactivated** (that is how `pull` installs them),
 so the `activate` on the isolated host is what makes them serve, there and at
 every restart afterwards. It also refreshes the SQL caches. `--path` on the
 connected host is files only; you can flip the descriptors there too

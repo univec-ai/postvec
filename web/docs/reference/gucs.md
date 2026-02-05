@@ -5,6 +5,9 @@ description: postvec.* settings, defaults and which ones need a restart.
 
 # GUCs
 
+`postvec setup` is the supported way to write these. The table is for
+reading what a setting does and whether a restart is required.
+
 Each GUC is read at use time, so a `SIGHUP` takes effect without a worker
 restart. POSTMASTER settings exist only when `shared_preload_libraries`
 includes `postvec`.

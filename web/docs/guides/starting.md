@@ -1,27 +1,30 @@
 ---
-title: Choose the SQL call
-description: Match enable, adopt, bridge, migrate or chunking to the current table.
+title: Which SQL call
+description: Match enable, adopt, bridge, migrate or chunking to the table you have.
 ---
 
-# Choose the SQL call
+# Which SQL call
 
 Column registration, search and migration are SQL functions. The CLI
 configures the cluster and, in embedded mode, the model inventory.
 
-Use the row that matches the table as it is now.
+Pick the row that matches the table **as it is now**.
 
 | Starting point | Call | Result |
 |---|---|---|
 | Text, no vectors | [`enable()`](/docs/guides/enable) | postvec creates and maintains a shadow `vector(N)` column |
-| A populated `vector(N)` column, same model | [`adopt()`](/docs/guides/adopt) | existing bytes stay; missing rows can backfill |
-| Vectors in a retired or provider-only space | [Bridge search](/docs/guides/bridge) | queries convert into that space; the corpus stays put |
-| Ready to change model | [`migrate()`](/docs/guides/migrate) | stored vectors convert in place, or re-embed if that strategy is chosen |
-| Long source documents | [Recursive chunking](/docs/guides/chunking) | a managed 1:N destination stores passage vectors; search returns documents |
+| A populated `vector(N)` column, same model | [`adopt()`](/docs/guides/adopt) | Existing bytes stay. Missing rows can backfill. |
+| Vectors in a retired or provider-only space | [Bridge search](/docs/guides/bridge) | Queries convert into that space. The corpus stays. |
+| Ready to change model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. |
+| Long source documents | [Recursive chunking](/docs/guides/chunking) | A managed 1:N destination stores passage vectors. Search returns documents. |
 
 Functions live in the `postvec` schema. Qualify every call:
 `postvec.*`. The extension leaves `search_path` unchanged.
 
 ## Text, no vectors
+
+`enable()` adds `{column}_semantic`, installs enqueue triggers and
+queues existing rows.
 
 ```sql
 SELECT postvec.enable(
@@ -31,11 +34,21 @@ SELECT postvec.enable(
 );
 ```
 
-Wait until `pending_jobs = 0`, then
-[`create_vector_index()`](/docs/guides/indexes) and
-[`search()`](/docs/guides/search).
+1. Wait until `pending_jobs = 0` in [`status()`](/docs/guides/status).
+2. [`create_vector_index()`](/docs/guides/indexes).
+3. [`search()`](/docs/guides/search).
+
+:::: tip Expected
+`enable()` returns a registry id. `docs.body_semantic` fills with
+`vector(384)` for MiniLM. `search()` then ranks by meaning and by
+keywords.
+::::
 
 ## A populated vector column
+
+`adopt()` registers the existing column. It does not rewrite stored
+bytes. The `model` argument records provenance - a wrong name makes
+later search and conversion silently invalid.
 
 ```sql
 SELECT postvec.adopt(
@@ -45,9 +58,10 @@ SELECT postvec.adopt(
 );
 ```
 
-`adopt()` registers the existing column and leaves stored bytes as they
-are. The `model` argument records provenance. A wrong name makes later
-search and conversion silently invalid.
+:::: tip Expected
+`owns_vector_column` is false. Only NULL vectors are queued
+(`backfill => 'missing'`). Future writes stay in sync.
+::::
 
 ## Keep a retired space
 
@@ -68,6 +82,11 @@ The converter (and its embed dependency) must be present. On an
 embedded host that is [`postvec model pull`](/docs/models/pull). Full
 walkthrough: [search a retired space](/docs/guides/bridge).
 
+:::: tip Expected
+Existing rows are untouched. Semantic ranks are present. The query
+vector has the stored dimension (1536 for classic ada-002).
+::::
+
 ## Change the stored model
 
 ```sql
@@ -77,9 +96,15 @@ SELECT postvec.migrate(
 );
 ```
 
-Default strategy is `convert`: UniVec translates the stored vectors.
-Finalize after the worker reaches `awaiting_finalize`. See
-[migrate](/docs/guides/migrate).
+Default strategy is `convert`: stored vectors are translated. The
+migration **stops and waits** at `awaiting_finalize`. You swap columns
+with `migration_finalize()`. See [migrate](/docs/guides/migrate).
+
+:::: tip Expected
+`migration_status()` reaches `awaiting_finalize`. After the first
+finalize the column is live on the new model. If it had an ANN index,
+a second finalize follows the rebuild.
+::::
 
 ## Long documents
 
@@ -95,6 +120,11 @@ SELECT postvec.enable(
 
 Search still returns one row per document, plus the winning chunk. See
 [chunking](/docs/guides/chunking).
+
+:::: tip Expected
+`status()` shows `chunking = recursive`. Each article produces one
+refresh job; the worker splits it and fans out one embed job per chunk.
+::::
 
 ## After any of the above
 

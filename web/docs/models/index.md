@@ -5,13 +5,15 @@ description: Discovery, embed versus convert and which CLI commands apply in eac
 
 # How models work
 
+A name in `postvec.models` is a cache of what the engine currently
+advertises. It is not a download list.
+
 On an embedded host, add models with `postvec model pull`. In remote
 mode, administer them on the `postvec-server` nodes. Package install,
 `setup` and `search()` use the inventory that is already present.
 
-A name in `postvec.models` is a cache of what the engine currently
-advertises. Workers refresh it on an interval and prune stale entries
-only after **every** discovery endpoint succeeded.
+Workers refresh the cache on an interval and prune stale entries only
+after **every** discovery endpoint succeeded.
 
 ```sql
 SELECT name, model_type, target_model, target_dim

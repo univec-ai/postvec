@@ -6,6 +6,8 @@ outline: deep
 
 # SQL reference
 
+Signatures and grants. Walkthroughs live under [Use](/docs/guides/).
+
 `relation` and `fts_config` are `text`. The extension resolves them with
 `to_regclass` / `::regconfig`, so `'schema.table'` works. `retry_dead()`
 is the exception: it takes `regclass`.

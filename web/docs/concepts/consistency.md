@@ -9,6 +9,10 @@ Application writes commit first. The vector is filled later, by a worker
 that does not hold the application transaction's row lock while calling
 the engine.
 
+This is why `SELECT body_semantic` inside the inserting transaction
+still shows NULL. Poll in a later transaction, or watch
+`status().pending_jobs`.
+
 A committed write arms an **at-commit latch** and nudges the worker.
 Under light load the worker normally starts within inference time of the
 commit. `postvec.poll_interval_ms` (default 5000) is only the backstop:

@@ -5,6 +5,8 @@ description: Short answers to common postvec questions.
 
 # FAQ
 
+Short answers. Longer treatment lives in the linked pages.
+
 ## Are RDS, Aurora, Cloud SQL and Azure Database supported?
 
 No, when the service will not load `shared_preload_libraries = 'postvec'`.
@@ -21,8 +23,7 @@ risk of changing that dependency.
 No key is required for the bundled MiniLM model or for search. A key and
 `postvec login` are required to pull **private-catalogue** models. The
 authenticated route is identity-only (verified account, unexpired key). A
-dedicated key with a $0 spending limit is the recommended credential. Account details:
-[univec.ai](https://univec.ai).
+dedicated key with a $0 spending limit is the recommended credential. Account details: [univec.ai](https://univec.ai).
 
 ## Can an ada-002 corpus remain unchanged?
 

@@ -5,9 +5,11 @@ description: Hybrid search in a disposable postvec container. Pick PostgreSQL 16
 
 # Quick start
 
-A single disposable container is enough for this walkthrough. The host
-PostgreSQL cluster is left alone. No API key is involved. One example
-table is created.
+A single disposable container. The host PostgreSQL cluster is left
+alone. No API key. One example table.
+
+You will: start the image, prove inference, enable a column, wait for
+vectors, index and search, then remove the container.
 
 The tabs on each command pick the PostgreSQL major. The same choice is
 remembered on the install pages.
@@ -146,5 +148,5 @@ cluster configuration were created.
 ## Next
 
 - [Install on a real cluster](/docs/install/)
-- [Choose the SQL call](/docs/guides/starting) - enable, adopt, bridge or migrate
+- [Which SQL call](/docs/guides/starting) - enable, adopt, bridge or migrate
 - [How the worker fills vectors](/docs/concepts/consistency)

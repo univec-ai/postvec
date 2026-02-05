@@ -1,98 +1,87 @@
 ---
 title: Overview
-description: What postvec is and where to start.
+description: What postvec is, what you need and the path from install to search.
 ---
 
 # Overview
 
-postvec keeps a shadow `pgvector` column synchronized with a source text
-column. It also provides hybrid full-text and vector search. Stored vectors
-can be converted to another model in place, or each query can be
-[bridged](/docs/guides/bridge) into the space that already exists.
+postvec is a PostgreSQL extension. You mark a text column as semantic. It
+adds a shadow `pgvector` column, keeps that column in sync as rows change
+and searches with full-text and vectors in one call.
 
-Inference runs in-process by default ([embedded](/docs/concepts/modes)), or on
-`postvec-server` nodes you operate. Models are local or on-prem.
+If the embedding model later has to change, stored vectors can be
+converted in place. You can also leave the column as-is and convert only
+the query.
 
-[Vector lock-in](/docs/concepts/lock-in) is the dependency between stored
-vectors and the model that produced them. [Embedding debt](/docs/concepts/lock-in)
-is the cost of changing that dependency later. postvec operates on both.
+Inference runs on the database host by default. Models live on disk. The
+bundled MiniLM model needs no API key.
 
-Use search in the header to jump to a function, GUC or topic.
+## What you need
 
-```sql
-SELECT postvec.enable('public.docs', 'body',
-                      model => 'sentence-transformers-all-minilm-l6-v2');
-SELECT postvec.migrate('public.docs', 'body', new_model => 'baai-bge-m3');
-```
+PostgreSQL 16, 17 or 18 on a host that can set
+`shared_preload_libraries = 'postvec'`. A restart is part of first-time
+setup.
 
-## Who this is for
+RDS and Aurora cannot load the worker.
 
-An operator with a working PostgreSQL 16, 17 or 18 install on a host
-that permits `shared_preload_libraries`.
+## The path
 
-RDS and Aurora are unsupported. The worker requires
-`shared_preload_libraries = 'postvec'`.
-
-## Starting points
-
-The same table, with a short walkthrough for each row, lives on
-[Choose the SQL call](/docs/guides/starting).
-
-| Initial state | Operation | Result |
-|---|---|---|
-| Text, no vectors | [`enable()`](/docs/guides/enable) | postvec creates and maintains a shadow vector column |
-| Existing vector column, same model | [`adopt()`](/docs/guides/adopt) | existing vectors stay as they are; missing rows can backfill |
-| Existing vectors in an old or provider-only space | [Bridge search](/docs/guides/bridge) | queries convert into that space; the corpus stays put |
-| Existing vectors, ready for a new model | [`migrate()`](/docs/guides/migrate) | stored vectors convert in place, or re-embed if that strategy is chosen |
-| Long source documents | [Recursive chunking](/docs/guides/chunking) | a managed 1:N destination stores passage vectors; search returns documents |
-
-## Basic workflow
-
-1. **Install files** - [Docker](/docs/install/docker),
-   [packages](/docs/install/packages) or [source](/docs/install/source).
-   Then configure the cluster.
-2. **Configure** - `postvec setup --embedded` for local inference, or
-   `--grpc` / `--http` for remote nodes. See
-   [cluster configuration](/docs/install/setup).
-3. **Enable or adopt** a column. New vectors fill in the background.
-   Adopted vectors stay as they are.
-4. **Search** - `postvec.search(...)`, with optional
-   [filters](/docs/guides/filters).
-5. **`migrate()`** to another model, or
-   [bridge](/docs/guides/bridge) and leave the column unchanged.
+1. [Install the files](/docs/install/) - Docker, packages or a source build.
+2. [Configure the cluster](/docs/install/setup) with `postvec setup`.
+3. [Enable](/docs/guides/enable) a text column, or [adopt](/docs/guides/adopt)
+   one that already has vectors.
+4. Wait until `pending_jobs = 0`. Vectors fill after commit, not inside
+   the inserting transaction.
+5. [Build an ANN index](/docs/guides/indexes). Nothing builds one unless
+   you ask.
+6. [Search](/docs/guides/search).
 
 The [quick start](/docs/quickstart) is the same path in one disposable
-container.
+container. It does not touch the host cluster.
+
+## Which SQL call
+
+| You have | Call | What happens |
+|---|---|---|
+| Text, no vectors | [`enable()`](/docs/guides/enable) | Creates and fills a shadow `vector(N)` column |
+| A populated `vector(N)` column | [`adopt()`](/docs/guides/adopt) | Registers it. Stored bytes stay. |
+| Vectors in a retired or provider-only space | [Bridge search](/docs/guides/bridge) | Queries convert into that space. The corpus stays. |
+| Ready to change the stored model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert, or re-embed if you choose that. |
+| Long source documents | [Chunking](/docs/guides/chunking) | A managed 1:N table holds passage vectors. Search still returns documents. |
+
+[Which SQL call](/docs/guides/starting) walks each row with the SQL and
+the expected result.
+
+Every function lives in the `postvec` schema. Qualify the call:
+`postvec.enable(...)`. The extension does not change `search_path`.
 
 ## Two inference modes
 
-| | Embedded | Remote (`grpc`) |
+| | Embedded (default) | Remote (`grpc`) |
 |---|---|---|
-| Where inference runs | Inside the PostgreSQL launcher | `postvec-server` nodes you operate |
-| Text leaves the DB host | No | Only to the configured nodes |
-| Models | `postvec model ...` on this host | Administered on each node |
-| Catalogue | Public subset; private after `login` | Same channels, pulled onto each node |
-| Same SQL? | Yes | Yes |
+| Where inference runs | Inside the PostgreSQL launcher | `postvec-server` nodes you run |
+| Text leaves the DB host | No | Only to those nodes |
+| Models | `postvec model ...` on this host | On each node |
 
-Embedded is the default and this site leads with it. Remote mode is the
-shape for keeping engine faults off the database host, for GPU inference,
-and for one engine serving several databases; the nodes are
-`postvec-server`, shipped in the postvec repository.
-[Embedded vs remote](/docs/concepts/modes) has the differences.
+SQL is the same in both modes. Embedded is what a package install does
+with `setup --embedded`. Use remote when inference should not share a
+crash domain, a CPU budget or a GPU with PostgreSQL.
+
+[Embedded vs remote](/docs/concepts/modes).
 
 ## Out of scope
 
-- Call OpenAI / Gemini / Cohere from PostgreSQL, or store their keys.
+- Call OpenAI, Gemini or Cohere from PostgreSQL, or store their keys.
 - Parse PDFs or HTML in the database.
-- Provide `rag()` / chat-completion SQL. Generation belongs in the application.
+- Provide `rag()` or chat-completion SQL. Generation belongs in the application.
 - Invent a new index access method. Storage and ANN indexes are pgvector's.
 
 ## License
 
 The extension, CLI and their packages are under the **PostgreSQL License**.
-Converter weights are a separate UniVec product. The public registry is a
-subset; a verified account sees the private superset. The bundled open-weight
-MiniLM model works offline and does not need registry access.
+Converter weights are a separate UniVec product. The public model
+catalogue is a subset; a verified account sees the private superset. The
+bundled MiniLM model works offline and does not need registry access.
 
-Terms for `postvec-server`, the remote-mode inference node, are not settled
-yet and are deliberately not stated here.
+Terms for `postvec-server`, the remote-mode inference node, are not
+settled yet and are not stated here.

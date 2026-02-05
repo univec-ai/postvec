@@ -5,7 +5,10 @@ description: AND-only JSON filters pushed into both search legs before ranking.
 
 # Filters
 
-`filter` is a JSON object. Every key is a column on the **source** table. Conditions are AND-ed and applied **inside both candidate legs** before ranking and `LIMIT`. An invalid filter is rejected *before* the query is embedded, so it costs no inference.
+`filter` is a JSON object. Every key is a column on the **source**
+table. Conditions are AND-ed and applied **inside both candidate legs**
+before ranking and `LIMIT`. An invalid filter is rejected before the
+query is embedded, so it costs no inference.
 
 ```sql
 SELECT d.body, s.rrf_score
@@ -37,19 +40,23 @@ subset.
 | `"region": ["EU","UK"]` | shorthand for `{"in": ["EU","UK"]}` |
 | `"title": {"like": "Q3%"}` | `LIKE` (`ilike` too) |
 
-Closed operator set: `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `like`, `ilike`, `is_not` (null only). Equality is the scalar shorthand: `"category": "finance"`.
+Closed operator set: `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `like`,
+`ilike`, `is_not` (null only). Equality is the scalar shorthand:
+`"category": "finance"`. There is no `eq`.
 
 Caps: 64 KiB serialized, 32 columns, 256 `in` values.
 
 ## Highly selective filters
 
-HNSW can under-recall when most of the index is excluded. Increasing `candidates`, `hnsw.ef_search` or `hnsw.max_scan_tuples` can compensate. postvec does not implement a filter selectivity estimator.
+HNSW can under-recall when most of the index is excluded. Increasing
+`candidates`, `hnsw.ef_search` or `hnsw.max_scan_tuples` can compensate.
+postvec does not estimate filter selectivity.
 
-## Invalid forms
+## Refused forms
 
 :::: danger SQL predicate fragments are not accepted
-`filter => 'category = ''finance'''` is refused. The JSON grammar prevents
-arbitrary SQL predicates from entering generated queries.
+`filter => 'category = ''finance'''` is refused. The JSON grammar keeps
+arbitrary SQL out of generated queries.
 ::::
 
 :::: danger Equality uses the scalar form
@@ -60,4 +67,6 @@ Write `"category": "finance"`.
 Use the scalar `null` / `{"is_not": null}` forms.
 ::::
 
-Unknown columns, unknown operators, empty operator objects, nested objects as values and values the column's type rejects (`pg_input_is_valid`) are all refused with a specific error.
+Unknown columns, unknown operators, empty operator objects, nested
+objects as values and values the column's type rejects
+(`pg_input_is_valid`) are all refused with a specific error.

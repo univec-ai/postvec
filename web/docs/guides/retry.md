@@ -5,7 +5,9 @@ description: Dead-letter inspection and re-drive with retry_dead().
 
 # Retry dead jobs
 
-Permanent failures and exhausted retries land in `postvec.jobs_dead`. They do not retry on their own.
+Permanent failures and exhausted retries land in `postvec.jobs_dead`.
+They do not retry on their own. Read `last_error`, fix the cause, then
+re-drive.
 
 <figure class="pvd">
 <svg viewBox="0 0 656 300" role="img" aria-labelledby="pvd-jobs-title pvd-jobs-desc">
@@ -90,7 +92,9 @@ Those rows leave `jobs_dead`.
 
 `retry_dead()` takes `regclass` (the one exception), so the invoking role's `search_path` resolves the table before the definer body runs. `'public.docs'` is unambiguous.
 
-## Limitations
+## Refusals
+
+`retry_dead()` will not:
 
 - Touch another entry's dead rows. A mixed `dead_ids` list is validated atomically before locking; no locks are acquired if any identifier is invalid.
 - Run on a missing, disabled or migrating entry.

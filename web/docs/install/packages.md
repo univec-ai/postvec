@@ -10,6 +10,9 @@ matches **one** release, **one** distribution, **one** architecture and
 **one** PostgreSQL major. The [release artifacts](/download) page lists
 names and publication status.
 
+The packages place files. They do not configure the cluster. After
+step 5, run [setup](/docs/install/setup).
+
 Tabs pick the PostgreSQL major and the package family. Debian examples
 use the `+deb12` filename tag. Ubuntu files use `+ubuntu22.04` or
 `+ubuntu24.04` instead; the rest of the command is the same.

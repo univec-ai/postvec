@@ -13,10 +13,11 @@ rarely appears on a schema diagram, but it is part of the data.
 An embedding is a point in the vector space of the model that produced
 it. `openai-text-embedding-ada-002`, BGE-M3, Gemini, Arctic and GTE each
 live in a different space, even when dimensions match. Embed a query
-with model B and search a corpus from model A, and the ranks are invalid.
+with model B and search a corpus from model A, and the ranks are
+invalid.
 
 Once the stored corpus, its ANN index and every query caller assume
-space A, the model stops being an ordinary configuration value. It is
+space A, the model is no longer an ordinary configuration value. It is
 part of the data contract. That binding is **vector lock-in**.
 
 ## Embedding debt
@@ -29,7 +30,7 @@ grows the eventual migration.
 
 That accumulated, deferred migration work is **embedding debt**.
 
-## Available approaches
+## What postvec does about it
 
 | Requirement | postvec operation |
 |---|---|

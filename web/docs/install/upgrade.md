@@ -10,6 +10,10 @@ Two lifecycles share one maintenance window:
 1. New files (`postvec.so`, control, upgrade SQL).
 2. `ALTER EXTENSION postvec UPDATE` in **every** database that has it.
 
+Do both in that order. Replacing the library alone parks the worker
+until the SQL catches up. `postvec model upgrade` is a different
+command: it replaces model bytes only.
+
 Replace `NEWVERSION` with the version being installed.
 
 <PgSnippet id="upgrade-packages" />

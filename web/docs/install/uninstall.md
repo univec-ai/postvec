@@ -5,8 +5,8 @@ description: Database cleanup and optional package removal for PostgreSQL 16, 17
 
 # Uninstall
 
-How far removal goes depends on the required end state. `DROP EXTENSION
-postvec CASCADE` is unsupported.
+How far removal goes depends on the required end state. Preview first
+with `--dry-run`. `DROP EXTENSION postvec CASCADE` is unsupported.
 
 | Goal | Command |
 |---|---|

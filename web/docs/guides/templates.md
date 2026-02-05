@@ -5,7 +5,11 @@ description: Format strings for adding row context to embedded text.
 
 # Templates
 
-A template defines the text that is **embedded**. The source column remains the lifecycle anchor and FTS input.
+A template defines the text that is **embedded**. The source column
+stays the lifecycle anchor and the FTS input.
+
+Use this when a short body needs title or other row context in the
+vector.
 
 ```sql
 SELECT postvec.set_format(
@@ -32,25 +36,37 @@ new-template vectors.
 | `$$` | A literal `$` |
 | anything else | Literal |
 
-There is **no backslash processing**. `\n` is two characters. Newlines come from SQL string syntax (`E'\n'` or dollar-quoting).
+There is **no backslash processing**. `\n` is two characters. Newlines
+come from SQL string syntax (`E'\n'` or dollar-quoting).
 
-Limits: non-empty, <= 16 KiB, <= 64 distinct columns. Must reference the source column. Must **not** reference the vector column (that is a feedback loop). A chunked template must reference `$chunk` and must not reference the source column.
+Limits: non-empty, <= 16 KiB, <= 64 distinct columns. Must reference
+the source column. Must **not** reference the vector column (that is a
+feedback loop). A chunked template must reference `$chunk` and must not
+reference the source column.
 
-NULL context columns render as `''`. A NULL **source** renders SQL NULL, costs no inference and converges the vector to NULL.
+NULL context columns render as `''`. A NULL **source** renders SQL
+NULL, costs no inference and converges the vector to NULL.
 
-Triggers fire on a change to **any** referenced column. Text is rendered at claim time and is not stored on the job, so a re-driven job uses the current template.
+Triggers fire on a change to **any** referenced column. Text is
+rendered at claim time and is not stored on the job, so a re-driven job
+uses the current template.
 
 ## `set_format()` is bulk maintenance
 
-The call takes `SHARE ROW EXCLUSIVE` (blocks writes) while it replaces triggers and enqueues every row. A maintenance window is appropriate. Comparison is **bytewise**: `$body` -> `${body}` is a real change.
+The call takes `SHARE ROW EXCLUSIVE` (blocks writes) while it replaces
+triggers and enqueues every row. Treat it as a maintenance window.
+Comparison is **bytewise**: `$body` -> `${body}` is a real change.
 
 Clear a template with `set_format(..., NULL)`.
 
-`migrate(strategy => 'reembed')` renders the template. `strategy => 'convert'` translates existing vectors.
+`migrate(strategy => 'reembed')` renders the template.
+`strategy => 'convert'` translates existing vectors.
 
-On `adopt(format => ...)` the template is also a provenance assertion about the vectors already stored. Use `backfill => 'all'` if that assertion is uncertain.
+On `adopt(format => ...)` the template is also a provenance assertion
+about the vectors already stored. Use `backfill => 'all'` if that
+assertion is uncertain.
 
-## Invalid forms
+## Refused forms
 
 :::: danger Newlines come from SQL string syntax
 Use `E'$title\n\n$body'` or dollar-quoting. In a plain SQL string, `\n`
@@ -58,6 +74,6 @@ is a backslash and an `n`.
 ::::
 
 :::: danger Templates cannot reference the vector column
-The function rejects this reference because it would create a continuous
+The function rejects this because it would create a continuous
 re-enqueue loop.
 ::::

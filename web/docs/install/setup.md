@@ -5,10 +5,10 @@ description: Cluster configuration and diagnostics with postvec setup and doctor
 
 # Configure the cluster
 
-`postvec setup` configures the launcher, the database workers and the
-inference mode after the files are installed.
+`postvec setup` is the step that actually turns files into a working
+extension. After packages or a source copy, run this.
 
-`setup` creates missing databases, installs the extension, merges
+It creates missing databases, installs the extension, merges
 `shared_preload_libraries`, writes **one** owned file
 (`conf.d/99-postvec.conf`), validates it, restarts or reloads if needed,
 refreshes models and verifies that the worker heartbeat **advances**.
@@ -23,8 +23,8 @@ sudo postvec setup --database app ... --dry-run
 
 The engine runs in the launcher. No account or outbound embedding API is
 required. This is the extension's **default** mode, and
-`postvec.ninference_path` defaults to `/opt/postvec/ninference` — where
-the engine-asset packages install — so `setup --embedded` needs no
+`postvec.ninference_path` defaults to `/opt/postvec/ninference`, where
+the engine-asset packages install, so `setup --embedded` needs no
 `--path` on a package install.
 
 `setup` still has to run: it is what enrols the database in
@@ -44,10 +44,10 @@ to scan-load every enabled descriptor.
 
 ## Remote gRPC
 
-Remote mode uses `postvec-server` nodes on the local network — for GPU
-inference, for keeping engine faults off the database host, or for one
-engine shared by several databases. The SQL surface is unchanged. See
-[embedded vs remote](/docs/concepts/modes).
+Remote mode uses `postvec-server` nodes on the local network. Pick it
+for GPU inference, for keeping engine faults off the database host or
+for one engine shared by several databases. The SQL surface is
+unchanged. See [embedded vs remote](/docs/concepts/modes).
 
 Every node must carry the same enabled models: postvec round-robins the
 configured endpoints, so a converter present on two nodes out of three

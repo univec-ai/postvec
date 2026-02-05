@@ -5,7 +5,9 @@ description: Authentication and access rules for the public and private model ca
 
 # Login and the private catalogue
 
-The CLI uses two compiled-in catalogue channels.
+The CLI uses two compiled-in catalogue channels. Login is only needed
+to pull from the private channel. The bundled MiniLM model does not
+need it.
 
 | Channel | Who | Contents |
 |---|---|---|

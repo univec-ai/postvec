@@ -5,12 +5,15 @@ description: In-place model migration via convert (or re-embed), finalize and ab
 
 # Migrate models
 
-Stored vectors move to a new model in place. The default strategy is `convert`: UniVec translates the stored vectors.
+Stored vectors move to a new model in place. The default strategy is
+`convert`: UniVec translates the stored vectors. Source text is not
+sent through the old embedding provider.
 
-When the corpus should remain unchanged, [bridge search](/docs/guides/bridge) converts queries into the existing space instead.
+When the corpus should stay put, [bridge search](/docs/guides/bridge)
+converts queries into the existing space instead.
 
-A migration does not complete on its own. It stops and waits for you at the
-two accented states below.
+A migration does not finish on its own. It stops and waits at the two
+accented states below.
 
 <figure class="pvd">
 <svg viewBox="0 0 576 456" role="img" aria-labelledby="pvd-mig-title pvd-mig-desc">
@@ -82,7 +85,7 @@ SELECT migration_id, state, rows_done, rows_total, progress_pct, error
   FROM postvec.migration_status(:migration_id);
 ```
 
-Repeat the status query until `awaiting_finalize`, then:
+Repeat the status query until `state = 'awaiting_finalize'`, then:
 
 ```sql
 SELECT postvec.migration_finalize(:migration_id);

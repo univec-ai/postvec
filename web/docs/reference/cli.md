@@ -44,7 +44,7 @@ database session. Read-only model commands do not need it:
 | Need | Commands |
 |---|---|
 | Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm` |
-| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, and cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` |
+| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall` and cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` |
 | Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show` |
 
 `sudo postvec ...` covers the first two at once: the parent keeps root
@@ -140,7 +140,7 @@ model deactivate NAME... [--path DIR] [--force] [--acknowledge-in-use]
 `pull` installs **deactivated**; `activate` / `deactivate` are the only verbs
 that change serving state, and both persist across a PostgreSQL restart.
 `--acknowledge-in-use` is required (with `--yes`) when managed columns would
-lose their embedding route — directly, or through a converter/bridge chain the
+lose their embedding route, directly or through a converter/bridge chain the
 model is part of; `--yes` and `--force` never stand in for it.
 
 ## Exit codes

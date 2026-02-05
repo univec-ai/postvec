@@ -5,7 +5,11 @@ description: Health signals from status(), stats() and postvec doctor.
 
 # Status and health
 
-`status()` and `stats()` expose database worker state. `postvec doctor` adds read-only checks of the host installation.
+`status()` is per enabled column. `stats()` is the worker process.
+`postvec doctor` adds read-only checks of the host installation.
+
+Start here when vectors stay NULL, search is lexical-only or a
+migration looks stuck.
 
 ## `status()` - per entry
 

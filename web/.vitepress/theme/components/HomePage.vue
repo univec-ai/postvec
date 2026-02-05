@@ -84,7 +84,7 @@ const active = ref(tabs[0].id);
           <nav class="links" aria-label="Primary documentation">
             <a class="lead-link" :href="withBase('/docs/quickstart')">Quick start</a>
             <a :href="withBase('/docs/install/')">Install</a>
-            <a :href="withBase('/docs/guides/starting')">Choose the SQL call</a>
+            <a :href="withBase('/docs/guides/starting')">Which SQL call</a>
             <a :href="withBase('/download')">Downloads</a>
           </nav>
         </div>
@@ -389,7 +389,7 @@ const active = ref(tabs[0].id);
           <div>
             <h3>Use</h3>
             <ul>
-              <li><a :href="withBase('/docs/guides/starting')">Choose the SQL call</a></li>
+              <li><a :href="withBase('/docs/guides/starting')">Which SQL call</a></li>
               <li><a :href="withBase('/docs/guides/search')">Search and filters</a></li>
               <li><a :href="withBase('/docs/guides/chunking')">Chunk long documents</a></li>
               <li><a :href="withBase('/docs/guides/migrate')">Migrate in place</a></li>

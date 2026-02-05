@@ -6,8 +6,10 @@ description: Source build and manual installation for PostgreSQL 16, 17 or 18.
 # Build from source
 
 Build from source when iterating on the extension. Persistent
-deployments should use [packages](/docs/install/packages). Package-owned
-files and manually copied files must not share paths.
+deployments should use [packages](/docs/install/packages).
+
+Package-owned files and manually copied files must not share paths.
+`command -v postvec` should resolve to the binary you intend.
 
 Tabs pick the PostgreSQL major and the layout of the target tree.
 

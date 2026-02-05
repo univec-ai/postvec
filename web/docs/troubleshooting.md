@@ -5,7 +5,8 @@ description: Diagnostic checks and common postvec failure conditions.
 
 # Troubleshooting
 
-Start with:
+`doctor --deep` is the first command. The table below maps a symptom to
+the usual cause. Start with:
 
 ```bash
 sudo postvec doctor --database app --deep

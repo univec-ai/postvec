@@ -5,12 +5,11 @@ description: Operational differences between embedded inference and remote gRPC 
 
 # Embedded vs remote
 
-Embedded is the default, and this site leads with it: inference on the
-database host, nothing else to run. Remote mode moves inference to nodes
-you operate — `postvec-server`, which this project ships — and is the
-shape to choose when inference should not share a crash domain, a CPU
-budget or a GPU with PostgreSQL, or when several databases should share
-one engine.
+Embedded is the default: inference on the database host, nothing else
+to run. Remote mode moves inference to nodes you operate
+(`postvec-server`, which this project ships). Pick remote when
+inference should not share a crash domain, a CPU budget or a GPU with
+PostgreSQL, or when several databases should share one engine.
 
 <figure class="pvd">
 <svg viewBox="0 0 632 368" role="img" aria-labelledby="pvd-modes-title pvd-modes-desc">
@@ -77,7 +76,7 @@ stay the same.
 | Typical use | Single-node, private, edge, air-gapped, regulated | Crash-domain isolation, GPU, one engine shared by several databases |
 
 One package does both: mode is configuration, not a different build.
-`postvec setup --embedded` selects embedded mode — and is also what the
+`postvec setup --embedded` selects embedded mode, and is also what the
 extension does with no configuration at all. `setup` with `--grpc` /
 `--http` selects remote mode.
 
@@ -121,7 +120,7 @@ postvec-server --root /var/lib/postvec-server \
   --ssl-cert-key /etc/postvec-server/tls.key
 ```
 
-Every node must carry the same enabled models — nothing replicates them,
+Every node must carry the same enabled models. Nothing replicates them,
 and postvec round-robins the endpoints it was given, so a converter
 present on some nodes and not others fails intermittently.
 `postvec-server status --fleet` is the check.

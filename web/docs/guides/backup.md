@@ -5,7 +5,11 @@ description: Data included in pg_dump and the post-restore checklist.
 
 # Backup and restore
 
-`pg_dump` carries the durable control tables (`registry`, `jobs`, `jobs_dead`, `migrations`) and their identity sequences. Generated triggers dump as ordinary database objects. A chunked destination, its identity sequence, join view, ownership-marker comments, RLS policy and triggers dump normally.
+`pg_dump` carries the durable control tables (`registry`, `jobs`,
+`jobs_dead`, `migrations`) and their identity sequences. Generated
+triggers dump as ordinary database objects. A chunked destination, its
+identity sequence, join view, ownership-marker comments, RLS policy
+and triggers dump normally.
 
 It does **not** dump:
 

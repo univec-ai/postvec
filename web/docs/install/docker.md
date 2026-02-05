@@ -6,7 +6,7 @@ description: postvec container images for PostgreSQL 16, 17 and 18. Volume layou
 # Install with Docker
 
 One container holds PostgreSQL, pgvector, postvec, the CLI, ONNX Runtime
-and MiniLM.
+and MiniLM. Use this to try postvec without touching the host cluster.
 
 Tabs pick the PostgreSQL major. The data-directory mount follows the
 official `postgres` image for that major.

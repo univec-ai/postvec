@@ -5,28 +5,13 @@ description: SQL operations from column registration through search and migratio
 
 # Usage overview
 
-Column registration, search, filters and migration are SQL functions. The CLI configures the cluster and, in embedded mode, the model inventory.
+Registration, search, filters and migration are SQL. The CLI configures
+the cluster and, in embedded mode, the model inventory.
 
-[Choose the SQL call](/docs/guides/starting) maps the current table to `enable()`, `adopt()`, bridge search, `migrate()` or chunking.
+If the table already exists, start at [Which SQL call](/docs/guides/starting).
+If you are filling a new table, the block below is the whole first pass.
 
-| Task | SQL | CLI counterpart |
-|---|---|---|
-| Attach a new column | [`enable()`](/docs/guides/enable) | `doctor` / `status()` |
-| Search | [`search()`](/docs/guides/search) | - |
-| Restrict by metadata | [`filter`](/docs/guides/filters) | - |
-| Embed title + body | [`set_format()`](/docs/guides/templates) | - |
-| Long documents | [`chunking`](/docs/guides/chunking) | - |
-| Register existing vectors | [`adopt()`](/docs/guides/adopt) | - |
-| Query a retired or provider-only space | [bridge](/docs/guides/bridge) | pull the converter; dependencies bring the embed model + `embed-bridge` |
-| Change model | [`migrate()`](/docs/guides/migrate) | - |
-| Speed up search | [`create_vector_index()`](/docs/guides/indexes) | `doctor` index checks |
-| Re-drive failures | [`retry_dead()`](/docs/guides/retry) | `doctor` `queue.dead` |
-| See health | [`status()` / `stats()`](/docs/guides/status) | `postvec doctor` |
-| Dump / restore | [Backup](/docs/guides/backup) | `setup` after restore |
-
-Functions live in the `postvec` schema. Qualify every call: `postvec.*`. The extension leaves `search_path` unchanged.
-
-## Minimal workflow
+## First pass
 
 ```sql
 CREATE TABLE docs (
@@ -60,19 +45,38 @@ SELECT d.id, d.body, s.rrf_score
 ```
 
 :::: tip Expected
-The second row ranks first. `has_vector_index` is true. No dead jobs.
+The engineering row ranks first. `has_vector_index` is true. No dead
+jobs.
 ::::
 
-## Roles
-
-Table ownership or superuser is required for the management verbs: `enable`, `adopt`, `disable`, `migrate`, `set_format`, `retry_dead` and `create_vector_index`. `uninstall()` is superuser only. `search()` is executable by PUBLIC. `embed` / `convert` / `refresh_models` are revoked from PUBLIC.
+Vectors fill **after** the inserting transaction commits. Poll
+`status()` in a later transaction. See
+[eventual consistency](/docs/concepts/consistency).
 
 ## Guides in this section
 
-1. [Choose the SQL call](/docs/guides/starting) from the current table.
-2. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt) one that already exists.
-3. [Search](/docs/guides/search), then add [filters](/docs/guides/filters) and [templates](/docs/guides/templates) as needed.
-4. [Chunk](/docs/guides/chunking) long documents.
-5. [Bridge](/docs/guides/bridge) an existing space, or [migrate](/docs/guides/migrate) it.
-6. [Index](/docs/guides/indexes), [retry](/docs/guides/retry) dead work and [watch](/docs/guides/status) the worker.
-7. [One-shot helpers](/docs/guides/helpers) for administrative `embed()` / `convert()`.
+Use, in roughly this order:
+
+1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt)
+   one that already exists.
+2. [Search](/docs/guides/search), then [filters](/docs/guides/filters) and
+   an [index](/docs/guides/indexes).
+3. [Templates](/docs/guides/templates) if short texts need row context.
+   [Chunk](/docs/guides/chunking) if the source is long.
+4. [Bridge](/docs/guides/bridge) an existing space, or
+   [migrate](/docs/guides/migrate) it.
+
+Operate, when something needs watching:
+
+- [Status](/docs/guides/status) and `postvec doctor`
+- [`retry_dead()`](/docs/guides/retry)
+- [Backup](/docs/guides/backup)
+- [One-shot helpers](/docs/guides/helpers) (`embed` / `convert`)
+
+## Roles
+
+Table ownership or superuser is required for the management verbs:
+`enable`, `adopt`, `disable`, `migrate`, `set_format`, `retry_dead` and
+`create_vector_index`. `uninstall()` is superuser only. `search()` is
+executable by PUBLIC. `embed` / `convert` / `refresh_models` are revoked
+from PUBLIC.

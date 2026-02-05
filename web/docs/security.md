@@ -5,6 +5,9 @@ description: Grants, RLS, credentials and worker visibility.
 
 # Security
 
+The worker sees source text. Filter values are bind parameters.
+Credentials never enter PostgreSQL GUCs.
+
 ## On-prem operation
 
 Embedded mode runs the engine in the PostgreSQL launcher. Text, weights
