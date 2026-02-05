@@ -49,10 +49,18 @@ jobs:
       # protoc compiles ../proto/ninference.proto; libssl-dev is the TLS
       # listener's backend (OpenSSL rather than rustls, matching the pinned
       # packaging builder image).
+      #
+      # libprotobuf-dev is what ships the well-known types
+      # (/usr/include/google/protobuf/*.proto) that the contract imports —
+      # protobuf-compiler only Recommends it, and --no-install-recommends
+      # drops it, so protoc resolves as installed and then fails on
+      # `import "google/protobuf/struct.proto"`. The other workflows get it
+      # implicitly by not passing the flag; this one has to name it.
       - name: Build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends protobuf-compiler libssl-dev
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libprotobuf-dev libssl-dev
 
       - name: rustfmt
         run: cargo fmt -p postvec-server -- --check
