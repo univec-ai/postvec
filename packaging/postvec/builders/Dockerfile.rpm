@@ -105,18 +105,34 @@ RUN rm -rf /src/target /src/postvec/target
 
 RUN cargo pgrx init "--pg${PG_MAJOR}" "/usr/pgsql-${PG_MAJOR}/bin/pg_config"
 
+# `--no-gc-sections` is restored by hand here because exporting RUSTFLAGS
+# silences the one cargo-pgrx passes. Cargo's four sources of extra rustflags
+# are mutually exclusive and RUSTFLAGS wins outright, so the
+# `-C link-arg=-Wl,--no-gc-sections` that `cargo pgrx package` supplies through
+# `--config target.'cfg(all(target_family = "unix", ...))'.rustflags` is
+# discarded, not merged. pgrx puts its schema entities in `.pgrxsc` marked
+# SHF_GNU_RETAIN, and `ld` honours that flag only from binutils 2.36: Debian 12
+# and Ubuntu ride on 2.38/2.40, while EL9's 2.35.2 garbage-collects the section
+# and `cargo pgrx package` then fails with "no embedded pgrx schema section
+# found". Both builders set the flag so the two produce the same library for
+# the same reason, rather than one of them passing on its linker's age.
+#
+# The extension build alone: the CLI carries no such section, and widening the
+# flag to it would change a shipped binary for no reason.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/postvec/target,sharing=locked,id=postvec-target-el9-${PG_MAJOR} \
     --mount=type=cache,target=/src/target,sharing=locked,id=workspace-target-el9 \
     set -eux; \
-    export RUSTFLAGS="--remap-path-prefix=/src=/postvec --remap-path-prefix=${CARGO_HOME}=/cargo"; \
+    remap="--remap-path-prefix=/src=/postvec --remap-path-prefix=${CARGO_HOME}=/cargo"; \
     export PGRX_BUILD_FLAGS=--locked; \
     cd /src/postvec; \
-    cargo pgrx package --no-default-features \
-        --features "pg${PG_MAJOR},embedded" \
-        --pg-config "/usr/pgsql-${PG_MAJOR}/bin/pg_config"; \
+    RUSTFLAGS="${remap} -C link-arg=-Wl,--no-gc-sections" \
+        cargo pgrx package --no-default-features \
+            --features "pg${PG_MAJOR},embedded" \
+            --pg-config "/usr/pgsql-${PG_MAJOR}/bin/pg_config"; \
     cd /src; \
-    CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+    RUSTFLAGS="${remap}" \
+        CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
         cargo build --locked --release -p postvec-cli; \
     mkdir -p /out/stage /out/cli; \
     cp -a "/src/postvec/target/release/postvec-pg${PG_MAJOR}/." /out/stage/; \

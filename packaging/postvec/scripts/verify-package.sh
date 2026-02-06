@@ -419,10 +419,25 @@ verify_rpm() {
     # `check_contents` asserts for every package carrying a binary.
     check_contents "${name}" "${files}" "${depends}"
 
-    if [[ "${name}" == postvec-cli-* ]]; then
-        if command -v rpm2cpio >/dev/null 2>&1; then
+    # `postvec-cli-[0-9]*` and not `postvec-cli-*`: the version field is what
+    # separates the CLI package from postvec-cli-debuginfo, which carries no
+    # binary by design — the check above asserts exactly that — and so can only
+    # ever fail a check for one.
+    if [[ "${name}" == postvec-cli-[0-9]* ]]; then
+        if command -v rpm2cpio >/dev/null 2>&1 && command -v cpio >/dev/null 2>&1; then
             local xdir; xdir="$(mktemp -d)"
-            (cd "${xdir}" && rpm2cpio "${RPM_QUERY_DIR}/${name}" | cpio -id --quiet ./usr/bin/postvec) || true
+            # No member pattern, and --no-absolute-filenames, for two reasons.
+            # nFPM writes payload member names absolute (`/usr/bin/postvec`)
+            # where rpmbuild writes them relative (`./usr/bin/postvec`), and
+            # cpio matches the stored spelling literally: a pattern for either
+            # convention extracts nothing from the other, silently and with a
+            # zero exit. And cpio's copy-in mode honours an absolute member
+            # name by default, so a *matching* pattern would write through to
+            # the host's real /usr/bin/postvec rather than into ${xdir} —
+            # extracting the whole payload under --no-absolute-filenames is
+            # both convention-independent and confined to the temporary tree.
+            (cd "${xdir}" && rpm2cpio "${RPM_QUERY_DIR}/${name}" \
+                | cpio -id --quiet --no-absolute-filenames) || true
             if [[ -f "${xdir}/usr/bin/postvec" ]]; then
                 check_no_registry_overrides "${xdir}/usr/bin/postvec"
             else
@@ -430,7 +445,7 @@ verify_rpm() {
             fi
             rm -rf "${xdir}"
         else
-            printf '    skip  rpm2cpio is not installed; the override check ran on the deb\n'
+            printf '    skip  rpm2cpio and cpio are not both installed; the override check ran on the deb\n'
         fi
     fi
 
