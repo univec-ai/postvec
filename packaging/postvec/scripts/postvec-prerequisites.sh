@@ -84,6 +84,14 @@ PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 PGDG_KEY_URL=https://www.postgresql.org/media/keys/ACCC4CF8.asc
 PGDG_RPM_KEY_FINGERPRINT=D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20
 PGDG_RPM_KEY_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL
+# PGDG signs each architecture with its own key and publishes them as separate
+# files: the x86_64 repository RPM is signed by ...08B40D20 above, the aarch64
+# one by ...B9738825 here. A key verifies exactly one architecture, so this is
+# selected the way the repository RPM URL already is — by machine, not by
+# distribution. Verifying an aarch64 download against the x86_64 fingerprint
+# fails closed, which is correct behaviour and a completely useless message.
+PGDG_RPM_KEY_AARCH64_FINGERPRINT=B031F89FC983E98262906B6E177B343BB9738825
+PGDG_RPM_KEY_AARCH64_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-AARCH64-RHEL
 KEYRING=/usr/share/keyrings/postgresql-archive-keyring.gpg
 SOURCES=/etc/apt/sources.list.d/pgdg.list
 
@@ -91,6 +99,15 @@ SOURCES=/etc/apt/sources.list.d/pgdg.list
 # distribution without a container per distribution. It changes what is *read*,
 # never what is written.
 OS_RELEASE="${POSTVEC_OS_RELEASE:-/etc/os-release}"
+
+# Read once, and overridable for the same reason: the signing key, the CRB
+# repository name and the repository RPM's URL all vary by machine, and a test
+# runner only ever has one of the two architectures under it.
+ARCH="${POSTVEC_UNAME_M:-$(uname -m)}"
+if [[ "${ARCH}" == aarch64 ]]; then
+    PGDG_RPM_KEY_FINGERPRINT="${PGDG_RPM_KEY_AARCH64_FINGERPRINT}"
+    PGDG_RPM_KEY_URL="${PGDG_RPM_KEY_AARCH64_URL}"
+fi
 
 PG_MAJOR=""
 ASSUME_YES=0
@@ -187,7 +204,7 @@ plan_crb() {
     case "${CRB_METHOD}" in
     subscription-manager)
         printf 'subscription-manager repos --enable "codeready-builder-for-rhel-9-%s-rpms"\n' \
-            "$(uname -m)" ;;
+            "${ARCH}" ;;
     *)
         printf 'dnf config-manager --set-enabled crb\n' ;;
     esac
@@ -207,7 +224,7 @@ plan_epel() {
 }
 
 plan_rpm() {
-    local arch; arch="$(uname -m)"
+    local arch; arch="${ARCH}"
     cat <<EOF
 # 1. tools this needs
 dnf install -y dnf-plugins-core
@@ -369,10 +386,10 @@ configure_rpm() {
     # require CRB to be enabled before its release RPM is installed.
     case "${CRB_METHOD}" in
     subscription-manager)
-        say "enabling codeready-builder-for-rhel-9-$(uname -m)-rpms"
+        say "enabling codeready-builder-for-rhel-9-${ARCH}-rpms"
         need_cmd subscription-manager \
             "this is RHEL, where CodeReady Builder is enabled through subscription-manager"
-        subscription-manager repos --enable "codeready-builder-for-rhel-9-$(uname -m)-rpms" \
+        subscription-manager repos --enable "codeready-builder-for-rhel-9-${ARCH}-rpms" \
             || die "could not enable CodeReady Builder. On RHEL this needs an active
 subscription; on a rebuild such as AlmaLinux or Rocky the repository is called
 'crb' and this script would have used dnf instead." ;;
@@ -419,7 +436,7 @@ subscription; on a rebuild such as AlmaLinux or Rocky the repository is called
 
         say "fetching the PGDG repository RPM"
         curl -fsSL --retry 3 --retry-delay 2 -o "${tmp}/pgdg-repo.rpm" \
-            "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-$(uname -m)/pgdg-redhat-repo-latest.noarch.rpm" \
+            "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-${ARCH}/pgdg-redhat-repo-latest.noarch.rpm" \
             || die "could not download the PGDG repository RPM"
 
         # Checked against **only** the key just verified.

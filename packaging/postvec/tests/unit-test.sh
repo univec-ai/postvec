@@ -1053,6 +1053,31 @@ if case_ "the prerequisite bootstrap emits the right commands per distribution";
         'grep -qxF' '| grep -qx '
 fi
 
+if case_ "the prerequisite plan follows PGDG's per-architecture signing keys"; then
+    # PGDG signs x86_64 and aarch64 with different keys. Verifying an aarch64
+    # repository RPM against the x86_64 fingerprint fails closed — correctly,
+    # and only on an arm64 runner twenty minutes into a packaging job. This
+    # asserts it from either architecture, in the fast job.
+    el9_osr="${WORK}/os-release-el9-arch"
+    printf '%s\n' $'ID=almalinux\nVERSION_ID="9.8"\nPRETTY_NAME="AlmaLinux 9.8"' > "${el9_osr}"
+    for want_arch in x86_64 aarch64; do
+        if [[ "${want_arch}" == aarch64 ]]; then
+            want_key="PGDG-RPM-GPG-KEY-AARCH64-RHEL"; want_fpr="${PGDG_RPM_KEY_AARCH64_FINGERPRINT}"
+        else
+            want_key="PGDG-RPM-GPG-KEY-RHEL"; want_fpr="${PGDG_RPM_KEY_FINGERPRINT}"
+        fi
+        arch_plan="$(POSTVEC_OS_RELEASE="${el9_osr}" POSTVEC_UNAME_M="${want_arch}" \
+            bash "${PKG_DIR}/scripts/postvec-prerequisites.sh" --print 2>/dev/null)" || arch_plan=""
+        if grep -qF "keys/${want_key}" <<<"${arch_plan}" \
+            && grep -qF "${want_fpr}" <<<"${arch_plan}" \
+            && grep -qF "EL-9-${want_arch}/" <<<"${arch_plan}"; then
+            ok "the ${want_arch} plan fetches ${want_key} and checks ${want_fpr}"
+        else
+            bad "the ${want_arch} plan does not pair EL-9-${want_arch} with ${want_key}"
+        fi
+    done
+fi
+
 if case_ "the prerequisite bootstrap pins the same PGDG key as the builders"; then
     # The script ships to users standalone, so it carries the fingerprint as a
     # constant rather than reading versions.env. That is the right shape and it
@@ -1068,6 +1093,12 @@ if case_ "the prerequisite bootstrap pins the same PGDG key as the builders"; th
         ok "postvec-prerequisites.sh verifies the RPM key ${rpm_fpr}"
     else
         bad "the bootstrap pins ${rpm_fpr:-<nothing>}, versions.env pins ${PGDG_RPM_KEY_FINGERPRINT}"
+    fi
+    arm_fpr="$(sed -n 's/^PGDG_RPM_KEY_AARCH64_FINGERPRINT=//p' "${PKG_DIR}/scripts/postvec-prerequisites.sh")"
+    if [[ "${arm_fpr}" == "${PGDG_RPM_KEY_AARCH64_FINGERPRINT}" ]]; then
+        ok "postvec-prerequisites.sh verifies the aarch64 RPM key ${arm_fpr}"
+    else
+        bad "the bootstrap pins ${arm_fpr:-<nothing>}, versions.env pins ${PGDG_RPM_KEY_AARCH64_FINGERPRINT}"
     fi
     # …and it must still refuse to run anything unattended without consent.
     if output="$(printf '' | bash "${PKG_DIR}/scripts/postvec-prerequisites.sh" --pg 18 2>&1)"; then
