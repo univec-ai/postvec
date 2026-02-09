@@ -28,6 +28,14 @@ on:
       - ".github/workflows/postvec-cli-ci.yml"
   workflow_dispatch:
 
+# Supersede an in-flight run on the same ref rather than letting the two
+# race to the same answer. A push that fixes the push before it makes the
+# earlier run's verdict irrelevant the moment it lands, and on a private
+# repository that run is still being paid for by the minute until it ends.
+concurrency:
+  group: postvec-cli-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -6,7 +6,9 @@
 # enough to catch the failures that actually happen (a package description that
 # no longer renders, a dependency that stopped resolving, an entrypoint that
 # broke, a healthcheck that lies). The full distribution × major × architecture
-# matrix runs nightly and at release time.
+# matrix runs at release time, and on demand via the full_matrix dispatch input
+# — there is no scheduled run, because on a private repository a nightly full
+# matrix costs several times the account's monthly allowance.
 #
 # Nothing here publishes anything: artifacts built in a pull-request security
 # context are for inspection only.
@@ -55,11 +57,19 @@ on:
       - ".github/workflows/postvec-moving-tags.yml"
       - ".github/workflows/postvec-release.yml"
       - ".github/workflows/postvec-packaging-ci.yml"
-  schedule:
-    # Nightly: the full matrix, so a distribution's package rename or a PGDG
-    # change is found by CI rather than by a release.
-    - cron: "0 3 * * *"
   workflow_dispatch:
+    inputs:
+      full_matrix:
+        description: >-
+          Also run the full distribution x major x architecture matrix, and the
+          coexistence check that needs two majors built. Off by default: that is
+          about thirty jobs and four hundred runner-minutes, which on a private
+          repository is a material share of a month's allowance — and the point
+          of a manual dispatch is usually to re-check the reference cell after a
+          fix, which the default already does. This is now the only way to run
+          the matrix outside a release, so run it before tagging one.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -268,6 +278,7 @@ jobs:
       - uses: ./.github/actions/postvec-buildx
 
       - name: Engine assets
+        timeout-minutes: 15
         run: |
           packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch amd64
 
@@ -277,23 +288,46 @@ jobs:
       # build to every call site would be a duplicate compiler path for a
       # binary the job already has.
       - name: Compile
+        timeout-minutes: 45
         run: |
           packaging/postvec/scripts/build-extension-stage.sh \
             --distro debian12 --pg 18 --arch amd64
 
       - name: Bundled model, from the registry's public channel
+        timeout-minutes: 15
         run: |
           packaging/postvec/scripts/build-model-bundle.sh \
             --cli packaging/postvec/build/debian12-pg18-amd64/cli/postvec
 
       - name: Package
+        timeout-minutes: 15
         run: |
           packaging/postvec/scripts/build-packages.sh \
             --distro debian12 --pg 18 --arch amd64
 
+      # A stalled apt mirror once ate this job's entire 90-minute budget. The
+      # step normally takes fifty seconds; `-qq` prints nothing while it works,
+      # so a hung acquire is indistinguishable from a working one until the
+      # runner kills the job — and the seven steps after this one never ran.
+      # Bounded and retried, a bad mirror now costs a couple of minutes and
+      # says which attempt failed.
       - name: Verify
+        timeout-minutes: 15
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq lintian
+          apt_get() {
+            timeout 300 sudo apt-get "$@" -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=20 -o DPkg::Lock::Timeout=120
+          }
+          for attempt in 1 2 3; do
+            apt_get update -qq && break
+            echo "::warning::apt-get update stalled or failed (attempt ${attempt}/3)"
+            [ "${attempt}" = 3 ] && exit 1
+            sleep $(( attempt * 15 ))
+          done
+          apt_get install -y -qq lintian
+
           packaging/postvec/scripts/verify-package.sh \
             packaging/postvec/dist/common/debian12-amd64/*.deb \
             packaging/postvec/dist/noarch/debian12/*.deb \
@@ -303,11 +337,13 @@ jobs:
       # full install, which also starts a cluster and embeds with the bundled
       # model.
       - name: Install on a clean host (minimal)
+        timeout-minutes: 20
         run: |
           packaging/postvec/tests/package-install-test.sh --minimal \
             --distro debian12 --pg 18 --arch amd64
 
       - name: Install on a clean host (full, with inference)
+        timeout-minutes: 25
         run: |
           packaging/postvec/tests/package-install-test.sh \
             --distro debian12 --pg 18 --arch amd64
@@ -373,16 +409,19 @@ jobs:
           retention-days: 7
 
       - name: Release manifest, with the closure enforced
+        timeout-minutes: 10
         run: |
           packaging/postvec/scripts/write-release-manifest.sh \
             --expect-distros debian12 --expect-majors 18 --expect-arches amd64
           ( cd packaging/postvec/release && sha256sum --check SHA256SUMS )
 
-  # The rest of the supported matrix, nightly. A distribution's package rename,
-  # a PGDG repository change or a pg16-only build break should be found by a
-  # scheduled run, not by a release.
+  # The rest of the supported matrix, on demand. A distribution's package
+  # rename, a PGDG repository change or a pg16-only build break should be found
+  # before a release rather than during one — so dispatch this with
+  # `full_matrix=true` before tagging, which is what the release rehearsal does
+  # anyway.
   packages-matrix:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: inputs.full_matrix
     needs: [lint, entrypoint]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 120
@@ -435,9 +474,9 @@ jobs:
             --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
 
   # Dual-major coexistence: the property the split CLI package exists for.
-  # It needs two majors built, so it runs after the nightly matrix.
+  # It needs two majors built, so it runs after the full matrix.
   coexistence:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: inputs.full_matrix
     needs: packages-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 90
