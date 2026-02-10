@@ -1,0 +1,61 @@
+# External embedding provider connectors (OpenAI, Gemini, Cohere, AWS
+# Bedrock, Mistral, OpenRouter), served by both inference hosts — the
+# embedded engine host inside postvec.so and postvec-server. The clients are
+# a copy of a tested internal crate, edited per docs/external-providers.md
+# §5.3; do not regenerate them from scratch.
+#
+# The default build is the pure HTTP clients. The `wire` feature adds the
+# providers.d config layer and the gateway both hosts mount (it needs the
+# fork's `shared` error codes for the wire error-code mapping).
+[package]
+name = "postvec-providers"
+version = "0.1.0"
+edition = "2021"
+description = "External embedding provider connectors for postvec's inference hosts"
+license = "PostgreSQL"
+# Same value every workspace crate carries; not an internal reference.
+repository = "https://github.com/univec-ai/postvec"
+
+[lib]
+name = "providers"
+
+[features]
+# The providers.d config + descriptor + gateway layer (docs/external-providers.md §6).
+wire = ["dep:shared", "dep:toml", "tokio/sync"]
+# Expose the in-process mock HTTP server (src/testing.rs) to other crates'
+# tests (the embedded host's spawn_for_test suite, postvec-server).
+test-util = ["tokio/net", "tokio/io-util", "tokio/rt"]
+
+[dependencies]
+# rustls, never native-tls: this crate compiles into postvec.so, which must
+# not link OpenSSL. Built fresh per provider — the hosts' discovery client
+# (which disables certificate validation) is never reused here.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "1"
+async-trait = "0.1"
+log = "0.4"
+# AWS Signature V4 (aws_sigv4.rs).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+percent-encoding = "2.3"
+# Retry jitter.
+rand = "0.8"
+# Only `time` at runtime (backoff sleeps, deadlines).
+tokio = { version = "1", features = ["time"] }
+
+# `wire` only.
+shared = { path = "../shared", optional = true }
+toml = { version = "0.8", optional = true }
+
+[dev-dependencies]
+# Self-dependency so `cargo test -p postvec-providers` builds the lib with
+# the extracted mock server available to tests/providers.rs.
+postvec-providers = { path = ".", features = ["test-util", "wire"] }
+# The mock server needs net + io-util; `test-util` (not part of `full`)
+# powers the paused-clock retry unit tests.
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"

@@ -1,0 +1,281 @@
+//!
+//! providers/src/retry.rs
+//!
+//! Provides a private helper function for exponential backoff logic.
+//!
+
+use crate::EmbeddingError;
+use rand::Rng;
+use std::future::Future;
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
+
+// --- Constants for Backoff Logic ---
+
+/// The initial delay to wait before the first retry (1 second).
+const INITIAL_DELAY_MS: u64 = 1000;
+/// The base for the exponential calculation (e.g., 2^retry_num).
+const EXPONENTIAL_BASE: f64 = 2.0;
+/// The maximum number of retries to attempt before failing.
+///
+/// Deliberately small: the extension holds one overall gRPC deadline
+/// (postvec.embed_timeout_ms, default 30 s) and the queue's own
+/// retry_backoff_ms machinery is the real retry loop — this in-client retry
+/// exists only to absorb momentary blips.
+const MAX_RETRIES: u32 = 2;
+
+/// A helper function to execute an async operation with exponential backoff.
+///
+/// This function will retry an operation if it fails with a "transient" error,
+/// such as a network error, a 429 rate limit, or a 5xx server error.
+/// It will *not* retry on permanent errors like 4xx client errors (except 429),
+/// deserialization errors, or configuration errors.
+///
+/// Retries stop early when `deadline` cannot fit another attempt: waiting the
+/// backoff would land past the caller's absolute budget, so the last error is
+/// surfaced immediately instead of burning time the caller no longer has.
+///
+/// # Arguments
+/// * `deadline` - The caller's absolute deadline, if any.
+/// * `operation` - An asynchronous closure that returns a `Result<T, EmbeddingError>`.
+///   This closure must be `Fn()` (not `FnOnce()`) because it may be called
+///   multiple times on failure.
+///
+/// # Returns
+/// A `Result<T, EmbeddingError>` which is either the successful result of the
+/// operation or the last error encountered after all retries are exhausted.
+pub async fn retry_with_backoff<F, T, Fut>(
+    deadline: Option<Instant>,
+    operation: F,
+) -> Result<T, EmbeddingError>
+where
+    F: Fn() -> Fut, // The operation is a closure that returns a Future
+    Fut: Future<Output = Result<T, EmbeddingError>>, // The Future resolves to our Result
+{
+    let mut num_retries = 0;
+    let mut delay = Duration::from_millis(INITIAL_DELAY_MS);
+    // Do NOT create rng here. `ThreadRng` is not `Send` and cannot live
+    // across an `.await` point if the future needs to be `Send`.
+
+    if let Some(deadline) = deadline {
+        if Instant::now() >= deadline {
+            return Err(EmbeddingError::Deadline(
+                "budget exhausted before the first attempt".to_string(),
+            ));
+        }
+    }
+
+    loop {
+        // Execute the operation
+        match operation().await {
+            Ok(result) => {
+                // Success! Return the result.
+                return Ok(result);
+            }
+            Err(e) => {
+                // Check if this is an error we should retry on
+                let should_retry = match &e {
+                    // 429 Too Many Requests (Rate Limit)
+                    EmbeddingError::Api { status: 429, .. } => true,
+                    // 5xx Server Errors (transient)
+                    EmbeddingError::Api {
+                        status: 500..=599, ..
+                    } => true,
+                    // Network errors (transient)
+                    EmbeddingError::Network(_) => true,
+                    // All other errors (4xx client errors, auth, config,
+                    // deserialization, deadline) are permanent.
+                    _ => false,
+                };
+
+                if !should_retry {
+                    // Not a retriable error, so fail immediately.
+                    return Err(e);
+                }
+
+                // We should retry. Increment the counter.
+                num_retries += 1;
+
+                // Check if we've exceeded the max retries.
+                if num_retries > MAX_RETRIES {
+                    // We're out of retries; surface the last error as-is so
+                    // the caller's error mapping sees the real failure class
+                    // (a 503 must not mutate into a configuration error).
+                    return Err(e);
+                }
+
+                // --- Jitter Calculation ---
+                // We must calculate the new delay *before* the await,
+                // and the `rng` must be created and dropped within a scope
+                // that does not cross the await.
+                {
+                    // Create the thread-local RNG here, in a tight scope.
+                    let mut rng = rand::thread_rng();
+
+                    // Calculate the jittered delay
+                    // jitter_multiplier = 1.0 + (random value between 0.0 and 1.0)
+                    let jitter_multiplier = 1.0 + rng.gen_range(0.0..=1.0);
+                    // delay = delay * base * (1 + jitter)
+                    let new_delay_ms =
+                        delay.as_millis() as f64 * EXPONENTIAL_BASE * jitter_multiplier;
+                    delay = Duration::from_millis(new_delay_ms as u64);
+                } // <-- `rng` is dropped here, *before* the await.
+
+                // Deadline awareness: if waiting out the backoff would land
+                // past the caller's budget, stop now with the real error.
+                if let Some(deadline) = deadline {
+                    if Instant::now() + delay >= deadline {
+                        return Err(e);
+                    }
+                }
+
+                log::warn!(
+                    "provider API error: {e}. Retrying in {:.2}s (attempt {num_retries}/{MAX_RETRIES})...",
+                    delay.as_secs_f32(),
+                );
+
+                // Sleep for the calculated delay.
+                // `rng` no longer exists, so the future is `Send`.
+                sleep(delay).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[tokio::test]
+    async fn returns_immediately_on_success() {
+        let calls = AtomicU32::new(0);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(None, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(42) }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "must not retry on success");
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_permanent_4xx() {
+        let calls = AtomicU32::new(0);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(None, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(EmbeddingError::Api {
+                    status: 400,
+                    message: "bad input".into(),
+                })
+            }
+        })
+        .await;
+        // A 4xx (non-429) is permanent: surfaced as-is, with no retry.
+        assert!(matches!(
+            result,
+            Err(EmbeddingError::Api { status: 400, .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not be retried");
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_configuration_error() {
+        let calls = AtomicU32::new(0);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(None, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(EmbeddingError::Configuration("nope".into())) }
+        })
+        .await;
+        assert!(matches!(result, Err(EmbeddingError::Configuration(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retries_transient_then_succeeds() {
+        // `start_paused` makes tokio auto-advance virtual time over the backoff
+        // sleeps, so this exercises the real retry path without wall-clock waits.
+        let calls = AtomicU32::new(0);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(None, || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    // Two transient failures (one 503, one 429) then success.
+                    let status = if n == 0 { 503 } else { 429 };
+                    Err(EmbeddingError::Api {
+                        status,
+                        message: "transient".into(),
+                    })
+                } else {
+                    Ok(7)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "two retries then success");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_budget_surfaces_the_last_real_error() {
+        // Every attempt fails 503: after MAX_RETRIES the *last error* comes
+        // back untouched, so the caller's error mapping still sees a 5xx.
+        let calls = AtomicU32::new(0);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(None, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(EmbeddingError::Api {
+                    status: 503,
+                    message: "still down".into(),
+                })
+            }
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(EmbeddingError::Api { status: 503, .. })
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1 + MAX_RETRIES,
+            "initial attempt plus the retry budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn deadline_that_cannot_fit_a_retry_stops_early() {
+        // The first backoff is ≥ 2s; a 50ms budget cannot fit it, so exactly
+        // one attempt runs and the transient error surfaces immediately.
+        let calls = AtomicU32::new(0);
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(Some(deadline), || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(EmbeddingError::Api {
+                    status: 503,
+                    message: "transient".into(),
+                })
+            }
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(EmbeddingError::Api { status: 503, .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "no retry fits the budget");
+    }
+
+    #[tokio::test]
+    async fn exhausted_deadline_refuses_before_the_first_attempt() {
+        let calls = AtomicU32::new(0);
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(Some(deadline), || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(1) }
+        })
+        .await;
+        assert!(matches!(result, Err(EmbeddingError::Deadline(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}

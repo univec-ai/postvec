@@ -9,6 +9,7 @@ members = [
     "shared",
     "registry/schema",
     "postvec-server",
+    "providers",
 ]
 
 [workspace.dependencies]

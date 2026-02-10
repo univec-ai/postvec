@@ -11,6 +11,7 @@ license covers which directory; the full texts are where the table points.
   packaging/postvec/                PostgreSQL     below
   engine/                           PostgreSQL     below
   shared/                           PostgreSQL     below
+  providers/                        PostgreSQL     below
   proto/                            PostgreSQL     below
   registry/schema/                  PostgreSQL     below
   docs/                             PostgreSQL     below
