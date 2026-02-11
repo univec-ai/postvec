@@ -27,6 +27,13 @@ pub mod openai;
 pub mod openrouter;
 pub mod titan;
 
+// The providers.d config layer and the gateway both inference hosts mount
+// (feature `wire` — needs the fork's `shared` error codes).
+#[cfg(feature = "wire")]
+pub mod config;
+#[cfg(feature = "wire")]
+pub mod gateway;
+
 /// The in-process mock HTTP server shared by this crate's integration tests
 /// and by the inference hosts' test suites (feature `test-util`).
 #[cfg(any(test, feature = "test-util"))]

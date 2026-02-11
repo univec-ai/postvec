@@ -31,6 +31,11 @@ pub enum RavennaCode {
     /// same target against this deployment can never succeed.
     TargetRestricted,
     UpstreamServiceUnavailable,
+    /// An external embedding provider refused the credential (HTTP 401/403).
+    /// An operator problem, not a transient one: bounded retry with backoff,
+    /// failover-eligible (another node may hold a valid key), never a
+    /// hot-loop and never dead-letters data for an ops problem.
+    UpstreamAuthFailed,
     /// A code we don't recognize (forward compatibility).
     Unknown,
 }
@@ -53,6 +58,7 @@ impl RavennaCode {
             "UPSTREAM_SERVICE_UNAVAILABLE" | "UpstreamServiceUnavailable" => {
                 Self::UpstreamServiceUnavailable
             }
+            "UPSTREAM_AUTH_FAILED" | "UpstreamAuthFailed" => Self::UpstreamAuthFailed,
             _ => Self::Unknown,
         }
     }
@@ -122,6 +128,11 @@ impl PvError {
                 | RavennaCode::ModelDisabled
                 | RavennaCode::BridgePathNotFound
                 | RavennaCode::ConverterNotFound => ErrorClass::Config,
+                // A provider 401/403 is an ops problem (bad or revoked key):
+                // Config keeps it on bounded backoff and failover — another
+                // node may hold a valid key — without dead-lettering rows or
+                // hot-looping while the operator rotates the credential.
+                RavennaCode::UpstreamAuthFailed => ErrorClass::Config,
                 RavennaCode::ContextLengthExceeded => ErrorClass::PoisonRow,
                 RavennaCode::InvalidInput | RavennaCode::TargetRestricted => ErrorClass::Permanent,
             },
@@ -240,6 +251,14 @@ mod tests {
             RavennaCode::ModelNotFound
         );
         assert_eq!(
+            RavennaCode::parse("UPSTREAM_AUTH_FAILED"),
+            RavennaCode::UpstreamAuthFailed
+        );
+        assert_eq!(
+            RavennaCode::parse("UpstreamAuthFailed"),
+            RavennaCode::UpstreamAuthFailed
+        );
+        assert_eq!(
             RavennaCode::parse("INVALID_INPUT"),
             RavennaCode::InvalidInput
         );
@@ -278,6 +297,10 @@ mod tests {
             RavennaCode::ModelDisabled,
             RavennaCode::BridgePathNotFound,
             RavennaCode::ConverterNotFound,
+            // A revoked provider key is an ops problem: bounded retry +
+            // failover, never Transient (hot loop) and never Permanent
+            // (dead-lettering data for a credential rotation).
+            RavennaCode::UpstreamAuthFailed,
         ] {
             assert_eq!(remote(code).class(), ErrorClass::Config, "{code:?}");
         }

@@ -81,3 +81,15 @@ Unused dependencies the deletions stranded:
 - The `ort-cuda` / `ort-tensorrt` features and `get_pool_size`'s ONNX
   GPU-availability check survive: they are ONNX execution-provider plumbing,
   not the Candle backend, and deleting them would edit live code paths.
+
+## Added in this copy
+
+The fork is trimmed by deletion only, with exactly one recorded addition:
+
+- `shared/src/error.rs`: the `UpstreamAuthFailed` error code (wire string
+  `UPSTREAM_AUTH_FAILED`), added 2026-08-19 for postvec's external embedding
+  providers (docs/external-providers.md §6.4). A provider HTTP 401/403 is an
+  operator problem, not a transient blip, and needed a code the extension can
+  classify as configuration. A backport diff will show this variant (and its
+  `as_str`/`from_str` arms and round-trip test row) as the fork's only `+`
+  lines; upstream may adopt the same variant verbatim.

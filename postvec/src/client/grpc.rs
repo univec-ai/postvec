@@ -173,7 +173,11 @@ fn model_config_error_should_failover(err: &PvError) -> bool {
                 | RavennaCode::ModelNotLoaded
                 | RavennaCode::ModelDisabled
                 | RavennaCode::BridgePathNotFound
-                | RavennaCode::ConverterNotFound,
+                | RavennaCode::ConverterNotFound
+                // Provider auth is per node (providers.d lives on each
+                // inference host): in a fleet another node may hold a valid
+                // key, so a 401/403 is worth one pass over the other nodes.
+                | RavennaCode::UpstreamAuthFailed,
             ..
         }
     )
@@ -712,6 +716,9 @@ mod tests {
             RavennaCode::ModelDisabled,
             RavennaCode::BridgePathNotFound,
             RavennaCode::ConverterNotFound,
+            // Provider keys live per inference host: another node in the
+            // fleet may hold a valid one.
+            RavennaCode::UpstreamAuthFailed,
         ] {
             assert!(model_config_error_should_failover(&PvError::Remote {
                 code,

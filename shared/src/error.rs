@@ -32,6 +32,14 @@ pub enum ErrorCode {
 
     // --- Upstream/Dependency Errors ---
     UpstreamServiceUnavailable, // e.g., if we were calling OpenAI directly (not current arch, but good for future)
+    /// An external embedding provider refused the credential (HTTP 401/403:
+    /// bad, revoked, or missing key). Distinct from
+    /// `UpstreamServiceUnavailable` because it is an operator problem, not a
+    /// transient one — clients classify it as configuration (bounded retry,
+    /// failover-eligible: another node may hold a valid key), never as a
+    /// hot-loop transient and never as data poison.
+    /// postvec fork addition (see engine/FORK.md).
+    UpstreamAuthFailed,
 }
 
 impl fmt::Display for ErrorCode {
@@ -57,6 +65,7 @@ impl ErrorCode {
             ErrorCode::ConverterNotFound => "CONVERTER_NOT_FOUND",
             ErrorCode::TargetRestricted => "TARGET_RESTRICTED",
             ErrorCode::UpstreamServiceUnavailable => "UPSTREAM_SERVICE_UNAVAILABLE",
+            ErrorCode::UpstreamAuthFailed => "UPSTREAM_AUTH_FAILED",
         }
     }
 
@@ -81,6 +90,7 @@ impl ErrorCode {
             "CONVERTER_NOT_FOUND" => Some(ErrorCode::ConverterNotFound),
             "TARGET_RESTRICTED" => Some(ErrorCode::TargetRestricted),
             "UPSTREAM_SERVICE_UNAVAILABLE" => Some(ErrorCode::UpstreamServiceUnavailable),
+            "UPSTREAM_AUTH_FAILED" => Some(ErrorCode::UpstreamAuthFailed),
             _ => None,
         }
     }
@@ -109,6 +119,7 @@ mod tests {
             ErrorCode::ConverterNotFound,
             ErrorCode::TargetRestricted,
             ErrorCode::UpstreamServiceUnavailable,
+            ErrorCode::UpstreamAuthFailed,
         ] {
             assert_eq!(ErrorCode::from_str(code.as_str()), Some(code), "{code}");
         }
