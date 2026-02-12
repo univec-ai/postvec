@@ -320,6 +320,34 @@ async fn no_error_display_ever_contains_the_api_key() {
     }
 }
 
+/// `Debug` is the other leak channel: a stray `{config:?}` in a log line or
+/// panic payload must not print any secret. (Display is covered above.)
+#[test]
+fn provider_config_debug_redacts_every_secret() {
+    let secrets = [
+        "sk-api-key-value",
+        "bedrock-bearer-value",
+        "AKIAEXAMPLEID",
+        "aws-secret-value",
+    ];
+    let config = ProviderConfig {
+        provider: "aws".to_string(),
+        api_key: Some(secrets[0].to_string()),
+        base_url: Some("https://example.invalid".to_string()),
+        region: Some("us-east-1".to_string()),
+        bearer_token: Some(secrets[1].to_string()),
+        access_key_id: Some(secrets[2].to_string()),
+        secret_access_key: Some(secrets[3].to_string()),
+    };
+    let debug = format!("{config:?}");
+    for secret in secrets {
+        assert!(!debug.contains(secret), "Debug leaked {secret:?}: {debug}");
+    }
+    // Non-secret fields stay readable, and presence is still visible.
+    assert!(debug.contains("us-east-1"), "{debug}");
+    assert!(debug.contains("<redacted>"), "{debug}");
+}
+
 // ---------------------------------------------------------------------------
 // Cohere (v3 direct array AND v4 nested-under-`float` response shapes)
 // ---------------------------------------------------------------------------

@@ -27,7 +27,11 @@ use crate::{
 
 /// Fully resolved connector configuration: every secret is already a value
 /// (any file/env indirection was resolved by the caller at load time).
-#[derive(Debug, Clone, Default)]
+///
+/// `Debug` is implemented by hand and redacts every secret field — a stray
+/// `log::debug!("{config:?}")` or panic payload must never put a key in the
+/// PostgreSQL log.
+#[derive(Clone, Default)]
 pub struct ProviderConfig {
     /// Connector type: `openai | openrouter | mistral | google | cohere |
     /// aws`. `gemini` is accepted as an alias for `google`, and `amazon`
@@ -46,6 +50,28 @@ pub struct ProviderConfig {
     pub access_key_id: Option<String>,
     /// AWS only: SigV4 static credentials.
     pub secret_access_key: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn redacted(secret: &Option<String>) -> &'static str {
+            match secret {
+                Some(_) => "Some(<redacted>)",
+                None => "None",
+            }
+        }
+        f.debug_struct("ProviderConfig")
+            .field("provider", &self.provider)
+            .field("api_key", &redacted(&self.api_key))
+            .field("base_url", &self.base_url)
+            .field("region", &self.region)
+            .field("bearer_token", &redacted(&self.bearer_token))
+            // The access key id is not strictly secret, but nothing needs it
+            // in a log either — redact the whole SigV4 pair.
+            .field("access_key_id", &redacted(&self.access_key_id))
+            .field("secret_access_key", &redacted(&self.secret_access_key))
+            .finish()
+    }
 }
 
 impl ProviderConfig {

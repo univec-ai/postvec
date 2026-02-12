@@ -49,7 +49,9 @@ fn default_max_batch() -> usize {
 
 /// The on-disk TOML schema. `deny_unknown_fields` on purpose: a typo'd
 /// credential field must be a load error, not a silently ignored key.
-#[derive(Debug, Deserialize)]
+/// Deliberately NOT `Debug`: the inline secret fields would be one stray
+/// format string away from a log line.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderFile {
     /// Connector type: openai | openrouter | mistral | google | cohere | aws
@@ -227,7 +229,7 @@ fn validate_model_name(name: &str) -> Result<(), String> {
 fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
     assert_private(path)?;
     let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
-    let file: ProviderFile = toml::from_str(&raw).map_err(|e| format!("cannot parse: {e}"))?;
+    let mut file: ProviderFile = toml::from_str(&raw).map_err(|e| format!("cannot parse: {e}"))?;
 
     if !file.enabled {
         return Ok(None);
@@ -270,6 +272,22 @@ fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
             ));
         }
     }
+    // Same-file duplicates follow the same rule as cross-file ones: first
+    // definition wins, warning logged — never a silent last-wins overwrite
+    // further down the pipeline.
+    let mut seen = std::collections::BTreeSet::new();
+    file.models.retain(|model| {
+        let fresh = seen.insert(model.name.clone());
+        if !fresh {
+            log::warn!(
+                "providers.d: {} defines model {:?} more than once; the first \
+                 definition wins",
+                path.display(),
+                model.name
+            );
+        }
+        fresh
+    });
 
     let config = ProviderConfig {
         provider: file.provider.clone(),
@@ -548,6 +566,22 @@ max_tokens = 8191
         let outcome = load_dir(dir.path()).unwrap();
         assert_eq!(outcome.providers.len(), 1, "b.toml serves nothing");
         assert_eq!(outcome.providers[0].models[0].provider_model_id, "first");
+    }
+
+    #[test]
+    fn duplicate_model_names_within_one_file_first_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "provider = \"openai\"\napi_key = \"k\"\n\n\
+                    [[models]]\nname = \"dup\"\nprovider_model_id = \"first\"\ndim = 4\n\n\
+                    [[models]]\nname = \"dup\"\nprovider_model_id = \"second\"\ndim = 8\n";
+        write_mode(dir.path(), "openai.toml", body, 0o600);
+
+        let outcome = load_dir(dir.path()).unwrap();
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        let models = &outcome.providers[0].models;
+        assert_eq!(models.len(), 1, "first wins, duplicate dropped");
+        assert_eq!(models[0].provider_model_id, "first");
+        assert_eq!(models[0].dim, 4);
     }
 
     #[test]

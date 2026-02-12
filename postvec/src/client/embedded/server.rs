@@ -200,10 +200,14 @@ impl NinferenceService for EmbeddedService {
                 "deadline exhausted at request entry",
             ));
         }
-        // Provider dispatch BEFORE `is_model_ready`: a provider-backed name
-        // is never resident in the engine, so the engine-first order would
-        // answer MODEL_NOT_LOADED for every provider model. Convert requests
-        // never take this branch (providers embed; they do not convert).
+        // Dispatch order: a ready engine model wins its name, then the
+        // gateway, then the MODEL_NOT_LOADED refusal. Two rules meet here:
+        // a provider-backed name is never engine-resident, so it must be
+        // routed before that refusal fires — and on a name collision the
+        // LOCAL model wins, the same §6.1 rule `/config` applies, so
+        // discovery and this handler can never disagree about which model a
+        // name is. Convert requests never consult the gateway (providers
+        // embed; they do not convert).
         //
         // §7.3 admission: the provider path deliberately bypasses all three
         // embedded_max_inflight gates — it took a widened tower slot (see
@@ -212,10 +216,10 @@ impl NinferenceService for EmbeddedService {
         // HostPolicy is not involved). Provider calls are network-bound and
         // must not queue behind CPU-bound ONNX; their limiter is the
         // per-provider `max_concurrent` semaphore inside the gateway.
-        if self.gateway.owns(&req.model) {
-            return self.embed_via_gateway(req, deadline_std).await;
-        }
         if !self.engine.is_model_ready(&req.model) {
+            if self.gateway.owns(&req.model) {
+                return self.embed_via_gateway(req, deadline_std).await;
+            }
             return Err(model_not_loaded_status(&req.model));
         }
 
@@ -764,7 +768,8 @@ fn spawn_inner(
     // budget is read from the gateway loaded at startup; a runtime
     // `/admin/providers/reload` that RAISES the budget shares the startup
     // ingress width until the next restart (serving is correct, admission
-    // is merely tighter). Zero-config: budget 0, size unchanged, so the
+    // is merely tighter — the reload endpoint logs a warning naming the
+    // restart). Zero-config: budget 0, size unchanged, so the
     // documented ≤ max_inflight × ~320 MiB ingress RSS bound holds exactly.
     // Residual (deliberate): a burst of *engine* EmbedTexts can occupy the
     // extra tower slots, decode, then wait on `response_slots` — extra
@@ -1270,9 +1275,9 @@ mod gateway_tests {
 
     /// The full wire path: postvec's production `GrpcClient` → loopback
     /// server → gateway → mock provider. The engine holds zero models, so
-    /// success is itself the ordering proof — `gateway.owns` must run
-    /// before `is_model_ready`, or every provider name refuses as
-    /// MODEL_NOT_LOADED. Convert never takes the gateway branch.
+    /// success is itself the ordering proof — the gateway must be consulted
+    /// before the MODEL_NOT_LOADED refusal, or every provider name would
+    /// refuse. Convert never takes the gateway branch.
     #[test]
     fn provider_embed_serves_before_engine_readiness_and_convert_never_does() {
         let root = crate::client::embedded::tests::empty_engine_root();
@@ -1317,6 +1322,129 @@ mod gateway_tests {
             matches!(&err, PvError::Remote { code, .. } if *code == RavennaCode::ModelNotLoaded),
             "got {err:?}"
         );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The §6.1 collision rule on the EMBED path, not just in `/config`: a
+    /// loaded local model wins its name, and the provider claiming it is
+    /// never dialed. The local fixture is a dummy-executor model, whose
+    /// distinctive engine-side error doubles as proof of which path served
+    /// the request.
+    #[test]
+    fn a_loaded_local_model_wins_the_name_collision_on_the_embed_path() {
+        let root = crate::client::embedded::tests::empty_engine_root();
+        let runtime = crate::client::embedded::tests::engine_runtime();
+        let engine = crate::client::embedded::tests::test_engine(&root);
+
+        // A real (dummy-executor) engine model under the colliding name.
+        let name = "openai-text-embedding-3-small";
+        let dir = root.join("models").join("generic").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ninference.hub.json"),
+            serde_json::json!({
+                "name": name,
+                "backend": "generic",
+                "enabled": true,
+                "executor": { "key": "dummy" }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        runtime.block_on(engine.load_model(name)).unwrap();
+        assert!(engine.is_model_ready(name), "local fixture is resident");
+
+        let mock = runtime.block_on(provider_mock::always(
+            200,
+            r#"{"data":[{"embedding":[0.25,0.5],"index":0}]}"#,
+        ));
+        let gateway = gateway_for(&mock.url);
+        assert!(gateway.owns(name), "the provider file claims the name");
+
+        let (server, addr) = spawn_for_test(
+            engine,
+            &runtime,
+            "127.0.0.1:0",
+            Duration::from_secs(5),
+            gateway,
+        )
+        .unwrap();
+        let client = GrpcClient::new(vec![addr.to_string()], Vec::new(), 5_000, 1_000);
+
+        let err = crate::runtime::block_on(client.embed(
+            &["hello".to_string()],
+            name,
+            &EmbedRoute::default(),
+        ))
+        .unwrap_err();
+        // The dummy executor's error proves the ENGINE served the name —
+        // exactly what /config advertises (local wins).
+        let message = format!("{err}");
+        assert!(message.contains("dummy executor"), "got: {message}");
+        assert_eq!(
+            mock.request_count(),
+            0,
+            "the provider must never be dialed for a local-won name"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A reload that adds the FIRST provider (zero-config start, then
+    /// `provider add`) serves through the wire without a restart. The tower
+    /// ingress width stays at its spawn-time size until restart — that
+    /// residual is a logged warning, not a serving failure.
+    #[test]
+    fn reload_that_adds_the_first_provider_serves_through_the_wire() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::client::embedded::tests::empty_engine_root();
+        let runtime = crate::client::embedded::tests::engine_runtime();
+        let engine = crate::client::embedded::tests::test_engine(&root);
+
+        let providers_dir = root.join("providers.d");
+        let gateway = Arc::new(Gateway::load(&providers_dir));
+        assert!(gateway.is_empty(), "zero-config start");
+
+        let (server, addr) = spawn_for_test(
+            engine,
+            &runtime,
+            "127.0.0.1:0",
+            Duration::from_secs(5),
+            gateway.clone(),
+        )
+        .unwrap();
+        let client = GrpcClient::new(vec![addr.to_string()], Vec::new(), 5_000, 1_000);
+
+        let mock = runtime.block_on(provider_mock::always(
+            200,
+            r#"{"data":[{"embedding":[0.25,0.5],"index":0}]}"#,
+        ));
+        std::fs::create_dir_all(&providers_dir).unwrap();
+        let file = providers_dir.join("openai.toml");
+        std::fs::write(
+            &file,
+            format!(
+                "provider = \"openai\"\napi_key = \"sk-test\"\nbase_url = \"{}\"\n\n\
+                 [[models]]\nname = \"openai-text-embedding-3-small\"\n\
+                 provider_model_id = \"text-embedding-3-small\"\ndim = 2\n",
+                mock.url
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let report = gateway.reload(&providers_dir).unwrap();
+        assert_eq!(report.models, 1, "{:?}", report.errors);
+
+        let out = crate::runtime::block_on(client.embed(
+            &["hello".to_string()],
+            "openai-text-embedding-3-small",
+            &EmbedRoute::default(),
+        ))
+        .expect("a reloaded-in provider serves without a restart");
+        assert_eq!(out, vec![vec![0.25, 0.5]]);
 
         server.abort();
         let _ = std::fs::remove_dir_all(&root);

@@ -546,14 +546,25 @@ async fn admin_unload(
 /// error instead of a silent dead listener. `root` is the engine root the
 /// admin handlers read descriptors from (the `enabled` admission check and
 /// the unload ordering both live on disk, not in the engine).
+/// Everything the listener needs about external providers: the shared
+/// gateway, where its files live (`/admin/providers/reload` rescans them),
+/// and the §7.3 inflight budget the gRPC ingress limit was sized with at
+/// spawn — a reload can grow the gateway past it; serving stays correct,
+/// but full provider throughput needs a restart, and the reload handler
+/// warns when that happens.
+pub(super) struct ProviderState {
+    pub(super) gateway: Arc<Gateway>,
+    pub(super) providers_path: PathBuf,
+    pub(super) startup_budget: usize,
+}
+
 pub(super) fn spawn(
     engine: Arc<InferenceEngine>,
     runtime: &tokio::runtime::Runtime,
     listen: &str,
     root: &Path,
     allowed_models: Vec<String>,
-    gateway: Arc<Gateway>,
-    providers_path: PathBuf,
+    providers: ProviderState,
 ) -> Result<(tokio::task::JoinHandle<()>, SocketAddr), String> {
     let addr: SocketAddr = listen
         .parse()
@@ -585,8 +596,10 @@ pub(super) fn spawn(
         .map_err(|e| format!("local_addr: {e}"))?;
 
     let config_engine = engine.clone();
-    let config_gateway = gateway.clone();
-    let reload_gateway = gateway;
+    let config_gateway = providers.gateway.clone();
+    let reload_gateway = providers.gateway;
+    let providers_path = providers.providers_path;
+    let startup_provider_budget = providers.startup_budget;
     let load_engine = engine.clone();
     let load_root = root.to_path_buf();
     let load_allowed = Arc::new(allowed_models);
@@ -616,7 +629,11 @@ pub(super) fn spawn(
                     // providers.d scanning is filesystem work (stat, read,
                     // key files) — keep it off the 2-thread engine runtime,
                     // like the other admin handlers.
-                    let outcome = tokio::task::spawn_blocking(move || gateway.reload(&path)).await;
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        let report = gateway.reload(&path)?;
+                        Ok::<_, String>((report, gateway.inflight_budget()))
+                    })
+                    .await;
                     match outcome {
                         // A failed reload kept the previous snapshot; say so.
                         Ok(Err(e)) => refusal(
@@ -627,17 +644,32 @@ pub(super) fn spawn(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             &format!("reload task failed: {e}"),
                         ),
-                        Ok(Ok(report)) => (
-                            StatusCode::OK,
-                            Json(json!({
-                                "success": true,
-                                "data": {
-                                    "providers": report.providers,
-                                    "models": report.models,
-                                    "errors": report.errors,
-                                }
-                            })),
-                        ),
+                        Ok(Ok((report, budget))) => {
+                            // §7.3 residual: the gRPC ingress width is fixed
+                            // at spawn. Providers added by reload still
+                            // serve, but they share the startup width until
+                            // a restart — say so once, at the moment the
+                            // operator caused it.
+                            if budget > startup_provider_budget {
+                                log::warn!(
+                                    "provider reload raised the outbound concurrency budget \
+                                     ({startup_provider_budget} -> {budget}); provider models \
+                                     serve now, but full provider throughput needs a \
+                                     PostgreSQL restart to widen the ingress limit"
+                                );
+                            }
+                            (
+                                StatusCode::OK,
+                                Json(json!({
+                                    "success": true,
+                                    "data": {
+                                        "providers": report.providers,
+                                        "models": report.models,
+                                        "errors": report.errors,
+                                    }
+                                })),
+                            )
+                        }
                     }
                 }
             }),
@@ -720,8 +752,11 @@ mod tests {
             "127.0.0.1:0",
             root,
             Vec::new(),
-            Arc::new(Gateway::empty()),
-            root.join("providers.d"),
+            ProviderState {
+                gateway: Arc::new(Gateway::empty()),
+                providers_path: root.join("providers.d"),
+                startup_budget: 0,
+            },
         )
         .unwrap()
     }
@@ -881,8 +916,11 @@ dim = 999
             "127.0.0.1:0",
             &root,
             Vec::new(),
-            gateway,
-            providers_dir.clone(),
+            ProviderState {
+                gateway,
+                providers_path: providers_dir.clone(),
+                startup_budget: 0,
+            },
         )
         .unwrap();
 
@@ -985,8 +1023,11 @@ dim = 999
             "127.0.0.1:0",
             &root,
             vec!["permitted-model".to_string()],
-            Arc::new(Gateway::empty()),
-            root.join("providers.d"),
+            ProviderState {
+                gateway: Arc::new(Gateway::empty()),
+                providers_path: root.join("providers.d"),
+                startup_budget: 0,
+            },
         )
         .unwrap();
 

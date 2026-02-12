@@ -82,6 +82,9 @@ struct ModelEntry {
     /// same provider file. This is the ONLY admission control on the
     /// provider path (the hosts bypass their engine gates for it, §7.3).
     permits: Arc<Semaphore>,
+    /// The configured cap behind `permits` — `available_permits()` shrinks
+    /// while embeds are in flight, so budget math must never read it.
+    max_concurrent: usize,
     document: Box<dyn EmbeddingBackend>,
     /// Present only where purpose changes the request (Cohere); everything
     /// else serves queries through the document backend.
@@ -207,6 +210,7 @@ impl Inner {
                     ModelEntry {
                         provider_name: provider.name.clone(),
                         permits: permits.clone(),
+                        max_concurrent: provider.max_concurrent,
                         document,
                         query,
                         dim: model.dim,
@@ -309,16 +313,15 @@ impl Gateway {
 
     /// Sum of the per-provider `max_concurrent` caps — the §7.3
     /// `provider_inflight_budget` the hosts add to their ingress limit.
+    /// Reads the configured caps, never live semaphore state, so the number
+    /// is stable regardless of in-flight embeds.
     pub fn inflight_budget(&self) -> usize {
         let snapshot = self.snapshot();
         let mut per_provider: BTreeMap<&str, usize> = BTreeMap::new();
         for entry in snapshot.models.values() {
-            // Semaphore knows its own size only as available permits; safe
-            // here because permits are only held during embed calls and this
-            // is called at host startup. Track from the entry instead.
             per_provider
                 .entry(entry.provider_name.as_str())
-                .or_insert_with(|| entry.permits.available_permits());
+                .or_insert(entry.max_concurrent);
         }
         per_provider.values().sum()
     }
@@ -796,6 +799,9 @@ mod tests {
             .permits_for_test("openai-text-embedding-3-small")
             .unwrap();
         let held = permits.clone().acquire_owned().await.unwrap();
+        // The §7.3 budget is the CONFIGURED cap: it must not shrink while a
+        // permit is in use.
+        assert_eq!(gateway.inflight_budget(), 1, "budget ignores live permits");
         let err = gateway
             .embed(
                 "openai-text-embedding-3-small",

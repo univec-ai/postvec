@@ -509,6 +509,9 @@ fn try_init() -> Result<(), String> {
     // an empty gateway changes nothing observable, including the
     // embedded_max_inflight ingress bound.
     let gateway = Arc::new(providers::gateway::Gateway::load(&cfg.providers_path));
+    // The §7.3 ingress width the gRPC server is about to be sized with;
+    // the reload endpoint warns when a later reload outgrows it.
+    let startup_provider_budget = gateway.inflight_budget();
 
     let server = server::spawn(
         engine.clone(),
@@ -528,8 +531,11 @@ fn try_init() -> Result<(), String> {
         &cfg.http_listen,
         &cfg.root,
         cfg.models.clone(),
-        gateway,
-        cfg.providers_path.clone(),
+        http::ProviderState {
+            gateway,
+            providers_path: cfg.providers_path.clone(),
+            startup_budget: startup_provider_budget,
+        },
     ) {
         Ok((handle, _)) => handle,
         Err(e) => {
