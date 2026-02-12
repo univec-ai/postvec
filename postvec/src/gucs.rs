@@ -56,6 +56,26 @@ pub static EMBEDDED_HTTP_LISTEN: GucSetting<Option<CString>> =
     GucSetting::<Option<CString>>::new(None);
 pub static EMBEDDED_MAX_INFLIGHT: GucSetting<i32> = GucSetting::<i32>::new(1);
 
+/// Where the embedded engine host reads external-provider connector files
+/// (`providers.d/*.toml`). A **path**, never a credential — provider API keys
+/// live only in the (0600) files under it, on the inference side. Default
+/// deliberately outside `postvec.ninference_path`: the model asset tree gets
+/// rsynced, baked into images and backed up; the credential directory must
+/// not ride along.
+pub const DEFAULT_PROVIDERS_PATH: &str = "/etc/postvec/providers.d";
+
+pub static PROVIDERS_PATH: GucSetting<Option<CString>> =
+    GucSetting::<Option<CString>>::new(Some(c"/etc/postvec/providers.d"));
+
+/// The providers.d path (with default applied).
+pub fn providers_path() -> String {
+    PROVIDERS_PATH
+        .get()
+        .map(|c| c.to_string_lossy().trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_PROVIDERS_PATH.to_string())
+}
+
 /// Where the in-worker gRPC server listens when `postvec.embedded_listen` is
 /// unset. Loopback, so source text never leaves the database host.
 pub const DEFAULT_EMBEDDED_LISTEN: &str = "127.0.0.1:33433";
@@ -204,6 +224,18 @@ pub fn register() {
             &EMBEDDED_MAX_INFLIGHT,
             1,
             16,
+            GucContext::Postmaster,
+            GucFlags::default(),
+        );
+        GucRegistry::define_string_guc(
+            c"postvec.providers_path",
+            c"Directory of external-provider connector files (providers.d) for the embedded host",
+            c"Default /etc/postvec/providers.d. Holds one TOML file per provider (0600, cluster \
+              owner), administered with `postvec provider add|ls|rm|test`. A path, never a \
+              credential: no provider API key is ever stored in a GUC, catalog table or SQL \
+              argument. An empty or missing directory means no provider-backed models — the \
+              zero-config behavior is unchanged.",
+            &PROVIDERS_PATH,
             GucContext::Postmaster,
             GucFlags::default(),
         );

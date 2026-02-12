@@ -1706,6 +1706,9 @@ fn enable(
         recursive,
     );
     let (vec_col, dim) = (plan.vec_col.clone(), plan.dim);
+    // Informed consent before any DDL: the moment this column is declared,
+    // its text is bound for the named external provider.
+    notice_external_provider(model, column_name);
     let vf = validate_format(
         &plan.rel,
         column_name,
@@ -1938,6 +1941,10 @@ fn adopt(
     // configuration; an embed route whenever anything will be written.
     check_not_null_policy(&plan.rel, &plan.vec_col, plan.vec_not_null, sync, &backfill);
     check_embed_route_policy(model, sync, &backfill);
+    // Same informed-consent moment as enable(): adopting onto a
+    // provider-backed model means fresh writes (and any backfill) send this
+    // column's text to that provider.
+    notice_external_provider(model, column_name);
     assert_column_unclaimed(&plan.rel.schema, &plan.rel.table, &plan.vec_col);
     // The advisories only matter when nothing will build the index anyway;
     // immediate/auto get their readiness through ensure_vector_index().
@@ -2063,6 +2070,37 @@ fn check_not_null_policy(rel: &RelInfo, vec_col: &str, not_null: bool, sync: boo
             rel.table,
             qtbl = format!("{}.{}", quote_ident(&rel.schema), quote_ident(&rel.table)),
             qcol = quote_ident(vec_col),
+        );
+    }
+}
+
+/// The external provider serving `model`, if any: discovery stores HubModel
+/// top-level extras under `raw->'extra'`, and provider-backed rows carry
+/// `provider` there (external-providers §6.2). Same tier-1 preference as
+/// `resolve_dim`: the public `target_model` match wins over the internal
+/// name.
+pub(crate) fn external_provider_of(model: &str) -> Option<String> {
+    Spi::get_one_with_args::<String>(
+        "SELECT raw->'extra'->>'provider' FROM postvec.models
+          WHERE model_type = 'embed' AND (target_model = $1 OR name = $1)
+          ORDER BY (target_model = $1) IS TRUE DESC, name
+          LIMIT 1",
+        &[model.into()],
+    )
+    .ok()
+    .flatten()
+}
+
+/// The informed-consent moment for a NEW column bound to a provider-backed
+/// model (external-providers §7.5): from now on, this column's source text
+/// leaves the database host for the named provider. Existing columns that
+/// upgrade from a bridge route are the CLI's acknowledgement gate, not this
+/// NOTICE.
+fn notice_external_provider(model: &str, source_column: &str) {
+    if let Some(provider) = external_provider_of(model) {
+        pgrx::notice!(
+            "postvec: model {model:?} is served by external provider {provider:?}; source \
+             text from column {source_column:?} will be sent to that provider for embedding"
         );
     }
 }
@@ -4513,6 +4551,47 @@ mod tests {
         // Backfill enqueued the two non-null rows (NULL body skipped).
         let pending = Spi::get_one::<i64>("SELECT count(*) FROM postvec.jobs").unwrap();
         assert_eq!(pending, Some(2));
+    }
+
+    /// A provider-backed model (external providers): the cache row carries
+    /// the provider under raw->'extra' — exactly where discovery's
+    /// `into_model_info` puts HubModel top-level extras. enable() resolves
+    /// the dimension from the cache (no probe embed: there is no inference
+    /// host in pg_test, so a probe would fail the call) and the NOTICE
+    /// helper names the provider.
+    #[pg_test]
+    fn enable_on_a_provider_backed_model_uses_the_cached_dim() {
+        Spi::run(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('openai-text-embedding-3-small', 'embed', 'openai-text-embedding-3-small',
+                     8,
+                     '{\"name\": \"openai-text-embedding-3-small\",
+                       \"extra\": {\"status\": \"provider\", \"provider\": \"openai\"}}'::jsonb)",
+        )
+        .unwrap();
+        make_docs();
+
+        let id = Spi::get_one::<i64>(
+            "SELECT postvec.enable('docs','body','openai-text-embedding-3-small')",
+        )
+        .unwrap();
+        assert!(id.is_some());
+        // Dimension came from the cached target_dim, not a live probe.
+        let typ = Spi::get_one::<String>(
+            "SELECT pg_catalog.format_type(atttypid, atttypmod) FROM pg_attribute
+              WHERE attrelid = 'docs'::regclass AND attname = 'body_semantic'",
+        )
+        .unwrap();
+        assert_eq!(typ.as_deref(), Some("vector(8)"));
+
+        // The NOTICE predicate: provider-backed rows resolve their provider,
+        // plain local models resolve none.
+        assert_eq!(
+            super::external_provider_of("openai-text-embedding-3-small").as_deref(),
+            Some("openai")
+        );
+        seed_model("local-m", 4);
+        assert_eq!(super::external_provider_of("local-m"), None);
     }
 
     #[pg_test]

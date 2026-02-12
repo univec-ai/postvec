@@ -3209,6 +3209,22 @@ mod unit_tests {
         assert!(out.iter().all(|o| matches!(o, ItemOutcome::Retry(_))));
     }
 
+    /// A provider auth failure (UPSTREAM_AUTH_FAILED, class Config) behaves
+    /// like every other config-class error at the queue: uniform Retry
+    /// outcomes — bounded backoff up to max_retries, never a straight
+    /// dead-letter of data over a revoked key.
+    #[test]
+    fn provider_auth_failure_retries_not_dead() {
+        let mut client = super::mock::MockClient::new(3);
+        client.fail_all = Some(PvError::Remote {
+            code: RavennaCode::UpstreamAuthFailed,
+            message: "provider \"openai\": API request failed with status 401".into(),
+        });
+        let texts: Vec<String> = ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let out = embed_with_bisection(&client, "m", &Default::default(), 1000, &texts);
+        assert!(out.iter().all(|o| matches!(o, ItemOutcome::Retry(_))));
+    }
+
     #[test]
     fn permanent_error_dead_letters_all() {
         let mut client = super::mock::MockClient::new(3);

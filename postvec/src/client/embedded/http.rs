@@ -26,6 +26,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::{InferenceEngine, ModelConfiguration};
+use providers::gateway::Gateway;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -42,13 +43,17 @@ const ADMIN_MAX_MODELS: usize = 32;
 /// Longest accepted model (directory) name, in bytes.
 const ADMIN_MAX_NAME_BYTES: usize = 128;
 
-/// Render the `/config` envelope for a set of model configurations —
-/// byte-compatible with what `discovery::parse_config` expects
-/// (`configuration.enabled` gates inclusion parser-side, `configuration.
-/// params` carries model_type/source/target/dims). Pure, so the wire shape
-/// is testable without an engine.
-pub(crate) fn config_envelope(configs: &[ModelConfiguration]) -> Value {
-    let models: Vec<Value> = configs
+/// Render the `/config` envelope for a set of model configurations plus the
+/// provider gateway's models — byte-compatible with what
+/// `discovery::parse_config` expects (`configuration.enabled` gates
+/// inclusion parser-side, `configuration.params` carries
+/// model_type/source/target/dims). Provider entries come after the engine's
+/// own, already in the nested HubModel shape (external-providers §6.2); a
+/// public name that collides with a local model is skipped with a warning —
+/// the local model wins, deterministically. Pure, so the wire shape is
+/// testable without an engine.
+pub(crate) fn config_envelope(configs: &[ModelConfiguration], gateway: &Gateway) -> Value {
+    let mut models: Vec<Value> = configs
         .iter()
         .map(|cfg| {
             json!({
@@ -58,17 +63,30 @@ pub(crate) fn config_envelope(configs: &[ModelConfiguration]) -> Value {
             })
         })
         .collect();
+    for descriptor in gateway.models() {
+        let name = descriptor["name"].as_str().unwrap_or_default();
+        if configs.iter().any(|cfg| cfg.name == name) {
+            // Local-by-default: an on-disk engine model keeps its name even
+            // when a provider file claims it.
+            log::warn!(
+                "provider model {name:?} collides with a local engine model; \
+                 the local model wins and the provider entry is not served"
+            );
+            continue;
+        }
+        models.push(descriptor);
+    }
     json!({ "success": true, "data": { "models": models } })
 }
 
-fn engine_envelope(engine: &InferenceEngine) -> Value {
+fn engine_envelope(engine: &InferenceEngine, gateway: &Gateway) -> Value {
     let configs: Vec<ModelConfiguration> = engine
         .get_active_models()
         .into_iter()
         .filter_map(|name| engine.get_model(&name).ok())
         .map(|model| model.configuration().clone())
         .collect();
-    config_envelope(&configs)
+    config_envelope(&configs, gateway)
 }
 
 // ---- Admin request plumbing -------------------------------------------
@@ -534,6 +552,8 @@ pub(super) fn spawn(
     listen: &str,
     root: &Path,
     allowed_models: Vec<String>,
+    gateway: Arc<Gateway>,
+    providers_path: PathBuf,
 ) -> Result<(tokio::task::JoinHandle<()>, SocketAddr), String> {
     let addr: SocketAddr = listen
         .parse()
@@ -565,6 +585,8 @@ pub(super) fn spawn(
         .map_err(|e| format!("local_addr: {e}"))?;
 
     let config_engine = engine.clone();
+    let config_gateway = gateway.clone();
+    let reload_gateway = gateway;
     let load_engine = engine.clone();
     let load_root = root.to_path_buf();
     let load_allowed = Arc::new(allowed_models);
@@ -578,7 +600,46 @@ pub(super) fn spawn(
             "/config",
             get(move || {
                 let engine = config_engine.clone();
-                async move { Json(engine_envelope(&engine)) }
+                let gateway = config_gateway.clone();
+                async move { Json(engine_envelope(&engine, &gateway)) }
+            }),
+        )
+        .route(
+            "/admin/providers/reload",
+            post(move |ConnectInfo(peer): ConnectInfo<SocketAddr>| {
+                let gateway = reload_gateway.clone();
+                let path = providers_path.clone();
+                async move {
+                    if let Err(refused) = admin_peer_check(peer) {
+                        return refused;
+                    }
+                    // providers.d scanning is filesystem work (stat, read,
+                    // key files) — keep it off the 2-thread engine runtime,
+                    // like the other admin handlers.
+                    let outcome = tokio::task::spawn_blocking(move || gateway.reload(&path)).await;
+                    match outcome {
+                        // A failed reload kept the previous snapshot; say so.
+                        Ok(Err(e)) => refusal(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("reload failed; previous providers kept: {e}"),
+                        ),
+                        Err(e) => refusal(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("reload task failed: {e}"),
+                        ),
+                        Ok(Ok(report)) => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "success": true,
+                                "data": {
+                                    "providers": report.providers,
+                                    "models": report.models,
+                                    "errors": report.errors,
+                                }
+                            })),
+                        ),
+                    }
+                }
             }),
         )
         .route(
@@ -646,6 +707,52 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    /// `spawn` with an empty gateway and a (nonexistent) providers.d under
+    /// the engine root — the zero-config shape most tests want.
+    fn spawn_empty_gateway(
+        engine: Arc<InferenceEngine>,
+        runtime: &tokio::runtime::Runtime,
+        root: &Path,
+    ) -> (tokio::task::JoinHandle<()>, SocketAddr) {
+        spawn(
+            engine,
+            runtime,
+            "127.0.0.1:0",
+            root,
+            Vec::new(),
+            Arc::new(Gateway::empty()),
+            root.join("providers.d"),
+        )
+        .unwrap()
+    }
+
+    /// Write a 0600 provider file into `<root>/providers.d`.
+    fn plant_provider(root: &Path, file: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = root.join("providers.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(file);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        dir
+    }
+
+    const OPENAI_PROVIDER_TOML: &str = r#"
+provider = "openai"
+api_key = "sk-test"
+
+[[models]]
+name = "openai-text-embedding-3-small"
+provider_model_id = "text-embedding-3-small"
+dim = 1536
+max_tokens = 8191
+
+[[models]]
+name = "baai-bge-m3"
+provider_model_id = "collides-with-local"
+dim = 999
+"#;
+
     fn cfg(name: &str, enabled: bool, params: &[(&str, Value)]) -> ModelConfiguration {
         let mut cfg = ModelConfiguration {
             name: name.to_string(),
@@ -692,7 +799,7 @@ mod tests {
             ),
             cfg("ghost", false, &[("model_type", json!("embed"))]),
         ];
-        let body = config_envelope(&configs).to_string();
+        let body = config_envelope(&configs, &Gateway::empty()).to_string();
         let models = discovery::parse_config(&body).expect("parses like a nin /config");
 
         assert_eq!(models.len(), 3, "the parser filters the disabled model");
@@ -711,6 +818,105 @@ mod tests {
         assert_eq!(bridge.model_type, "embed-bridge");
     }
 
+    /// Provider entries merge into the envelope in the nested HubModel shape
+    /// (external-providers §6.2) and round-trip through the production
+    /// discovery parser — a flat object would be silently dropped there, so
+    /// this is the load-bearing wire test. The name collision with a local
+    /// model resolves local-wins.
+    #[test]
+    fn provider_models_merge_into_the_envelope_and_local_wins() {
+        let root = super::super::tests::empty_engine_root();
+        let dir = plant_provider(&root, "openai.toml", OPENAI_PROVIDER_TOML);
+        let gateway = Gateway::load(&dir);
+
+        let configs = vec![cfg(
+            "baai-bge-m3",
+            true,
+            &[
+                ("model_type", json!("embed")),
+                ("target_model", json!("baai-bge-m3")),
+                ("target_dim", json!(1024)),
+            ],
+        )];
+        let body = config_envelope(&configs, &gateway).to_string();
+        let models = discovery::parse_config(&body).expect("parses like a nin /config");
+
+        // The collision resolves local-wins: one row, the engine's dim.
+        let local: Vec<_> = models.iter().filter(|m| m.name == "baai-bge-m3").collect();
+        assert_eq!(local.len(), 1, "local model wins the name collision");
+        assert_eq!(local[0].target_dim, Some(1024));
+
+        // The provider model is a plain embed row the resolver can use
+        // unchanged, with the provider recorded under raw.extra for the
+        // enable()/adopt() NOTICE (raw->'extra'->>'provider').
+        let provider = models
+            .iter()
+            .find(|m| m.name == "openai-text-embedding-3-small")
+            .expect("provider model served");
+        assert_eq!(provider.model_type, "embed");
+        assert_eq!(
+            provider.target_model.as_deref(),
+            Some("openai-text-embedding-3-small")
+        );
+        assert_eq!(provider.target_dim, Some(1536));
+        assert_eq!(provider.sequence_len, Some(8191));
+        assert_eq!(provider.raw["extra"]["provider"], json!("openai"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// POST /admin/providers/reload picks up a providers.d change without a
+    /// restart: the /config the discovery client sees gains the new model.
+    #[test]
+    fn admin_providers_reload_updates_the_served_config() {
+        let root = super::super::tests::empty_engine_root();
+        let runtime = super::super::tests::engine_runtime();
+        let engine = super::super::tests::test_engine(&root);
+        // Start with an empty (nonexistent) providers.d.
+        let providers_dir = root.join("providers.d");
+        let gateway = Arc::new(Gateway::load(&providers_dir));
+        let (server, addr) = spawn(
+            engine,
+            &runtime,
+            "127.0.0.1:0",
+            &root,
+            Vec::new(),
+            gateway,
+            providers_dir.clone(),
+        )
+        .unwrap();
+
+        let endpoint = format!("http://{addr}");
+        let before = crate::runtime::block_on(discovery::fetch_models_report(
+            std::slice::from_ref(&endpoint),
+            Duration::from_secs(5),
+        ))
+        .unwrap();
+        assert!(before.models.is_empty(), "zero-config serves nothing");
+
+        plant_provider(&root, "openai.toml", OPENAI_PROVIDER_TOML);
+        let (status, body) = post_json(addr, "/admin/providers/reload", json!({}));
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["success"], json!(true));
+        assert_eq!(body["data"]["models"], json!(2));
+
+        let after = crate::runtime::block_on(discovery::fetch_models_report(
+            std::slice::from_ref(&endpoint),
+            Duration::from_secs(5),
+        ))
+        .unwrap();
+        assert!(
+            after
+                .models
+                .iter()
+                .any(|m| m.name == "openai-text-embedding-3-small"),
+            "reload serves the new provider model"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// End to end over loopback HTTP: the production discovery client fetches
     /// a (model-less) engine host's /config and reports a complete refresh —
     /// exactly the path per-DB workers and refresh_models() use.
@@ -720,7 +926,7 @@ mod tests {
         let runtime = super::super::tests::engine_runtime();
         let engine = super::super::tests::test_engine(&root);
 
-        let (server, addr) = spawn(engine, &runtime, "127.0.0.1:0", &root, Vec::new()).unwrap();
+        let (server, addr) = spawn_empty_gateway(engine, &runtime, &root);
         let endpoint = format!("http://{addr}");
 
         let report = crate::runtime::block_on(discovery::fetch_models_report(
@@ -761,7 +967,7 @@ mod tests {
         let root = super::super::tests::empty_engine_root();
         let runtime = super::super::tests::engine_runtime();
         let engine = super::super::tests::test_engine(&root);
-        let (server, addr) = spawn(engine, &runtime, "127.0.0.1:0", &root, Vec::new()).unwrap();
+        let (server, addr) = spawn_empty_gateway(engine, &runtime, &root);
         (root, runtime, server, addr)
     }
 
@@ -779,6 +985,8 @@ mod tests {
             "127.0.0.1:0",
             &root,
             vec!["permitted-model".to_string()],
+            Arc::new(Gateway::empty()),
+            root.join("providers.d"),
         )
         .unwrap();
 
@@ -856,8 +1064,7 @@ mod tests {
         });
         assert_eq!(engine.get_active_models().len(), 15);
 
-        let (server, addr) =
-            spawn(engine.clone(), &runtime, "127.0.0.1:0", &root, Vec::new()).unwrap();
+        let (server, addr) = spawn_empty_gateway(engine.clone(), &runtime, &root);
         let (left, right) = runtime.block_on(async {
             let client = reqwest::Client::new();
             tokio::join!(

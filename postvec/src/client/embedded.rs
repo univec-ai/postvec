@@ -98,6 +98,9 @@ struct EmbeddedConfig {
     models: Vec<String>,
     listen: String,
     http_listen: String,
+    /// `postvec.providers_path` — the providers.d directory the gateway
+    /// loads. A path, never a credential.
+    providers_path: PathBuf,
     predict_timeout: Duration,
     /// `postvec.embedded_max_inflight` — sizes BOTH the engine admission
     /// gate and the loopback server's global ingress limit (round 7: the
@@ -129,6 +132,7 @@ fn config_from_gucs() -> Result<EmbeddedConfig, String> {
         models: crate::gucs::parse_endpoint_list(crate::gucs::EMBEDDED_MODELS.get()),
         listen: crate::gucs::embedded_listen(),
         http_listen: crate::gucs::embedded_http_listen(),
+        providers_path: PathBuf::from(crate::gucs::providers_path()),
         predict_timeout: Duration::from_millis(crate::gucs::EMBED_TIMEOUT_MS.get().max(100) as u64),
         max_inflight: crate::gucs::EMBEDDED_MAX_INFLIGHT.get().clamp(1, 16) as usize,
     })
@@ -498,12 +502,21 @@ fn try_init() -> Result<(), String> {
         );
     }
 
+    // External providers (docs/external-providers.md §7): one gateway,
+    // shared by both loopback servers. `load` isolates per-provider/per-file
+    // failures internally (a broken provider file must never degrade local
+    // models), and a missing directory is the ordinary zero-config case —
+    // an empty gateway changes nothing observable, including the
+    // embedded_max_inflight ingress bound.
+    let gateway = Arc::new(providers::gateway::Gateway::load(&cfg.providers_path));
+
     let server = server::spawn(
         engine.clone(),
         &runtime,
         &cfg.listen,
         cfg.predict_timeout,
         cfg.max_inflight,
+        gateway.clone(),
     )
     .map_err(|e| format!("loopback gRPC server: {e}"))?;
     // If the HTTP listener fails, abort the gRPC server before erroring:
@@ -515,6 +528,8 @@ fn try_init() -> Result<(), String> {
         &cfg.http_listen,
         &cfg.root,
         cfg.models.clone(),
+        gateway,
+        cfg.providers_path.clone(),
     ) {
         Ok((handle, _)) => handle,
         Err(e) => {
@@ -743,9 +758,14 @@ mod tests {
         // not-yet-activated) model refuses as MODEL_NOT_LOADED — which the
         // client classifies as Config, same as a remote node's answer.
         // Port 0: the OS picks a free port; spawn() reports it back.
-        let (server, addr) =
-            server::spawn_for_test(engine, &runtime, "127.0.0.1:0", Duration::from_secs(5))
-                .unwrap();
+        let (server, addr) = server::spawn_for_test(
+            engine,
+            &runtime,
+            "127.0.0.1:0",
+            Duration::from_secs(5),
+            Arc::new(providers::gateway::Gateway::empty()),
+        )
+        .unwrap();
 
         let client = GrpcClient::new(vec![addr.to_string()], Vec::new(), 5_000, 1_000);
 

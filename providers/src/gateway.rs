@@ -301,6 +301,12 @@ impl Gateway {
         self.snapshot().models.is_empty()
     }
 
+    /// Declared dimension of a served model (hosts size response envelopes
+    /// from it before dispatch).
+    pub fn dim(&self, model: &str) -> Option<u32> {
+        self.snapshot().models.get(model).map(|entry| entry.dim)
+    }
+
     /// Sum of the per-provider `max_concurrent` caps — the §7.3
     /// `provider_inflight_budget` the hosts add to their ingress limit.
     pub fn inflight_budget(&self) -> usize {

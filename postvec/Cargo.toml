@@ -41,7 +41,7 @@ pg_test_concurrency = ["pg_test", "dep:postgres"]
 # `postvec.mode = 'embedded'`. Off by default: it drags the engine + ONNX/
 # AWS-SDK dependency tree into the cdylib. Add engine backend features
 # (ort-cuda, candle, ...) here as the deployment requires.
-embedded = ["dep:engine", "dep:shared", "dep:log", "dep:axum", "dep:tower", "dep:http-body", "tokio/rt-multi-thread"]
+embedded = ["dep:engine", "dep:shared", "dep:log", "dep:axum", "dep:tower", "dep:http-body", "dep:postvec-providers", "tokio/rt-multi-thread"]
 
 [dependencies]
 pgrx = "=0.18.1"
@@ -66,6 +66,10 @@ postgres = { version = "0.19", optional = true }
 # worker start.
 engine = { path = "../engine", features = ["onnx"], optional = true }
 shared = { path = "../shared", optional = true }
+# External embedding providers: the providers.d gateway the embedded host
+# mounts (docs/external-providers.md). rustls only — postvec.so must not
+# link OpenSSL.
+postvec-providers = { path = "../providers", features = ["wire"], optional = true }
 log = { version = "0.4", optional = true }
 # The engine host's loopback HTTP /config listener (embedded mode). Costs
 # nothing extra: `engine` already compiles axum 0.7 into the cdylib.
@@ -76,6 +80,8 @@ tonic-build = "0.13"
 
 [dev-dependencies]
 pgrx-tests = "=0.18.1"
+# The provider mock HTTP server for the embedded host's gateway tests.
+postvec-providers = { path = "../providers", features = ["wire", "test-util"] }
 
 [profile.dev]
 panic = "unwind"
