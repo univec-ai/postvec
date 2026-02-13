@@ -649,8 +649,11 @@ pub(super) fn spawn(
                             // at spawn. Providers added by reload still
                             // serve, but they share the startup width until
                             // a restart — say so once, at the moment the
-                            // operator caused it.
-                            if budget > startup_provider_budget {
+                            // operator caused it, and put the same fact in
+                            // the body so `postvec provider add` can print
+                            // it without scraping logs.
+                            let restart_needed = budget > startup_provider_budget;
+                            if restart_needed {
                                 log::warn!(
                                     "provider reload raised the outbound concurrency budget \
                                      ({startup_provider_budget} -> {budget}); provider models \
@@ -666,6 +669,7 @@ pub(super) fn spawn(
                                         "providers": report.providers,
                                         "models": report.models,
                                         "errors": report.errors,
+                                        "restart_needed": restart_needed,
                                     }
                                 })),
                             )
@@ -937,6 +941,10 @@ dim = 999
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["success"], json!(true));
         assert_eq!(body["data"]["models"], json!(2));
+        // The spawn-time budget was 0 and the reload raised it: the body
+        // says a restart is needed for full provider throughput (the CLI
+        // prints this after `provider add`).
+        assert_eq!(body["data"]["restart_needed"], json!(true));
 
         let after = crate::runtime::block_on(discovery::fetch_models_report(
             std::slice::from_ref(&endpoint),

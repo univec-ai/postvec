@@ -66,8 +66,27 @@ where
     }
 
     loop {
-        // Execute the operation
-        match operation().await {
+        // Execute the operation, bounded by the caller's absolute deadline:
+        // the attempt itself is an HTTP round trip otherwise limited only by
+        // the client's per-attempt timeout (default 20 s), while a search()
+        // caller may hold a 2 s budget — an attempt must never outlive the
+        // budget while holding the provider semaphore and a tower slot.
+        let outcome = match deadline {
+            Some(deadline) => {
+                match tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), operation())
+                    .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        return Err(EmbeddingError::Deadline(
+                            "budget exhausted mid-attempt".to_string(),
+                        ))
+                    }
+                }
+            }
+            None => operation().await,
+        };
+        match outcome {
             Ok(result) => {
                 // Success! Return the result.
                 return Ok(result);
@@ -264,6 +283,28 @@ mod tests {
             Err(EmbeddingError::Api { status: 503, .. })
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1, "no retry fits the budget");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_attempt_is_cut_at_the_deadline_not_at_the_http_timeout() {
+        // The operation would run for a minute (think: a slow provider and a
+        // generous per-attempt HTTP timeout); a 100ms budget must cut it at
+        // the deadline and surface Deadline — never sit in the attempt.
+        let calls = AtomicU32::new(0);
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(Some(deadline), || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                sleep(Duration::from_secs(60)).await;
+                Ok(1)
+            }
+        })
+        .await;
+        assert!(
+            matches!(result, Err(EmbeddingError::Deadline(_))),
+            "{result:?}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
