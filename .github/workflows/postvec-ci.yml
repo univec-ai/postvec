@@ -13,6 +13,9 @@ name: postvec-ci
 
 on:
   push:
+    # Feature branches iterate without burning CI minutes; every merge
+    # still runs via the pull_request trigger below.
+    branches: [main]
     paths:
       - "postvec/**"
       - "proto/**"

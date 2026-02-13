@@ -10,6 +10,9 @@ name: postvec-server-ci
 
 on:
   push:
+    # Feature branches iterate without burning CI minutes; every merge
+    # still runs via the pull_request trigger below.
+    branches: [main]
     paths:
       - "postvec-server/**"
       # The engine it links and the wire contract it serves.
