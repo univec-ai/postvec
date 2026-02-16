@@ -71,7 +71,14 @@ async fn start_in(root: tempfile::TempDir, mut flags: ServeArgs) -> Node {
             host_policy: Default::default(),
         },
     )));
-    let state = ServerState::new(engine, settings, identity, Arc::new(Metrics::new()), None);
+    let state = ServerState::new(
+        engine,
+        settings,
+        identity,
+        Arc::new(Metrics::new()),
+        None,
+        Arc::new(providers::gateway::Gateway::empty()),
+    );
 
     let admin_socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let public_socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

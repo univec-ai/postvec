@@ -63,6 +63,30 @@ pub fn config_models(configs: &[ModelConfiguration]) -> Vec<Value> {
         .collect()
 }
 
+/// [`config_models`] plus the provider gateway's descriptors (already in
+/// the nested HubModel shape, external-providers §6.2), appended after the
+/// engine's own models. A public name that collides with a local model is
+/// skipped with a warning — the local model wins, deterministically, the
+/// same rule the gRPC dispatch applies.
+pub fn merged_config_models(
+    configs: &[ModelConfiguration],
+    gateway: &providers::gateway::Gateway,
+) -> Vec<Value> {
+    let mut models = config_models(configs);
+    for descriptor in gateway.models() {
+        let name = descriptor["name"].as_str().unwrap_or_default();
+        if configs.iter().any(|cfg| cfg.name == name) {
+            log::warn!(
+                "provider model {name:?} collides with a local engine model; \
+                 the local model wins and the provider entry is not served"
+            );
+            continue;
+        }
+        models.push(descriptor);
+    }
+    models
+}
+
 fn loaded_configs(engine: &InferenceEngine) -> Vec<ModelConfiguration> {
     engine
         .get_active_models()
@@ -137,7 +161,10 @@ pub async fn config_envelope(state: &ServerState) -> Value {
     let mut data = Map::new();
     data.insert(
         "models".to_string(),
-        Value::Array(config_models(&loaded_configs(&state.engine))),
+        Value::Array(merged_config_models(
+            &loaded_configs(&state.engine),
+            &state.gateway,
+        )),
     );
     data.insert("server".to_string(), server_object(state));
     data.insert("cluster".to_string(), cluster_object(state).await);
@@ -475,6 +502,61 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, ["configuration", "name", "status"]);
         assert_eq!(object["status"], json!("local"));
+    }
+
+    /// Provider entries merge after the engine's own models in the nested
+    /// HubModel shape, collisions resolve local-wins, and the transcribed
+    /// postvec parser reads the provider row exactly like a local embed
+    /// model (with the provider recorded as a top-level extra).
+    #[test]
+    fn provider_models_merge_into_the_envelope_and_local_wins() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openai.toml");
+        std::fs::write(
+            &path,
+            "provider = \"openai\"\napi_key = \"sk-test\"\n\n\
+             [[models]]\nname = \"openai-text-embedding-3-small\"\n\
+             provider_model_id = \"text-embedding-3-small\"\ndim = 1536\nmax_tokens = 8191\n\n\
+             [[models]]\nname = \"baai-bge-m3\"\nprovider_model_id = \"collides\"\ndim = 999\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let gateway = providers::gateway::Gateway::load(dir.path());
+
+        let configs = [model(
+            "baai-bge-m3",
+            true,
+            &[("model_type", json!("embed")), ("target_dim", json!(1024))],
+        )];
+        let rendered = merged_config_models(&configs, &gateway);
+        let raw = json!({ "success": true, "data": { "models": rendered } });
+        let parsed: Envelope = serde_json::from_value(raw).unwrap();
+        let models = parsed.data.unwrap().models;
+
+        // Local wins the collision: one row, the engine's dim.
+        let local: Vec<&HubModel> = models.iter().filter(|m| m.name == "baai-bge-m3").collect();
+        assert_eq!(local.len(), 1, "local model wins the name collision");
+        assert_eq!(
+            local[0].configuration.as_ref().unwrap().params.target_dim,
+            Some(1024)
+        );
+
+        let provider = models
+            .iter()
+            .find(|m| m.name == "openai-text-embedding-3-small")
+            .expect("provider model served");
+        let cfg = provider.configuration.as_ref().unwrap();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.params.model_type.as_deref(), Some("embed"));
+        assert_eq!(
+            cfg.params.target_model.as_deref(),
+            Some("openai-text-embedding-3-small")
+        );
+        assert_eq!(cfg.params.target_dim, Some(1536));
+        // The provider marker rides as a top-level extra (raw.extra in
+        // postvec's cache) — what the NOTICE and the fleet labeling read.
+        assert_eq!(provider.rest.get("provider"), Some(&json!("openai")));
     }
 
     #[test]

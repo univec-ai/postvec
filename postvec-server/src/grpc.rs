@@ -28,6 +28,7 @@ use crate::proto::{
 };
 use engine::{EngineError, ExecutorOutput, InferenceEngine, InputData};
 use prost_types::{ListValue, Value as ProstValue};
+use providers::gateway::{Gateway, GatewayError, InputType};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -170,7 +171,13 @@ struct InferenceService {
     /// returns. This semaphore's permit is moved into the HTTP response body,
     /// so slow/abandoned loopback readers cannot accumulate unbounded prost
     /// response trees after Tower's request-future limit has been released.
+    /// Engine path only — the provider path never takes a slot (§7.3, see
+    /// the dispatch comment in `embed_texts_inner`).
     response_slots: Arc<Semaphore>,
+    /// External-provider gateway (docs/external-providers.md §8). Empty in
+    /// the zero-config case; `owns()` decides routing after the engine
+    /// readiness check.
+    gateway: Arc<Gateway>,
 }
 
 /// The metric label for a refusal: its wire error code when it carries one,
@@ -267,7 +274,24 @@ impl InferenceService {
                 "deadline exhausted at request entry",
             ));
         }
+        // Dispatch order (external-providers §7.2, the amended shape): a
+        // ready engine model wins its name, then the gateway, then the
+        // MODEL_NOT_LOADED refusal — the same §6.1 local-wins collision rule
+        // `/config` applies, so discovery and this handler can never
+        // disagree about which model a name is. Convert requests never
+        // consult the gateway.
+        //
+        // §7.3 admission: the provider path deliberately bypasses all three
+        // max-inflight gates — it took a widened tower slot (see the layer
+        // construction in `serve`), it skips `response_slots`, and it never
+        // calls `predict_raw_at` (so HostPolicy is not involved). Provider
+        // calls are network-bound and must not queue behind CPU-bound ONNX;
+        // their limiter is the per-provider `max_concurrent` semaphore
+        // inside the gateway.
         if !self.engine.is_model_ready(&req.model) {
+            if self.gateway.owns(&req.model) {
+                return self.embed_via_gateway(req, deadline_std).await;
+            }
             return Err(model_not_loaded_status(&req.model));
         }
 
@@ -370,6 +394,53 @@ impl InferenceService {
             .extensions_mut()
             .insert(ResponsePermit(Arc::new(response_permit)));
         Ok(response)
+    }
+
+    /// The provider path of `EmbedTexts` (§7.3): dispatch to the gateway,
+    /// bounded by the per-provider semaphore and the caller's deadline —
+    /// never by `response_slots` or the engine's HostPolicy (a provider
+    /// call is network-bound and must not serialize behind local ONNX).
+    /// The response envelope is still enforced with the same math as the
+    /// engine path, sized from the descriptor's declared dimension.
+    async fn embed_via_gateway(
+        &self,
+        req: EmbedTextsRequest,
+        deadline: std::time::Instant,
+    ) -> Result<Response<EmbedTextsResponse>, Status> {
+        if req.texts.len() > crate::limits::MAX_REQUEST_ITEMS {
+            return Err(Status::invalid_argument(format!(
+                "{} texts exceeds the {} items-per-request ceiling; split the request",
+                req.texts.len(),
+                crate::limits::MAX_REQUEST_ITEMS
+            )));
+        }
+        // The gateway validates every returned vector against this dim, so
+        // the envelope math is exact, not best-effort.
+        let dim = self
+            .gateway
+            .dim(&req.model)
+            .map(|d| d as i32)
+            .unwrap_or(16_000);
+        let max_items = crate::limits::max_items_for_dim(dim);
+        if req.texts.len() > max_items {
+            return Err(Status::invalid_argument(format!(
+                "{} texts at {dim} dims exceeds the response envelope; send at most \
+                 {max_items} per request",
+                req.texts.len()
+            )));
+        }
+
+        let input_type = InputType::from_wire(&req.input_type);
+        let vectors = self
+            .gateway
+            .embed(&req.model, &req.texts, input_type, deadline)
+            .await
+            .map_err(gateway_error_to_status)?;
+
+        Ok(Response::new(EmbedTextsResponse {
+            embeddings: Some(vectors_to_list_value(vectors, deadline)?),
+            usage: None,
+        }))
     }
 
     async fn convert_embeddings_inner(
@@ -630,6 +701,7 @@ pub async fn serve(
     listener: std::net::TcpListener,
     predict_timeout: Duration,
     max_inflight: usize,
+    gateway: Arc<Gateway>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), String> {
     // The socket was reserved before the models loaded, so a port conflict
@@ -647,11 +719,25 @@ pub async fn serve(
     log::info!("gRPC listening on {bound} (plaintext, unauthenticated — private networks only)");
 
     let response_slots = Arc::new(Semaphore::new(max_inflight.max(1)));
+    // §7.3 (same choice as the embedded host): the tower ingress limit stays
+    // as the decode-amplification backstop, widened by the sum of the
+    // configured per-provider `max_concurrent` caps so provider calls
+    // (network-bound) never queue behind CPU-bound ONNX at a gate they
+    // don't need. The budget is read from the gateway loaded at boot; an
+    // `/admin/providers/reload` that RAISES it shares the boot ingress
+    // width until the next restart (serving is correct, admission merely
+    // tighter — the reload route reports restart_needed). Zero-config:
+    // budget 0, size unchanged. Residual (deliberate): a burst of *engine*
+    // EmbedTexts can occupy the extra tower slots, decode, then wait on
+    // `response_slots` — extra decoded RSS exists only when providers are
+    // configured, and callers still carry `grpc-timeout`.
+    let ingress_limit = max_inflight.max(1) + gateway.inflight_budget();
     let service = NinferenceServiceServer::new(InferenceService {
         engine,
         metrics,
         predict_timeout,
         response_slots,
+        gateway,
     })
     .max_encoding_message_size(MAX_ENCODE_MESSAGE_SIZE)
     .max_decoding_message_size(MAX_DECODE_MESSAGE_SIZE);
@@ -662,7 +748,7 @@ pub async fn serve(
     tonic::transport::Server::builder()
         .layer(ResponsePermitLayer { predict_timeout })
         .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-            max_inflight.max(1),
+            ingress_limit,
         ))
         .concurrency_limit_per_connection(4)
         .add_service(service)
@@ -693,6 +779,82 @@ fn engine_error_to_status(e: EngineError) -> Status {
         tonic::metadata::MetadataValue::from_static(code.as_str()),
     );
     status
+}
+
+/// [`GatewayError`] → tonic Status + `x-ravenna-error-code` metadata, the
+/// same wire contract as [`engine_error_to_status`] — postvec's client (and
+/// any other) classifies provider failures exactly like this node's engine
+/// answers, per the external-providers §6.4 mapping table. Messages are
+/// secret-free by construction in the providers crate.
+fn gateway_error_to_status(e: GatewayError) -> Status {
+    let code = e.code;
+    let message = e.message;
+    log::warn!("provider request failed [{}]: {message}", code.as_str());
+    let mut status = match code {
+        shared::ErrorCode::Timeout => Status::deadline_exceeded(message),
+        shared::ErrorCode::ModelNotFound => Status::not_found(message),
+        shared::ErrorCode::InvalidInput | shared::ErrorCode::ContextLengthExceeded => {
+            Status::invalid_argument(message)
+        }
+        shared::ErrorCode::UpstreamAuthFailed => Status::unauthenticated(message),
+        shared::ErrorCode::UpstreamServiceUnavailable => Status::unavailable(message),
+        _ => Status::internal(message),
+    };
+    status.metadata_mut().insert(
+        "x-ravenna-error-code",
+        tonic::metadata::MetadataValue::from_static(code.as_str()),
+    );
+    status
+}
+
+/// Gateway vectors → prost `ListValue[ListValue[NumberValue]]`, the direct
+/// twin of [`json_to_list_value`] without the intermediate JSON tree (the
+/// gateway already validated count and dimension). The same output-tree
+/// budget and deadline cadence apply.
+#[allow(clippy::result_large_err)]
+fn vectors_to_list_value(
+    vectors: Vec<Vec<f32>>,
+    deadline: std::time::Instant,
+) -> Result<ListValue, Status> {
+    let total_components: u64 = vectors.iter().map(|v| v.len() as u64).sum();
+    let estimated = total_components
+        .saturating_mul(PROST_COMPONENT_BYTES)
+        .saturating_add((vectors.len() as u64).saturating_mul(TREE_ITEM_OVERHEAD_BYTES));
+    if estimated > OUTPUT_TREE_BUDGET_BYTES {
+        return Err(resource_exhausted_status(format!(
+            "provider output of {} rows / {total_components} components exceeds the \
+             response-tree envelope",
+            vectors.len()
+        )));
+    }
+    let mut prost_outer = Vec::with_capacity(vectors.len());
+    let mut converted = 0u64;
+    let mut next_deadline_check = DEADLINE_CHECK_COMPONENTS;
+    for vector in vectors {
+        let mut prost_inner = Vec::with_capacity(vector.len());
+        for f in vector {
+            converted += 1;
+            if converted >= next_deadline_check {
+                if std::time::Instant::now() >= deadline {
+                    return Err(Status::deadline_exceeded(
+                        "deadline exhausted while encoding the provider response",
+                    ));
+                }
+                next_deadline_check = converted.saturating_add(DEADLINE_CHECK_COMPONENTS);
+            }
+            prost_inner.push(ProstValue {
+                kind: Some(prost_types::value::Kind::NumberValue(f as f64)),
+            });
+        }
+        prost_outer.push(ProstValue {
+            kind: Some(prost_types::value::Kind::ListValue(ListValue {
+                values: prost_inner,
+            })),
+        });
+    }
+    Ok(ListValue {
+        values: prost_outer,
+    })
 }
 
 /// The refusal for a request naming a model that is not resident+ready:
@@ -1046,6 +1208,7 @@ mod deadline_tests {
             metrics: metrics.clone(),
             predict_timeout: Duration::from_secs(30),
             response_slots: Arc::new(Semaphore::new(1)),
+            gateway: Arc::new(Gateway::empty()),
         };
 
         let mut req = Request::new(EmbedTextsRequest {
@@ -1100,6 +1263,182 @@ mod deadline_tests {
             MAX_PLAUSIBLE_DIM + 1
         ));
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+}
+
+#[cfg(test)]
+mod gateway_tests {
+    use super::*;
+    use providers::testing as provider_mock;
+
+    fn test_engine(root: &std::path::Path) -> Arc<InferenceEngine> {
+        std::fs::create_dir_all(root.join("models").join("onnx-runtime")).unwrap();
+        Arc::new(InferenceEngine::new(Arc::new(engine::EngineConfig {
+            root_path: root.to_path_buf(),
+            host_policy: Default::default(),
+        })))
+    }
+
+    /// A providers.d directory serving one 2-dim OpenAI-typed model pointed
+    /// at `base_url`, loaded into a gateway.
+    fn gateway_for(dir: &std::path::Path, base_url: &str) -> Arc<Gateway> {
+        use std::os::unix::fs::PermissionsExt;
+        let providers_dir = dir.join("providers.d");
+        std::fs::create_dir_all(&providers_dir).unwrap();
+        let path = providers_dir.join("openai.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "provider = \"openai\"\napi_key = \"sk-test\"\nbase_url = \"{base_url}\"\n\n\
+                 [[models]]\nname = \"openai-text-embedding-3-small\"\n\
+                 provider_model_id = \"text-embedding-3-small\"\ndim = 2\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        Arc::new(Gateway::load(&providers_dir))
+    }
+
+    fn service(engine: Arc<InferenceEngine>, gateway: Arc<Gateway>) -> InferenceService {
+        InferenceService {
+            engine,
+            metrics: Arc::new(Metrics::new()),
+            predict_timeout: Duration::from_secs(5),
+            // Zero permits: anything that waits on response_slots can never
+            // proceed — which is exactly what the provider path must not do.
+            response_slots: Arc::new(Semaphore::new(0)),
+            gateway,
+        }
+    }
+
+    /// A provider-only name serves (the gateway is consulted before the
+    /// MODEL_NOT_LOADED refusal) and takes NO response_slots permit (§7.3);
+    /// convert with the same name never touches the gateway.
+    #[test]
+    fn provider_names_serve_without_engine_gates_and_convert_never_routes() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mock = runtime.block_on(provider_mock::always(
+            200,
+            r#"{"data":[{"embedding":[0.25,0.5],"index":0}]}"#,
+        ));
+        let svc = service(
+            test_engine(root.path()),
+            gateway_for(root.path(), &mock.url),
+        );
+
+        let req = Request::new(EmbedTextsRequest {
+            model: "openai-text-embedding-3-small".to_string(),
+            texts: vec!["hello".to_string()],
+            ..Default::default()
+        });
+        let response = runtime
+            .block_on(svc.embed_texts(req))
+            .expect("provider path is not gated by response_slots");
+        assert!(response.into_inner().embeddings.is_some());
+
+        // Convert requests never consult the gateway: the same name refuses
+        // exactly like any model the engine does not hold.
+        let req = Request::new(ConvertEmbeddingsRequest {
+            model: "openai-text-embedding-3-small".to_string(),
+            ..Default::default()
+        });
+        let err = runtime.block_on(svc.convert_embeddings(req)).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(
+            err.metadata().get("x-ravenna-error-code").unwrap(),
+            "MODEL_NOT_LOADED"
+        );
+        assert_eq!(
+            mock.request_count(),
+            1,
+            "only the embed dialed the provider"
+        );
+    }
+
+    /// The §6.4 auth mapping crosses this node's wire exactly like the
+    /// embedded host's: 401 → Unauthenticated + UPSTREAM_AUTH_FAILED.
+    #[test]
+    fn provider_auth_failures_carry_the_wire_code() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mock = runtime.block_on(provider_mock::always(401, r#"{"error":"bad key"}"#));
+        let svc = service(
+            test_engine(root.path()),
+            gateway_for(root.path(), &mock.url),
+        );
+
+        let req = Request::new(EmbedTextsRequest {
+            model: "openai-text-embedding-3-small".to_string(),
+            texts: vec!["hello".to_string()],
+            ..Default::default()
+        });
+        let err = runtime.block_on(svc.embed_texts(req)).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+        assert_eq!(
+            err.metadata().get("x-ravenna-error-code").unwrap(),
+            "UPSTREAM_AUTH_FAILED"
+        );
+        assert!(!err.message().contains("sk-test"), "{}", err.message());
+    }
+
+    /// The §6.1 collision rule on the embed path: a loaded local model wins
+    /// its name; the provider claiming it is never dialed. The local fixture
+    /// is a dummy-executor model, whose distinctive engine-side error
+    /// doubles as proof of which path served the request.
+    #[test]
+    fn a_loaded_local_model_wins_the_name_collision() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+
+        let name = "openai-text-embedding-3-small";
+        let dir = root.path().join("models").join("generic").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ninference.hub.json"),
+            serde_json::json!({
+                "name": name,
+                "backend": "generic",
+                "enabled": true,
+                "executor": { "key": "dummy" }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let engine = test_engine(root.path());
+        runtime.block_on(engine.load_model(name)).unwrap();
+        assert!(engine.is_model_ready(name), "local fixture is resident");
+
+        let mock = runtime.block_on(provider_mock::always(
+            200,
+            r#"{"data":[{"embedding":[0.25,0.5],"index":0}]}"#,
+        ));
+        let gateway = gateway_for(root.path(), &mock.url);
+        assert!(gateway.owns(name), "the provider file claims the name");
+
+        let svc = InferenceService {
+            engine,
+            metrics: Arc::new(Metrics::new()),
+            predict_timeout: Duration::from_secs(5),
+            response_slots: Arc::new(Semaphore::new(1)),
+            gateway,
+        };
+        let req = Request::new(EmbedTextsRequest {
+            model: name.to_string(),
+            texts: vec!["hello".to_string()],
+            ..Default::default()
+        });
+        let err = runtime.block_on(svc.embed_texts(req)).unwrap_err();
+        assert!(
+            err.message().contains("dummy executor"),
+            "the engine served the name: {}",
+            err.message()
+        );
+        assert_eq!(
+            mock.request_count(),
+            0,
+            "the provider must never be dialed for a local-won name"
+        );
     }
 }
 

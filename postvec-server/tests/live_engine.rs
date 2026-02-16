@@ -96,6 +96,7 @@ impl Live {
             listener,
             Duration::from_secs(120),
             4,
+            Arc::new(providers::gateway::Gateway::empty()),
             async {
                 let _ = rx.await;
             },

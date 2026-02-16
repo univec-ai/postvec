@@ -376,11 +376,66 @@ async fn admin_unload(state: Arc<ServerState>, names: Vec<String>) -> (StatusCod
     }
 }
 
+// ---- /admin/providers/reload --------------------------------------------
+
+/// Rescan providers.d and swap the gateway snapshot in atomically
+/// (external-providers §8): `postvec provider add/rm --path <root>` calls
+/// this after writing files, and a restart also picks changes up naturally.
+/// A failed (structural) reload keeps the previous snapshot. The body
+/// carries `restart_needed` when the new provider concurrency budget
+/// exceeds what the gRPC ingress limit was sized with at boot — serving is
+/// correct either way; full provider throughput needs the restart.
+async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) {
+    let gateway = state.gateway.clone();
+    let path = state.settings.providers_path.clone();
+    // providers.d scanning is filesystem work (stat, read, key files) —
+    // keep it off the serving runtime's workers like the other admin routes.
+    let outcome = tokio::task::spawn_blocking(move || {
+        let report = gateway.reload(&path)?;
+        Ok::<_, String>((report, gateway.inflight_budget()))
+    })
+    .await;
+    match outcome {
+        Ok(Err(e)) => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("reload failed; previous providers kept: {e}"),
+        ),
+        Err(e) => refusal(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("reload task failed: {e}"),
+        ),
+        Ok(Ok((report, budget))) => {
+            let restart_needed = budget > state.startup_provider_budget;
+            if restart_needed {
+                log::warn!(
+                    "provider reload raised the outbound concurrency budget ({} -> {budget}); \
+                     provider models serve now, but full provider throughput needs a restart \
+                     to widen the gRPC ingress limit",
+                    state.startup_provider_budget
+                );
+            }
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "data": {
+                        "providers": report.providers,
+                        "models": report.models,
+                        "errors": report.errors,
+                        "restart_needed": restart_needed,
+                    }
+                })),
+            )
+        }
+    }
+}
+
 // ---- Listener ----------------------------------------------------------
 
 pub fn router(state: Arc<ServerState>) -> Router {
     let load_state = state.clone();
     let unload_state = state.clone();
+    let reload_state = state.clone();
     // The read-only routes ride along so the node-local CLI can read
     // `/config` over plain loopback HTTP instead of negotiating TLS with a
     // self-signed certificate against the public port.
@@ -428,6 +483,19 @@ pub fn router(state: Arc<ServerState>) -> Router {
                     }
                 },
             ),
+        )
+        .route(
+            "/admin/providers/reload",
+            post(move |ConnectInfo(peer): ConnectInfo<SocketAddr>| {
+                let state = reload_state.clone();
+                async move {
+                    if let Err(refused) = peer_check(peer) {
+                        state.metrics.admin_refused();
+                        return refused;
+                    }
+                    providers_reload(state).await
+                }
+            }),
         )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
 }
@@ -547,6 +615,64 @@ mod tests {
 
         let ordered = reverse_dependency_order(&names(&["solo"]), &HashMap::new());
         assert_eq!(ordered, names(&["solo"]));
+    }
+
+    /// The reload route swaps the gateway snapshot in and reports
+    /// restart_needed when the provider budget outgrows what the gRPC
+    /// ingress limit was sized with at boot.
+    #[tokio::test]
+    async fn providers_reload_swaps_the_gateway_and_reports_restart_needed() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("models").join("onnx-runtime")).unwrap();
+        let settings = crate::config::resolve(
+            &crate::cli::ServeArgs::default(),
+            &crate::config::FileConfig::default(),
+            &std::collections::BTreeMap::new(),
+            root.path().to_path_buf(),
+            None,
+        )
+        .unwrap();
+        let engine = Arc::new(InferenceEngine::new(Arc::new(engine::EngineConfig {
+            root_path: root.path().to_path_buf(),
+            host_policy: Default::default(),
+        })));
+        let identity = crate::state::NodeIdentity {
+            advertise: "127.0.0.1".parse().unwrap(),
+            api_address: "http://127.0.0.1:22222".to_string(),
+            grpc_address: "127.0.0.1:33333".to_string(),
+            frontend: "http://127.0.0.1:22222".to_string(),
+        };
+        // Boot with an empty (nonexistent) providers.d: budget 0.
+        let gateway = Arc::new(providers::gateway::Gateway::load(&settings.providers_path));
+        let providers_path = settings.providers_path.clone();
+        let state = ServerState::new(
+            engine,
+            Arc::new(settings),
+            identity,
+            Arc::new(crate::metrics::Metrics::new()),
+            None,
+            gateway,
+        );
+        assert_eq!(state.startup_provider_budget, 0);
+
+        // The operator adds the first provider file, then reloads.
+        std::fs::create_dir_all(&providers_path).unwrap();
+        let file = providers_path.join("openai.toml");
+        std::fs::write(
+            &file,
+            "provider = \"openai\"\napi_key = \"sk-test\"\n\n[[models]]\n\
+             name = \"openai-text-embedding-3-small\"\n\
+             provider_model_id = \"text-embedding-3-small\"\ndim = 2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let (status, Json(body)) = providers_reload(state.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["models"], json!(1));
+        assert_eq!(body["data"]["restart_needed"], json!(true));
+        assert!(state.gateway.owns("openai-text-embedding-3-small"));
     }
 
     #[test]

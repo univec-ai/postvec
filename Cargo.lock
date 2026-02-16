@@ -3097,6 +3097,7 @@ dependencies = [
  "local-ip-address",
  "log",
  "memberlist",
+ "postvec-providers",
  "prost",
  "prost-types",
  "reqwest",

@@ -103,6 +103,9 @@ pub struct FileConfig {
     pub ssl: Option<SslFile>,
     pub insecure: Option<bool>,
     pub models: Option<Vec<String>>,
+    /// providers.d directory for external embedding providers. A path,
+    /// never a credential.
+    pub providers_path: Option<String>,
     pub predict_timeout_ms: Option<u64>,
     pub max_inflight: Option<usize>,
     pub max_resident_models: Option<usize>,
@@ -176,6 +179,10 @@ pub struct Settings {
     /// `None` = `--insecure`: discovery is served over plain HTTP.
     pub tls: Option<TlsPaths>,
     pub models: Vec<String>,
+    /// providers.d directory for external embedding providers (a path, never
+    /// a credential; default `<root>/providers.d`). Missing/empty = no
+    /// provider-backed models, zero-config unchanged.
+    pub providers_path: PathBuf,
     pub predict_timeout: Duration,
     pub max_inflight: usize,
     pub max_resident_models: usize,
@@ -516,6 +523,18 @@ pub fn resolve(
         .filter(|m| !m.is_empty())
         .collect::<Vec<_>>();
 
+    // Unlike the extension's GUC (which defaults outside the model tree for
+    // rsync/backup safety), the server default nests under --root: the root
+    // is this process's one configuration anchor, and every node of a fleet
+    // is administered per node anyway (`postvec provider … --path <root>`).
+    let providers_path = flags
+        .providers_path
+        .clone()
+        .or_else(|| env.get("POSTVEC_SERVER_PROVIDERS_PATH").map(PathBuf::from))
+        .or_else(|| file.providers_path.clone().map(PathBuf::from))
+        .map(|p| against_root(&root, p))
+        .unwrap_or_else(|| root.join("providers.d"));
+
     let predict_timeout_ms = flags
         .predict_timeout_ms
         .or(env_u64(env, "POSTVEC_SERVER_PREDICT_TIMEOUT_MS")?)
@@ -594,6 +613,7 @@ pub fn resolve(
         frontend,
         tls,
         models,
+        providers_path,
         predict_timeout: Duration::from_millis(predict_timeout_ms),
         max_inflight,
         max_resident_models,
@@ -659,6 +679,52 @@ mod tests {
             "a signal must not close the socket before /ready has said 503"
         );
         assert_eq!(s.bind, "0.0.0.0".parse::<IpAddr>().unwrap());
+        assert_eq!(
+            s.providers_path,
+            PathBuf::from("/srv/root/providers.d"),
+            "providers.d nests under the root by default"
+        );
+    }
+
+    #[test]
+    fn providers_path_follows_the_precedence_and_the_root() {
+        // Relative values anchor to the root, like the TLS paths.
+        let s = resolve_with(
+            ServeArgs {
+                providers_path: Some(PathBuf::from("conf/providers.d")),
+                ..Default::default()
+            },
+            FileConfig::default(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            s.providers_path,
+            PathBuf::from("/srv/root/conf/providers.d")
+        );
+
+        // Absolute flag wins over env and file, and stays absolute.
+        let file = FileConfig {
+            providers_path: Some("/from/file".into()),
+            ..Default::default()
+        };
+        let s = resolve_with(
+            ServeArgs::default(),
+            file.clone(),
+            &[("POSTVEC_SERVER_PROVIDERS_PATH", "/from/env")],
+        )
+        .unwrap();
+        assert_eq!(s.providers_path, PathBuf::from("/from/env"));
+        let s = resolve_with(
+            ServeArgs {
+                providers_path: Some(PathBuf::from("/from/flag")),
+                ..Default::default()
+            },
+            file,
+            &[("POSTVEC_SERVER_PROVIDERS_PATH", "/from/env")],
+        )
+        .unwrap();
+        assert_eq!(s.providers_path, PathBuf::from("/from/flag"));
     }
 
     /// The documented precedence, one field at a time.

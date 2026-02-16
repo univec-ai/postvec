@@ -6,6 +6,7 @@ use crate::config::Settings;
 use crate::metrics::Metrics;
 use crate::net::Advertise;
 use engine::InferenceEngine;
+use providers::gateway::Gateway;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -54,6 +55,13 @@ pub struct ServerState {
     /// `None` in the degenerate case where gossip could not start. The node
     /// still serves; it just cannot describe its peers.
     pub cluster: Option<Arc<ClusterManager>>,
+    /// External-provider gateway (docs/external-providers.md §8). Empty in
+    /// the zero-config case; shared by `/config`, the gRPC dispatch and the
+    /// admin reload route.
+    pub gateway: Arc<Gateway>,
+    /// The §7.3 provider inflight budget the gRPC ingress limit was sized
+    /// with at boot — the reload route warns when a reload outgrows it.
+    pub startup_provider_budget: usize,
     pub started_at: SystemTime,
     /// Serializes model load/unload. Held across the whole
     /// admission-check-and-mutate sequence so the resident-count check is an
@@ -70,13 +78,17 @@ impl ServerState {
         identity: NodeIdentity,
         metrics: Arc<Metrics>,
         cluster: Option<Arc<ClusterManager>>,
+        gateway: Arc<Gateway>,
     ) -> Arc<Self> {
+        let startup_provider_budget = gateway.inflight_budget();
         Arc::new(Self {
             engine,
             settings,
             identity,
             metrics,
             cluster,
+            gateway,
+            startup_provider_budget,
             started_at: SystemTime::now(),
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             draining: AtomicBool::new(false),

@@ -20,7 +20,7 @@ use crate::cli::DEFAULT_ADMIN_PORT;
 use crate::cli::{LocalArgs, ModelArgs, StatusArgs};
 use crate::models;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 pub const EXIT_OK: i32 = 0;
@@ -68,15 +68,19 @@ fn unreachable_hint(args: &LocalArgs, error: &dyn std::fmt::Display) -> String {
 /// The subset of `/config` this client reads.
 struct NodeReport {
     models: Vec<String>,
+    /// Provider-backed entries: public name → connector type, read from the
+    /// entry's top-level `provider` extra. These have no on-disk descriptor
+    /// (the serving truth is a providers.d file), so the descriptor-drift
+    /// checks skip them and the fleet report labels them.
+    providers: BTreeMap<String, String>,
     server: Value,
     cluster: Value,
 }
 
 fn parse_config(body: &Value) -> NodeReport {
     let data = body.get("data").cloned().unwrap_or(Value::Null);
-    let models = data
-        .get("models")
-        .and_then(Value::as_array)
+    let entries = data.get("models").and_then(Value::as_array);
+    let models = entries
         .map(|models| {
             models
                 .iter()
@@ -85,8 +89,22 @@ fn parse_config(body: &Value) -> NodeReport {
                 .collect()
         })
         .unwrap_or_default();
+    let providers = entries
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|m| {
+                    Some((
+                        m.get("name")?.as_str()?.to_string(),
+                        m.get("provider")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     NodeReport {
         models,
+        providers,
         server: data.get("server").cloned().unwrap_or(Value::Null),
         cluster: data.get("cluster").cloned().unwrap_or(Value::Null),
     }
@@ -119,7 +137,14 @@ fn peer_addresses(cluster: &Value) -> Vec<String> {
 /// check unions every node's models before comparing, which hides exactly
 /// this — a name missing from one node looks identical to a name present
 /// everywhere.
-fn inventory_drift(nodes: &[(String, Vec<String>)]) -> Vec<String> {
+/// `provider_of` labels provider-backed names in the drift lines: a
+/// provider model missing from one node is not a missing model *file* but a
+/// missing (or broken) providers.d entry/key on that node, and the fix is
+/// different enough to be worth naming.
+fn inventory_drift(
+    nodes: &[(String, Vec<String>)],
+    provider_of: &BTreeMap<String, String>,
+) -> Vec<String> {
     if nodes.len() < 2 {
         return Vec::new();
     }
@@ -135,8 +160,15 @@ fn inventory_drift(nodes: &[(String, Vec<String>)]) -> Vec<String> {
             .map(|(address, _)| address.as_str())
             .collect();
         if !missing.is_empty() {
+            let label = match provider_of.get(name) {
+                Some(provider) => format!(
+                    " [provider-backed via {provider:?} — check providers.d and its key on \
+                     the missing node(s)]"
+                ),
+                None => String::new(),
+            };
             drift.push(format!(
-                "{name}: absent from {} of {} node(s) — {}",
+                "{name}: absent from {} of {} node(s) — {}{label}",
                 missing.len(),
                 nodes.len(),
                 missing.join(", ")
@@ -246,6 +278,13 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
                 ));
             }
             for name in &report.models {
+                // Provider-backed models have no on-disk descriptor by
+                // design: their serving truth is a providers.d file, which
+                // survives a restart. The descriptor checks are for engine
+                // models only.
+                if report.providers.contains_key(name) {
+                    continue;
+                }
                 match inv.get(name) {
                     None => warnings.push(format!(
                         "model {name:?} is loaded but has no descriptor on disk; it will not \
@@ -274,16 +313,23 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
             .unwrap_or("this node")
             .to_string();
         fleet.push((own, report.models.clone()));
+        // Any node's provider marker labels the union entry: a name that is
+        // provider-backed anywhere gets the providers.d diagnosis.
+        let mut fleet_providers = report.providers.clone();
         for address in peer_addresses(&report.cluster) {
             match client.get(format!("{address}/config")).send().await {
                 Ok(response) => match response.json::<Value>().await {
-                    Ok(body) => fleet.push((address, parse_config(&body).models)),
+                    Ok(body) => {
+                        let peer = parse_config(&body);
+                        fleet_providers.extend(peer.providers);
+                        fleet.push((address, peer.models));
+                    }
                     Err(e) => warnings.push(format!("peer {address} served invalid /config: {e}")),
                 },
                 Err(e) => warnings.push(format!("peer {address} did not answer /config: {e}")),
             }
         }
-        drift = inventory_drift(&fleet);
+        drift = inventory_drift(&fleet, &fleet_providers);
         for line in &drift {
             warnings.push(format!("inventory drift — {line}"));
         }
@@ -297,6 +343,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
                 "server": report.server,
                 "cluster": report.cluster,
                 "loaded": report.models,
+                "providers": report.providers,
                 "on_disk": on_disk
                     .iter()
                     .map(|(name, enabled, loaded)| json!({
@@ -356,11 +403,16 @@ fn print_status(
     println!("  frontend    {}", field("frontend"));
 
     println!("\nmodels");
+    let engine_models: Vec<&String> = report
+        .models
+        .iter()
+        .filter(|name| !report.providers.contains_key(*name))
+        .collect();
     if on_disk.is_empty() {
-        for name in &report.models {
+        for name in &engine_models {
             println!("  {name}  loaded");
         }
-        if report.models.is_empty() {
+        if engine_models.is_empty() {
             println!("  (none loaded)");
         }
     } else {
@@ -370,6 +422,12 @@ fn print_status(
                 if *enabled { "enabled" } else { "deactivated" },
                 if *loaded { "loaded" } else { "not loaded" }
             );
+        }
+    }
+    if !report.providers.is_empty() {
+        println!("\nprovider-backed models (served from providers.d, no on-disk descriptor)");
+        for (name, provider) in &report.providers {
+            println!("  {name:<40} via {provider}");
         }
     }
 
@@ -544,11 +602,15 @@ mod tests {
                 vec!["embed".to_string(), "conv".to_string()],
             ),
         ];
-        let drift = inventory_drift(&nodes);
+        let drift = inventory_drift(&nodes, &BTreeMap::new());
         assert_eq!(drift.len(), 1, "{drift:?}");
         assert!(drift[0].starts_with("conv:"), "{drift:?}");
         assert!(drift[0].contains("absent from 1 of 3"), "{drift:?}");
         assert!(drift[0].contains('b'), "{drift:?}");
+        assert!(
+            !drift[0].contains("provider-backed"),
+            "engine models are not provider-labeled: {drift:?}"
+        );
     }
 
     #[test]
@@ -557,13 +619,74 @@ mod tests {
             ("a".to_string(), vec!["embed".to_string()]),
             ("b".to_string(), vec!["embed".to_string()]),
         ];
-        assert!(inventory_drift(&nodes).is_empty());
+        assert!(inventory_drift(&nodes, &BTreeMap::new()).is_empty());
     }
 
     #[test]
     fn a_single_node_is_never_drifted() {
         let nodes = vec![("a".to_string(), vec!["embed".to_string()])];
-        assert!(inventory_drift(&nodes).is_empty());
+        assert!(inventory_drift(&nodes, &BTreeMap::new()).is_empty());
+    }
+
+    /// A `/config` with a provider entry: the name lands in `models` (so the
+    /// existing comparison covers it with no new machinery) AND in the
+    /// provider map (so reports can label it).
+    #[test]
+    fn parse_config_extracts_provider_markers() {
+        let body = json!({
+            "success": true,
+            "data": {
+                "models": [
+                    { "name": "embed", "status": "local",
+                      "configuration": {"enabled": true} },
+                    { "name": "openai-text-embedding-3-small", "status": "provider",
+                      "provider": "openai",
+                      "configuration": {"enabled": true, "params": {"model_type": "embed"}} },
+                ],
+            }
+        });
+        let report = parse_config(&body);
+        assert_eq!(report.models, ["embed", "openai-text-embedding-3-small"]);
+        assert_eq!(
+            report.providers.get("openai-text-embedding-3-small"),
+            Some(&"openai".to_string())
+        );
+        assert!(!report.providers.contains_key("embed"));
+    }
+
+    /// The two-node parity case the fleet report exists for: one node
+    /// missing the provider file shows a drift line labeled with the
+    /// provider and the providers.d diagnosis — a missing key is an ops
+    /// problem on that node, not a missing model file.
+    #[test]
+    fn a_node_missing_the_provider_file_shows_a_labeled_diff() {
+        let nodes = vec![
+            (
+                "https://a:22222".to_string(),
+                vec![
+                    "embed".to_string(),
+                    "openai-text-embedding-3-small".to_string(),
+                ],
+            ),
+            ("https://b:22222".to_string(), vec!["embed".to_string()]),
+        ];
+        let providers: BTreeMap<String, String> = [(
+            "openai-text-embedding-3-small".to_string(),
+            "openai".to_string(),
+        )]
+        .into();
+        let drift = inventory_drift(&nodes, &providers);
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert!(
+            drift[0].contains("openai-text-embedding-3-small"),
+            "{drift:?}"
+        );
+        assert!(drift[0].contains("https://b:22222"), "{drift:?}");
+        assert!(
+            drift[0].contains("provider-backed via \"openai\""),
+            "{drift:?}"
+        );
+        assert!(drift[0].contains("providers.d"), "{drift:?}");
     }
 
     #[test]

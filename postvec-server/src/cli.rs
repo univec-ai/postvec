@@ -163,6 +163,15 @@ pub struct ServeArgs {
     #[arg(long, value_name = "LIST", value_delimiter = ',', num_args = 1..)]
     pub models: Option<Vec<String>>,
 
+    /// Directory of external-provider connector files (providers.d).
+    /// A path, never a credential: provider API keys live only in the
+    /// (0600) TOML files under it. Empty or missing means no
+    /// provider-backed models.
+    ///
+    /// [env: POSTVEC_SERVER_PROVIDERS_PATH] [default: <root>/providers.d]
+    #[arg(long = "providers-path", value_name = "PATH")]
+    pub providers_path: Option<PathBuf>,
+
     /// Ceiling on a request's execution budget, in milliseconds. A smaller
     /// inbound grpc-timeout always wins. [default: 30000]
     ///

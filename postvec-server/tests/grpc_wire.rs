@@ -50,6 +50,7 @@ impl Server {
             listener,
             predict_timeout,
             max_inflight,
+            Arc::new(providers::gateway::Gateway::empty()),
             async {
                 let _ = rx.await;
             },

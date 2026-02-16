@@ -229,6 +229,12 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         engine_host::warm_up(&engine, &metrics).await;
     }
 
+    // External providers (docs/external-providers.md §8): one gateway per
+    // node, mounted beside the engine. `load` isolates per-provider/per-file
+    // failures internally — a broken provider file never degrades local
+    // models — and a missing directory is the ordinary zero-config case.
+    let gateway = Arc::new(providers::gateway::Gateway::load(&settings.providers_path));
+
     // --- 5. Cluster ------------------------------------------------------
     let (seeds, problems) = net::resolve_peers(&settings.peers, settings.gossip_port).await;
     for problem in &problems {
@@ -261,6 +267,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         identity,
         metrics.clone(),
         cluster.clone(),
+        gateway.clone(),
     );
 
     // --- 6. Serve ---------------------------------------------------------
@@ -281,6 +288,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         grpc_socket,
         settings.predict_timeout,
         settings.max_inflight,
+        gateway,
         async {
             let _ = grpc_shutdown_rx.await;
         },
