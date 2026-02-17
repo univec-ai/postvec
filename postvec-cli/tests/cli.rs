@@ -544,3 +544,223 @@ fn setup_without_yes_is_refused_before_touching_anything_when_not_interactive() 
     ]);
     assert_ne!(code(&output), 0, "{}", stderr(&output));
 }
+
+// ---- external providers (`postvec provider …`) --------------------------
+
+#[test]
+fn provider_help_lists_every_verb_and_the_key_rules() {
+    let output = run(&["provider", "--help"]);
+    assert_eq!(code(&output), 0);
+    let text = stdout(&output);
+    for verb in ["add", "ls", "rm", "test"] {
+        assert!(text.contains(verb), "provider --help omits {verb}:\n{text}");
+    }
+
+    let add = stdout(&run(&["provider", "add", "--help"]));
+    // The three key sources, and no bare value flag: argv is world-observable.
+    for flag in ["--api-key-file", "--api-key-env", "--key-stdin"] {
+        assert!(
+            add.contains(flag),
+            "provider add --help omits {flag}:\n{add}"
+        );
+    }
+    assert!(
+        !add.lines()
+            .any(|line| line.trim_start().starts_with("--api-key ")),
+        "a key must never be accepted as a command-line value:\n{add}"
+    );
+    // The privacy gate is offered where the bridge-upgrade event applies.
+    assert!(add.contains("--acknowledge-in-use"), "{add}");
+    assert!(add.contains("--path"), "{add}");
+}
+
+/// A key is never accepted as a bare flag value, on any provider verb.
+#[test]
+fn no_provider_verb_accepts_a_key_on_the_command_line() {
+    for args in [
+        vec![
+            "provider",
+            "add",
+            "openai",
+            "--model",
+            "m",
+            "--api-key",
+            "sk-x",
+        ],
+        vec!["provider", "test", "openai", "--api-key", "sk-x"],
+    ] {
+        assert_eq!(
+            code(&run(&args)),
+            2,
+            "{args:?} must be a usage error, not an accepted key"
+        );
+    }
+}
+
+/// `provider add` writes a 0600 file into `<path>/providers.d`, `ls` reads
+/// it back showing the key *source* and never the key, and `rm` removes it
+/// — the walkthrough, entirely on the filesystem (`--path`, so no cluster
+/// and no network).
+#[test]
+fn provider_add_ls_rm_round_trip_on_a_path_root() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let key = root.path().join("openai.key");
+    std::fs::write(&key, "sk-test-key-value\n").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let root_arg = root.path().to_str().unwrap();
+    let key_arg = key.to_str().unwrap();
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-file",
+        key_arg,
+        "--path",
+        root_arg,
+        // No paid API call in a test, and no cluster is in scope.
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+
+    let file = root.path().join("providers.d").join("openai.toml");
+    assert!(
+        file.is_file(),
+        "provider add wrote no file: {}",
+        stderr(&output)
+    );
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "provider files are 0600"
+    );
+    assert_eq!(
+        std::fs::metadata(file.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "the providers.d directory is 0700"
+    );
+    let body = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        body.contains("provider = \"openai\""),
+        "the canonical connector type is written:\n{body}"
+    );
+    assert!(
+        body.contains("api_key_file"),
+        "the key file is referenced, not copied:\n{body}"
+    );
+    assert!(
+        !body.contains("sk-test-key-value"),
+        "the key value must never be copied into the provider file:\n{body}"
+    );
+    // The catalog filled in the descriptor.
+    assert!(body.contains("openai-text-embedding-3-small"), "{body}");
+    assert!(body.contains("dim = 1536"), "{body}");
+
+    // ls reports the source, never the key.
+    let listed = run(&["provider", "ls", "--path", root_arg]);
+    assert_eq!(code(&listed), 0, "{}", stderr(&listed));
+    let text = format!("{}{}", stdout(&listed), stderr(&listed));
+    assert!(text.contains("openai-text-embedding-3-small"), "{text}");
+    assert!(text.contains("file:"), "the key source is shown: {text}");
+    assert!(
+        !text.contains("sk-test-key-value"),
+        "provider ls must never print a key: {text}"
+    );
+
+    // rm takes the file away again.
+    let removed = run(&["provider", "rm", "openai", "--path", root_arg, "--yes"]);
+    assert_eq!(code(&removed), 0, "{}", stderr(&removed));
+    assert!(!file.exists(), "provider rm left the file behind");
+}
+
+/// A world-readable key file is refused with the same rule the serving host
+/// applies, before anything is written.
+#[test]
+fn provider_add_refuses_a_world_readable_key_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let key = root.path().join("leaky.key");
+    std::fs::write(&key, "sk-test-key-value\n").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-file",
+        key.to_str().unwrap(),
+        "--path",
+        root.path().to_str().unwrap(),
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0);
+    let err = stderr(&output);
+    assert!(err.contains("readable by other users"), "{err}");
+    assert!(
+        !root.path().join("providers.d").join("openai.toml").exists(),
+        "nothing may be written when the key file is refused"
+    );
+}
+
+/// An unknown model id with --no-verify has no dimension to write, and
+/// says so instead of guessing one.
+#[test]
+fn an_unknown_model_needs_a_dim_when_verification_is_skipped() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "some-future-model",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--path",
+        root.path().to_str().unwrap(),
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0);
+    let err = stderr(&output);
+    assert!(err.contains("--dim"), "{err}");
+}
+
+/// `gemini` is accepted and writes the canonical `google` connector type,
+/// so the file matches the factory arm.
+#[test]
+fn the_gemini_alias_writes_the_google_connector_type() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let output = run(&[
+        "provider",
+        "add",
+        "gemini",
+        "--model",
+        "gemini-embedding-001",
+        "--api-key-env",
+        "GEMINI_API_KEY",
+        "--path",
+        root.path().to_str().unwrap(),
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let body = std::fs::read_to_string(root.path().join("providers.d").join("google.toml"))
+        .expect("written under the canonical name");
+    assert!(body.contains("provider = \"google\""), "{body}");
+    assert!(body.contains("api_key_env = \"GEMINI_API_KEY\""), "{body}");
+    // The public name keeps the documented spelling.
+    assert!(body.contains("name = \"gemini-embedding-001\""), "{body}");
+}

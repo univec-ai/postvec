@@ -206,6 +206,14 @@ impl SettingsSnapshot {
         non_empty(self.value("postvec.ninference_path")).map(PathBuf::from)
     }
 
+    /// The providers.d directory the embedded host reads (with the
+    /// extension's default applied). A path, never a credential.
+    pub fn providers_path(&self) -> PathBuf {
+        non_empty(self.value("postvec.providers_path"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(crate::config::DEFAULT_PROVIDERS_PATH))
+    }
+
     /// Config files the server reports as unparseable.
     pub fn file_errors(&self) -> Vec<&FileSettingRow> {
         self.file_rows

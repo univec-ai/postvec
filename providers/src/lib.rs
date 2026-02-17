@@ -27,6 +27,10 @@ pub mod openai;
 pub mod openrouter;
 pub mod titan;
 
+// The built-in model catalog: CLI descriptor prefill and docs generation
+// only — the serving hosts never consult it.
+pub mod catalog;
+
 // The providers.d config layer and the gateway both inference hosts mount
 // (feature `wire` — needs the fork's `shared` error codes).
 #[cfg(feature = "wire")]

@@ -4,6 +4,7 @@ pub mod account;
 pub mod collect;
 pub mod doctor;
 pub mod model;
+pub mod provider;
 pub mod setup;
 pub mod uninstall;
 
@@ -49,6 +50,24 @@ pub async fn dispatch(cli: Cli) -> Exit {
                 }
                 crate::cli::ModelCommand::Deactivate(args) => {
                     model::deactivate::run(&cli, args.clone(), &output).await
+                }
+            };
+            (name, result)
+        }
+        Command::Provider(subcommand) => {
+            let name = subcommand.name();
+            let result = match subcommand {
+                crate::cli::ProviderCommand::Add(args) => {
+                    provider::add::run(&cli, args.clone(), &output).await
+                }
+                crate::cli::ProviderCommand::Ls(args) => {
+                    provider::ls::run(&cli, args.clone(), &output).await
+                }
+                crate::cli::ProviderCommand::Rm(args) => {
+                    provider::rm::run(&cli, args.clone(), &output).await
+                }
+                crate::cli::ProviderCommand::Test(args) => {
+                    provider::test::run(&cli, args.clone(), &output).await
                 }
             };
             (name, result)

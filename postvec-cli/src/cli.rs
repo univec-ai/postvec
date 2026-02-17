@@ -81,6 +81,12 @@ pub enum Command {
     /// list, inspect, remove, activate, deactivate.
     #[command(subcommand)]
     Model(ModelCommand),
+    /// Manage external embedding providers (OpenAI, Gemini, Cohere, AWS
+    /// Bedrock, Mistral, OpenRouter): the providers.d connector files the
+    /// inference host reads. Credentials live only in those (0600) files —
+    /// never in a GUC, catalog table or SQL argument.
+    #[command(subcommand)]
+    Provider(ProviderCommand),
     /// Store a UniVec API key for the authenticated model catalogue.
     Login(LoginArgs),
     /// Remove the stored credential; model commands become anonymous.
@@ -137,6 +143,162 @@ impl ModelCommand {
             ModelCommand::Deactivate(_) => "model deactivate",
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProviderCommand {
+    /// Configure a provider: write its providers.d file (0600), verify the
+    /// key with one live embed per model, and reload the running host.
+    Add(ProviderAddArgs),
+    /// List configured providers: key source (never the key), models, dims,
+    /// and whether the running host currently serves them.
+    Ls(ProviderLsArgs),
+    /// Remove a provider file, or one model entry from it.
+    Rm(ProviderRmArgs),
+    /// Run the verification probe against a configured provider.
+    Test(ProviderTestArgs),
+}
+
+impl ProviderCommand {
+    /// The command name as it appears in output envelopes and error reports.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ProviderCommand::Add(_) => "provider add",
+            ProviderCommand::Ls(_) => "provider ls",
+            ProviderCommand::Rm(_) => "provider rm",
+            ProviderCommand::Test(_) => "provider test",
+        }
+    }
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ProviderAddArgs {
+    /// Connector type: openai | openrouter | mistral | google | cohere | aws
+    /// (gemini is accepted as an alias for google).
+    #[arg(value_name = "TYPE")]
+    pub provider_type: String,
+
+    /// File stem for the providers.d file. Default: the canonical type.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Provider model id (e.g. text-embedding-3-small). Repeatable.
+    #[arg(long = "model", value_name = "ID", required = true)]
+    pub models: Vec<String>,
+
+    /// Reference this key file from the provider file (the file itself must
+    /// be 0600; it is referenced, never copied).
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["api_key_env", "key_stdin"])]
+    pub api_key_file: Option<PathBuf>,
+
+    /// Record this environment variable as the key source. It must be
+    /// present in the POSTMASTER's (or the server unit's) environment — not
+    /// this shell's.
+    #[arg(long, value_name = "VAR", conflicts_with = "key_stdin")]
+    pub api_key_env: Option<String>,
+
+    /// Read the key from stdin (for pipes). Without any key source and a
+    /// TTY, a hidden prompt asks for it. A key is never accepted as a
+    /// command-line value: argv is world-observable.
+    #[arg(long)]
+    pub key_stdin: bool,
+
+    /// AWS only: the Bedrock region. The key source supplies the Bedrock
+    /// bearer token; for static SigV4 credentials, edit the provider file's
+    /// access_key_id/secret_access_key fields (file/env/inline triads).
+    #[arg(long, value_name = "REGION")]
+    pub region: Option<String>,
+
+    /// Optional base-URL override (Azure-style fronts, mock servers).
+    #[arg(long, value_name = "URL")]
+    pub base_url: Option<String>,
+
+    /// Vector dimension, when a single unknown model is added with
+    /// --no-verify (otherwise the catalog or the verification probe fills
+    /// it in).
+    #[arg(long, value_name = "N")]
+    pub dim: Option<u32>,
+
+    /// Write into <DIR>/providers.d (or <DIR> itself when it already is
+    /// one) instead of the selected cluster's providers path. This is how
+    /// remote postvec-server roots are administered.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Skip the live verification embed (it costs one paid API call per
+    /// model).
+    #[arg(long)]
+    pub no_verify: bool,
+
+    /// Acknowledge that existing columns bound to these model names start
+    /// sending their source text to the provider on the next worker cycle.
+    /// Required with --yes when any column is affected; never implied by
+    /// --yes.
+    #[arg(long)]
+    pub acknowledge_in_use: bool,
+
+    /// Skip the confirmation prompt. Required for mutation without a TTY.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show the plan and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ProviderLsArgs {
+    /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
+    /// cluster's providers path.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ProviderRmArgs {
+    /// Provider name (the providers.d file stem).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Remove only this model entry (public name or provider id) instead of
+    /// the whole file.
+    #[arg(long = "model", value_name = "ID")]
+    pub model: Option<String>,
+
+    /// Operate on <DIR>/providers.d (or <DIR> itself) instead of the
+    /// selected cluster's providers path.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+
+    /// Acknowledge that managed columns lose their embedding route to the
+    /// removed model(s). Required with --yes when any column is affected;
+    /// never implied by --yes.
+    #[arg(long)]
+    pub acknowledge_in_use: bool,
+
+    /// Skip the confirmation prompt. Required for mutation without a TTY.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Show the plan and exit without changing anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ProviderTestArgs {
+    /// Provider name (the providers.d file stem).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Probe only this model (public name or provider id).
+    #[arg(long = "model", value_name = "ID")]
+    pub model: Option<String>,
+
+    /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
+    /// cluster's providers path.
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -453,6 +615,12 @@ pub struct SetupArgs {
     )]
     pub model: Vec<String>,
 
+    /// Directory of external-provider connector files (providers.d) the
+    /// embedded host reads. Omit to keep the extension's default
+    /// (/etc/postvec/providers.d). A path, never a credential.
+    #[arg(long, requires = "embedded", value_name = "DIR")]
+    pub providers_path: Option<PathBuf>,
+
     /// Loopback address for the embedded gRPC listener (default
     /// 127.0.0.1:33433).
     #[arg(long, requires = "embedded", value_name = "ADDR")]
@@ -643,6 +811,11 @@ impl SetupArgs {
                 // Syntax only: existence and readability are checked from the
                 // PostgreSQL account's perspective during engine preflight.
                 let path = validate::absolute_path(&path, "--path")?;
+                let providers_path = self
+                    .providers_path
+                    .as_deref()
+                    .map(|p| validate::absolute_path(p, "--providers-path"))
+                    .transpose()?;
                 let models = validate::model_list(&self.model)?;
                 let grpc_listen = self.embedded_grpc_listen;
                 let http_listen = self.embedded_http_listen;
@@ -665,6 +838,7 @@ impl SetupArgs {
                     databases,
                     target: ModeTarget::Embedded {
                         path,
+                        providers_path,
                         models,
                         grpc_listen,
                         http_listen,
@@ -702,6 +876,8 @@ pub enum ModeTarget {
     },
     Embedded {
         path: PathBuf,
+        /// providers.d override; `None` keeps the extension's default path.
+        providers_path: Option<PathBuf>,
         models: Vec<String>,
         grpc_listen: Option<SocketAddr>,
         http_listen: Option<SocketAddr>,

@@ -46,6 +46,11 @@ semver = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
+# The provider connector clients (the `provider add`/`test` verification
+# probe and the built-in catalog). No `wire` feature: the CLI edits
+# providers.d files as TOML documents itself and never runs the gateway.
+postvec-providers = { path = "../providers" }
+toml = "0.8"
 sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio-rustls",
     "postgres",

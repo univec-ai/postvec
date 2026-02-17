@@ -34,6 +34,7 @@ pub const MANAGED_SETTINGS: &[&str] = &[
     "postvec.embedded_models",
     "postvec.embedded_listen",
     "postvec.embedded_http_listen",
+    "postvec.providers_path",
 ];
 
 /// Defaults the extension applies when the listener GUCs are unset
@@ -49,6 +50,12 @@ pub const DEFAULT_EMBEDDED_HTTP_LISTEN: &str = "127.0.0.1:33434";
 /// one cannot link. The pair is asserted in `cli.rs`; change both together.
 pub const DEFAULT_ENGINE_ROOT: &str = "/opt/postvec/ninference";
 
+/// What `postvec.providers_path` defaults to
+/// (`postvec/src/gucs.rs::DEFAULT_PROVIDERS_PATH`). Deliberately outside the
+/// engine root: the model tree gets rsynced and baked into images; the
+/// credential directory must not ride along.
+pub const DEFAULT_PROVIDERS_PATH: &str = "/etc/postvec/providers.d";
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RemoteSettings {
     pub grpc: Vec<GrpcEndpoint>,
@@ -58,6 +65,12 @@ pub struct RemoteSettings {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct EmbeddedSettings {
     pub path: PathBuf,
+    /// providers.d override. `None` (the default) is not rendered at all, so
+    /// the extension's own default stays in effect — unlike
+    /// `embedded_models`, an omitted value here means exactly the default
+    /// path and nothing lower-precedence can disagree with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub providers_path: Option<PathBuf>,
     /// Empty means "scan-load every enabled model under <root>/models".
     pub models: Vec<String>,
     pub grpc_listen: SocketAddr,
@@ -67,12 +80,14 @@ pub struct EmbeddedSettings {
 impl EmbeddedSettings {
     pub fn new(
         path: PathBuf,
+        providers_path: Option<PathBuf>,
         models: Vec<String>,
         grpc_listen: Option<SocketAddr>,
         http_listen: Option<SocketAddr>,
     ) -> Self {
         Self {
             path,
+            providers_path,
             models,
             grpc_listen: grpc_listen
                 .unwrap_or_else(|| DEFAULT_EMBEDDED_LISTEN.parse().expect("valid default")),
@@ -180,6 +195,15 @@ impl DesiredConfig {
                     "postvec.embedded_http_listen = {}\n",
                     validate::config_literal(&embedded.http_listen.to_string())?
                 ));
+                // Rendered only when the operator overrode it: unset means
+                // the extension's own default path, and restating a default
+                // would take ownership of a value setup was never given.
+                if let Some(providers_path) = &embedded.providers_path {
+                    out.push_str(&format!(
+                        "postvec.providers_path = {}\n",
+                        validate::config_literal(&providers_path.display().to_string())?
+                    ));
+                }
             }
         }
         Ok(out)
@@ -238,6 +262,12 @@ impl DesiredConfig {
                     "postvec.embedded_http_listen",
                     embedded.http_listen.to_string(),
                 ));
+                if let Some(providers_path) = &embedded.providers_path {
+                    out.push((
+                        "postvec.providers_path",
+                        providers_path.display().to_string(),
+                    ));
+                }
             }
         }
         out
@@ -265,6 +295,7 @@ mod tests {
             databases: vec!["univec".into()],
             inference: InferenceSettings::Embedded(EmbeddedSettings::new(
                 PathBuf::from("/opt/ninference"),
+                None,
                 vec!["baai-bge-m3".into(), "embed-bridge".into()],
                 None,
                 None,
@@ -296,6 +327,26 @@ postvec.ninference_http_endpoints = 'https://192.0.2.2:22222'
         assert!(rendered.contains("postvec.embedded_listen = '127.0.0.1:33433'"));
         assert!(rendered.contains("postvec.embedded_http_listen = '127.0.0.1:33434'"));
         assert!(!rendered.contains("ninference_grpc_endpoints"));
+    }
+
+    /// providers_path renders only when the operator overrode it: unset means
+    /// the extension's own default, and restating a default would take
+    /// ownership of a value setup was never given.
+    #[test]
+    fn providers_path_renders_only_when_overridden() {
+        let rendered = embedded().render("0.1.0").unwrap();
+        assert!(!rendered.contains("postvec.providers_path"));
+
+        let mut cfg = embedded();
+        if let InferenceSettings::Embedded(e) = &mut cfg.inference {
+            e.providers_path = Some(PathBuf::from("/srv/providers.d"));
+        }
+        let rendered = cfg.render("0.1.0").unwrap();
+        assert!(rendered.contains("postvec.providers_path = '/srv/providers.d'"));
+        assert!(cfg
+            .expected_settings()
+            .iter()
+            .any(|(name, value)| *name == "postvec.providers_path" && value == "/srv/providers.d"));
     }
 
     /// An empty list must be rendered, not omitted: an omitted setting cannot

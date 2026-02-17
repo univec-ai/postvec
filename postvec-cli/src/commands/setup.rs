@@ -599,6 +599,7 @@ async fn preflight(
         }
         ModeTarget::Embedded {
             path,
+            providers_path: _,
             models,
             grpc_listen,
             http_listen,
@@ -689,8 +690,13 @@ async fn preflight(
                      start, so that needs a restart)",
                 );
             }
-            let settings =
-                EmbeddedSettings::new(path.clone(), models.clone(), *grpc_listen, *http_listen);
+            let settings = EmbeddedSettings::new(
+                path.clone(),
+                None,
+                models.clone(),
+                *grpc_listen,
+                *http_listen,
+            );
             for address in [settings.grpc_listen, settings.http_listen] {
                 validate::loopback_listener(address, "the embedded listener")?;
                 if engine::embedded::port_is_taken(&address.to_string(), Duration::from_millis(500))
@@ -780,11 +786,13 @@ fn build_desired(
         }),
         ModeTarget::Embedded {
             path,
+            providers_path,
             models,
             grpc_listen,
             http_listen,
         } => InferenceSettings::Embedded(EmbeddedSettings::new(
             path.clone(),
+            providers_path.clone(),
             models.clone(),
             *grpc_listen,
             *http_listen,
@@ -1427,6 +1435,7 @@ mod tests {
             &Ownership::Unmanaged,
             &ModeTarget::Embedded {
                 path: PathBuf::from("/opt/postvec/ninference"),
+                providers_path: None,
                 models: vec![],
                 grpc_listen: None,
                 http_listen: None,
@@ -1575,6 +1584,7 @@ mod tests {
     fn embedded_inference_is_described_for_the_prompt() {
         let described = describe_inference(&InferenceSettings::Embedded(EmbeddedSettings::new(
             PathBuf::from("/opt/ninference"),
+            None,
             vec!["baai-bge-m3".into()],
             None,
             None,
@@ -1585,6 +1595,7 @@ mod tests {
 
         let scan = describe_inference(&InferenceSettings::Embedded(EmbeddedSettings::new(
             PathBuf::from("/opt/ninference"),
+            None,
             vec![],
             None,
             None,

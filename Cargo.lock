@@ -3046,6 +3046,7 @@ dependencies = [
  "hex",
  "humantime",
  "libc",
+ "postvec-providers",
  "registry-schema",
  "reqwest",
  "semver",
@@ -3055,6 +3056,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "toml",
  "url",
  "walkdir",
 ]

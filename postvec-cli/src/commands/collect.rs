@@ -439,6 +439,10 @@ pub fn evaluate(
                 cached_models: &cached,
                 tls_strict,
             }));
+            // Provider files live on the server nodes in remote mode, so
+            // there is nothing here to inspect — say where they are rather
+            // than reporting a clean bill for something never looked at.
+            out.push(checks::provider::grpc_note());
         }
         InferenceProbe::Embedded(probe) => {
             let build_info = databases
@@ -467,12 +471,20 @@ pub fn evaluate(
                 log_command: context.log_command(),
                 versioned_ort_libraries: versioned,
             }));
+            // External providers: the providers.d files this host's engine
+            // reads. Read-only, and independent of the model store — a
+            // provider-backed model has no on-disk descriptor by design.
+            let provider_facts = checks::provider::gather(&snapshot.settings.providers_path());
+            let loaded_names = probe.loaded.as_ref().map(|inv| inv.enabled_names());
+            out.extend(checks::provider::checks(&checks::provider::ProviderInput {
+                facts: &provider_facts,
+                served: loaded_names.as_ref(),
+            }));
             // The CLI-managed model store (postvec model …): receipts,
             // activation, and — under --deep — file integrity and registry
             // reachability. Same filesystem-inspection latitude as the ORT
             // scan above.
             let store = model_store_facts(probe, deep);
-            let loaded_names = probe.loaded.as_ref().map(|inv| inv.enabled_names());
             out.extend(checks::models::checks(&checks::models::ModelsInput {
                 store: store.as_ref(),
                 registry,

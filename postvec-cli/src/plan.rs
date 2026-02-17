@@ -103,6 +103,19 @@ pub enum PlanStep {
         /// never established for them.
         unknown_databases: Vec<String>,
     },
+    /// Not a mutation: the inverse of [`PlanStep::AcknowledgeInUse`] —
+    /// existing columns bound to this public name START sending their source
+    /// text to an external provider once it serves the name (the
+    /// bridge-upgrade privacy event, external-providers §3.4). Carried as a
+    /// step so [`Plan::in_use_models`] gates the confirmation on it.
+    AcknowledgeProviderPrivacy {
+        provider: String,
+        model: String,
+        columns: Vec<InUseColumn>,
+        /// Databases whose registry could not be read, so "no column is
+        /// affected" was never established for them.
+        unknown_databases: Vec<String>,
+    },
     RefreshModelCache {
         database: String,
     },
@@ -259,6 +272,32 @@ impl PlanStep {
                 ));
                 text
             }
+            PlanStep::AcknowledgeProviderPrivacy {
+                provider,
+                model,
+                columns,
+                unknown_databases,
+            } => {
+                let mut text = format!(
+                    "WARNING: these columns are bound to {model}, which external provider \
+                     {provider:?} is about to serve:"
+                );
+                for column in columns {
+                    text.push_str(&format!("\n      {}", column.describe()));
+                }
+                for database in unknown_databases {
+                    text.push_str(&format!(
+                        "\n      {database}: could not be inspected, so columns bound to \
+                         {model} are UNKNOWN"
+                    ));
+                }
+                text.push_str(&format!(
+                    "\n    from the next worker cycle their SOURCE TEXT is sent to \
+                     {provider:?} for embedding — no SQL change and no further notice. \
+                     Stored vectors are not touched."
+                ));
+                text
+            }
             PlanStep::RefreshModelCache { database } => {
                 format!("refresh postvec.models in {database:?}")
             }
@@ -405,9 +444,12 @@ impl Plan {
     /// those is still a no-op — and must not be able to demand confirmation
     /// for work it is not doing.
     pub fn is_noop(&self) -> bool {
-        self.steps
-            .iter()
-            .all(|step| matches!(step, PlanStep::AcknowledgeInUse { .. }))
+        self.steps.iter().all(|step| {
+            matches!(
+                step,
+                PlanStep::AcknowledgeInUse { .. } | PlanStep::AcknowledgeProviderPrivacy { .. }
+            )
+        })
     }
 
     /// The models this plan takes an embedding route away from, in plan order.
@@ -426,7 +468,8 @@ impl Plan {
         self.steps
             .iter()
             .filter_map(|step| match step {
-                PlanStep::AcknowledgeInUse { model, .. } => Some(model.clone()),
+                PlanStep::AcknowledgeInUse { model, .. }
+                | PlanStep::AcknowledgeProviderPrivacy { model, .. } => Some(model.clone()),
                 _ => None,
             })
             .collect()
@@ -562,7 +605,33 @@ pub fn confirm_in_use(
     yes: bool,
     dry_run: bool,
     prompt: Prompt,
+    ask: impl FnMut(&[String]) -> Result<String>,
+) -> Result<()> {
+    confirm_in_use_with(
+        plan,
+        acknowledged,
+        yes,
+        dry_run,
+        prompt,
+        ask,
+        "managed columns lose their embedding route to {models}; pass --acknowledge-in-use \
+         together with --yes to proceed knowing those entries will fail. --yes and --force \
+         deliberately do not stand in for it",
+    )
+}
+
+/// [`confirm_in_use`] with a caller-supplied consequence sentence for the
+/// non-interactive refusal (`{models}` is substituted). The provider-privacy
+/// gate shares the mechanics but not the wording: there the columns keep
+/// working — their text starts leaving the host.
+pub fn confirm_in_use_with(
+    plan: &Plan,
+    acknowledged: bool,
+    yes: bool,
+    dry_run: bool,
+    prompt: Prompt,
     mut ask: impl FnMut(&[String]) -> Result<String>,
+    consequence: &str,
 ) -> Result<()> {
     let models = plan.in_use_models();
     if models.is_empty() || dry_run {
@@ -572,12 +641,9 @@ pub fn confirm_in_use(
         return Ok(());
     }
     if yes || !prompt.is_interactive() {
-        return Err(CliError::usage(format!(
-            "managed columns lose their embedding route to {}; pass --acknowledge-in-use \
-             together with --yes to proceed knowing those entries will fail. --yes and --force \
-             deliberately do not stand in for it",
-            models.join(", ")
-        )));
+        return Err(CliError::usage(
+            consequence.replace("{models}", &models.join(", ")),
+        ));
     }
     let typed = ask(&models)?;
     if !in_use_answer_matches(&typed, &models) {
@@ -618,6 +684,16 @@ fn in_use_answer_matches(typed: &str, models: &[String]) -> bool {
 pub fn interactive_in_use_acknowledgement(models: &[String]) -> Result<String> {
     eprint!(
         "Type {} to confirm those columns will stop working: ",
+        models.join(" ")
+    );
+    read_line()
+}
+
+/// The interactive provider-privacy acknowledgement: the plan has printed
+/// which columns start sending text; the operator types the names back.
+pub fn interactive_provider_privacy_acknowledgement(models: &[String]) -> Result<String> {
+    eprint!(
+        "Type {} to confirm those columns' source text may be sent to the provider: ",
         models.join(" ")
     );
     read_line()

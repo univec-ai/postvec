@@ -10,6 +10,7 @@ pub mod cluster;
 pub mod database;
 pub mod embedded;
 pub mod models;
+pub mod provider;
 pub mod remote;
 
 use serde::Serialize;
@@ -178,6 +179,12 @@ pub const CHECK_ORDER: &[&str] = &[
     "embedded.http-listener",
     "embedded.loaded-models",
     "embedded.cache-consistency",
+    // external providers (postvec provider …)
+    "provider.directory",
+    "provider.file",
+    "provider.key-source",
+    "provider.descriptors",
+    "provider.served",
     // model store (postvec model …)
     "models.receipts",
     "models.unactivated",
