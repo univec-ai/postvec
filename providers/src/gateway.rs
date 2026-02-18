@@ -7,8 +7,8 @@
 //! `embed` calls hold the previous `Arc` and finish against it, and a failed
 //! reload keeps the previous snapshot (never half-applies). Every provider
 //! failure leaves here as a [`GatewayError`] carrying a `shared::ErrorCode`
-//! — the `x-ravenna-error-code` vocabulary the extension already classifies
-//! — per the normative mapping table in docs/external-providers.md §6.4.
+//! — the wire error-code vocabulary the extension already classifies — per
+//! the normative mapping table in docs/external-providers.md §6.4.
 
 use crate::config::{self, LoadOutcome, ModelDescriptor};
 use crate::{new_embedding_backend, EmbeddingBackend, EmbeddingError};
