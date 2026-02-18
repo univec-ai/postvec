@@ -9,7 +9,7 @@
 use crate::client::discovery;
 use crate::client::discovery::DiscoveryReport;
 use crate::client::grpc::GrpcClient;
-use crate::client::{ConvertRoute, EmbedRoute, InferenceClient, ModelInfo, PvError};
+use crate::client::{ConvertRoute, EmbedPurpose, EmbedRoute, InferenceClient, ModelInfo, PvError};
 use crate::{gucs, runtime};
 use pgrx::prelude::*;
 
@@ -95,8 +95,13 @@ fn cached_target_dim(model_public: &str) -> i32 {
 /// transport's decode ceiling (and, embedded, a launcher-memory spike while
 /// the engine builds the response tree). All sub-batches share ONE total
 /// deadline.
-pub(crate) fn embed_texts(texts: &[String], model_public: &str) -> Result<Vec<Vec<f32>>, PvError> {
+pub(crate) fn embed_texts(
+    texts: &[String],
+    model_public: &str,
+    purpose: EmbedPurpose,
+) -> Result<Vec<Vec<f32>>, PvError> {
     let (model, route) = resolve_embed_route(model_public)?.into_call();
+    let route = route.with_purpose(purpose);
     let timeout = query_timeout_ms();
     let client = GrpcClient::from_gucs(timeout);
     let overall = client.overall_timeout_ms();
@@ -193,6 +198,7 @@ impl EmbedResolution {
                 EmbedRoute {
                     bridge_model: Some(via),
                     target_model: Some(target),
+                    ..Default::default()
                 },
             ),
         }
@@ -459,7 +465,8 @@ fn refresh_models() -> i32 {
 fn embed(input: &str, model: &str) -> Vec<f32> {
     assert_input_within_cap("embed() input", input.len());
     let texts = vec![input.to_string()];
-    let mut vecs = embed_texts(&texts, model).unwrap_or_else(|e| error!("postvec: embed: {e}"));
+    let mut vecs = embed_texts(&texts, model, EmbedPurpose::Document)
+        .unwrap_or_else(|e| error!("postvec: embed: {e}"));
     if vecs.len() != 1 {
         error!("postvec: embed: expected 1 embedding, got {}", vecs.len());
     }
@@ -480,7 +487,8 @@ fn embed_set<'a>(
         );
     }
     let inputs = collect_batch_within_caps("embed() input", inputs);
-    let vecs = embed_texts(&inputs, model).unwrap_or_else(|e| error!("postvec: embed: {e}"));
+    let vecs = embed_texts(&inputs, model, EmbedPurpose::Document)
+        .unwrap_or_else(|e| error!("postvec: embed: {e}"));
     // Same contract as the scalar overload: the response must be row-parallel
     // to the input, or the caller silently loses/mismatches rows.
     if vecs.len() != inputs.len() {

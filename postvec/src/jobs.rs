@@ -1790,6 +1790,8 @@ mod tests {
             EmbedRoute {
                 bridge_model: Some("m".into()),
                 target_model: Some("ext".into()),
+                // The worker embeds stored content.
+                purpose: crate::client::EmbedPurpose::Document,
             }
         );
 

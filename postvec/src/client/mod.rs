@@ -176,6 +176,34 @@ pub struct ConvertRoute {
     pub target_model: Option<String>,
 }
 
+/// What the texts of an embed call are *for*. Quality-relevant to providers
+/// that distinguish the two (Cohere's `input_type`; Gemini's `taskType` is
+/// deferred), and inert for every other route.
+///
+/// Carried on [`EmbedRoute`] rather than as a new trait method or proto
+/// field: the wire already has `EmbedTextsRequest.input_type`, so this
+/// changes no contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EmbedPurpose {
+    /// Stored content: the worker, one-shot `embed()`, migrate reembed, and
+    /// the dimension probe.
+    #[default]
+    Document,
+    /// A `search()` query being embedded to compare against stored vectors.
+    Query,
+}
+
+impl EmbedPurpose {
+    /// The `EmbedTextsRequest.input_type` value, using the vocabulary the
+    /// providers already speak.
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            EmbedPurpose::Document => "search_document",
+            EmbedPurpose::Query => "search_query",
+        }
+    }
+}
+
 /// Bridge fields for an embed call routed through an `embed-bridge` executor
 /// (texts are embedded with `bridge_model`, then converted into
 /// `target_model`'s space engine-side); both `None` for a direct embed model.
@@ -184,6 +212,17 @@ pub struct ConvertRoute {
 pub struct EmbedRoute {
     pub bridge_model: Option<String>,
     pub target_model: Option<String>,
+    /// Query vs document. Defaults to `Document`, so every existing
+    /// construction site keeps today's meaning.
+    pub purpose: EmbedPurpose,
+}
+
+impl EmbedRoute {
+    /// The same route, embedding for `purpose`.
+    pub fn with_purpose(mut self, purpose: EmbedPurpose) -> Self {
+        self.purpose = purpose;
+        self
+    }
 }
 
 /// Transport-agnostic core trait. Async; callers run it on the per-process
@@ -263,6 +302,27 @@ mod tests {
             RavennaCode::InvalidInput
         );
         assert_eq!(RavennaCode::parse("SomethingNew"), RavennaCode::Unknown);
+    }
+
+    /// The default must be Document: every construction site that predates
+    /// the purpose keeps meaning exactly what it meant.
+    #[test]
+    fn embed_purpose_defaults_to_document_and_maps_to_the_wire() {
+        assert_eq!(EmbedPurpose::default(), EmbedPurpose::Document);
+        assert_eq!(EmbedRoute::default().purpose, EmbedPurpose::Document);
+        assert_eq!(EmbedPurpose::Document.as_wire(), "search_document");
+        assert_eq!(EmbedPurpose::Query.as_wire(), "search_query");
+
+        // `with_purpose` changes only the purpose.
+        let bridged = EmbedRoute {
+            bridge_model: Some("m".into()),
+            target_model: Some("ext".into()),
+            ..Default::default()
+        };
+        let query = bridged.clone().with_purpose(EmbedPurpose::Query);
+        assert_eq!(query.bridge_model, bridged.bridge_model);
+        assert_eq!(query.target_model, bridged.target_model);
+        assert_eq!(query.purpose, EmbedPurpose::Query);
     }
 
     #[test]

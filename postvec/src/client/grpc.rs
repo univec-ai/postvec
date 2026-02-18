@@ -407,6 +407,11 @@ impl InferenceClient for GrpcClient {
                     model: model.to_string(),
                     bridge_model: route.bridge_model.clone().unwrap_or_default(),
                     target_model: route.target_model.clone().unwrap_or_default(),
+                    // The field the proto has carried all along; provider
+                    // connectors consume it, and the hosts strip it before
+                    // the engine ever sees it (see the engine-path comment
+                    // in embedded/server.rs).
+                    input_type: route.purpose.as_wire().to_string(),
                     ..Default::default()
                 });
                 request.set_timeout(budget);
@@ -1041,6 +1046,7 @@ mod tests {
                         &EmbedRoute {
                             bridge_model: Some("m".into()),
                             target_model: Some("ext".into()),
+                            ..Default::default()
                         },
                     )
                     .await

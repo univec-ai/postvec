@@ -294,9 +294,18 @@ impl NinferenceService for EmbeddedService {
                 Value::Number(req.dimensions.into()),
             );
         }
-        if !req.input_type.is_empty() {
-            payload.insert("input_type".to_string(), Value::String(req.input_type));
-        }
+        // §10 option (b): `input_type` is deliberately NOT forwarded to the
+        // engine. The extension's client now always sets it (the gateway
+        // needs it for Cohere), and the engine applies it only to models
+        // that declare templates — but a template-less model (the bundled
+        // MiniLM, and every model shipped today) logs a warning PER REQUEST
+        // when it sees one, which would flood the PostgreSQL log on every
+        // embed, and a templated model's vectors would silently change,
+        // which is exactly what the golden-vector suite exists to prevent.
+        // Forwarding it is a deliberate, separately tested change (it moves
+        // stored-vector semantics); stripping it here preserves today's
+        // engine numbers exactly, with no client-side model lookup.
+        let _ = req.input_type;
         // `user` is a pass-through identifier; not forwarded (same as the
         // production server).
         let _ = req.user;
@@ -1445,6 +1454,86 @@ mod gateway_tests {
         ))
         .expect("a reloaded-in provider serves without a restart");
         assert_eq!(out, vec![vec![0.25, 0.5]]);
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Phase 6, end to end: the purpose on `EmbedRoute` becomes
+    /// `EmbedTextsRequest.input_type` on the wire, and the gateway turns it
+    /// into the provider's own vocabulary. Cohere is the connector whose
+    /// request body carries it, so its mock request is the observable.
+    ///
+    /// This is the honest form of "search sets Query": `search()` embeds
+    /// through `embed_texts`, which constructs its own `GrpcClient` with no
+    /// injection seam, and `pg_test` has no host at all — so the contract is
+    /// proved here, through the real client, the real server and the real
+    /// gateway, rather than against a mock two layers below it.
+    #[test]
+    fn the_route_purpose_becomes_the_providers_input_type() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::client::embedded::tests::empty_engine_root();
+        let runtime = crate::client::embedded::tests::engine_runtime();
+        let engine = crate::client::embedded::tests::test_engine(&root);
+
+        let mock = runtime.block_on(provider_mock::always(
+            200,
+            r#"{"embeddings":{"float":[[0.25,0.5]]}}"#,
+        ));
+        let dir = root.join("providers.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cohere.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "provider = \"cohere\"\napi_key = \"co-test\"\nbase_url = \"{}\"\n\n\
+                 [[models]]\nname = \"cohere-embed-v4-0\"\n\
+                 provider_model_id = \"embed-v4.0\"\ndim = 2\n",
+                mock.url
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let gateway = Arc::new(Gateway::load(&dir));
+
+        let (server, addr) = spawn_for_test(
+            engine,
+            &runtime,
+            "127.0.0.1:0",
+            Duration::from_secs(5),
+            gateway,
+        )
+        .unwrap();
+        let client = GrpcClient::new(vec![addr.to_string()], Vec::new(), 5_000, 1_000);
+
+        // What `search()` sends.
+        crate::runtime::block_on(client.embed(
+            &["a query".to_string()],
+            "cohere-embed-v4-0",
+            &EmbedRoute::default().with_purpose(crate::client::EmbedPurpose::Query),
+        ))
+        .expect("query embed");
+        assert!(
+            mock.last_request()
+                .contains("\"input_type\":\"search_query\""),
+            "{}",
+            mock.last_request()
+        );
+
+        // What the worker, one-shot embed() and migrate reembed send — and
+        // what a default-constructed route means.
+        crate::runtime::block_on(client.embed(
+            &["stored content".to_string()],
+            "cohere-embed-v4-0",
+            &EmbedRoute::default(),
+        ))
+        .expect("document embed");
+        assert!(
+            mock.last_request()
+                .contains("\"input_type\":\"search_document\""),
+            "{}",
+            mock.last_request()
+        );
 
         server.abort();
         let _ = std::fs::remove_dir_all(&root);

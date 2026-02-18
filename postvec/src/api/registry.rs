@@ -194,7 +194,11 @@ pub(crate) fn resolve_dim(model: &str) -> i32 {
     }
     // Fallback: probe-embed and measure. Rides the bridge for
     // convert-only models.
-    match embed_texts(&["dimension probe".to_string()], model) {
+    match embed_texts(
+        &["dimension probe".to_string()],
+        model,
+        crate::client::EmbedPurpose::Document,
+    ) {
         Ok(vecs) if vecs.first().map(|v| v.len()).unwrap_or(0) > 0 => vecs[0].len() as i32,
         Ok(_) => error!("postvec: probe embed for {model:?} returned an empty vector"),
         Err(e) => error!(

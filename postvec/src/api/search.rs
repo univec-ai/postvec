@@ -898,7 +898,14 @@ fn search(
     // The response is validated before it reaches the dynamic SQL: a wrong
     // cardinality, wrong dimension, or non-finite component would otherwise
     // surface as a late pgvector/SPI error instead of a clear postvec one.
-    let qvec = match embed_texts(&[query.to_string()], &entry.model) {
+    // The one Query site: this text is a search query, not stored
+    // content. Providers that distinguish the two (Cohere) embed it
+    // differently; every other route ignores it.
+    let qvec = match embed_texts(
+        &[query.to_string()],
+        &entry.model,
+        crate::client::EmbedPurpose::Query,
+    ) {
         Ok(vecs) => match validate_query_embedding(&entry, vecs) {
             Ok(v) => Some(v),
             Err(reason) => degrade_or_error(&reason),

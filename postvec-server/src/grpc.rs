@@ -366,9 +366,18 @@ impl InferenceService {
                 Value::Number(req.dimensions.into()),
             );
         }
-        if !req.input_type.is_empty() {
-            payload.insert("input_type".to_string(), Value::String(req.input_type));
-        }
+        // §10 option (b): `input_type` is deliberately NOT forwarded to the
+        // engine. The extension's client now always sets it (the gateway
+        // needs it for Cohere), and the engine applies it only to models
+        // that declare templates — but a template-less model (the bundled
+        // MiniLM, and every model shipped today) logs a warning PER REQUEST
+        // when it sees one, which would flood this node's log on every
+        // embed, and a templated model's vectors would silently change,
+        // which is exactly what the golden-vector suite exists to prevent.
+        // Forwarding it is a deliberate, separately tested change (it moves
+        // stored-vector semantics); stripping it here preserves today's
+        // engine numbers exactly, with no client-side model lookup.
+        let _ = req.input_type;
         // `user` is a pass-through identifier; not forwarded (same as the
         // production server).
         let _ = req.user;
