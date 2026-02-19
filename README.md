@@ -50,9 +50,10 @@ re-embedding, no shadow index rebuild.
 | Directory | |
 |---|---|
 | `postvec/` | The extension (pgrx, PostgreSQL 16–18, pgvector ≥ 0.8) |
-| `postvec-cli/` | The `postvec` command: `setup`, `doctor`, `model pull/…`, `uninstall` |
+| `postvec-cli/` | The `postvec` command: `setup`, `doctor`, `model pull/…`, `provider add/…`, `uninstall` |
 | `postvec-server/` | The standalone inference node remote mode dials ([README](postvec-server/README.md)) — **Business Source License 1.1** (source-available), not the PostgreSQL License the rest uses |
 | `engine/`, `shared/` | The in-process inference engine embedded mode uses — a trimmed fork of UniVec's engine ([engine/FORK.md](engine/FORK.md)) |
+| `providers/` | Connectors for hosted embedding APIs (OpenAI, Gemini, Cohere, Mistral, Bedrock, OpenRouter), mounted by both inference hosts ([docs](docs/external-providers-usage.md)) |
 | `proto/` | The canonical gRPC contract between postvec and inference nodes |
 | `packaging/postvec/` | The `.deb`/`.rpm`/container release pipeline |
 | `docs/` | Operator documentation — start at [docs/postvec-description.md](docs/postvec-description.md), or [docs/postvec-server.md](docs/postvec-server.md) to run the inference nodes |
@@ -61,7 +62,8 @@ re-embedding, no shadow index rebuild.
 
 - **Embedded** (`postvec.mode = 'embedded'`, the default): one engine hosted
   inside the PostgreSQL launcher process, CPU-only, models on local disk, no
-  text leaves the host. Install the packages, preload the library, restart —
+  text leaves the host (unless you bind a column to an external provider).
+  Install the packages, preload the library, restart —
   `search()` works with nothing else configured. Traded against a shared
   CPU/memory/failure domain with PostgreSQL.
 - **Remote** (`postvec.mode = 'grpc'`): inference runs on separate nodes and
@@ -78,8 +80,10 @@ Same SQL, same queue, same wire contract in both modes.
 - Requires `shared_preload_libraries`, so no RDS/Aurora or other managed
   services that do not allow it.
 - The extension is PostgreSQL-licensed — unconditionally, in either mode — and
-  phones nothing home: no telemetry, no provider API keys in the database, no
-  licence check. `postvec-server` is under the Business Source License 1.1 (source-available)
+  phones nothing home: no telemetry, no licence check, and no provider API key
+  in the database — external embedding providers are opt-in per column, and
+  their credentials live only in the inference layer, in `0600` files.
+  `postvec-server` is under the Business Source License 1.1 (source-available)
   and does the same.
 - `postvec model pull` fetches models from UniVec's model registry: an
   anonymous public channel for open models, and an authenticated channel

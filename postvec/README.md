@@ -431,7 +431,11 @@ source model, convert engine-side — one RPC). Embed resolution is two-tier
 everywhere (worker, `search()`, `enable()`, `embed()`): a hosted embed model
 wins; the bridge is the fallback, re-resolved from the model cache on every
 batch — so if the target later becomes directly embeddable, postvec upgrades
-to direct embedding automatically. A converter target whose *source* is not
+to direct embedding automatically. Configuring an external provider for that
+space is exactly how that happens, which is why `postvec provider add` lists
+the affected columns and requires an acknowledgement: their source text starts
+going to the provider on the next worker cycle. See
+[docs/external-providers-usage.md](../docs/external-providers-usage.md). A converter target whose *source* is not
 embeddable (and any model with no embed path at all) is still refused at
 `enable()`/`migrate()` time.
 
