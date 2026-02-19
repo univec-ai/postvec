@@ -20,7 +20,7 @@ use crate::cli::{Cli, UninstallArgs};
 use crate::config;
 use crate::config::owned::{sha256_hex, ClusterState, HostLock, Ownership, STATE_SCHEMA_VERSION};
 use crate::error::{CliError, Exit, Result};
-use crate::facts::DatabaseFacts;
+use crate::facts::{DatabaseFacts, SettingsSnapshot};
 use crate::output::{CommandResult, Output};
 use crate::plan::{ApplyJournal, DatabasePlan, Plan, PlanStep, Prompt};
 use std::time::{Duration, Instant};
@@ -245,6 +245,13 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                     "postvec: removed {} (revealing the configuration that was there before)",
                     paths.config.display()
                 ));
+                // Nothing postvec-managed is left on this host, so this is the
+                // moment the provider credentials become orphaned. Teardown
+                // never destroys what it did not create, and it never deletes
+                // credentials silently either — so say where they are.
+                if let Some(note) = leftover_provider_files(&snapshot.settings) {
+                    messages.push(format!("postvec: {note}"));
+                }
             }
             // Nothing was changed, and the command was asked to change
             // something: the worker keeps connecting to a database the operator
@@ -450,6 +457,27 @@ fn rewrite_database_list(previous: &str, databases: &[String]) -> Result<String>
         out.push_str(&format!("postvec.database = {value}\n"));
     }
     Ok(out)
+}
+
+/// Report — never remove — provider connector files left behind by a
+/// teardown. They hold credentials this command did not create, so deleting
+/// them is the operator's call; saying nothing would leave API keys on a host
+/// nobody is looking at any more.
+fn leftover_provider_files(settings: &SettingsSnapshot) -> Option<String> {
+    if settings.mode() != Some(crate::cli::Mode::Embedded) {
+        return None;
+    }
+    let dir = settings.providers_path();
+    let files = crate::commands::provider::ls::provider_files(&dir);
+    if files.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} still holds {} provider connector file(s) with API credentials; they were not \
+         removed — delete them yourself once no other host needs them",
+        dir.display(),
+        files.len()
+    ))
 }
 
 /// Per-database preflight summary: what exists and what will be torn down.
@@ -665,5 +693,59 @@ postvec.ninference_http_endpoints = 'https://192.0.2.2:22222'
         assert!(absent.contains("does not exist"));
         let clean = summarize(&[facts("univec", false)], false).join("\n");
         assert!(clean.contains("postvec is not installed"));
+    }
+
+    fn settings(pairs: &[(&str, &str)]) -> SettingsSnapshot {
+        SettingsSnapshot {
+            rows: pairs
+                .iter()
+                .map(|(name, value)| crate::facts::SettingRow {
+                    name: (*name).to_string(),
+                    setting: (*value).to_string(),
+                    context: "postmaster".to_string(),
+                    source: "configuration file".to_string(),
+                    sourcefile: None,
+                    sourceline: None,
+                    pending_restart: false,
+                })
+                .collect(),
+            file_rows: Vec::new(),
+        }
+    }
+
+    /// Teardown must name orphaned credentials and leave every one of them on
+    /// disk — the same rule as shadow columns, applied to API keys.
+    #[test]
+    fn teardown_reports_leftover_provider_files_without_deleting_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let providers = dir.path().join("providers.d");
+        std::fs::create_dir(&providers).expect("mkdir");
+        std::fs::write(providers.join("openai.toml"), "provider = 'openai'\n").expect("write");
+
+        let embedded = settings(&[
+            ("postvec.mode", "embedded"),
+            (
+                "postvec.providers_path",
+                providers.to_str().expect("utf-8 path"),
+            ),
+        ]);
+        let note = leftover_provider_files(&embedded).expect("a report");
+        assert!(note.contains("1 provider connector file"), "{note}");
+        assert!(note.contains("were not removed"), "{note}");
+        assert!(providers.join("openai.toml").exists());
+
+        // grpc clusters keep their provider files on the postvec-server nodes.
+        let remote = settings(&[
+            ("postvec.mode", "grpc"),
+            (
+                "postvec.providers_path",
+                providers.to_str().expect("utf-8 path"),
+            ),
+        ]);
+        assert!(leftover_provider_files(&remote).is_none());
+
+        // Zero-config: nothing to say.
+        std::fs::remove_file(providers.join("openai.toml")).expect("rm");
+        assert!(leftover_provider_files(&embedded).is_none());
     }
 }

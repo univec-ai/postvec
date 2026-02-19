@@ -259,6 +259,30 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
         }
     }
 
+    // The providers.d directory the embedded host reads. Created here rather
+    // than by the packages, which can neither name the cluster owner nor
+    // safely chown at unpack time; `postvec provider add` creates it too, so
+    // this only makes the location exist for an operator who drops a file in
+    // by hand. Nothing depends on it: an absent directory is the zero-config
+    // path, so a failure here is a note, never a failed setup.
+    if let InferenceSettings::Embedded(embedded) = &desired.inference {
+        let dir = embedded
+            .providers_path
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(config::DEFAULT_PROVIDERS_PATH));
+        match crate::commands::provider::ensure_private_dir(&dir, context.cluster.owner.as_ref()) {
+            Ok(true) => {
+                journal.record(format!("created {} (0700)", dir.display()));
+                output.progress(&format!("postvec: created {} (0700)", dir.display()));
+            }
+            Ok(false) => {}
+            Err(error) => output.note(&format!(
+                "could not create {}: {error}; external providers need it, local models do not",
+                dir.display()
+            )),
+        }
+    }
+
     let previous_server = context.server.clone();
     match activation {
         Activation::Restart => {

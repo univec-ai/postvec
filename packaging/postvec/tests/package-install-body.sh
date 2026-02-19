@@ -286,6 +286,15 @@ ok "no PostgreSQL configuration was written"
     && bad "the package created CLI-owned state; that belongs to postvec setup" \
     || ok "no CLI state was created"
 
+# The external-provider credential directory is deliberately not packaged: only
+# `postvec setup --embedded` knows which account owns the cluster, and a
+# package-declared owner would be applied at unpack time, before PostgreSQL's
+# own packages have created it. Absent here is also the zero-config state the
+# host reads as "no external providers configured".
+[[ -e /etc/postvec ]] \
+    && bad "the package created /etc/postvec; the credential directory belongs to postvec setup" \
+    || ok "no credential directory was created"
+
 step "the CLI works"
 
 version="$(postvec --version 2>&1 || true)"
@@ -557,6 +566,62 @@ else
     [[ "${probe}" == MISSING ]] \
         && ok "doctor probed the engine (no inference.probe fallback in the report)" \
         || bad "doctor fell back to inference.probe=${probe}; the engine was not examined"
+
+    # ----------------------------------------------------- external providers
+    #
+    # Files only: no provider is contacted (`--no-verify`), because a package
+    # test must not need an API key or the internet. What it proves is the
+    # packaging-shaped half — that the released CLI can create the credential
+    # directory the packages deliberately do not ship, with the right mode and
+    # owner, and round-trip a connector file through the shipped binary.
+    step "external providers (no network)"
+
+    PROVIDERS_D=/etc/postvec/providers.d
+    if [[ -d "${PROVIDERS_D}" ]]; then
+        dir_mode="$(stat -c %a "${PROVIDERS_D}")"
+        dir_owner="$(stat -c %U "${PROVIDERS_D}")"
+        [[ "${dir_mode}" == 700 && "${dir_owner}" == "${PG_USER}" ]] \
+            && ok "setup --embedded created ${PROVIDERS_D} (0700, ${dir_owner})" \
+            || bad "${PROVIDERS_D} is ${dir_owner} mode ${dir_mode}, expected ${PG_USER} 700"
+    else
+        bad "postvec setup --embedded did not create ${PROVIDERS_D}"
+    fi
+
+    provider_status=0
+    postvec provider add openai \
+        --pg-config "${BIN}/pg_config" --config-dir "${CONF_D}" \
+        --model text-embedding-3-small \
+        --api-key-env POSTVEC_PACKAGE_TEST_KEY \
+        --no-verify --yes >/tmp/provider-add.log 2>&1 || provider_status=$?
+    # 0 = written and the host reloaded; 4 = written, host not reachable. Both
+    # mean the files are correct, which is what this test is about.
+    if [[ "${provider_status}" == 0 || "${provider_status}" == 4 ]]; then
+        ok "postvec provider add wrote a connector file (exit ${provider_status})"
+    else
+        bad "postvec provider add exited ${provider_status}: $(tail -5 /tmp/provider-add.log)"
+    fi
+
+    if [[ -f "${PROVIDERS_D}/openai.toml" ]]; then
+        file_mode="$(stat -c %a "${PROVIDERS_D}/openai.toml")"
+        file_owner="$(stat -c %U "${PROVIDERS_D}/openai.toml")"
+        [[ "${file_mode}" == 600 && "${file_owner}" == "${PG_USER}" ]] \
+            && ok "the connector file is ${file_owner}-owned and 0600" \
+            || bad "openai.toml is ${file_owner} mode ${file_mode}, expected ${PG_USER} 600"
+    else
+        bad "no ${PROVIDERS_D}/openai.toml after provider add"
+    fi
+
+    listing="$(postvec provider ls --pg-config "${BIN}/pg_config" \
+                   --config-dir "${CONF_D}" 2>&1 || true)"
+    grep -q 'POSTVEC_PACKAGE_TEST_KEY' <<<"${listing}" \
+        && ok "provider ls names the key *source*" \
+        || bad "provider ls did not report the key source: $(head -3 <<<"${listing}")"
+
+    postvec provider rm openai --pg-config "${BIN}/pg_config" \
+        --config-dir "${CONF_D}" --yes >/tmp/provider-rm.log 2>&1 || true
+    [[ -e "${PROVIDERS_D}/openai.toml" ]] \
+        && bad "provider rm left the connector file behind: $(tail -3 /tmp/provider-rm.log)" \
+        || ok "provider rm removed the connector file"
 fi
 
 # ------------------------------------------------------------ detached symbols

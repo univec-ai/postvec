@@ -533,6 +533,16 @@ sudo postvec setup --database app --grpc 192.0.2.20:33333 --http https://192.0.2
 postvec doctor --database app
 ```
 
+That is also why no package ships `/etc/postvec/providers.d`, the directory the
+external-provider connector files live in. It has to be `0700` and owned by the
+account that owns the cluster — which is not always `postgres`, and which a
+package would have to chown at unpack time, before PostgreSQL's own packages
+have created it. `postvec setup --embedded` creates it instead (so does
+`postvec provider add`), and neither package removal nor `postvec uninstall`
+deletes it: it holds credentials the packages never created. An absent
+directory is exactly the zero-config state, so nothing is missing until an
+operator configures a provider.
+
 `scripts/verify-package.sh` enforces this mechanically: it extracts the
 maintainer scripts, strips comments and here-document bodies (a `postrm` that
 *prints* "run postvec uninstall first" is exactly right; one that *runs* it is

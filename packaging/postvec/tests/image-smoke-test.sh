@@ -185,6 +185,21 @@ if [[ "${VARIANT}" == complete ]]; then
     echo
     echo "inference (no external service, no API key)"
 
+    # External providers are opt-in, and the image ships none. Both halves of
+    # that are asserted here, because "zero-config still works" is exactly the
+    # claim a provider feature is able to break silently: an image that shipped
+    # a providers.d, or a host that advertised a provider-backed model without
+    # one, would still pass every check below it.
+    docker exec "${RUN_ID}" test -e /etc/postvec/providers.d \
+        && bad "the image ships /etc/postvec/providers.d — providers must be opt-in" \
+        || ok "no provider configuration in the image"
+
+    external="$(sql -c "SELECT count(*) FROM postvec.models
+                         WHERE raw->'extra'->>'provider' IS NOT NULL")"
+    [[ "${external}" == 0 ]] \
+        && ok "the model cache advertises no provider-backed model" \
+        || bad "${external} provider-backed model(s) in an image configured with none"
+
     dim="$(sql -c "SELECT target_dim FROM postvec.models WHERE name = '${MODEL}'")"
     [[ "${dim}" == "${DIMS}" ]] \
         && ok "${MODEL} is loaded at ${dim} dimensions" \

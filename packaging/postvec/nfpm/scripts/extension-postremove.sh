@@ -30,6 +30,11 @@ load the library:
   postvec doctor                        # what is still configured
 
 Run these *before* removing the package for a clean uninstall.
+
+External embedding providers, if you configured any, keep their connector
+files in /etc/postvec/providers.d. Those hold API credentials, they were never
+package-owned, and nothing here deletes them — remove them yourself when no
+host needs them any more.
 EOF
 
 exit 0

@@ -316,6 +316,33 @@ impl ProviderFileDoc {
     }
 }
 
+/// Create `dir` 0700, owned by `owner` when we are root acting on their
+/// behalf, and report whether it had to be created. Idempotent, and it never
+/// touches a directory that already exists — the operator's own mode and
+/// ownership are theirs to keep.
+///
+/// This is where the providers.d directory comes from. The packages
+/// deliberately do not ship it: an nfpm-declared owner would have to name
+/// `postgres` (postvec serves clusters owned by other accounts too) and would
+/// be applied at unpack time, before the PostgreSQL packages have created
+/// that account. The CLI, by contrast, knows the cluster owner, so it creates
+/// the directory at `postvec setup --embedded` and here.
+pub fn ensure_private_dir(dir: &Path, owner: Option<&crate::proc::OsAccount>) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if dir.exists() {
+        return Ok(false);
+    }
+    // Parents (`/etc/postvec`) keep the default mode: only the leaf holds
+    // credentials, and a 0700 `/etc/postvec` would hide unrelated files.
+    std::fs::create_dir_all(dir)
+        .map_err(|e| CliError::apply(format!("cannot create {}: {e}", dir.display())))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| CliError::apply(format!("cannot chmod {}: {e}", dir.display())))?;
+    chown_if_root(dir, owner)?;
+    Ok(true)
+}
+
 /// Create `path`'s parent 0700 and write `path` 0600, atomically (write to a
 /// sibling temp file, then rename), chowning both to `owner` when running
 /// as root on their behalf.
@@ -330,13 +357,7 @@ pub fn write_secret_file(
     let dir = path
         .parent()
         .ok_or_else(|| CliError::internal(format!("{} has no parent", path.display())))?;
-    if !dir.exists() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| CliError::apply(format!("cannot create {}: {e}", dir.display())))?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| CliError::apply(format!("cannot chmod {}: {e}", dir.display())))?;
-        chown_if_root(dir, owner)?;
-    }
+    ensure_private_dir(dir, owner)?;
     let tmp = dir.join(format!(
         ".{}.tmp",
         path.file_name().unwrap_or_default().to_string_lossy()
@@ -665,6 +686,38 @@ mod tests {
         assert_eq!(
             providers_dir_from_path(Path::new("/etc/postvec/providers.d")),
             PathBuf::from("/etc/postvec/providers.d")
+        );
+    }
+
+    /// The packages ship no providers.d; the CLI is what brings it into
+    /// existence, 0700, and it never re-permissions one an operator already
+    /// has.
+    #[test]
+    fn ensure_private_dir_creates_0700_once_and_leaves_an_existing_one_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("postvec/providers.d");
+
+        assert!(ensure_private_dir(&dir, None).unwrap(), "created");
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        // The parent is an ordinary directory: only the leaf holds secrets.
+        assert_ne!(
+            std::fs::metadata(dir.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o077,
+            0
+        );
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(!ensure_private_dir(&dir, None).unwrap(), "already there");
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o750,
+            "an existing directory is the operator's to permission"
         );
     }
 
