@@ -411,6 +411,19 @@ impl InferenceClient for GrpcClient {
                     // connectors consume it, and the hosts strip it before
                     // the engine ever sees it (see the engine-path comment
                     // in embedded/server.rs).
+                    //
+                    // Set for BOTH purposes, deliberately. Only `search_query`
+                    // changes anything a gateway does, so sending nothing for
+                    // documents would be equivalent and would leave the
+                    // worker's wire bytes exactly as they were before this
+                    // feature. It is written out in full instead because the
+                    // request should say what it means: a reader of a packet
+                    // capture, or of a future host, should not have to know
+                    // that "absent" is spelled "document". Both postvec hosts
+                    // strip the field on the engine path; a third-party
+                    // ninference node that honours it would apply templates,
+                    // which is the one deployment where the shorter form
+                    // would have been safer.
                     input_type: route.purpose.as_wire().to_string(),
                     ..Default::default()
                 });

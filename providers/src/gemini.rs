@@ -143,10 +143,11 @@ impl EmbeddingBackend for GeminiClient {
                 return Err(EmbeddingError::Api { status, message });
             }
 
-            // Deserialize the successful JSON response.
-            // `response.json()` returns a `Result<T, reqwest::Error>`.
-            // We map this error to `EmbeddingError::Network`, which is retriable.
-            response.json().await.map_err(redacted_network)
+            // Read the body first, then decode it. A failure to read is
+            // transport trouble (retriable `Network`, URL stripped); a body
+            // that will not parse is permanent. See `decode_json`.
+            let bytes = response.bytes().await.map_err(redacted_network)?;
+            crate::decode_json::<GeminiBatchResponse>(&bytes)
         })
         .await?;
 

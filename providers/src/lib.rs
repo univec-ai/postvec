@@ -60,6 +60,30 @@ use thiserror::Error;
 /// (and, mapped to wire codes, toward PostgreSQL) — bound them at creation.
 const ERROR_BODY_PREVIEW_BYTES: usize = 500;
 
+/// Decode a body that has already been read off a 2xx response.
+///
+/// Every client reads `response.bytes()` first and then calls this, instead
+/// of `response.json()`. The split is a classification decision, not a style
+/// one: reading the body is transport work (a reset connection or a
+/// truncated body must stay `Network`, and therefore transient), while a
+/// body that is not the shape the provider documents is permanent for this
+/// response. `reqwest` folds both into one `Decode` error kind
+/// (`async_impl/decoder.rs`, the `PlainText` arm), so a caller that used
+/// `response.json()` could not tell an outage from garbage — and the
+/// gateway would classify a dropped connection as a dead-letter.
+pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> Result<T, EmbeddingError> {
+    serde_json::from_slice(bytes).map_err(|e| EmbeddingError::Api {
+        status: 200,
+        message: format!(
+            "decode failed ({} bytes): {e}; body={:?}",
+            bytes.len(),
+            body_preview(&String::from_utf8_lossy(bytes))
+        ),
+    })
+}
+
 /// Truncate a provider response body for inclusion in an error message,
 /// respecting UTF-8 char boundaries.
 pub(crate) fn body_preview(body: &str) -> String {

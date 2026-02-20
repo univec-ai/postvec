@@ -33,10 +33,56 @@ use std::path::{Path, PathBuf};
 /// where `--path` roots get their best-effort reload.
 const POSTVEC_SERVER_ADMIN: &str = "127.0.0.1:22223";
 
+/// Who new provider files belong to when this process is root and is acting
+/// on someone else's behalf. Only the numeric pair is ever used, and a
+/// `--path` root supplies one that has no account name to look up here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileOwner {
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl From<&crate::proc::OsAccount> for FileOwner {
+    fn from(account: &crate::proc::OsAccount) -> Self {
+        FileOwner {
+            uid: account.uid,
+            gid: account.gid,
+        }
+    }
+}
+
+/// The owner of `dir`, or of its nearest existing ancestor.
+///
+/// This is where a `--path` target gets its owner. A server root exists and
+/// belongs to the account `postvec-server` runs as, so inheriting from it
+/// makes `sudo postvec provider add --path <root>` write files that node can
+/// actually read. Without it the files land root-owned 0600 and the node
+/// skips them with a permission error, which looks like the provider was
+/// never configured.
+pub fn owner_of_nearest_existing(dir: &Path) -> Option<FileOwner> {
+    use std::os::unix::fs::MetadataExt;
+    let mut candidate = Some(dir);
+    while let Some(path) = candidate {
+        if let Ok(meta) = std::fs::metadata(path) {
+            return Some(FileOwner {
+                uid: meta.uid(),
+                gid: meta.gid(),
+            });
+        }
+        candidate = path.parent();
+    }
+    None
+}
+
 /// What a provider command works against.
 pub enum ProviderTarget {
     /// `--path DIR`: a providers.d directory, no cluster involved.
-    Path { dir: PathBuf },
+    Path {
+        dir: PathBuf,
+        /// Inherited from the root the operator named, so files written
+        /// under `sudo` still belong to the account that serves them.
+        owner: Option<FileOwner>,
+    },
     /// The selected cluster, embedded mode.
     Embedded {
         dir: PathBuf,
@@ -52,7 +98,7 @@ pub enum ProviderTarget {
 impl ProviderTarget {
     pub fn dir(&self) -> &Path {
         match self {
-            ProviderTarget::Path { dir } => dir,
+            ProviderTarget::Path { dir, .. } => dir,
             ProviderTarget::Embedded { dir, .. } => dir,
         }
     }
@@ -60,8 +106,21 @@ impl ProviderTarget {
     /// The label that stands in for `cluster` in result envelopes.
     pub fn label(&self) -> String {
         match self {
-            ProviderTarget::Path { dir } => format!("path:{}", dir.display()),
+            ProviderTarget::Path { dir, .. } => format!("path:{}", dir.display()),
             ProviderTarget::Embedded { cluster_id, .. } => cluster_id.clone(),
+        }
+    }
+
+    /// Who a file written for this target should belong to. A cluster target
+    /// uses the cluster owner; a `--path` root uses the account that owns
+    /// the root.
+    pub fn owner(&self) -> Option<FileOwner> {
+        match self {
+            ProviderTarget::Path { owner, .. } => *owner,
+            ProviderTarget::Embedded { context, .. } => context
+                .as_ref()
+                .and_then(|ctx| ctx.cluster.owner.as_ref())
+                .map(FileOwner::from),
         }
     }
 
@@ -94,9 +153,22 @@ pub async fn resolve_target(
 ) -> Result<ProviderTarget> {
     if let Some(path) = path {
         let path = crate::validate::absolute_path(path, "--path")?;
-        return Ok(ProviderTarget::Path {
-            dir: providers_dir_from_path(&path),
-        });
+        // The root must already be there. It is the only thing that says who
+        // the files belong to, and a typo would otherwise build a whole
+        // credential tree in a directory nothing reads.
+        if !path.is_dir() {
+            return Err(CliError::precondition(format!(
+                "--path {} is not an existing directory",
+                path.display()
+            ))
+            .with_fix(
+                "name a server root (or a providers.d) that already exists on this host; \
+                 `postvec provider` creates the providers.d inside it, not the root itself",
+            ));
+        }
+        let dir = providers_dir_from_path(&path);
+        let owner = owner_of_nearest_existing(&dir);
+        return Ok(ProviderTarget::Path { dir, owner });
     }
     if cli.database_url.is_some() {
         let context = Context::open(cli, output).await?;
@@ -306,7 +378,7 @@ impl ProviderFileDoc {
 
     /// Serialize and write: 0600 file, 0700 directory, chowned to `owner`
     /// when one is known and we can (root).
-    pub fn write(&self, owner: Option<&crate::proc::OsAccount>) -> Result<()> {
+    pub fn write(&self, owner: Option<FileOwner>) -> Result<()> {
         let body = format!(
             "# Managed by `postvec provider`. Comments do not survive a rewrite.\n{}",
             toml::to_string_pretty(&self.value)
@@ -327,7 +399,7 @@ impl ProviderFileDoc {
 /// be applied at unpack time, before the PostgreSQL packages have created
 /// that account. The CLI, by contrast, knows the cluster owner, so it creates
 /// the directory at `postvec setup --embedded` and here.
-pub fn ensure_private_dir(dir: &Path, owner: Option<&crate::proc::OsAccount>) -> Result<bool> {
+pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> {
     use std::os::unix::fs::PermissionsExt;
 
     if dir.exists() {
@@ -346,11 +418,7 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<&crate::proc::OsAccount>) ->
 /// Create `path`'s parent 0700 and write `path` 0600, atomically (write to a
 /// sibling temp file, then rename), chowning both to `owner` when running
 /// as root on their behalf.
-pub fn write_secret_file(
-    path: &Path,
-    body: &[u8],
-    owner: Option<&crate::proc::OsAccount>,
-) -> Result<()> {
+pub fn write_secret_file(path: &Path, body: &[u8], owner: Option<FileOwner>) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -383,7 +451,7 @@ pub fn write_secret_file(
     Ok(())
 }
 
-fn chown_if_root(path: &Path, owner: Option<&crate::proc::OsAccount>) -> Result<()> {
+fn chown_if_root(path: &Path, owner: Option<FileOwner>) -> Result<()> {
     let Some(owner) = owner else { return Ok(()) };
     if !crate::proc::is_root() {
         return Ok(());

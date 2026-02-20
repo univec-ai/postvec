@@ -270,7 +270,12 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
             .providers_path
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from(config::DEFAULT_PROVIDERS_PATH));
-        match crate::commands::provider::ensure_private_dir(&dir, context.cluster.owner.as_ref()) {
+        let owner = context
+            .cluster
+            .owner
+            .as_ref()
+            .map(crate::commands::provider::FileOwner::from);
+        match crate::commands::provider::ensure_private_dir(&dir, owner) {
             Ok(true) => {
                 journal.record(format!("created {} (0700)", dir.display()));
                 output.progress(&format!("postvec: created {} (0700)", dir.display()));

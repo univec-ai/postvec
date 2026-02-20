@@ -132,22 +132,13 @@ impl EmbeddingBackend for OpenRouterClient {
                 return Err(EmbeddingError::Api { status, message });
             }
 
-            // Deserialize the successful JSON response.
-            // Read raw bytes first so we can surface the offending body on parse failure
-            // (OpenRouter occasionally returns 200 with an `{"error": ...}` envelope, or
-            // injects SSE-style keepalive whitespace that can interfere with parsing).
+            // Read the body first, then decode it. A failure to read is
+            // transport trouble (retriable `Network`); a body that will not
+            // parse is permanent for this response — OpenRouter occasionally
+            // returns 200 with an `{"error": ...}` envelope, or injects
+            // SSE-style keepalive whitespace. See `decode_json`.
             let bytes = response.bytes().await.map_err(EmbeddingError::Network)?;
-            serde_json::from_slice::<OpenRouterResponse>(&bytes).map_err(|e| {
-                let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(500)]);
-                EmbeddingError::Api {
-                    status: 200,
-                    message: format!(
-                        "decode failed ({} bytes): {e}; body[0..500]={:?}",
-                        bytes.len(),
-                        preview
-                    ),
-                }
-            })
+            crate::decode_json::<OpenRouterResponse>(&bytes)
         })
         .await?;
 

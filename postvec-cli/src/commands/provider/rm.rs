@@ -119,13 +119,7 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         let id_or_name = args.model.as_deref().expect("partial removal has --model");
         let (removed, remaining) = doc.remove_model(id_or_name);
         debug_assert!(removed, "matched above");
-        let owner = match &target {
-            ProviderTarget::Embedded { context, .. } => {
-                context.as_ref().and_then(|ctx| ctx.cluster.owner.clone())
-            }
-            ProviderTarget::Path { .. } => None,
-        };
-        doc.write(owner.as_ref())?;
+        doc.write(target.owner())?;
         journal.record(format!(
             "removed {id_or_name} from {} ({remaining} model(s) remain)",
             file_path.display()

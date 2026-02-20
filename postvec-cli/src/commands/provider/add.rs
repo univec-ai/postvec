@@ -161,7 +161,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     }
 
     // ---- Verification probe (and dimension inference) ----
-    if !args.no_verify {
+    // A dry run never probes. The probe is a live, billed request that also
+    // puts the key on the network, and `--dry-run` promises neither. The
+    // plan says what the real run would do instead.
+    let probe = !args.no_verify && !args.dry_run;
+    if probe {
         let secret = probe_secret(&key, existing.as_ref())?;
         let config = providers::ProviderConfig {
             provider: canonical.clone(),
@@ -222,13 +226,23 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         }
     }
     for model in &new_models {
-        if model.dim.is_none() {
+        // A dry run may legitimately reach here with no dimension yet: the
+        // probe it skipped is what would have measured one. Only
+        // --no-verify makes the gap permanent.
+        if model.dim.is_none() && args.no_verify {
             return Err(CliError::usage(format!(
                 "{} is not in the built-in catalog and --no-verify skips the probe; pass \
                  --dim <N> (its vector dimension) for it",
                 model.id
             )));
         }
+    }
+    if args.dry_run && !args.no_verify && !new_models.is_empty() {
+        output.note(
+            "--dry-run: the verification embed was not sent. The real run makes one live \
+             call per model, which the provider bills, and measures any dimension the \
+             built-in catalog does not know",
+        );
     }
 
     // ---- Privacy gate + plan ----
@@ -257,8 +271,25 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             unknown_databases: unknown_databases.clone(),
         });
     }
+    // Editing `base_url` or `region` on an existing file is a legitimate
+    // reason to run this command with no new model and no new key (an Azure
+    // front moves, a Bedrock deployment changes region). Without these two
+    // terms the plan would be a no-op and the flag would be dropped in
+    // silence.
+    let recorded = |field: &str| {
+        existing.as_ref().and_then(|doc| {
+            doc.value
+                .get(field)
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+        })
+    };
+    let base_url_changes = args.base_url.is_some() && args.base_url != recorded("base_url");
+    let region_changes = args.region.is_some() && args.region != recorded("region");
     if !new_models.is_empty()
         || matches!(key, KeySpec::File(_) | KeySpec::Env(_) | KeySpec::Inline(_))
+        || base_url_changes
+        || region_changes
     {
         plan.push(PlanStep::WriteConfig {
             path: file_path.clone(),
@@ -292,7 +323,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             &target,
             plan,
             ApplyJournal::default(),
-            vec!["nothing to do: every requested model is already declared".to_string()],
+            vec![
+                "nothing to do: every requested model is already declared, and no key, \
+                 base URL or region changed"
+                    .to_string(),
+            ],
             started,
             started_at,
         );
@@ -364,13 +399,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         doc.push_model(toml::Value::Table(entry));
     }
 
-    let owner = match &target {
-        ProviderTarget::Embedded { context, .. } => {
-            context.as_ref().and_then(|ctx| ctx.cluster.owner.clone())
-        }
-        ProviderTarget::Path { .. } => None,
-    };
-    doc.write(owner.as_ref())?;
+    doc.write(target.owner())?;
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
         journal.record(format!(

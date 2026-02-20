@@ -682,6 +682,121 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
     assert!(!file.exists(), "provider rm left the file behind");
 }
 
+/// `--dry-run` sends nothing. The verification embed is a live, billed
+/// request that also puts the key on the network, so the dry run must skip
+/// it: this test passes on a host with no route to any provider, which it
+/// could not do if the probe still ran.
+#[test]
+fn provider_add_dry_run_makes_no_provider_call_and_writes_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let key = root.path().join("openai.key");
+    std::fs::write(&key, "sk-test-key-value\n").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-file",
+        key.to_str().unwrap(),
+        "--path",
+        root.path().to_str().unwrap(),
+        // Deliberately NOT --no-verify: the dry run itself is what must
+        // suppress the probe.
+        "--dry-run",
+    ]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(
+        !root.path().join("providers.d").join("openai.toml").exists(),
+        "--dry-run wrote a connector file"
+    );
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(
+        text.contains("verification embed was not sent"),
+        "the dry run must say the probe was skipped:\n{text}"
+    );
+}
+
+/// A `--path` root that does not exist is refused. It is the only thing that
+/// says who the files should belong to, and a typo would otherwise build a
+/// credential directory nothing reads.
+#[test]
+fn provider_add_refuses_a_path_root_that_does_not_exist() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let missing = root.path().join("no-such-root");
+
+    let output = run(&["provider", "ls", "--path", missing.to_str().unwrap()]);
+    // A precondition, not a usage error: the value is well formed, the host
+    // is not in the state it describes.
+    assert_eq!(code(&output), 1, "{}", stderr(&output));
+    let text = stderr(&output);
+    assert!(
+        text.contains("--path") && text.contains("existing directory"),
+        "the refusal must name --path and why:\n{text}"
+    );
+}
+
+/// Re-running `add` purely to move `base_url` is a real change, not a
+/// no-op. The file records the new value and the command says it wrote.
+#[test]
+fn provider_add_applies_a_base_url_change_to_an_existing_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let key = root.path().join("openai.key");
+    std::fs::write(&key, "sk-test-key-value\n").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let root_arg = root.path().to_str().unwrap();
+
+    let first = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-file",
+        key.to_str().unwrap(),
+        "--base-url",
+        "https://api.openai.com",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&first), 0, "{}", stderr(&first));
+
+    // Same model, same key, new front end.
+    let second = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--base-url",
+        "https://eu.example.invalid",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&second), 0, "{}", stderr(&second));
+
+    let body = std::fs::read_to_string(root.path().join("providers.d").join("openai.toml"))
+        .expect("connector file");
+    assert!(
+        body.contains("https://eu.example.invalid"),
+        "the base_url change was dropped:\n{body}"
+    );
+    assert!(
+        body.contains("text-embedding-3-small"),
+        "the existing model entry must survive:\n{body}"
+    );
+}
+
 /// A world-readable key file is refused with the same rule the serving host
 /// applies, before anything is written.
 #[test]

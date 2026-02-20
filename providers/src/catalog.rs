@@ -81,8 +81,12 @@ pub const CATALOG: &[CatalogModel] = &[
         max_tokens: 512,
         max_batch: 96,
     },
-    // AWS Bedrock. Titan invokes one text per request (`max_batch` 1 is the
-    // API shape, not a policy).
+    // AWS Bedrock. The `aws` connector speaks the Amazon Titan embedding
+    // schema only (`titan.rs`): `inputText` in, `embedding` out. Models on
+    // Bedrock with a different body shape — Cohere's, for one — need their
+    // own codec, so they are deliberately absent here rather than offered
+    // as a descriptor that can never serve. Titan invokes one text per
+    // request, so `max_batch` 1 is the API shape, not a policy.
     CatalogModel {
         provider: "aws",
         id: "amazon.titan-embed-text-v2:0",
@@ -93,10 +97,10 @@ pub const CATALOG: &[CatalogModel] = &[
     },
     CatalogModel {
         provider: "aws",
-        id: "cohere.embed-english-v3",
-        name: "aws-cohere-embed-english-v3",
-        dim: 1024,
-        max_tokens: 512,
+        id: "amazon.titan-embed-text-v1",
+        name: "aws-titan-embed-text-v1",
+        dim: 1536,
+        max_tokens: 8192,
         max_batch: 1,
     },
     // Mistral
@@ -179,6 +183,22 @@ mod tests {
             public_name("gemini", "gemini-embedding-001"),
             "gemini-embedding-001"
         );
+    }
+
+    /// The `aws` connector implements the Amazon Titan request and response
+    /// schema and nothing else (`titan.rs`). A catalog row for any other
+    /// Bedrock model would prefill a descriptor the host can never serve —
+    /// silently so under `provider add --no-verify`. Add the codec first,
+    /// then the row.
+    #[test]
+    fn the_aws_catalog_holds_only_models_the_titan_codec_serves() {
+        for model in CATALOG.iter().filter(|m| m.provider == "aws") {
+            assert!(
+                model.id.starts_with("amazon.titan-embed"),
+                "{} is not a Titan embedding model",
+                model.id
+            );
+        }
     }
 
     #[test]

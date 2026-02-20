@@ -140,13 +140,11 @@ impl EmbeddingBackend for OpenAIClient {
                 return Err(EmbeddingError::Api { status, message });
             }
 
-            // Deserialize the successful JSON response.
-            // `response.json()` returns a `Result<T, reqwest::Error>`.
-            // We map this error to `EmbeddingError::Network`, which is retriable.
-            // If it's a permanent deserialization error, retries will
-            // likely fail, but it's correct to classify it as a network/response
-            // issue from the client's perspective.
-            response.json().await.map_err(EmbeddingError::Network)
+            // Read the body first, then decode it. A failure to read is
+            // transport trouble (retriable `Network`); a body that will not
+            // parse is permanent for this response. See `decode_json`.
+            let bytes = response.bytes().await.map_err(EmbeddingError::Network)?;
+            crate::decode_json::<OpenAIResponse>(&bytes)
         })
         .await?;
 

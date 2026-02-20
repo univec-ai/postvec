@@ -289,7 +289,16 @@ impl InferenceService {
         // their limiter is the per-provider `max_concurrent` semaphore
         // inside the gateway.
         if !self.engine.is_model_ready(&req.model) {
-            if self.gateway.owns(&req.model) {
+            // `is_model_loaded` and not `is_model_ready` is what decides the
+            // collision, because `is_model_loaded` is the predicate `/config`
+            // renders from (the engine's model map). A model that is in that
+            // map but has not finished building its executor is briefly
+            // ready == false, and routing it to the provider there would make
+            // discovery and this handler disagree about which model a name
+            // is: `/config` would advertise the local dimension while the
+            // batch came back in the provider's. Refusing is the honest
+            // answer for a load in flight, and MODEL_NOT_LOADED is retried.
+            if !self.engine.is_model_loaded(&req.model) && self.gateway.owns(&req.model) {
                 return self.embed_via_gateway(req, deadline_std).await;
             }
             return Err(model_not_loaded_status(&req.model));

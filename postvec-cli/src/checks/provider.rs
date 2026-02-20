@@ -30,6 +30,10 @@ pub struct ProviderFileFacts {
 pub struct ProviderFacts {
     pub dir: PathBuf,
     pub exists: bool,
+    /// Permission bits of the directory itself. The CLI creates it 0700 and
+    /// then never re-permissions one that is already there, so this is the
+    /// only thing that observes whether it still is.
+    pub mode: Option<u32>,
     pub files: Vec<ProviderFileFacts>,
 }
 
@@ -46,6 +50,9 @@ pub fn gather(dir: &Path) -> ProviderFacts {
     let mut facts = ProviderFacts {
         dir: dir.to_path_buf(),
         exists: dir.is_dir(),
+        mode: std::fs::metadata(dir)
+            .ok()
+            .map(|meta| meta.permissions().mode() & 0o777),
         files: Vec::new(),
     };
     if !facts.exists {
@@ -189,15 +196,36 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
         ));
         return out;
     }
-    out.push(CheckResult::pass(
-        "provider.directory",
-        "providers",
-        format!(
-            "{}: {} provider file(s)",
-            facts.dir.display(),
-            facts.files.len()
+    // The directory holds credentials, so its own mode matters. `setup` and
+    // `provider add` create it 0700 and deliberately leave an existing one
+    // alone, which is why nothing else notices when it drifts. Group or
+    // other bits do not expose a key (the files are 0600) but they do expose
+    // which providers a host is configured for, so this is a warning rather
+    // than a failure.
+    match facts.mode {
+        Some(mode) if mode & 0o077 != 0 => out.push(
+            CheckResult::warn(
+                "provider.directory",
+                "providers",
+                format!(
+                    "{} is mode {mode:o}: other users can list the configured providers \
+                     ({} file(s))",
+                    facts.dir.display(),
+                    facts.files.len()
+                ),
+            )
+            .with_fix(format!("chmod 700 {}", facts.dir.display())),
         ),
-    ));
+        _ => out.push(CheckResult::pass(
+            "provider.directory",
+            "providers",
+            format!(
+                "{}: {} provider file(s)",
+                facts.dir.display(),
+                facts.files.len()
+            ),
+        )),
+    }
 
     for file in &facts.files {
         let scope = format!("provider:{}", file.name);
@@ -404,6 +432,40 @@ mod tests {
                 .contains("openai-text-embedding-3-small"),
             "{served_check:?}"
         );
+    }
+
+    /// The directory is created 0700 and never re-permissioned, so doctor is
+    /// what notices when it stops being private. A warning, not a failure:
+    /// the 0600 files still hide the keys, only the provider names leak.
+    #[test]
+    fn a_group_readable_directory_is_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            "provider = \"openai\"\napi_key = \"sk\"\n\n[[models]]\nname = \"m1\"\n\
+             provider_model_id = \"m\"\ndim = 4\n",
+            0o600,
+        );
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let results = checks(&ProviderInput {
+            facts: &gather(dir.path()),
+            served: None,
+        });
+        assert_eq!(
+            by_id(&results, "provider.directory", "providers").status,
+            CheckStatus::Pass
+        );
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let results = checks(&ProviderInput {
+            facts: &gather(dir.path()),
+            served: None,
+        });
+        let check = by_id(&results, "provider.directory", "providers");
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert!(check.summary.contains("755"), "{check:?}");
     }
 
     #[test]

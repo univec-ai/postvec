@@ -438,12 +438,15 @@ impl Gateway {
 /// file-stem name — safe log vocabulary, never a secret.
 fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
     let code = match e {
-        // A 200 whose body does not decode is a protocol glitch, not an
-        // outage (reqwest keeps transport failures out of is_decode):
-        // permanent, like the wrong-count case — retrying garbage forever
-        // only burns the queue's budget before dead-lettering anyway.
-        EmbeddingError::Network(e) if e.is_decode() => ErrorCode::InvalidInput,
-        // Network trouble and provider-side overload/outage: transient.
+        // Every network-layer failure is transient, with no inspection of
+        // reqwest's error kind. `is_decode()` looks like it would separate
+        // "the body was garbage" from "the connection died", and it does
+        // not: reqwest gives a body-stream failure the same Decode kind as
+        // a serde failure, so keying on it would dead-letter a batch whose
+        // only problem was a reset connection. The clients keep the two
+        // apart at the source instead — `bytes()` failures stay here, and a
+        // body that will not parse arrives as `Api { status: 200 }` below
+        // (see `crate::decode_json`).
         EmbeddingError::Network(_) => ErrorCode::UpstreamServiceUnavailable,
         EmbeddingError::Api {
             status: 429 | 500..=599,
@@ -736,6 +739,31 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::ModelNotFound, "{err}");
+    }
+
+    /// A truncated 200 body is an outage, not poison. reqwest reports it
+    /// with the same error kind as unparseable JSON, so this is the case
+    /// that decides whether a reset connection retries or dead-letters a
+    /// batch of rows. It must be Transient.
+    #[tokio::test]
+    async fn a_truncated_response_body_is_transient_not_a_dead_letter() {
+        let m = mock::truncated(r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
+        let dir = tempfile::tempdir().unwrap();
+        write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
+        let gateway = Gateway::load(dir.path());
+
+        let err = gateway
+            .embed(
+                "openai-text-embedding-3-small",
+                &["x".to_string()],
+                InputType::Document,
+                // Short: no in-client retry fits, so the first failure is
+                // the one that surfaces.
+                Instant::now() + Duration::from_millis(300),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::UpstreamServiceUnavailable, "{err}");
     }
 
     #[tokio::test]

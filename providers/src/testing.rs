@@ -115,3 +115,61 @@ pub async fn spawn(responses: Vec<(u16, String)>) -> Mock {
 pub async fn always(status: u16, body: &str) -> Mock {
     spawn(vec![(status, body.to_string())]).await
 }
+
+/// A server that promises more body than it sends and then closes the
+/// socket: a 200 whose body arrives truncated, which is what a reset
+/// connection looks like to the client.
+///
+/// This is the failure the clients must NOT report as a decode failure.
+/// reqwest gives an incomplete body the same error kind as unparseable JSON,
+/// so a client that used `response.json()` would make the two
+/// indistinguishable and the gateway would dead-letter a transient outage.
+pub async fn truncated(body: &str) -> Mock {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+    let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let reqs = Arc::clone(&requests);
+    let payload = body.to_string();
+
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let mut buf = [0u8; 8192];
+            let mut data = Vec::new();
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                data.extend_from_slice(&buf[..n]);
+                if let Some(pos) = find(&data, b"\r\n\r\n") {
+                    let need = content_length(&data[..pos]);
+                    if data.len() - (pos + 4) >= need {
+                        break;
+                    }
+                }
+            }
+            reqs.lock().unwrap().push(match find(&data, b"\r\n\r\n") {
+                Some(pos) => String::from_utf8_lossy(&data[pos + 4..]).to_string(),
+                None => String::new(),
+            });
+
+            // Announce 64 bytes more than we are going to write, then hang up.
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len() + 64
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+            let _ = socket.flush().await;
+            drop(socket);
+        }
+    });
+
+    Mock { url, requests }
+}

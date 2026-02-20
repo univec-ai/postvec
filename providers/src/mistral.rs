@@ -134,21 +134,11 @@ impl EmbeddingBackend for MistralClient {
                 return Err(EmbeddingError::Api { status, message });
             }
 
-            // Read bytes first so a malformed body surfaces as a non-retriable
-            // Api error with a readable preview, instead of looping for ~30s
-            // on a permanent decode failure.
+            // Read the body first, then decode it. A failure to read is
+            // transport trouble (retriable `Network`); a body that will not
+            // parse is permanent for this response. See `decode_json`.
             let bytes = response.bytes().await.map_err(EmbeddingError::Network)?;
-            serde_json::from_slice::<MistralResponse>(&bytes).map_err(|e| {
-                let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(500)]);
-                EmbeddingError::Api {
-                    status: 200,
-                    message: format!(
-                        "decode failed ({} bytes): {e}; body[0..500]={:?}",
-                        bytes.len(),
-                        preview
-                    ),
-                }
-            })
+            crate::decode_json::<MistralResponse>(&bytes)
         })
         .await?;
 

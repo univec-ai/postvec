@@ -158,10 +158,11 @@ impl EmbeddingBackend for CohereClient {
                 return Err(EmbeddingError::Api { status, message });
             }
 
-            // Deserialize the successful JSON response.
-            // `response.json()` returns a `Result<T, reqwest::Error>`.
-            // We map this error to `EmbeddingError::Network`, which is retriable.
-            response.json().await.map_err(EmbeddingError::Network)
+            // Read the body first, then decode it. A failure to read is
+            // transport trouble (retriable `Network`); a body that will not
+            // parse is permanent for this response. See `decode_json`.
+            let bytes = response.bytes().await.map_err(EmbeddingError::Network)?;
+            crate::decode_json::<CohereResponse>(&bytes)
         })
         .await?;
 
