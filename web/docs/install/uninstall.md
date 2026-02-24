@@ -29,9 +29,31 @@ from the CLI-owned config.
 | The name in `99-postvec.conf` | pgvector, source tables, source data |
 | Shadow columns, only with `--drop-columns` | Adopted / user-owned vector columns |
 | | Chunk destinations and their views |
+| | Models under `/opt/postvec/ninference` |
+| | [Provider connector files](/docs/models/providers) and their keys |
 
 There is **no** `--drop-destinations` on the CLI. Destinations stay as
 ordinary tables after this command.
+
+## Provider credentials
+
+When the last configured database goes away, `uninstall` names any connector
+files left in `providers.d` and leaves every one of them on disk. Package
+removal does the same. Credentials the tooling did not create are not its to
+delete, and a host nobody is watching any more is the wrong place to leave an
+API key by accident.
+
+```text
+postvec: /etc/postvec/providers.d still holds 1 provider connector file(s)
+         with API credentials; they were not removed - delete them yourself
+         once no other host needs them
+```
+
+Remove them, and any key files they reference, by hand:
+
+```bash
+sudo rm -r /etc/postvec/providers.d
+```
 
 ```sql
 -- before CLI uninstall, when chunk removal is required:

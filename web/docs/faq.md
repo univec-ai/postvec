@@ -25,11 +25,21 @@ No key is required for the bundled MiniLM model or for search. A key and
 authenticated route is identity-only (verified account, unexpired key). A
 dedicated key with a $0 spending limit is the recommended credential. Account details: [univec.ai](https://univec.ai).
 
+## Can postvec embed with OpenAI, Gemini or Cohere?
+
+Yes, per column, with `postvec provider add`. The connector file and the key
+live on the inference side; PostgreSQL holds neither.
+[External providers](/docs/models/providers).
+
 ## Can an ada-002 corpus remain unchanged?
 
 Yes. [Adopt the column](/docs/guides/adopt) and name that space;
 [embed-bridge](/docs/guides/bridge) produces query vectors in it without a
 corpus re-embed or OpenAI call.
+
+Adding an OpenAI key later changes that: a direct embed route wins over a
+bridge, so the column starts being embedded by the provider. `provider add`
+lists the affected columns and asks first.
 
 ## Does embedded inference require internet access?
 
@@ -39,8 +49,17 @@ No. Models already present on disk run in the launcher. `model pull` and
 
 ## Where do OpenAI / Gemini keys go?
 
-Embedded mode uses local models. Remote mode talks to the configured
-`postvec-server` nodes. Provider credentials stay off the database.
+Into `0600` connector files in a `providers.d` directory on the inference
+side: the database host in embedded mode, each `postvec-server` node in
+remote mode. Never a GUC, a catalog table or a SQL argument. The one setting
+involved, `postvec.providers_path`, holds a path.
+[External providers](/docs/models/providers).
+
+## How do I run inference off the database host?
+
+Run one or more `postvec-server` nodes and point the cluster at them with
+`postvec setup --grpc ... --http ...`. [Remote inference](/docs/server/) is
+the walkthrough, from one node to a fleet.
 
 ## Why is the vector NULL right after INSERT?
 

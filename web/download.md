@@ -41,6 +41,14 @@ Debian 12 and Ubuntu 22.04 packages are not interchangeable, even though both
 are `.deb`. The filename tag has to match the host that will run the
 binaries.
 
+## postvec-server
+
+No package and no image for the [remote inference node](/docs/server/) is
+published yet, and the release manifest does not reference one. Build it from
+a checkout with `cargo build --release -p postvec-server`, or build the
+container with `packaging/postvec/scripts/build-server-image.sh`. Its
+licensing terms are not settled yet either, and are not stated here.
+
 ## After the files are on disk
 
 After the files are on disk, configure the cluster. Packages leave

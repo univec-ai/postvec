@@ -9,8 +9,9 @@ A name in `postvec.models` is a cache of what the engine currently
 advertises. It is not a download list.
 
 On an embedded host, add models with `postvec model pull`. In remote
-mode, administer them on the `postvec-server` nodes. Package install,
-`setup` and `search()` use the inventory that is already present.
+mode, administer them on the `postvec-server` nodes ([models on a
+node](/docs/server/models)). Package install, `setup` and `search()` use
+the inventory that is already present.
 
 Workers refresh the cache on an interval and prune stale entries only
 after **every** discovery endpoint succeeded.
@@ -38,6 +39,18 @@ Conversion itself resolves a direct converter or a two-hop
 `convert-bridge`. Write, search, one-shot and migration paths share the
 same resolver.
 
+## Hosted models
+
+A model in `postvec.models` does not have to be a file on disk. A connector
+file on the inference side can declare models served by OpenAI, Gemini,
+Cohere, Mistral, AWS Bedrock or OpenRouter. They appear in the same cache,
+with the same `model_type` and `target_dim`, and every resolution rule above
+applies to them unchanged. There is no `pull` and no `activate` step: the
+connector file is the serving truth.
+
+The credential lives in that file, never in PostgreSQL.
+[External providers](/docs/models/providers).
+
 ## Catalogue channels
 
 | Channel | Access | Contents |
@@ -61,7 +74,7 @@ bundled MiniLM package works without the registry. The
 | Mode | Install / activate / remove / upgrade |
 |---|---|
 | Embedded | `postvec model pull / activate / deactivate / upgrade / rm` on this host |
-| Remote | Each `postvec-server` node. Local mutation is **refused** |
+| Remote | Each `postvec-server` node. Local mutation is **refused**. See [models on a node](/docs/server/models) |
 | Either | `model ls` - local inventory, or node-advertised names in remote |
 
 Installing and serving are separate steps: `pull` lands a model
@@ -93,3 +106,4 @@ other.
 - [Pull, upgrade, remove](/docs/models/pull)
 - [Login](/docs/models/login) - private catalogue
 - [Air-gapped](/docs/models/air-gapped)
+- [External providers](/docs/models/providers) - hosted embedding APIs

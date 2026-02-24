@@ -126,12 +126,14 @@ const active = ref(tabs[0].id);
       <section class="band band--facts" aria-label="What it does">
         <dl class="caps">
           <div>
-            <dt>No API keys</dt>
+            <dt>No keys in your database</dt>
             <dd>
-              Embedding runs on open-weight models, either inside
-              PostgreSQL or on inference nodes you operate. The
-              database never holds a provider credential. In embedded
-              mode the text stays on the host.
+              Embedding runs on open-weight models by default, either
+              inside PostgreSQL or on inference nodes you operate, and
+              the text stays on the host. Hosted providers are opt-in
+              per column; their credentials live in the inference
+              layer, never in the database.
+              <a :href="withBase('/docs/models/providers')">External providers</a>.
             </dd>
           </div>
           <div>

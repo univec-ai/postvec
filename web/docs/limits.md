@@ -23,6 +23,10 @@ description: Supported environments and explicit limitations.
 - Provider API keys as GUCs
 - In-database document parsing
 - A new index access method
+- AWS session tokens, instance profiles and the credential chain for
+  [external providers](/docs/models/providers). The signer takes static
+  credentials
+- Reranking providers and `Retry-After`-aware provider backoff
 
 ## Deliberate product refusals
 

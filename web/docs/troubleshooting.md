@@ -37,7 +37,11 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `DROP DATABASE` is blocked | Worker holds a connection. `uninstall` then `dropdb --force` |
 | `sudo model pull` is anonymous | Credentials are per user. `sudo postvec login` |
 | `model pull` says package/manual owned | Pull through the package manager or as the original owner. |
-| Remote `model pull` returns an error | Expected; models are administered on each `postvec-server` node |
+| Remote `model pull` returns an error | Expected; models are administered on each [`postvec-server` node](/docs/server/models) |
+| Remote `MODEL_NOT_LOADED`, intermittently | Fleet inventory drift. `postvec-server status --fleet` names the model and the nodes missing it |
+| `provider ls` says `NOT served` | The host has not reloaded the connector file, or a loaded local model owns that name. `doctor` names which |
+| A connector file is refused | Its mode, or a referenced key file's mode, grants group or other bits. `chmod 600`, then rotate the key |
+| Provider jobs retry with a 401 | Bad or revoked key. Fix it, then `retry_dead()` for rows that already gave up |
 | Uninstall exits 3 | SQL changed; config left alone. Follow the printed file/line |
 | Exit 4 | Restart the selected cluster, then `doctor --deep` |
 

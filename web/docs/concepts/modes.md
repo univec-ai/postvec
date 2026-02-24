@@ -70,7 +70,7 @@ stay the same.
 | Inference | One engine inside the PostgreSQL launcher | `postvec-server` nodes you operate |
 | Discovery | Loopback HTTP on the launcher | `GET /config` on those nodes |
 | DB-host assets | Extension, CLI, ONNX Runtime, models | Extension + CLI |
-| Raw text leaves the DB host | Stays on the host | Goes only to the configured nodes |
+| Raw text leaves the DB host | Stays on the host, except columns bound to an [external provider](/docs/models/providers) | Goes only to the configured nodes |
 | Model commands | `postvec model pull / upgrade / rm / activate` | Local mutation unsupported; models are administered on each node |
 | Engine crash | Restarts the launcher | Stays outside PostgreSQL |
 | Typical use | Single-node, private, edge, air-gapped, regulated | Crash-domain isolation, GPU, one engine shared by several databases |
@@ -128,7 +128,8 @@ present on some nodes and not others fails intermittently.
 `postvec-server` is a CPU or GPU inference node on the deployment
 network, shipped in the postvec repository. Every node in a fleet runs
 the same command and binds the same ports; models are files on disk that
-each node loads. Remote mode gives you:
+each node loads. Running one, and running several, is
+[Remote inference](/docs/server/). Remote mode gives you:
 
 - engine faults outside the PostgreSQL process
 - inference memory and compute off the database host
@@ -136,10 +137,11 @@ each node loads. Remote mode gives you:
 - one engine serving several databases or services
 
 The gRPC port is plaintext and unauthenticated by design, so the nodes
-belong on a trusted private network. Provider credentials, when
-required, stay on that side; they are never stored in PostgreSQL.
-`--allow-unreachable` is only for staging configuration before the nodes
-exist.
+belong on a trusted private network. [External provider](/docs/models/providers)
+credentials, when required, stay on that side; they are never stored in
+PostgreSQL. Every node must carry the same connector files, for the same
+reason it must carry the same models. `--allow-unreachable` is only for
+staging configuration before the nodes exist.
 
 If the remote engine is unavailable, jobs remain **pending** without
 consuming retry attempts. Lexical search can still run while

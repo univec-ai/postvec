@@ -23,6 +23,23 @@ never written into PostgreSQL GUCs.
 
 Presigned registry URLs are omitted from terminal output, JSON and receipts.
 
+## Provider credentials
+
+Keys for [external providers](/docs/models/providers) live in `0600`
+connector files in a `0700` directory, owned by the account the inference
+process runs as: the database host in embedded mode, each `postvec-server`
+node in remote mode. A connector file, or a key file it references, whose
+mode grants group or other bits is refused by name.
+
+No key reaches a GUC, a catalog table, a SQL argument, a log line or an error
+message. `postvec.providers_path` holds a path. A key is never a
+command-line argument, and `provider ls` prints the key source rather than
+its value.
+
+The extension itself never calls a provider. The outbound HTTPS request is
+made by the inference host, only for models an operator configured, and only
+for columns bound to them.
+
 ## Worker visibility
 
 The worker connects as the bootstrap superuser and **bypasses RLS**. Source

@@ -85,6 +85,34 @@ that as `grpc` would silently disable the engine a `*-complete` image was
 built around. Embedded mode with no engine assets exits **78**. Embedded
 listeners stay loopback-only.
 
+## External providers
+
+Both images work with no provider configuration at all. Nothing here is needed
+for local models.
+
+To serve a hosted embedding API from a container, give it a `providers.d` and
+a key. The lighter path keeps the key out of the filesystem and names a
+variable the postmaster already has:
+
+<PgSnippet id="docker-provider" />
+
+with `providers.d/openai.toml` carrying `api_key_env = "OPENAI_API_KEY"`.
+`postvec provider add openai --model text-embedding-3-small --path "$PWD"`
+writes that file for you.
+
+| Mount | Contents | Permissions |
+|---|---|---|
+| `/etc/postvec/providers.d` | One `*.toml` connector file per provider | Directory `0700`, files `0600`, owned by the container's `postgres` uid (`999`) |
+| Any path you reference | The `api_key_file` a connector points at | `0600`, same owner |
+
+The host refuses a connector file, or a key file it references, that is
+readable by other users, so a bind mount has to carry the right mode and
+owner. With Compose secrets, mount the secret with an explicit `mode: 0400`
+and `uid: "999"` and reference it as `api_key_file`. The image's `_FILE`
+convention covers PostgreSQL's own variables, not this one.
+
+Format and walkthrough: [external providers](/docs/models/providers).
+
 ## Adding another database
 
 Init scripts do **not** rerun on an existing volume.

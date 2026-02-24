@@ -119,6 +119,19 @@ export default defineConfig({
             { text: "Pull, activate, remove", link: "/docs/models/pull" },
             { text: "Login and private catalogue", link: "/docs/models/login" },
             { text: "Air-gapped hosts", link: "/docs/models/air-gapped" },
+            { text: "External providers", link: "/docs/models/providers" },
+          ],
+        },
+        {
+          text: "Remote inference",
+          collapsed: true,
+          items: [
+            { text: "When to use it", link: "/docs/server/" },
+            { text: "Run a node", link: "/docs/server/node" },
+            { text: "Connect PostgreSQL", link: "/docs/server/connect" },
+            { text: "Models on a node", link: "/docs/server/models" },
+            { text: "Run a fleet", link: "/docs/server/fleet" },
+            { text: "Node reference", link: "/docs/server/reference" },
           ],
         },
         {

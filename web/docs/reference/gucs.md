@@ -41,13 +41,20 @@ includes `postvec`.
 | `embedded_listen` | `127.0.0.1:33433` | **POSTMASTER** |
 | `embedded_http_listen` | `127.0.0.1:33434` | **POSTMASTER** |
 | `embedded_max_inflight` | 1 | **POSTMASTER** |
+| `providers_path` | `/etc/postvec/providers.d` | **POSTMASTER** - a path, never a credential |
 
 `postvec setup` is the supported way to write these. The CLI merges
 `shared_preload_libraries` and owns `99-postvec.conf`.
 
 `pg_reload_conf()` does not apply POSTMASTER settings. A restart is required
-after a change to `database`, `mode`, `ninference_path`, `embedded_*` or
-preload.
+after a change to `database`, `mode`, `ninference_path`, `embedded_*`,
+`providers_path` or preload.
+
+`providers_path` names the directory of
+[external provider](/docs/models/providers) connector files. It holds a path.
+The keys stay in the `0600` files under it, and no API key is ever stored in
+a GUC, a catalog table or a SQL argument. An absent directory means no
+provider-backed models, which is the default.
 
 Add databases through `setup`. A name that does not exist makes the worker
 fail and respawn about every 15 seconds.

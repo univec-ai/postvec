@@ -40,6 +40,14 @@ If a direct embed route becomes available later, it takes precedence
 after the next model refresh. The resolved route is inventory state.
 postvec does not persist it in the table registry.
 
+:::: warning A provider key ends the bridge
+Configuring an [external provider](/docs/models/providers) for the stored
+space makes a direct route exist. The column then stops bridging and starts
+sending its source text to that provider, with no SQL change. `postvec
+provider add` lists the affected columns and requires an acknowledgement
+before it writes the file.
+::::
+
 ## 1. Verify the stored space
 
 The vector dimension is a fact. The model name is an operator-supplied

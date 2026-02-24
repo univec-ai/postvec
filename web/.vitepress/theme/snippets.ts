@@ -115,6 +115,21 @@ export const SNIPPETS: Record<string, SnippetDef> = {
       ].join("\n"),
   },
 
+  "docker-provider": {
+    lang: "bash",
+    render: (t) =>
+      [
+        "docker run -d --name postvec \\",
+        "  -e POSTGRES_PASSWORD=demo \\",
+        "  -e POSTGRES_DB=app \\",
+        "  -e OPENAI_API_KEY \\",
+        '  -v "$PWD/providers.d:/etc/postvec/providers.d:ro" \\',
+        `  -v postvec-data:${t.vol} \\`,
+        "  -p 127.0.0.1:5432:5432 \\",
+        `  ${t.imageComplete}`,
+      ].join("\n"),
+  },
+
   "docker-remote": {
     lang: "bash",
     render: (t) =>

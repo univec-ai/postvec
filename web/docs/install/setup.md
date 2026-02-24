@@ -47,7 +47,8 @@ to scan-load every enabled descriptor.
 Remote mode uses `postvec-server` nodes on the local network. Pick it
 for GPU inference, for keeping engine faults off the database host or
 for one engine shared by several databases. The SQL surface is
-unchanged. See [embedded vs remote](/docs/concepts/modes).
+unchanged. See [embedded vs remote](/docs/concepts/modes), and
+[remote inference](/docs/server/) for the node side.
 
 Every node must carry the same enabled models: postvec round-robins the
 configured endpoints, so a converter present on two nodes out of three

@@ -75,6 +75,20 @@ sudo cp -a build/payload-common/opt/postvec/ninference/models \
 Manually copied models are operator-owned. `postvec model rm` will not
 delete them.
 
+## Build the inference node
+
+`postvec-server` is an ordinary workspace member, so it needs neither pgrx nor
+PostgreSQL headers:
+
+```bash
+cargo build --release -p postvec-server
+sudo install -m 0755 target/release/postvec-server /usr/local/bin/
+```
+
+It still needs ONNX Runtime and at least one model under its `--root`, which
+is the same engine root described above. [Run a node](/docs/server/node)
+covers TLS, the first start and what the boot log means.
+
 ## Development rebuild sequence
 
 1. `cargo pgrx package`

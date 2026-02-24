@@ -21,7 +21,8 @@ step.
 **Embedded mode** (`setup --embedded`) runs inference on the host. No
 third-party embedding API is involved. Remote mode talks to
 `postvec-server` nodes you operate. The postvec repository ships one.
-See [embedded vs remote](/docs/concepts/modes).
+See [embedded vs remote](/docs/concepts/modes), and
+[remote inference](/docs/server/) for installing and running the nodes.
 
 :::: info Release status
 Commands in these guides use the planned `0.1.0-1` artifact identity.

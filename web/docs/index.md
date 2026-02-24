@@ -16,6 +16,10 @@ the query.
 Inference runs on the database host by default. Models live on disk. The
 bundled MiniLM model needs no API key.
 
+A column can also be bound to a hosted embedding API instead. The key stays
+in the inference layer, never in the database.
+[External providers](/docs/models/providers).
+
 ## What you need
 
 PostgreSQL 16, 17 or 18 on a host that can set
@@ -67,11 +71,14 @@ SQL is the same in both modes. Embedded is what a package install does
 with `setup --embedded`. Use remote when inference should not share a
 crash domain, a CPU budget or a GPU with PostgreSQL.
 
-[Embedded vs remote](/docs/concepts/modes).
+[Embedded vs remote](/docs/concepts/modes) compares them.
+[Remote inference](/docs/server/) covers running the nodes.
 
 ## Out of scope
 
-- Call OpenAI, Gemini or Cohere from PostgreSQL, or store their keys.
+- Store provider API keys in PostgreSQL. Hosted providers are opt-in per
+  column and their credentials live only in the inference layer.
+  [External providers](/docs/models/providers).
 - Parse PDFs or HTML in the database.
 - Provide `rag()` or chat-completion SQL. Generation belongs in the application.
 - Invent a new index access method. Storage and ANN indexes are pgvector's.

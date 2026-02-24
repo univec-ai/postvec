@@ -19,6 +19,7 @@ happen only when the `postvec` CLI is invoked.
 | Diagnose (read-only) | `postvec doctor` |
 | Remove SQL + config | `postvec uninstall` |
 | Embedded models | `postvec model ...` |
+| External providers | `postvec provider ...` |
 | Registry identity | `postvec login` / `whoami` / `logout` |
 
 The CLI has no extension-upgrade command. See [upgrade](/docs/install/upgrade).
@@ -43,8 +44,8 @@ database session. Read-only model commands do not need it:
 
 | Need | Commands |
 |---|---|
-| Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm` |
-| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall` and cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` |
+| Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm`, `provider add` / `rm` |
+| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` and cluster-targeted `provider add` / `rm` |
 | Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show` |
 
 `sudo postvec ...` covers the first two at once: the parent keeps root
@@ -77,6 +78,7 @@ sudo postvec setup --database app \
 | `--embedded` | In-process inference |
 | `--path DIR` | Absolute engine root. Defaults to `/opt/postvec/ninference` |
 | `--model NAME` | Embedded preload allow-list; omit to scan-load |
+| `--providers-path DIR` | Move the [provider](/docs/models/providers) connector directory. Omit to keep `/etc/postvec/providers.d` |
 | `--embedded-grpc-listen`, `--embedded-http-listen` | Loopback only |
 | `--switch-mode` | Acknowledge remote <-> embedded; name every database |
 | `--allow-unreachable` | Stage config before inference exists |
@@ -142,6 +144,45 @@ that change serving state, and both persist across a PostgreSQL restart.
 `--acknowledge-in-use` is required (with `--yes`) when managed columns would
 lose their embedding route, directly or through a converter/bridge chain the
 model is part of; `--yes` and `--force` never stand in for it.
+
+## `provider`
+
+See [External providers](/docs/models/providers).
+
+```
+provider add TYPE --model ID... [--name STEM] [--path DIR]
+            [--api-key-file FILE | --api-key-env VAR | --key-stdin]
+            [--base-url URL] [--region REGION] [--dim N] [--no-verify]
+            [--acknowledge-in-use] [--dry-run] [--yes]
+provider ls [--path DIR]
+provider test NAME [--model ID] [--path DIR]
+provider rm NAME [--model ID] [--path DIR] [--acknowledge-in-use]
+            [--dry-run] [--yes]
+```
+
+`TYPE` is `openai`, `openrouter`, `mistral`, `google`, `cohere` or `aws`.
+`gemini` and `amazon` are accepted aliases; the file records the canonical
+name.
+
+A key is never a command-line value. Without `--api-key-file`,
+`--api-key-env` or `--key-stdin`, an interactive run prompts without echo and
+a non-interactive one is a usage error. `--api-key-env` records the variable
+name; the **inference process** resolves it, so the variable belongs to the
+postmaster or the `postvec-server` unit, not to your shell.
+
+`add` and `test` each make one live embed per model, which the provider
+bills. `--no-verify` skips it, and then `--dim` is required for a model the
+built-in catalogue does not know.
+
+`--path DIR` manages `DIR/providers.d` as files, with no cluster in scope.
+That is how a `postvec-server` node is administered, and it is the only form
+accepted on a remote-mode cluster; without it, such a cluster is refused with
+a message naming the server root.
+
+`--acknowledge-in-use` is required (with `--yes`) when the change affects
+existing columns: on `add`, columns that will start sending source text to
+the provider; on `rm`, columns that lose their embedding route. `--yes` never
+stands in for it.
 
 ## Exit codes
 
