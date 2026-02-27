@@ -538,6 +538,7 @@ mod tests {
                     name: (*name).to_string(),
                     enabled: true,
                     model_type: Some("embed".into()),
+                    provider: None,
                 })
                 .collect(),
         }

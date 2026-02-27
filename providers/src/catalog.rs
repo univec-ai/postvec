@@ -57,12 +57,15 @@ pub const CATALOG: &[CatalogModel] = &[
         max_batch: 96,
     },
     // Cohere
+    // embed-v4.0 takes 128k tokens per input, not the 8192 of v3 — the
+    // figure a reader will quote back from the docs table, and the one the
+    // descriptor advertises as `sequence_len`.
     CatalogModel {
         provider: "cohere",
         id: "embed-v4.0",
         name: "cohere-embed-v4-0",
         dim: 1536,
-        max_tokens: 8192,
+        max_tokens: 128_000,
         max_batch: 96,
     },
     CatalogModel {
@@ -131,19 +134,83 @@ pub fn lookup(provider: &str, id: &str) -> Option<&'static CatalogModel> {
         .find(|model| model.provider == provider && model.id == id)
 }
 
+/// The prefix the documented public names carry for a connector type.
+///
+/// Derived from the *canonical* type, never from what the operator typed:
+/// `gemini` and `google` name one connector, and if the prefix followed the
+/// spelling they would produce two different SQL model names for the same
+/// model — the alias would stop being an alias at exactly the point it
+/// matters. `google` is spelled `gemini` here because that is the prefix the
+/// docs and the catalog use.
+pub fn name_prefix(typed: &str) -> String {
+    match canonical_provider(typed).as_str() {
+        "google" => "gemini".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// The public-name convention: curated catalog name where one exists, else
-/// the mechanical rule — lowercase `{typed-provider}-{provider_model_id}`
-/// with `/`, `:`, `.` and spaces mapped to `-` (the same derivation the
-/// established provider spaces use). `typed` keeps the CLI's spelling
-/// (`gemini`, not `google`) because that is the prefix the documented names
-/// carry.
+/// the mechanical rule — lowercase `{prefix}-{provider_model_id}` reduced to
+/// the charset the hosts accept for a model name (`[a-z0-9._-]`, starting
+/// `[a-z0-9]`).
+///
+/// The reduction is deliberately total rather than a fixed substitution
+/// list: a name the hosts refuse is a providers.d file that fails to load
+/// *as a whole*, so a model id with an unexpected character in it would take
+/// a whole connector down at the next reload instead of being renamed.
 pub fn public_name(typed: &str, id: &str) -> String {
     if let Some(model) = lookup(typed, id) {
         return model.name.to_string();
     }
-    format!("{typed}-{id}")
-        .to_lowercase()
-        .replace(['/', ':', '.', ' '], "-")
+    sanitize_public_name(&format!("{}-{}", name_prefix(typed), id))
+}
+
+/// Lowercase, map every character outside `[a-z0-9._-]` to `-`, collapse
+/// runs of `-`, then trim the separators off both ends. What survives is
+/// either empty or starts with `[a-z0-9]`, because those are the only other
+/// characters the loop can emit.
+fn sanitize_public_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.to_lowercase().chars() {
+        let mapped = match ch {
+            'a'..='z' | '0'..='9' | '.' | '_' => ch,
+            _ => '-',
+        };
+        if mapped == '-' && out.ends_with('-') {
+            continue;
+        }
+        out.push(mapped);
+    }
+    out.trim_matches(|c| c == '-' || c == '.' || c == '_')
+        .to_string()
+}
+
+/// The rule the hosts enforce on a served model name
+/// (`config::validate_model_name`). `public_name` already produces a
+/// conforming name; this is what tells the CLI that an id reduced to
+/// *nothing* usable.
+pub fn validate_public_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("the derived public name is empty".to_string());
+    }
+    if name.len() > 128 {
+        return Err(format!(
+            "the derived public name {name:?} exceeds 128 bytes"
+        ));
+    }
+    let first = name.as_bytes()[0];
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return Err(format!("public name {name:?} must start with [a-z0-9]"));
+    }
+    if !name
+        .bytes()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    {
+        return Err(format!(
+            "public name {name:?} contains characters outside [a-z0-9._-]"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -209,9 +276,54 @@ mod tests {
         );
         assert_eq!(
             public_name("openai", "Future Model.v2:1"),
-            "openai-future-model-v2-1"
+            "openai-future-model.v2-1"
         );
         assert!(lookup("openrouter", "anything").is_none());
+    }
+
+    /// An alias must not change the name a model gets in SQL. Before this,
+    /// `provider add google` and `provider add gemini` produced two
+    /// different public names for one model.
+    #[test]
+    fn aliases_derive_one_public_name() {
+        assert_eq!(
+            public_name("google", "text-embedding-004"),
+            public_name("gemini", "text-embedding-004")
+        );
+        assert_eq!(
+            public_name("google", "text-embedding-004"),
+            "gemini-text-embedding-004"
+        );
+        assert_eq!(
+            public_name("amazon", "some.future-model"),
+            public_name("aws", "some.future-model")
+        );
+    }
+
+    /// A derived name the hosts would refuse takes the whole connector file
+    /// down at load, so the derivation reduces to the accepted charset
+    /// instead of hoping ids stay tidy.
+    #[test]
+    fn derived_names_always_satisfy_the_host_rule() {
+        for id in [
+            "weird@id+v2",
+            "  spaced  out  ",
+            "///leading",
+            "Ünïcode-model",
+            "UPPER::CASE",
+        ] {
+            let name = public_name("openai", id);
+            assert!(
+                validate_public_name(&name).is_ok(),
+                "{id:?} -> {name:?}: {:?}",
+                validate_public_name(&name)
+            );
+        }
+        for model in CATALOG {
+            assert!(validate_public_name(model.name).is_ok(), "{}", model.name);
+        }
+        // An id that reduces to nothing usable is reported, not written.
+        assert!(validate_public_name(&sanitize_public_name("---")).is_err());
     }
 
     #[test]

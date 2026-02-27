@@ -1,4 +1,4 @@
-//! The `providers.d` configuration directory (feature `wire`).
+//! The `providers.d` configuration directory (feature `config`).
 //!
 //! One TOML file per provider; the files on disk are the complete serving
 //! truth. Credentials resolve here — at load time, on the inference host —
@@ -161,6 +161,26 @@ fn assert_private(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Exactly one source per secret triad. Checked separately from resolution
+/// so the structural pass can report it without reading a credential.
+fn check_exclusive(
+    field: &str,
+    inline: &Option<String>,
+    file: &Option<PathBuf>,
+    env: &Option<String>,
+) -> Result<(), String> {
+    let set = [inline.is_some(), file.is_some(), env.is_some()]
+        .iter()
+        .filter(|s| **s)
+        .count();
+    if set > 1 {
+        return Err(format!(
+            "{field}, {field}_file and {field}_env are mutually exclusive; set exactly one"
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve one secret from its inline/file/env triad. Exactly one source may
 /// be set; a referenced file must be 0600 and is trimmed of trailing
 /// whitespace (key files conventionally end with a newline). Returns
@@ -172,15 +192,7 @@ fn resolve_secret(
     file: &Option<PathBuf>,
     env: &Option<String>,
 ) -> Result<Option<String>, String> {
-    let set = [inline.is_some(), file.is_some(), env.is_some()]
-        .iter()
-        .filter(|s| **s)
-        .count();
-    if set > 1 {
-        return Err(format!(
-            "{field}, {field}_file and {field}_env are mutually exclusive; set exactly one"
-        ));
-    }
+    check_exclusive(field, inline, file, env)?;
     let value = if let Some(v) = inline {
         v.clone()
     } else if let Some(path) = file {
@@ -224,70 +236,43 @@ fn validate_model_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Everything the loader checks **before** it touches a credential: the file
+/// mode, the schema (`deny_unknown_fields`, so a typo'd key field is an
+/// error rather than a silently ignored one), the per-file ceilings, the
+/// descriptors, the region, and the one-source-per-secret rule. Duplicate
+/// model names within the file are dropped here too, first-wins.
+///
+/// `Ok(false)` = `enabled = false`: the file parses and serves nothing, and
+/// nothing past that point is checked — exactly as at load, so a caller
+/// reporting on this cannot be stricter than the host.
+///
+/// Split out and public so `postvec doctor` can say "the serving host will
+/// refuse this file, and here is why" using these rules rather than a second,
+/// more permissive reader that would disagree — and without reading a single
+/// secret.
+pub fn validate_file(path: &Path) -> Result<bool, String> {
+    let mut file = parse_file(path)?;
+    if !file.enabled {
+        return Ok(false);
+    }
+    validate_structure(&mut file, path)?;
+    Ok(true)
+}
+
+fn parse_file(path: &Path) -> Result<ProviderFile, String> {
+    assert_private(path)?;
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+    toml::from_str(&raw).map_err(|e| format!("cannot parse: {e}"))
+}
+
 /// Parse and resolve one provider file. `Ok(None)` = disabled (parses, serves
 /// nothing).
 fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
-    assert_private(path)?;
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
-    let mut file: ProviderFile = toml::from_str(&raw).map_err(|e| format!("cannot parse: {e}"))?;
-
+    let mut file = parse_file(path)?;
     if !file.enabled {
         return Ok(None);
     }
-    if file.models.is_empty() {
-        return Err("no [[models]] entries; an enabled provider must serve something".to_string());
-    }
-    if file.models.len() > MAX_MODELS_PER_FILE {
-        return Err(format!(
-            "{} [[models]] entries exceeds the {MAX_MODELS_PER_FILE} per-file ceiling",
-            file.models.len()
-        ));
-    }
-    if file.max_concurrent == 0 || file.max_concurrent > MAX_MAX_CONCURRENT {
-        return Err(format!(
-            "max_concurrent must be between 1 and {MAX_MAX_CONCURRENT}"
-        ));
-    }
-    if file.timeout_ms == 0 {
-        return Err("timeout_ms must be positive".to_string());
-    }
-    for model in &file.models {
-        validate_model_name(&model.name).map_err(|e| format!("[[models]]: {e}"))?;
-        if model.provider_model_id.trim().is_empty() {
-            return Err(format!(
-                "[[models]] {:?}: provider_model_id is empty",
-                model.name
-            ));
-        }
-        if model.dim == 0 || model.dim as i64 > 100_000 {
-            return Err(format!(
-                "[[models]] {:?}: dim {} is not plausible",
-                model.name, model.dim
-            ));
-        }
-        if model.max_batch == 0 {
-            return Err(format!(
-                "[[models]] {:?}: max_batch must be ≥ 1",
-                model.name
-            ));
-        }
-    }
-    // Same-file duplicates follow the same rule as cross-file ones: first
-    // definition wins, warning logged — never a silent last-wins overwrite
-    // further down the pipeline.
-    let mut seen = std::collections::BTreeSet::new();
-    file.models.retain(|model| {
-        let fresh = seen.insert(model.name.clone());
-        if !fresh {
-            log::warn!(
-                "providers.d: {} defines model {:?} more than once; the first \
-                 definition wins",
-                path.display(),
-                model.name
-            );
-        }
-        fresh
-    });
+    validate_structure(&mut file, path)?;
 
     let config = ProviderConfig {
         provider: file.provider.clone(),
@@ -331,6 +316,96 @@ fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
         timeout_ms: file.timeout_ms,
         models: file.models,
     }))
+}
+
+fn validate_structure(file: &mut ProviderFile, path: &Path) -> Result<(), String> {
+    if file.models.is_empty() {
+        return Err("no [[models]] entries; an enabled provider must serve something".to_string());
+    }
+    if file.models.len() > MAX_MODELS_PER_FILE {
+        return Err(format!(
+            "{} [[models]] entries exceeds the {MAX_MODELS_PER_FILE} per-file ceiling",
+            file.models.len()
+        ));
+    }
+    if file.max_concurrent == 0 || file.max_concurrent > MAX_MAX_CONCURRENT {
+        return Err(format!(
+            "max_concurrent must be between 1 and {MAX_MAX_CONCURRENT}"
+        ));
+    }
+    if file.timeout_ms == 0 {
+        return Err("timeout_ms must be positive".to_string());
+    }
+    if let Some(region) = &file.region {
+        crate::validate_region(region)?;
+    }
+    for model in &file.models {
+        validate_model_name(&model.name).map_err(|e| format!("[[models]]: {e}"))?;
+        if model.provider_model_id.trim().is_empty() {
+            return Err(format!(
+                "[[models]] {:?}: provider_model_id is empty",
+                model.name
+            ));
+        }
+        if model.dim == 0 || model.dim as i64 > 100_000 {
+            return Err(format!(
+                "[[models]] {:?}: dim {} is not plausible",
+                model.name, model.dim
+            ));
+        }
+        if model.max_batch == 0 {
+            return Err(format!(
+                "[[models]] {:?}: max_batch must be ≥ 1",
+                model.name
+            ));
+        }
+    }
+    // Same-file duplicates follow the same rule as cross-file ones: first
+    // definition wins, warning logged — never a silent last-wins overwrite
+    // further down the pipeline.
+    let mut seen = std::collections::BTreeSet::new();
+    file.models.retain(|model| {
+        let fresh = seen.insert(model.name.clone());
+        if !fresh {
+            log::warn!(
+                "providers.d: {} defines model {:?} more than once; the first \
+                 definition wins",
+                path.display(),
+                model.name
+            );
+        }
+        fresh
+    });
+
+    // One source per secret, checked here rather than only inside
+    // `resolve_secret`, so a structural pass sees it too: a file with both
+    // `api_key` and `api_key_env` is refused by the host, and a checker that
+    // did not know that would call it healthy.
+    check_exclusive(
+        "api_key",
+        &file.api_key,
+        &file.api_key_file,
+        &file.api_key_env,
+    )?;
+    check_exclusive(
+        "bearer_token",
+        &file.bearer_token,
+        &file.bearer_token_file,
+        &file.bearer_token_env,
+    )?;
+    check_exclusive(
+        "access_key_id",
+        &file.access_key_id,
+        &file.access_key_id_file,
+        &file.access_key_id_env,
+    )?;
+    check_exclusive(
+        "secret_access_key",
+        &file.secret_access_key,
+        &file.secret_access_key_file,
+        &file.secret_access_key_env,
+    )?;
+    Ok(())
 }
 
 /// Scan a providers.d directory. A missing directory is the zero-config
@@ -614,6 +689,88 @@ max_tokens = 8191
             "{}",
             outcome.errors[0]
         );
+    }
+
+    /// The region is interpolated into the Bedrock hostname and into the
+    /// SigV4 credential scope, so a value that can carry a dot or a slash
+    /// could point signed requests at another host.
+    #[test]
+    fn a_region_that_could_redirect_the_endpoint_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        write_mode(
+            dir.path(),
+            "aws.toml",
+            "provider = \"aws\"\nregion = \"us-east-1.evil.example\"\nbearer_token = \"t\"\n\n\
+             [[models]]\nname = \"aws-titan-embed-text-v1\"\n\
+             provider_model_id = \"amazon.titan-embed-text-v1\"\ndim = 1536\n",
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert!(outcome.providers.is_empty());
+        assert!(
+            outcome.errors[0].message.contains("region"),
+            "{}",
+            outcome.errors[0]
+        );
+    }
+
+    /// `validate_file` is what the CLI reports from, so it must agree with
+    /// the loader exactly — no stricter, no laxer — and it must never read a
+    /// secret to reach its verdict.
+    #[test]
+    fn validate_file_agrees_with_the_loader_without_reading_a_secret() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // A key file that would be refused if anything resolved it. The
+        // structural pass must not care: it never looks at a key source's
+        // contents, only at the shape of the declaration.
+        let key = write_mode(dir.path(), "leaky.key", "sk-secret-value", 0o644);
+        let body = format!(
+            "provider = \"openai\"\napi_key_file = \"{}\"\n\n[[models]]\nname = \"m1\"\n\
+             provider_model_id = \"m\"\ndim = 4\n",
+            key.display()
+        );
+        let path = write_mode(dir.path(), "openai.toml", &body, 0o600);
+        assert_eq!(validate_file(&path), Ok(true), "structure is fine");
+        // …while the loader, which does resolve it, refuses.
+        assert!(load_file(&path).is_err(), "the key file is world-readable");
+        std::fs::remove_file(&path).unwrap();
+
+        // Cases the loader refuses that a permissive TOML read would not.
+        for (marker, body) in [
+            (
+                "unknown field",
+                "provider = \"openai\"\napi_kee = \"k\"\n\n[[models]]\nname = \"m1\"\n\
+                 provider_model_id = \"m\"\ndim = 4\n",
+            ),
+            (
+                "two key sources",
+                "provider = \"openai\"\napi_key = \"k\"\napi_key_env = \"OPENAI_API_KEY\"\n\n\
+                 [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n",
+            ),
+            (
+                "bad public name",
+                "provider = \"openai\"\napi_key = \"k\"\n\n[[models]]\nname = \"Bad Name\"\n\
+                 provider_model_id = \"m\"\ndim = 4\n",
+            ),
+            ("no models", "provider = \"openai\"\napi_key = \"k\"\n"),
+        ] {
+            let path = write_mode(dir.path(), "p.toml", body, 0o600);
+            assert!(validate_file(&path).is_err(), "case {marker}");
+            assert!(load_file(&path).is_err(), "case {marker} (loader)");
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        // A disabled file is checked no further than the loader checks it —
+        // otherwise a checker would report problems the host never sees.
+        let path = write_mode(
+            dir.path(),
+            "off.toml",
+            "provider = \"openai\"\nenabled = false\n",
+            0o600,
+        );
+        assert_eq!(validate_file(&path), Ok(false));
+        assert!(load_file(&path).unwrap().is_none());
     }
 
     #[test]

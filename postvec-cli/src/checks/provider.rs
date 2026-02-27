@@ -15,6 +15,8 @@ pub struct ProviderFileFacts {
     /// The file stem — the operator-facing provider name.
     pub name: String,
     pub provider: Option<String>,
+    /// `enabled = false`: the file parses and serves nothing, on purpose.
+    pub enabled: bool,
     /// The key *source* rendered for display; never a value.
     pub key_source: String,
     /// `Some(problem)` when the key source cannot resolve (missing or
@@ -72,6 +74,7 @@ pub fn gather(dir: &Path) -> ProviderFacts {
             facts.files.push(ProviderFileFacts {
                 name,
                 provider: None,
+                enabled: true,
                 key_source: "unknown".to_string(),
                 key_problem: None,
                 models: Vec::new(),
@@ -79,6 +82,26 @@ pub fn gather(dir: &Path) -> ProviderFacts {
                     "{} is readable by other users (mode {mode:o}); the host refuses it",
                     path.display()
                 )),
+            });
+            continue;
+        }
+        // The loader's own schema, run before the display read. Doctor's
+        // job here is to predict the serving host, and a permissive TOML
+        // parse cannot: `deny_unknown_fields` (a typo'd `api_kee`), the
+        // one-source-per-secret rule, the per-file ceilings and the
+        // descriptor rules are all load errors the host will hit and this
+        // check would otherwise miss — reporting the file as healthy and
+        // then blaming `provider.served` on a missing reload. It reads no
+        // secret to reach that verdict.
+        if let Err(problem) = providers::config::validate_file(&path) {
+            facts.files.push(ProviderFileFacts {
+                name,
+                provider: None,
+                enabled: true,
+                key_source: "unknown".to_string(),
+                key_problem: None,
+                models: Vec::new(),
+                error: Some(problem),
             });
             continue;
         }
@@ -108,6 +131,7 @@ pub fn gather(dir: &Path) -> ProviderFacts {
                 facts.files.push(ProviderFileFacts {
                     name,
                     provider: doc.provider_type().map(str::to_string),
+                    enabled: doc.enabled(),
                     key_source,
                     key_problem,
                     models,
@@ -118,6 +142,7 @@ pub fn gather(dir: &Path) -> ProviderFacts {
             Err(e) => facts.files.push(ProviderFileFacts {
                 name,
                 provider: None,
+                enabled: true,
                 key_source: "unknown".to_string(),
                 key_problem: None,
                 models: Vec::new(),
@@ -128,57 +153,43 @@ pub fn gather(dir: &Path) -> ProviderFacts {
     facts
 }
 
-/// Whether the file's key source can resolve, without printing any value.
+/// Whether the file's key sources can resolve, without printing any value.
+///
+/// Every source is checked, not just the first: an AWS file authenticates
+/// with a *pair* (`access_key_id` + `secret_access_key`), so stopping at the
+/// first field would report a world-readable secret-key file as healthy —
+/// while the host refuses the whole connector over it.
 fn key_source_problem(doc: &crate::commands::provider::ProviderFileDoc) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
-    let field = |name: &str| {
-        doc.value
-            .get(name)
-            .and_then(toml::Value::as_str)
-            .map(str::to_string)
-    };
-    for file_field in ["api_key_file", "bearer_token_file"] {
-        if let Some(path) = field(file_field) {
-            let path = Path::new(&path);
-            return match std::fs::symlink_metadata(path) {
-                Err(e) => Some(format!("{file_field} {}: {e}", path.display())),
-                Ok(meta) if !meta.is_file() => Some(format!(
-                    "{file_field} {} is not a regular file",
-                    path.display()
-                )),
-                Ok(meta) if meta.permissions().mode() & 0o077 != 0 => Some(format!(
-                    "{file_field} {} is readable by other users (mode {:o}); the host \
-                     refuses it",
-                    path.display(),
-                    meta.permissions().mode() & 0o777
-                )),
-                Ok(_) => None,
-            };
-        }
-    }
-    for env_field in ["api_key_env", "bearer_token_env"] {
-        if let Some(var) = field(env_field) {
-            if std::env::var(&var).is_err() {
-                return Some(format!(
-                    "{env_field} {var} is not set in this environment (the POSTMASTER's or \
-                     server unit's environment is what the host resolves; this check can only \
-                     observe its own)"
-                ));
-            }
-            return None;
-        }
-    }
-    None
-}
+    let mut problems: Vec<String> = Vec::new();
 
-/// The public-name rule the hosts enforce.
-fn valid_public_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 128
-        && (name.as_bytes()[0].is_ascii_lowercase() || name.as_bytes()[0].is_ascii_digit())
-        && name
-            .bytes()
-            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    for (field, path) in doc.secret_file_fields() {
+        let path = Path::new(&path);
+        match std::fs::symlink_metadata(path) {
+            Err(e) => problems.push(format!("{field} {}: {e}", path.display())),
+            Ok(meta) if !meta.is_file() => problems.push(format!(
+                "{field} {} is not a regular file (the host refuses symlinks too)",
+                path.display()
+            )),
+            Ok(meta) if meta.permissions().mode() & 0o077 != 0 => problems.push(format!(
+                "{field} {} is readable by other users (mode {:o}); the host refuses it",
+                path.display(),
+                meta.permissions().mode() & 0o777
+            )),
+            Ok(_) => {}
+        }
+    }
+    for (field, var) in doc.secret_env_fields() {
+        if std::env::var(&var).is_err() {
+            problems.push(format!(
+                "{field} {var} is not set in this environment (the POSTMASTER's or server \
+                 unit's environment is what the host resolves; this check can only observe \
+                 its own)"
+            ));
+        }
+    }
+
+    (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
@@ -243,10 +254,15 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
             "provider.file",
             scope.clone(),
             format!(
-                "provider {} — {} model(s), key: {}",
+                "provider {} — {} model(s), key: {}{}",
                 file.provider.as_deref().unwrap_or("?"),
                 file.models.len(),
-                file.key_source
+                file.key_source,
+                if file.enabled {
+                    ""
+                } else {
+                    " (enabled = false: parses, serves nothing)"
+                }
             ),
         ));
 
@@ -262,28 +278,24 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
             )),
         }
 
-        let bad: Vec<String> = file
-            .models
-            .iter()
-            .filter(|(name, dim)| !valid_public_name(name) || !matches!(dim, Some(d) if *d > 0))
-            .map(|(name, dim)| match dim {
-                Some(d) if *d > 0 => format!("{name}: bad name"),
-                _ => format!("{name}: dim missing or not positive"),
-            })
-            .collect();
-        if bad.is_empty() {
-            out.push(CheckResult::pass(
-                "provider.descriptors",
-                scope.clone(),
-                "every model has a plausible dim and a valid public name",
-            ));
-        } else {
-            out.push(
-                CheckResult::fail("provider.descriptors", scope.clone(), bad.join("; "))
-                    .with_fix("fix the [[models]] entries; the host refuses the file as is"),
-            );
-        }
+        // There is deliberately no separate descriptor check. Every rule one
+        // could state here — a positive `dim`, a public name in the host's
+        // charset, a non-empty `provider_model_id` — is enforced by
+        // `config::validate_file` above, and the host refuses the file over
+        // any of them. A second check restating them could only ever pass,
+        // and a check that cannot fail teaches operators to skim.
 
+        // A parked file is not a stale reload. Comparing it against what the
+        // host serves would warn on every run, forever, for a state the
+        // operator chose deliberately.
+        if !file.enabled {
+            out.push(CheckResult::skip(
+                "provider.served",
+                scope.clone(),
+                "enabled = false, so the host is not expected to serve these models",
+            ));
+            continue;
+        }
         match input.served {
             Some(served) => {
                 let missing: Vec<&str> = file
@@ -389,12 +401,14 @@ mod tests {
         );
         // A world-readable provider file.
         write_mode(dir.path(), "cohere.toml", "provider = \"cohere\"", 0o644);
-        // A descriptor problem.
+        // A file the serving host refuses over its schema: a typo'd key
+        // field. A permissive TOML read accepts it happily, which is why
+        // doctor runs the loader's rules.
         write_mode(
             dir.path(),
             "mistral.toml",
-            "provider = \"mistral\"\napi_key = \"k\"\n\n[[models]]\nname = \"m\"\n\
-             provider_model_id = \"mistral-embed\"\n",
+            "provider = \"mistral\"\napi_kee = \"k\"\n\n[[models]]\nname = \"m\"\n\
+             provider_model_id = \"mistral-embed\"\ndim = 1024\n",
             0o600,
         );
 
@@ -420,9 +434,9 @@ mod tests {
         let world_readable = by_id(&results, "provider.file", "provider:cohere");
         assert_eq!(world_readable.status, CheckStatus::Fail);
 
-        let descriptors = by_id(&results, "provider.descriptors", "provider:mistral");
-        assert_eq!(descriptors.status, CheckStatus::Fail);
-        assert!(descriptors.summary.contains("dim"), "{descriptors:?}");
+        let schema = by_id(&results, "provider.file", "provider:mistral");
+        assert_eq!(schema.status, CheckStatus::Fail);
+        assert!(schema.summary.contains("api_kee"), "{schema:?}");
 
         let served_check = by_id(&results, "provider.served", "provider:openai");
         assert_eq!(served_check.status, CheckStatus::Warn);
@@ -466,6 +480,68 @@ mod tests {
         let check = by_id(&results, "provider.directory", "providers");
         assert_eq!(check.status, CheckStatus::Warn);
         assert!(check.summary.contains("755"), "{check:?}");
+    }
+
+    /// The AWS SigV4 pair is two secrets, and `provider add` never writes
+    /// it — so a hand-written file is exactly where a world-readable key
+    /// lands. Checking only the first source would have called this healthy
+    /// while the host refused the whole connector.
+    #[test]
+    fn every_aws_secret_source_is_checked_not_just_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = write_mode(dir.path(), "id.key", "AKIA", 0o600);
+        let leaky = write_mode(dir.path(), "secret.key", "sk-secret-value", 0o644);
+        write_mode(
+            dir.path(),
+            "aws.toml",
+            &format!(
+                "provider = \"aws\"\nregion = \"us-east-1\"\n\
+                 access_key_id_file = \"{}\"\nsecret_access_key_file = \"{}\"\n\n\
+                 [[models]]\nname = \"aws-titan-embed-text-v1\"\n\
+                 provider_model_id = \"amazon.titan-embed-text-v1\"\ndim = 1536\n",
+                good.display(),
+                leaky.display()
+            ),
+            0o600,
+        );
+
+        let results = checks(&ProviderInput {
+            facts: &gather(dir.path()),
+            served: None,
+        });
+        let key = by_id(&results, "provider.key-source", "provider:aws");
+        assert_eq!(key.status, CheckStatus::Fail, "{key:?}");
+        assert!(key.summary.contains("secret_access_key_file"), "{key:?}");
+        for check in &results {
+            assert!(!check.summary.contains("sk-secret-value"), "{check:?}");
+        }
+    }
+
+    /// `enabled = false` is a state an operator chose. Reporting it as
+    /// "configured but not served" would warn on every doctor run forever.
+    #[test]
+    fn a_disabled_file_is_not_reported_as_an_unreloaded_host() {
+        let dir = tempfile::tempdir().unwrap();
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            "provider = \"openai\"\nenabled = false\napi_key = \"sk\"\n\n[[models]]\n\
+             name = \"openai-text-embedding-3-small\"\n\
+             provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
+            0o600,
+        );
+        let served: BTreeSet<String> = Default::default();
+        let results = checks(&ProviderInput {
+            facts: &gather(dir.path()),
+            served: Some(&served),
+        });
+        let file = by_id(&results, "provider.file", "provider:openai");
+        assert_eq!(file.status, CheckStatus::Pass);
+        assert!(file.summary.contains("enabled = false"), "{file:?}");
+        assert_eq!(
+            by_id(&results, "provider.served", "provider:openai").status,
+            CheckStatus::Skip
+        );
     }
 
     #[test]

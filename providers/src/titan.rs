@@ -174,14 +174,17 @@ impl EmbeddingBackend for TitanClient {
                                 ))
                             })?;
 
-                        // Sign the request in place
+                        // Sign the request in place. A credential that
+                        // cannot be put in a header is a configuration
+                        // error, not a panic — this runs inside the
+                        // PostgreSQL launcher in embedded mode.
                         aws_sigv4::sign_request(
                             &mut request,
                             access_key,
                             secret_key,
                             &self.region,
                             "bedrock",
-                        );
+                        )?;
 
                         // Execute the signed request
                         self.client

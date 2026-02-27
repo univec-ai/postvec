@@ -879,3 +879,154 @@ fn the_gemini_alias_writes_the_google_connector_type() {
     // The public name keeps the documented spelling.
     assert!(body.contains("name = \"gemini-embedding-001\""), "{body}");
 }
+
+/// The provider name becomes `<providers.d>/<name>.toml` in every verb, and
+/// `rm` deletes that path. A traversing name — under `sudo`, against a
+/// system directory — must be refused before it is joined onto anything.
+#[test]
+fn a_traversing_provider_name_is_refused_by_every_verb() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let outside = root.path().join("outside.toml");
+    std::fs::write(&outside, "provider = 'openai'\n").expect("write");
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir(&providers_d).expect("mkdir");
+    let escape = "../outside";
+
+    for args in [
+        vec![
+            "provider",
+            "rm",
+            escape,
+            "--path",
+            providers_d.to_str().unwrap(),
+            "--yes",
+        ],
+        vec![
+            "provider",
+            "test",
+            escape,
+            "--path",
+            providers_d.to_str().unwrap(),
+        ],
+    ] {
+        let output = run(&args);
+        assert_ne!(code(&output), 0, "{args:?} was accepted");
+        let err = stderr(&output);
+        assert!(
+            err.contains("outside [a-z0-9._-]") || err.contains("must start with"),
+            "{args:?}: {err}"
+        );
+    }
+    assert!(outside.exists(), "provider rm escaped the providers.d");
+}
+
+/// The Titan connector derives its endpoint from the region and never reads
+/// `base_url`, so accepting the flag would write a setting the host silently
+/// ignores. The region itself becomes a hostname, so it is validated too.
+#[test]
+fn aws_refuses_a_base_url_and_a_region_that_could_move_the_endpoint() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let base = |extra: &[&'static str]| -> Vec<&'static str> {
+        let root_arg: &'static str =
+            Box::leak(root.path().to_str().unwrap().to_string().into_boxed_str());
+        let mut args = vec![
+            "provider",
+            "add",
+            "aws",
+            "--model",
+            "amazon.titan-embed-text-v2:0",
+            "--api-key-env",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "--path",
+            root_arg,
+            "--no-verify",
+            "--yes",
+        ];
+        args.extend_from_slice(extra);
+        args
+    };
+
+    let output = run(&base(&["--region", "us-east-1", "--base-url", "http://x"]));
+    assert_ne!(code(&output), 0);
+    assert!(
+        stderr(&output).contains("--base-url"),
+        "{}",
+        stderr(&output)
+    );
+
+    let output = run(&base(&["--region", "us-east-1.evil.example"]));
+    assert_ne!(code(&output), 0);
+    assert!(stderr(&output).contains("region"), "{}", stderr(&output));
+
+    // The good pair still works.
+    let output = run(&base(&["--region", "us-east-1"]));
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let body =
+        std::fs::read_to_string(root.path().join("providers.d").join("aws.toml")).expect("written");
+    assert!(body.contains("region = \"us-east-1\""), "{body}");
+    assert!(!body.contains("base_url"), "{body}");
+}
+
+/// `enabled = false` is a state an operator chose. `ls` says so instead of
+/// telling them to reload a host that is behaving correctly.
+#[test]
+fn provider_ls_reports_a_disabled_file_as_disabled() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().expect("tempdir");
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir(&providers_d).expect("mkdir");
+    let path = providers_d.join("openai.toml");
+    std::fs::write(
+        &path,
+        "provider = \"openai\"\nenabled = false\napi_key_env = \"OPENAI_API_KEY\"\n\n\
+         [[models]]\nname = \"openai-text-embedding-3-small\"\n\
+         provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
+    )
+    .expect("write");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+    let output = run(&["provider", "ls", "--path", root.path().to_str().unwrap()]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("enabled = false"), "{text}");
+    assert!(
+        !text.contains("NOT served"),
+        "a parked file must not read as a stale reload: {text}"
+    );
+}
+
+/// A model id the host's name charset does not accept is *reduced*, not
+/// written through. A public name the loader refuses fails the whole
+/// connector file at the next reload, taking that provider's working models
+/// down with it — so the derivation has to be total.
+#[test]
+fn an_awkward_model_id_still_derives_a_name_the_host_accepts() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "Some/Future Model@v3",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--path",
+        root.path().to_str().unwrap(),
+        "--no-verify",
+        "--dim",
+        "8",
+        "--yes",
+    ]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let body = std::fs::read_to_string(root.path().join("providers.d").join("openai.toml"))
+        .expect("written");
+    assert!(
+        body.contains("name = \"openai-some-future-model-v3\""),
+        "{body}"
+    );
+    // The provider id itself is preserved verbatim: it is what the API expects.
+    assert!(
+        body.contains("provider_model_id = \"Some/Future Model@v3\""),
+        "{body}"
+    );
+}

@@ -31,9 +31,11 @@ pub mod titan;
 // only — the serving hosts never consult it.
 pub mod catalog;
 
-// The providers.d config layer and the gateway both inference hosts mount
-// (feature `wire` — needs the fork's `shared` error codes).
-#[cfg(feature = "wire")]
+// The providers.d config layer (feature `config`) and the gateway both
+// inference hosts mount (feature `wire` — that one also needs the fork's
+// `shared` error codes). The split lets the CLI validate a provider file
+// against the loader's own schema without linking the gateway.
+#[cfg(feature = "config")]
 pub mod config;
 #[cfg(feature = "wire")]
 pub mod gateway;
@@ -54,6 +56,32 @@ pub use titan::TitanClient;
 
 use async_trait::async_trait;
 use thiserror::Error;
+
+/// AWS regions become part of a hostname verbatim
+/// (`bedrock-runtime.{region}.amazonaws.com`, see `titan.rs`) and part of
+/// the SigV4 credential scope. A value carrying a dot or a slash would
+/// therefore redirect signed, credential-bearing requests at an arbitrary
+/// host. Real region names are `[a-z0-9-]`, so refuse anything else — at
+/// providers.d load time and at `postvec provider add` — rather than letting
+/// a typo (or a tampered file) choose the endpoint.
+///
+/// Lives here rather than in `config` so the CLI, which builds this crate
+/// without the `wire` feature, enforces the same rule before writing a file.
+pub fn validate_region(region: &str) -> Result<(), String> {
+    if region.is_empty() || region.len() > 32 {
+        return Err("region must be 1..=32 characters".to_string());
+    }
+    if !region
+        .bytes()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+    {
+        return Err(format!(
+            "region {region:?} contains characters outside [a-z0-9-]; it is interpolated into \
+             the Bedrock hostname and the SigV4 credential scope"
+        ));
+    }
+    Ok(())
+}
 
 /// Ceiling on provider response-body bytes copied into an error message.
 /// Bodies can be arbitrarily large and these messages travel into host logs
@@ -220,6 +248,21 @@ mod tests {
         let cloned = e.clone();
         assert_eq!(cloned.text_index, 3);
         assert_eq!(cloned.vector, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_region_that_could_redirect_the_endpoint_is_refused() {
+        assert!(validate_region("us-east-1").is_ok());
+        assert!(validate_region("eu-central-1").is_ok());
+        for bad in [
+            "us-east-1.evil.example",
+            "us east 1",
+            "../x",
+            "",
+            "US-EAST-1",
+        ] {
+            assert!(validate_region(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

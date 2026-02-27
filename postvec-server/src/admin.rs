@@ -388,6 +388,11 @@ async fn admin_unload(state: Arc<ServerState>, names: Vec<String>) -> (StatusCod
 async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) {
     let gateway = state.gateway.clone();
     let path = state.settings.providers_path.clone();
+    // The directory this node actually reads. Reported in the body because
+    // `postvec provider … --path DIR` has to try loopback listeners blind:
+    // without it, whichever host answers first would be credited with a
+    // reload of a directory it never looks at.
+    let served_path = path.display().to_string();
     // providers.d scanning is filesystem work (stat, read, key files) —
     // keep it off the serving runtime's workers like the other admin routes.
     let outcome = tokio::task::spawn_blocking(move || {
@@ -419,6 +424,7 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
                 Json(json!({
                     "success": true,
                     "data": {
+                        "path": served_path,
                         "providers": report.providers,
                         "models": report.models,
                         "errors": report.errors,
@@ -672,6 +678,12 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["data"]["models"], json!(1));
         assert_eq!(body["data"]["restart_needed"], json!(true));
+        // The directory this node reads, so `postvec provider … --path DIR`
+        // can tell "I reloaded your files" from "some other host answered".
+        assert_eq!(
+            body["data"]["path"],
+            json!(providers_path.display().to_string())
+        );
         assert!(state.gateway.owns("openai-text-embedding-3-small"));
     }
 

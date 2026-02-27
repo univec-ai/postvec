@@ -409,6 +409,12 @@ pub struct InventoryModel {
     pub name: String,
     pub enabled: bool,
     pub model_type: Option<String>,
+    /// `Some(connector type)` when the host serves this name through an
+    /// external provider rather than its own engine. `/config` carries both
+    /// kinds in one list, so anything reasoning about "what this host runs
+    /// locally" has to look at this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// A parsed ninference `/config` envelope.
@@ -836,11 +842,13 @@ mod tests {
                     name: "a".into(),
                     enabled: true,
                     model_type: Some("embed".into()),
+                    provider: None,
                 },
                 InventoryModel {
                     name: "b".into(),
                     enabled: false,
                     model_type: Some("embed".into()),
+                    provider: None,
                 },
             ],
         };
@@ -908,6 +916,7 @@ mod tests {
                             name: "m".into(),
                             enabled: true,
                             model_type: Some("embed".into()),
+                            provider: None,
                         }],
                     }),
                     error: None,
@@ -923,6 +932,7 @@ mod tests {
                             name: "m".into(),
                             enabled: true,
                             model_type: Some("convert".into()),
+                            provider: None,
                         }],
                     }),
                     error: None,

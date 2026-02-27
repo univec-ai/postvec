@@ -133,6 +133,33 @@ impl ProviderTarget {
     }
 }
 
+/// The provider name is a **file stem** that every command joins onto the
+/// providers.d path, so it has to be validated before it becomes one —
+/// `provider rm ../../etc/something` under `sudo` would otherwise delete a
+/// file outside the directory entirely. The charset is the loader's own
+/// (`config::validate_model_name`), which also keeps a name from colliding
+/// with the `.tmp` sibling `write_secret_file` uses.
+pub fn validate_provider_name(name: &str, flag: &str) -> Result<()> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(CliError::usage(format!("{flag} must be 1..=64 characters")));
+    }
+    let first = name.as_bytes()[0];
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return Err(CliError::usage(format!(
+            "{flag} {name:?} must start with [a-z0-9]"
+        )));
+    }
+    if !name
+        .bytes()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+    {
+        return Err(CliError::usage(format!(
+            "{flag} {name:?} contains characters outside [a-z0-9._-]"
+        )));
+    }
+    Ok(())
+}
+
 /// `<DIR>/providers.d`, or `<DIR>` itself when it already is one.
 pub fn providers_dir_from_path(dir: &Path) -> PathBuf {
     if dir.file_name().is_some_and(|name| name == "providers.d") {
@@ -293,6 +320,56 @@ impl ProviderFileDoc {
 
     pub fn provider_type(&self) -> Option<&str> {
         self.value.get("provider").and_then(toml::Value::as_str)
+    }
+
+    /// `enabled = false` parses and serves nothing. Absent means enabled,
+    /// matching the loader's default. Reported everywhere "is the host
+    /// serving this?" is asked, so a deliberately parked file does not read
+    /// as a reload that never happened.
+    pub fn enabled(&self) -> bool {
+        self.value
+            .get("enabled")
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(true)
+    }
+
+    /// Every field this file uses as a *file* secret source. The loader
+    /// refuses each of them at 0600, so every one of them is worth checking
+    /// before the host does — including the AWS SigV4 pair, which is easy to
+    /// forget precisely because `provider add` never writes it.
+    pub fn secret_file_fields(&self) -> Vec<(&'static str, String)> {
+        [
+            "api_key_file",
+            "bearer_token_file",
+            "access_key_id_file",
+            "secret_access_key_file",
+        ]
+        .into_iter()
+        .filter_map(|field| {
+            self.value
+                .get(field)
+                .and_then(toml::Value::as_str)
+                .map(|path| (field, path.to_string()))
+        })
+        .collect()
+    }
+
+    /// Every field this file uses as an *environment* secret source.
+    pub fn secret_env_fields(&self) -> Vec<(&'static str, String)> {
+        [
+            "api_key_env",
+            "bearer_token_env",
+            "access_key_id_env",
+            "secret_access_key_env",
+        ]
+        .into_iter()
+        .filter_map(|field| {
+            self.value
+                .get(field)
+                .and_then(toml::Value::as_str)
+                .map(|var| (field, var.to_string()))
+        })
+        .collect()
     }
 
     /// `(public name, provider_model_id)` pairs, in file order.
@@ -546,6 +623,11 @@ pub fn resolve_doc_secret(doc: &ProviderFileDoc) -> Result<String> {
 /// What `POST /admin/providers/reload` reported.
 #[derive(Debug, Deserialize)]
 pub struct ReloadOutcome {
+    /// The providers.d directory that host actually reads. `None` from a
+    /// host older than this field; the caller then falls back to trusting
+    /// whichever listener answered, which is what it did before.
+    #[serde(default)]
+    pub path: Option<String>,
     pub providers: usize,
     pub models: usize,
     #[serde(default)]
@@ -609,9 +691,27 @@ pub async fn reload_host(
             crate::config::DEFAULT_EMBEDDED_HTTP_LISTEN.to_string(),
         ],
     };
+    let wanted = target.dir();
     for listen in &candidates {
         match post_reload(listen, timeout).await {
             Ok(outcome) => {
+                // A host that reads a *different* providers.d did not apply
+                // this change. Saying "reloaded" there would be the worst
+                // kind of wrong: the operator would believe the files are
+                // live. This is reachable in the ordinary way — `--path
+                // <server-root>` on a machine that also runs an embedded
+                // cluster, where the node is down and the embedded host
+                // answers instead.
+                if let Some(served) = &outcome.path {
+                    if Path::new(served) != wanted {
+                        journal.record(format!(
+                            "the host at {listen} reads {served}, not {}; it was not asked \
+                             again",
+                            wanted.display()
+                        ));
+                        continue;
+                    }
+                }
                 journal.record(format!(
                     "reloaded the host at {listen}: {} provider(s), {} model(s) now served",
                     outcome.providers, outcome.models
@@ -642,7 +742,8 @@ pub async fn reload_host(
         target,
         journal,
         &format!(
-            "no local inference host answered a provider reload on {}",
+            "no inference host reading {} answered a provider reload on {}",
+            wanted.display(),
             candidates.join(" or ")
         ),
     );
@@ -689,15 +790,23 @@ pub async fn columns_bound_to(
         return (Vec::new(), databases);
     };
 
-    // What the running host serves locally right now: an enabled embed model
-    // under a colliding name keeps that name local (§6.1), so its columns
-    // are not affected either way.
+    // What the running host serves from its own engine right now: an enabled
+    // LOCAL embed model under a colliding name keeps that name local (§6.1),
+    // so its columns are not affected either way.
+    //
+    // `m.provider.is_none()` is load-bearing. `/config` carries provider
+    // descriptors in the same list, so without it a name already served by
+    // some *other* provider file would count as "local wins" and its columns
+    // would be dropped from the privacy warning — for a change that does
+    // move their text, from one provider to another.
     let locally_served: std::collections::BTreeSet<String> =
         match crate::commands::model::admin::loaded_inventory(&listen, timeout).await {
             Some(inventory) => inventory
                 .models
                 .iter()
-                .filter(|m| m.enabled && m.model_type.as_deref() == Some("embed"))
+                .filter(|m| {
+                    m.enabled && m.model_type.as_deref() == Some("embed") && m.provider.is_none()
+                })
                 .map(|m| m.name.clone())
                 .collect(),
             None => Default::default(),
@@ -744,6 +853,25 @@ pub async fn columns_bound_to(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// The name becomes `<providers.d>/<name>.toml` in every command, and
+    /// `rm` deletes that path. A traversing name must never get that far.
+    #[test]
+    fn provider_names_cannot_escape_the_directory() {
+        assert!(validate_provider_name("openai", "NAME").is_ok());
+        assert!(validate_provider_name("openai-eu", "NAME").is_ok());
+        for bad in [
+            "",
+            "../../etc/shadow",
+            "..",
+            "/etc/passwd",
+            ".hidden",
+            "Open AI",
+            "a/b",
+        ] {
+            assert!(validate_provider_name(bad, "NAME").is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn a_path_that_already_is_a_providers_d_is_used_as_is() {

@@ -405,7 +405,28 @@ impl Gateway {
                     ),
                 ));
             }
-            for embedding in embeddings {
+            for (position, embedding) in embeddings.into_iter().enumerate() {
+                // Alignment, not just arity. Every client reports which input
+                // a vector belongs to (`text_index`: the provider's own
+                // `index` field for the OpenAI-shaped APIs, the response
+                // position for the rest) and then hands them back in input
+                // order. A response that repeats or skips an index survives
+                // the count and dimension checks above and would write one
+                // row's vector onto another row — silently, and permanently,
+                // since nothing downstream can detect it. Checking the field
+                // the clients already carry is what makes "row-parallel to
+                // the input" an assertion rather than an assumption.
+                if embedding.text_index != position {
+                    return Err(GatewayError::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "provider {:?} returned a vector for input {} at position \
+                             {position} for {model:?}; the response is not row-parallel to \
+                             the request",
+                            entry.provider_name, embedding.text_index
+                        ),
+                    ));
+                }
                 if embedding.vector.len() as u32 != entry.dim {
                     return Err(GatewayError::new(
                         ErrorCode::InvalidInput,
@@ -639,6 +660,34 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput, "{err}");
         assert!(err.message.contains("3-dim"), "{err}");
+    }
+
+    /// Right count, right dimensions, wrong *alignment*: a response that
+    /// names input 0 twice would otherwise write one row's vector onto
+    /// another row, permanently and undetectably. The count and dim guards
+    /// both pass here — only the `text_index` check catches it.
+    #[tokio::test]
+    async fn a_response_that_is_not_row_parallel_is_refused() {
+        let m = mock::always(
+            200,
+            r#"{"data":[{"embedding":[1.0,2.0],"index":0},{"embedding":[3.0,4.0],"index":0}]}"#,
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
+        let gateway = Gateway::load(dir.path());
+
+        let err = gateway
+            .embed(
+                "openai-text-embedding-3-small",
+                &["a".to_string(), "b".to_string()],
+                InputType::Document,
+                far_deadline(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput, "{err}");
+        assert!(err.message.contains("row-parallel"), "{err}");
     }
 
     /// The normative §6.4 mapping table, exercised end to end against the

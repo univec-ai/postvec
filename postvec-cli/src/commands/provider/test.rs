@@ -2,7 +2,7 @@
 //! single-input embed per configured model, dimensions checked against the
 //! file. Costs one paid API call per model probed.
 
-use super::{resolve_doc_secret, resolve_target, ProviderFileDoc};
+use super::{resolve_doc_secret, resolve_target, validate_provider_name, ProviderFileDoc};
 use crate::cli::{Cli, ProviderTestArgs};
 use crate::error::{CliError, Exit, Result};
 use crate::output::Output;
@@ -32,6 +32,7 @@ struct TestDocument {
 }
 
 pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<Exit> {
+    validate_provider_name(&args.name, "NAME")?;
     let target = resolve_target(cli, args.path.as_deref(), output, false).await?;
     let file_path = target.dir().join(format!("{}.toml", args.name));
     let Some(doc) = ProviderFileDoc::load(&file_path)? else {

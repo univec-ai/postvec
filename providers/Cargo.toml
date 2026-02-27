@@ -20,8 +20,14 @@ repository = "https://github.com/univec-ai/postvec"
 name = "providers"
 
 [features]
+# The providers.d file schema and its structural validation, without the
+# gateway. Split out of `wire` so the CLI can tell an operator that the
+# serving host will refuse a file — and why — using the loader's own rules
+# instead of a second, permissive reader that disagrees with it. Pulls in
+# `toml` and nothing else; no `shared`, no gateway, no secret resolution.
+config = ["dep:toml"]
 # The providers.d config + descriptor + gateway layer (docs/external-providers.md §6).
-wire = ["dep:shared", "dep:toml", "tokio/sync"]
+wire = ["config", "dep:shared", "tokio/sync"]
 # Expose the in-process mock HTTP server (src/testing.rs) to other crates'
 # tests (the embedded host's spawn_for_test suite, postvec-server).
 test-util = ["tokio/net", "tokio/io-util", "tokio/rt"]

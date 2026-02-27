@@ -15,15 +15,35 @@
 //! 4. Add the Signature to the Request: The final signature is added to the `Authorization` header.
 //!
 
+use crate::EmbeddingError;
 use chrono::Utc;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-use reqwest::{header::HeaderMap, Method, Request, Url};
+use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::{Method, Request, Url};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Build a header value from a string that came out of configuration.
+///
+/// Deliberately not `.unwrap()`. The `Authorization` value embeds the
+/// operator's `access_key_id` verbatim, and this code runs inside the
+/// PostgreSQL launcher process in embedded mode — a key file with a stray
+/// newline or a non-ASCII byte in it would turn a configuration mistake into
+/// a panic in a database background worker. It is a configuration error, so
+/// it comes back as one and flows through the same classification as every
+/// other provider failure.
+fn header_value(field: &str, raw: &str) -> Result<HeaderValue, EmbeddingError> {
+    HeaderValue::from_str(raw).map_err(|_| {
+        EmbeddingError::Configuration(format!(
+            "the AWS {field} is not usable as an HTTP header value (control or non-ASCII \
+             characters); check the credential file for stray whitespace"
+        ))
+    })
+}
 
 /// Main function to sign a `reqwest::Request`. It modifies the request's headers in place.
 pub fn sign_request(
@@ -32,7 +52,7 @@ pub fn sign_request(
     secret_key: &str,
     region: &str,
     service: &str,
-) {
+) -> Result<(), EmbeddingError> {
     // --- Common variables ---
     let now = Utc::now();
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
@@ -48,9 +68,11 @@ pub fn sign_request(
 
     // Create a temporary map of headers that includes the original headers
     // plus the new ones required for signing.
+    let host_value = header_value("host", &host)?;
+    let date_value = header_value("date", &amz_date)?;
     let mut headers_for_signing = request.headers().clone();
-    headers_for_signing.insert("host", host.parse().unwrap());
-    headers_for_signing.insert("x-amz-date", amz_date.parse().unwrap());
+    headers_for_signing.insert("host", host_value.clone());
+    headers_for_signing.insert("x-amz-date", date_value.clone());
 
     // --- Task 1: Create a Canonical Request ---
     let (canonical_request, signed_headers) =
@@ -71,10 +93,12 @@ pub fn sign_request(
 
     // Now, we get a mutable borrow of the actual request headers and insert the
     // headers that were used for signing.
+    let authorization = header_value("access key id", &authorization_header)?;
     let final_headers = request.headers_mut();
-    final_headers.insert("host", host.parse().unwrap());
-    final_headers.insert("x-amz-date", amz_date.parse().unwrap());
-    final_headers.insert("Authorization", authorization_header.parse().unwrap());
+    final_headers.insert("host", host_value);
+    final_headers.insert("x-amz-date", date_value);
+    final_headers.insert("Authorization", authorization);
+    Ok(())
 }
 
 /// Hashes the request payload (body). Returns a hex-encoded SHA256 hash.
@@ -330,7 +354,7 @@ mod tests {
             .body("{}")
             .build()
             .unwrap();
-        sign_request(&mut req, "AKIDEXAMPLE", "secret", "us-east-1", "bedrock");
+        sign_request(&mut req, "AKIDEXAMPLE", "secret", "us-east-1", "bedrock").unwrap();
 
         let headers = req.headers();
         assert!(headers.contains_key("host"));
@@ -343,5 +367,24 @@ mod tests {
         assert!(auth.contains("/us-east-1/bedrock/aws4_request"), "{auth}");
         assert!(auth.contains("SignedHeaders="));
         assert!(auth.contains("Signature="));
+    }
+
+    /// A credential that cannot be a header value is a configuration error,
+    /// never a panic: this code runs inside the PostgreSQL launcher process
+    /// in embedded mode, and the access key id is operator-supplied — a key
+    /// file with a stray newline is a realistic way to get here.
+    #[test]
+    fn an_unusable_access_key_is_a_configuration_error_not_a_panic() {
+        let client = Client::new();
+        let mut req = client
+            .post("https://bedrock-runtime.us-east-1.amazonaws.com/model/m/invoke")
+            .body("{}")
+            .build()
+            .unwrap();
+        let err =
+            sign_request(&mut req, "AKID\nEXAMPLE", "secret", "us-east-1", "bedrock").unwrap_err();
+        assert!(matches!(err, EmbeddingError::Configuration(_)), "{err:?}");
+        // The message names the field, never the value.
+        assert!(!err.to_string().contains("AKID"), "{err}");
     }
 }

@@ -16,7 +16,7 @@
 
 use super::{
     columns_bound_to, read_secret_file, reload_host, require_private_secret_file,
-    resolve_doc_secret, resolve_target, ProviderFileDoc, ProviderTarget,
+    resolve_doc_secret, resolve_target, validate_provider_name, ProviderFileDoc, ProviderTarget,
 };
 use crate::cli::{Cli, ProviderAddArgs};
 use crate::error::{CliError, Exit, Result};
@@ -62,16 +62,31 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         )));
     }
     let canonical = catalog::canonical_provider(&typed);
-    if canonical == "aws" && args.region.as_deref().unwrap_or("").trim().is_empty() {
-        return Err(CliError::usage(
-            "aws needs --region (the Bedrock region, e.g. us-east-1)",
-        ));
+    if canonical == "aws" {
+        let region = args.region.as_deref().unwrap_or("").trim();
+        if region.is_empty() {
+            return Err(CliError::usage(
+                "aws needs --region (the Bedrock region, e.g. us-east-1)",
+            ));
+        }
+        // The same rule the loader enforces: the region becomes part of the
+        // Bedrock hostname and of the SigV4 credential scope.
+        providers::validate_region(region).map_err(CliError::usage)?;
+        // The Titan connector builds its endpoint from the region alone and
+        // never consults `base_url`. Writing one would be a setting the
+        // operator can see in the file and the host silently ignores.
+        if args.base_url.is_some() {
+            return Err(CliError::usage(
+                "--base-url does not apply to the aws type: the Bedrock endpoint is derived \
+                 from --region",
+            ));
+        }
     }
     if canonical != "aws" && args.region.is_some() {
         return Err(CliError::usage("--region only applies to the aws type"));
     }
     let stem = args.name.clone().unwrap_or_else(|| canonical.clone());
-    validate_stem(&stem)?;
+    validate_provider_name(&stem, "--name")?;
 
     let mut model_ids: Vec<String> = Vec::new();
     for id in &args.models {
@@ -127,6 +142,16 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             continue;
         }
         let public_name = catalog::public_name(&typed, id);
+        // The derivation reduces any id to the loader's charset, so this
+        // normally cannot fire. It stays because the consequence if it ever
+        // did is disproportionate: the host refuses a connector file *as a
+        // whole* over one bad model name, so a name that slipped through
+        // would take that provider's already-working models down at the
+        // next reload rather than just failing to add this one.
+        catalog::validate_public_name(&public_name).map_err(|e| {
+            CliError::usage(format!("--model {id:?}: {e}"))
+                .with_fix("give the model an id with letters or digits in it")
+        })?;
         if already_declared
             .iter()
             .any(|(name, _)| *name == public_name)
@@ -160,71 +185,13 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         ));
     }
 
-    // ---- Verification probe (and dimension inference) ----
-    // A dry run never probes. The probe is a live, billed request that also
-    // puts the key on the network, and `--dry-run` promises neither. The
-    // plan says what the real run would do instead.
+    // ---- Whether a verification probe will run ----
+    // The probe is deferred until after both confirmation gates below. It
+    // is a live, billed request that puts the key on the network, and until
+    // the operator has answered the plan — the privacy acknowledgement in
+    // particular — this command has no mandate to spend either. A dry run
+    // never probes at all; the plan says what the real run would do.
     let probe = !args.no_verify && !args.dry_run;
-    if probe {
-        let secret = probe_secret(&key, existing.as_ref())?;
-        let config = providers::ProviderConfig {
-            provider: canonical.clone(),
-            api_key: (canonical != "aws").then(|| secret.clone()),
-            base_url: args.base_url.clone(),
-            region: args.region.clone(),
-            bearer_token: (canonical == "aws").then(|| secret.clone()),
-            access_key_id: None,
-            secret_access_key: None,
-        };
-        for model in &mut new_models {
-            let backend = providers::new_embedding_backend(
-                &config,
-                &model.id,
-                model.dim.unwrap_or(0) as i32,
-                "search_document",
-                None,
-            )
-            .map_err(|e| CliError::precondition(format!("{}: {e}", model.id)))?;
-            let deadline = std::time::Instant::now() + cli.timeout;
-            let embeddings = backend
-                .embed(&["postvec verification probe"], Some(deadline))
-                .await
-                .map_err(|e| {
-                    CliError::precondition(format!(
-                        "verification embed for {} failed: {e}",
-                        model.id
-                    ))
-                    .with_fix(
-                        "check the key, model id and network; pass --no-verify to write the \
-                         file anyway (the probe costs one paid API call per model)",
-                    )
-                })?;
-            let measured = embeddings.first().map(|e| e.vector.len()).unwrap_or(0) as u32;
-            if measured == 0 {
-                return Err(CliError::precondition(format!(
-                    "verification embed for {} returned an empty vector",
-                    model.id
-                )));
-            }
-            match model.dim {
-                Some(declared) if declared != measured => {
-                    return Err(CliError::precondition(format!(
-                        "{}: the probe returned {measured} dimensions but {declared} was \
-                         declared; fix --dim (or drop it to use the measured value)",
-                        model.id
-                    )));
-                }
-                Some(_) => {}
-                None => {
-                    output.progress(&format!(
-                        "{}: measured dimension {measured}",
-                        model.public_name
-                    ));
-                    model.dim = Some(measured);
-                }
-            }
-        }
-    }
     for model in &new_models {
         // A dry run may legitimately reach here with no dimension yet: the
         // probe it skipped is what would have measured one. Only
@@ -356,6 +323,72 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     )?;
     plan::confirm(&plan, args.yes, None, Prompt::from_environment())?;
 
+    // ---- Verification probe (and dimension inference) ----
+    // Deliberately after both gates: the first thing this command does that
+    // costs money and sends the key over the network happens only once the
+    // operator has said yes to the plan. Nothing has been written yet, so a
+    // probe failure still leaves the host exactly as it was.
+    if probe {
+        let secret = probe_secret(&key, existing.as_ref())?;
+        let config = providers::ProviderConfig {
+            provider: canonical.clone(),
+            api_key: (canonical != "aws").then(|| secret.clone()),
+            base_url: args.base_url.clone(),
+            region: args.region.clone(),
+            bearer_token: (canonical == "aws").then(|| secret.clone()),
+            access_key_id: None,
+            secret_access_key: None,
+        };
+        for model in &mut new_models {
+            let backend = providers::new_embedding_backend(
+                &config,
+                &model.id,
+                model.dim.unwrap_or(0) as i32,
+                "search_document",
+                None,
+            )
+            .map_err(|e| CliError::precondition(format!("{}: {e}", model.id)))?;
+            let deadline = std::time::Instant::now() + cli.timeout;
+            let embeddings = backend
+                .embed(&["postvec verification probe"], Some(deadline))
+                .await
+                .map_err(|e| {
+                    CliError::precondition(format!(
+                        "verification embed for {} failed: {e}",
+                        model.id
+                    ))
+                    .with_fix(
+                        "check the key, model id and network; pass --no-verify to write the \
+                         file anyway (the probe costs one paid API call per model)",
+                    )
+                })?;
+            let measured = embeddings.first().map(|e| e.vector.len()).unwrap_or(0) as u32;
+            if measured == 0 {
+                return Err(CliError::precondition(format!(
+                    "verification embed for {} returned an empty vector",
+                    model.id
+                )));
+            }
+            match model.dim {
+                Some(declared) if declared != measured => {
+                    return Err(CliError::precondition(format!(
+                        "{}: the probe returned {measured} dimensions but {declared} was \
+                         declared; fix --dim (or drop it to use the measured value)",
+                        model.id
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    output.progress(&format!(
+                        "{}: measured dimension {measured}",
+                        model.public_name
+                    ));
+                    model.dim = Some(measured);
+                }
+            }
+        }
+    }
+
     // ---- Apply: build the document, write, reload ----
     let mut journal = ApplyJournal::default();
     let mut doc = match existing {
@@ -424,27 +457,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
 
 fn scanned_note_needed(public_names: &[String]) -> bool {
     !public_names.is_empty()
-}
-
-fn validate_stem(stem: &str) -> Result<()> {
-    if stem.is_empty() || stem.len() > 64 {
-        return Err(CliError::usage("--name must be 1..=64 characters"));
-    }
-    let first = stem.as_bytes()[0];
-    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-        return Err(CliError::usage(format!(
-            "--name {stem:?} must start with [a-z0-9]"
-        )));
-    }
-    if !stem
-        .bytes()
-        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
-    {
-        return Err(CliError::usage(format!(
-            "--name {stem:?} contains characters outside [a-z0-9._-]"
-        )));
-    }
-    Ok(())
 }
 
 /// Which key source this run records. No flag + an existing keyed file keeps
@@ -579,16 +591,6 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stems_follow_the_file_name_rules() {
-        assert!(validate_stem("openai").is_ok());
-        assert!(validate_stem("openai-eu").is_ok());
-        assert!(validate_stem("").is_err());
-        assert!(validate_stem("Open AI").is_err());
-        assert!(validate_stem("../escape").is_err());
-        assert!(validate_stem(".hidden").is_err());
-    }
 
     #[test]
     fn key_specs_write_the_right_fields_per_type() {

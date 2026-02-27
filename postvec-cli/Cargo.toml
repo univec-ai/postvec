@@ -49,7 +49,10 @@ sha2 = "0.10"
 # The provider connector clients (the `provider add`/`test` verification
 # probe and the built-in catalog). No `wire` feature: the CLI edits
 # providers.d files as TOML documents itself and never runs the gateway.
-postvec-providers = { path = "../providers" }
+# `config` (not `wire`): the providers.d schema and its structural
+# validation, so doctor reports what the serving host will actually do with a
+# file. No gateway, no `shared`, no secret resolution.
+postvec-providers = { path = "../providers", features = ["config"] }
 toml = "0.8"
 sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio-rustls",

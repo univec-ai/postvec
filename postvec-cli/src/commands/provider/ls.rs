@@ -22,6 +22,9 @@ struct LsModel {
 struct LsProvider {
     name: String,
     provider: String,
+    /// `enabled = false`: parses, serves nothing. Shown so a deliberately
+    /// parked file does not read as a host that never reloaded.
+    enabled: bool,
     key_source: String,
     file: String,
     models: Vec<LsModel>,
@@ -58,6 +61,7 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
             .unwrap_or_default();
         match ProviderFileDoc::load(&path) {
             Ok(Some(doc)) => {
+                let enabled = doc.enabled();
                 let models = doc
                     .models()
                     .into_iter()
@@ -74,7 +78,12 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                             .and_then(|m| m.get("dim"))
                             .and_then(toml::Value::as_integer);
                         LsModel {
-                            served: served.as_ref().map(|set| set.contains(&name)),
+                            // A parked file is not expected to be served, so
+                            // do not invite a reload that would change
+                            // nothing.
+                            served: enabled
+                                .then(|| served.as_ref().map(|set| set.contains(&name)))
+                                .flatten(),
                             name,
                             provider_model_id: id,
                             dim,
@@ -84,6 +93,7 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                 providers.push(LsProvider {
                     name: stem,
                     provider: doc.provider_type().unwrap_or("?").to_string(),
+                    enabled,
                     key_source: doc.key_source(),
                     file: path.display().to_string(),
                     models,
@@ -115,8 +125,15 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
     }
     for provider in &providers {
         output.progress(&format!(
-            "{}  ({}, key: {})",
-            provider.name, provider.provider, provider.key_source
+            "{}  ({}, key: {}){}",
+            provider.name,
+            provider.provider,
+            provider.key_source,
+            if provider.enabled {
+                ""
+            } else {
+                "  [enabled = false]"
+            }
         ));
         for model in &provider.models {
             output.progress(&format!(
@@ -126,10 +143,11 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                     .dim
                     .map(|d| d.to_string())
                     .unwrap_or_else(|| "?".to_string()),
-                match model.served {
-                    Some(true) => "served",
-                    Some(false) => "NOT served (reload or restart the host)",
-                    None => "(no running host to ask)",
+                match (provider.enabled, model.served) {
+                    (false, _) => "disabled in the file",
+                    (true, Some(true)) => "served",
+                    (true, Some(false)) => "NOT served (reload or restart the host)",
+                    (true, None) => "(no running host to ask)",
                 }
             ));
         }

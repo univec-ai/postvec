@@ -576,15 +576,25 @@ mod tests {
         assert!(find_ort_libraries(&libs).is_empty());
     }
 
+    /// A loopback port nothing in this process will ever bind.
+    ///
+    /// The obvious way to get a closed port — bind an ephemeral one and drop
+    /// the listener — is a race, not a fact: the kernel is free to hand that
+    /// exact port to the next `127.0.0.1:0` bind, and this suite makes a lot
+    /// of those in parallel. It failed that way. Port 1 is in the privileged
+    /// range, so no test (and no unprivileged process) can take it, which
+    /// makes "connection refused" the only possible outcome.
+    const CLOSED_PORT: &str = "127.0.0.1:1";
+
     #[tokio::test]
     async fn listener_probes_distinguish_closed_ports_from_bad_addresses() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let open = tcp_probe(&address, Duration::from_secs(1)).await;
         assert!(open.connected);
-
         drop(listener);
-        let closed = tcp_probe(&address, Duration::from_secs(1)).await;
+
+        let closed = tcp_probe(CLOSED_PORT, Duration::from_secs(1)).await;
         assert!(!closed.connected);
         assert!(closed.error.is_some());
 
@@ -621,11 +631,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_listener_yields_an_explanation_not_an_error() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        drop(listener);
+        // Same reasoning as CLOSED_PORT: bind-and-drop is a race under a
+        // parallel suite, a privileged port is a fact.
+        let address = CLOSED_PORT;
         let mut probe = EmbeddedProbe::new(Some(PathBuf::from("/opt/nin")), RootSource::Guc);
-        probe_listeners(&mut probe, &address, &address, Duration::from_millis(300))
+        probe_listeners(&mut probe, address, address, Duration::from_millis(300))
             .await
             .unwrap();
         assert!(probe.loaded.is_none());

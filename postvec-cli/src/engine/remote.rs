@@ -187,11 +187,11 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_probe_reports_a_closed_port_without_failing() {
-        // Bind then drop, so the port is almost certainly free.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let endpoint = validate::grpc_endpoint(&format!("127.0.0.1:{port}")).unwrap();
+        // A privileged port, not a bound-then-dropped ephemeral one: "almost
+        // certainly free" is a race the kernel is entitled to lose, and this
+        // suite binds `127.0.0.1:0` in parallel all over the place. Nothing
+        // unprivileged can take port 1, so refusal is guaranteed.
+        let endpoint = validate::grpc_endpoint("127.0.0.1:1").unwrap();
         let probe = probe_grpc(&endpoint, Duration::from_secs(2)).await;
         assert!(!probe.connected);
         assert!(probe.connect_error.is_some());

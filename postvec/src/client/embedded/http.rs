@@ -622,6 +622,13 @@ pub(super) fn spawn(
             post(move |ConnectInfo(peer): ConnectInfo<SocketAddr>| {
                 let gateway = reload_gateway.clone();
                 let path = providers_path.clone();
+                // The directory this host actually reads. Reported in the
+                // body because `postvec provider … --path DIR` has to try
+                // loopback listeners blind: without it, an embedded host
+                // that happens to be running would answer a reload meant
+                // for some other root and the CLI would report the change
+                // as applied when nothing read it.
+                let served_path = providers_path.display().to_string();
                 async move {
                     if let Err(refused) = admin_peer_check(peer) {
                         return refused;
@@ -666,6 +673,7 @@ pub(super) fn spawn(
                                 Json(json!({
                                     "success": true,
                                     "data": {
+                                        "path": served_path,
                                         "providers": report.providers,
                                         "models": report.models,
                                         "errors": report.errors,
@@ -945,6 +953,13 @@ dim = 999
         // says a restart is needed for full provider throughput (the CLI
         // prints this after `provider add`).
         assert_eq!(body["data"]["restart_needed"], json!(true));
+        // Which directory this host reads. `postvec provider … --path DIR`
+        // tries loopback listeners blind, so without this it could credit
+        // an unrelated host with applying a change it never saw.
+        assert_eq!(
+            body["data"]["path"],
+            json!(providers_dir.display().to_string())
+        );
 
         let after = crate::runtime::block_on(discovery::fetch_models_report(
             std::slice::from_ref(&endpoint),

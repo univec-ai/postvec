@@ -5,7 +5,10 @@
 //! so the same in-use acknowledgement the `model` family uses gates it:
 //! the plan names every affected column, and `--yes` never answers it.
 
-use super::{columns_bound_to, reload_host, resolve_target, ProviderFileDoc, ProviderTarget};
+use super::{
+    columns_bound_to, reload_host, resolve_target, validate_provider_name, ProviderFileDoc,
+    ProviderTarget,
+};
 use crate::cli::{Cli, ProviderRmArgs};
 use crate::error::{CliError, Exit, Result};
 use crate::output::{CommandResult, Output};
@@ -16,6 +19,9 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     let started = Instant::now();
     let started_at = crate::checks::timestamp_now();
 
+    // Before any host access: this name becomes the path this command
+    // deletes.
+    validate_provider_name(&args.name, "NAME")?;
     let mut target = resolve_target(cli, args.path.as_deref(), output, true).await?;
     let file_path = target.dir().join(format!("{}.toml", args.name));
     let Some(mut doc) = ProviderFileDoc::load(&file_path)? else {

@@ -183,7 +183,6 @@ pub const CHECK_ORDER: &[&str] = &[
     "provider.directory",
     "provider.file",
     "provider.key-source",
-    "provider.descriptors",
     "provider.served",
     // model store (postvec model …)
     "models.receipts",

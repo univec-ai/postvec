@@ -45,6 +45,12 @@ struct EnvelopeData {
 struct HubModel {
     name: String,
     configuration: Option<HubConfiguration>,
+    /// Top-level extra a provider gateway sets on its own descriptors
+    /// (external-providers §6.2): the connector type. Absent for every
+    /// engine model, so its presence is what distinguishes "this host runs
+    /// this model" from "this host relays this model to an API".
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -114,6 +120,7 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
         .map(|model| InventoryModel {
             enabled: model.configuration.as_ref().is_some_and(|c| c.enabled),
             model_type: model.model_type(),
+            provider: model.provider,
             name: model.name,
         })
         .collect();
