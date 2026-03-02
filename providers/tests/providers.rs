@@ -524,3 +524,34 @@ async fn factory_builds_clients_and_accepts_the_gemini_alias() {
         assert_eq!(out[0].vector, vec![0.5]);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The gateway, built where postvec actually builds it
+// ---------------------------------------------------------------------------
+
+/// The embedded host constructs its gateway on the PostgreSQL **launcher
+/// thread**, outside `runtime.block_on` (`postvec/src/client/embedded.rs`) —
+/// so `Gateway::load` builds a `reqwest::Client` per provider with no tokio
+/// runtime on the thread. Every other test in this tree runs under
+/// `#[tokio::test]` and could not see a regression here; a panic would land
+/// in a database background worker during startup, which is not a failure
+/// mode this project accepts for a configuration file.
+#[test]
+fn the_gateway_loads_with_no_tokio_runtime_on_the_thread() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("openai.toml");
+    std::fs::write(
+        &path,
+        "provider = \"openai\"\napi_key = \"sk-test\"\n\n[[models]]\n\
+         name = \"openai-text-embedding-3-small\"\n\
+         provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let gateway = providers::gateway::Gateway::load(dir.path());
+    assert!(gateway.owns("openai-text-embedding-3-small"));
+    assert_eq!(gateway.inflight_budget(), 4);
+}

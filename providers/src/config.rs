@@ -34,6 +34,13 @@ const MAX_MAX_CONCURRENT: usize = 64;
 const MAX_MODELS_PER_FILE: usize = 64;
 const MAX_NAME_BYTES: usize = 128;
 
+/// The connector types [`crate::new_embedding_backend`] implements, in the
+/// canonical spelling. The CLI's `gemini`/`amazon` aliases fold into these
+/// (see [`crate::catalog::canonical_provider`]); a file should carry the
+/// canonical name and either is accepted.
+pub const SUPPORTED_PROVIDERS: &[&str] =
+    &["openai", "openrouter", "mistral", "google", "cohere", "aws"];
+
 fn default_true() -> bool {
     true
 }
@@ -213,6 +220,153 @@ fn resolve_secret(
     Ok(Some(value))
 }
 
+/// A `base_url` override has to be an absolute `http`/`https` URL with a
+/// host and nothing after the path: every connector builds its endpoint by
+/// concatenating its own suffix onto this string.
+///
+/// Checked at load rather than left to the request, because of how a bad
+/// value would otherwise present. `reqwest` reports an unparseable URL from
+/// `send()`, as an ordinary `reqwest::Error` — which the §6.4 mapping
+/// classifies `UpstreamServiceUnavailable`, i.e. **Transient**. A permanent
+/// typo would therefore look like a provider outage and be retried until the
+/// queue dead-lettered the rows, with nothing anywhere naming the real
+/// cause. A trailing `/` gets the same treatment: it yields a `//v1/…` path
+/// that some gateways answer with a 404 that reads like a wrong model id.
+pub fn validate_base_url(raw: &str) -> Result<(), String> {
+    let url =
+        reqwest::Url::parse(raw).map_err(|e| format!("base_url {raw:?} is not a URL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "base_url {raw:?} must be http:// or https:// (got scheme {:?})",
+            url.scheme()
+        ));
+    }
+    if url.host_str().unwrap_or("").is_empty() {
+        return Err(format!("base_url {raw:?} names no host"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(format!(
+            "base_url {raw:?} must not carry a query string or fragment: the connector \
+             appends its own path to it"
+        ));
+    }
+    if raw.ends_with('/') {
+        return Err(format!(
+            "base_url {raw:?} must not end with '/': the connector appends its own path, so \
+             the trailing slash becomes a doubled one"
+        ));
+    }
+    Ok(())
+}
+
+/// True when this `base_url` would put the provider credential on the
+/// network in cleartext: plain `http` to something other than loopback.
+///
+/// Not a refusal — a plaintext OpenAI-compatible endpoint on a private
+/// network is a real deployment, and loopback (a sidecar, a mock server) is
+/// the ordinary test shape. It is reported: by the host at load, and by
+/// `postvec doctor`, because "the bearer token crosses the network in the
+/// clear" is not something to discover from a packet capture.
+pub fn base_url_is_plaintext_offhost(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    // `host_str` keeps the brackets on an IPv6 literal.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if matches!(host, "localhost" | "localhost.") {
+        return false;
+    }
+    !host
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The credential shape each connector type requires.
+///
+/// The factory enforces the same thing one layer later, on *resolved values*,
+/// and that stays as the last line. This pass works on the **declarations**,
+/// which is the only thing a reader that resolves no secret can see — and it
+/// is what makes a file the host will refuse a per-file *load* error, visible
+/// in `provider ls` and `postvec doctor`, rather than a gateway-build failure
+/// that only appears in the host's log. Without it the whole family of
+/// misdiagnoses this crate already fixed once returns: doctor green,
+/// `provider.served` blaming a reload, and the actual cause — a missing
+/// `api_key_file`, or `provider = "opanai"` — visible nowhere the operator
+/// looks.
+fn validate_connector(file: &ProviderFile) -> Result<(), String> {
+    let declared = |inline: &Option<String>, path: &Option<PathBuf>, env: &Option<String>| {
+        inline.is_some() || path.is_some() || env.is_some()
+    };
+    let api_key = declared(&file.api_key, &file.api_key_file, &file.api_key_env);
+    let bearer = declared(
+        &file.bearer_token,
+        &file.bearer_token_file,
+        &file.bearer_token_env,
+    );
+    let access_key_id = declared(
+        &file.access_key_id,
+        &file.access_key_id_file,
+        &file.access_key_id_env,
+    );
+    let secret_access_key = declared(
+        &file.secret_access_key,
+        &file.secret_access_key_file,
+        &file.secret_access_key_env,
+    );
+
+    match crate::catalog::canonical_provider(&file.provider).as_str() {
+        "aws" => {
+            if file.region.is_none() {
+                return Err(
+                    "provider \"aws\" needs `region`: the Bedrock endpoint is derived from it"
+                        .to_string(),
+                );
+            }
+            // The Titan connector builds its endpoint from the region alone
+            // and never reads `base_url`; a file carrying one shows the
+            // operator a setting the host ignores.
+            if file.base_url.is_some() {
+                return Err(
+                    "base_url does not apply to provider \"aws\": the Bedrock endpoint comes \
+                     from `region`"
+                        .to_string(),
+                );
+            }
+            if !(bearer || (access_key_id && secret_access_key)) {
+                return Err(
+                    "provider \"aws\" needs either a Bedrock bearer token (bearer_token, \
+                     bearer_token_file or bearer_token_env) or both access_key_id and \
+                     secret_access_key"
+                        .to_string(),
+                );
+            }
+        }
+        supported if SUPPORTED_PROVIDERS.contains(&supported) => {
+            if !api_key {
+                return Err(format!(
+                    "provider {:?} needs an API key: set exactly one of api_key_file \
+                     (recommended), api_key_env or api_key",
+                    file.provider
+                ));
+            }
+        }
+        _ => {
+            return Err(format!(
+                "unsupported provider type {:?}; expected one of {} (aliases: gemini, amazon)",
+                file.provider,
+                SUPPORTED_PROVIDERS.join(", ")
+            ))
+        }
+    }
+    Ok(())
+}
+
 /// Public-name rule: the same charset the hosts accept for model names.
 fn validate_model_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
@@ -251,11 +405,23 @@ fn validate_model_name(name: &str) -> Result<(), String> {
 /// more permissive reader that would disagree — and without reading a single
 /// secret.
 pub fn validate_file(path: &Path) -> Result<bool, String> {
-    let mut file = parse_file(path)?;
+    assert_private(path)?;
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+    validate_str(&raw, &path.display().to_string())
+}
+
+/// [`validate_file`] without the file: the same rules over a rendered
+/// document, so `postvec provider add` can refuse to *write* a file the host
+/// would refuse to load. A connector file is refused as a whole, so one
+/// mistaken entry takes that provider's already-working models down at the
+/// next reload — and the command that composed it is the last place that can
+/// still stop it.
+pub fn validate_str(body: &str, label: &str) -> Result<bool, String> {
+    let mut file: ProviderFile = toml::from_str(body).map_err(|e| format!("cannot parse: {e}"))?;
     if !file.enabled {
         return Ok(false);
     }
-    validate_structure(&mut file, path)?;
+    validate_structure(&mut file, label)?;
     Ok(true)
 }
 
@@ -272,7 +438,7 @@ fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
     if !file.enabled {
         return Ok(None);
     }
-    validate_structure(&mut file, path)?;
+    validate_structure(&mut file, &path.display().to_string())?;
 
     let config = ProviderConfig {
         provider: file.provider.clone(),
@@ -318,7 +484,7 @@ fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
     }))
 }
 
-fn validate_structure(file: &mut ProviderFile, path: &Path) -> Result<(), String> {
+fn validate_structure(file: &mut ProviderFile, label: &str) -> Result<(), String> {
     if file.models.is_empty() {
         return Err("no [[models]] entries; an enabled provider must serve something".to_string());
     }
@@ -338,6 +504,9 @@ fn validate_structure(file: &mut ProviderFile, path: &Path) -> Result<(), String
     }
     if let Some(region) = &file.region {
         crate::validate_region(region)?;
+    }
+    if let Some(base_url) = &file.base_url {
+        validate_base_url(base_url)?;
     }
     for model in &file.models {
         validate_model_name(&model.name).map_err(|e| format!("[[models]]: {e}"))?;
@@ -368,9 +537,8 @@ fn validate_structure(file: &mut ProviderFile, path: &Path) -> Result<(), String
         let fresh = seen.insert(model.name.clone());
         if !fresh {
             log::warn!(
-                "providers.d: {} defines model {:?} more than once; the first \
+                "providers.d: {label} defines model {:?} more than once; the first \
                  definition wins",
-                path.display(),
                 model.name
             );
         }
@@ -405,7 +573,9 @@ fn validate_structure(file: &mut ProviderFile, path: &Path) -> Result<(), String
         &file.secret_access_key_file,
         &file.secret_access_key_env,
     )?;
-    Ok(())
+    // Last, because it is the rule that reads the others: which connector
+    // this is, and whether the credential it needs is declared at all.
+    validate_connector(file)
 }
 
 /// Scan a providers.d directory. A missing directory is the zero-config
@@ -771,6 +941,127 @@ max_tokens = 8191
         );
         assert_eq!(validate_file(&path), Ok(false));
         assert!(load_file(&path).unwrap().is_none());
+    }
+
+    /// The factory refuses an unsupported connector type and a connector
+    /// with no credential — but it does so at gateway build, where only the
+    /// host's log sees it. Checking the *declarations* here is what makes
+    /// those two a per-file load error, which is what `provider ls` and
+    /// `postvec doctor` report from.
+    #[test]
+    fn a_connector_the_factory_cannot_build_is_a_file_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = "\n\n[[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n";
+        for (marker, body, expect) in [
+            (
+                "unknown type",
+                format!("provider = \"opanai\"\napi_key = \"k\"{models}"),
+                "unsupported provider type",
+            ),
+            (
+                "no key source",
+                format!("provider = \"openai\"{models}"),
+                "needs an API key",
+            ),
+            (
+                "aws without a region",
+                format!("provider = \"aws\"\nbearer_token = \"t\"{models}"),
+                "needs `region`",
+            ),
+            (
+                "aws without any credential",
+                format!("provider = \"aws\"\nregion = \"us-east-1\"{models}"),
+                "bearer token",
+            ),
+            (
+                "aws with half a sigv4 pair",
+                format!(
+                    "provider = \"aws\"\nregion = \"us-east-1\"\naccess_key_id = \"AKIA\"{models}"
+                ),
+                "bearer token",
+            ),
+            (
+                // The Titan connector never reads base_url; a file carrying
+                // one shows a setting the host silently ignores.
+                "aws with a base_url",
+                format!(
+                    "provider = \"aws\"\nregion = \"us-east-1\"\nbearer_token = \"t\"\n\
+                     base_url = \"https://example.invalid\"{models}"
+                ),
+                "does not apply to provider \"aws\"",
+            ),
+        ] {
+            let path = write_mode(dir.path(), "p.toml", &body, 0o600);
+            let refused = validate_file(&path).unwrap_err();
+            assert!(refused.contains(expect), "case {marker}: {refused}");
+            assert!(load_file(&path).is_err(), "case {marker} (loader)");
+            std::fs::remove_file(&path).unwrap();
+        }
+
+        // The shapes that do build: every key-authenticated type, and both
+        // AWS credential variants.
+        for (marker, body) in [
+            ("openai", "provider = \"openai\"\napi_key_env = \"K\""),
+            ("google alias", "provider = \"gemini\"\napi_key = \"k\""),
+            (
+                "amazon alias",
+                "provider = \"amazon\"\nregion = \"us-east-1\"\nbearer_token = \"t\"",
+            ),
+            (
+                "aws sigv4",
+                "provider = \"aws\"\nregion = \"us-east-1\"\naccess_key_id = \"AKIA\"\n\
+                 secret_access_key = \"s\"",
+            ),
+        ] {
+            let path = write_mode(dir.path(), "p.toml", &format!("{body}{models}"), 0o600);
+            assert_eq!(validate_file(&path), Ok(true), "case {marker}");
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+
+    /// A `base_url` reqwest cannot parse fails at *request* time as a
+    /// transport error, which §6.4 classifies Transient — so a permanent
+    /// typo would be retried until the queue dead-lettered the rows, with
+    /// nothing naming the cause. It is a load error instead.
+    #[test]
+    fn an_unusable_base_url_is_refused_at_load_not_retried_forever() {
+        for bad in [
+            "api.openai.com",
+            "ftp://api.openai.com",
+            "https://",
+            "https://api.openai.com/",
+            "https://api.openai.com/v1?key=x",
+        ] {
+            assert!(validate_base_url(bad).is_err(), "{bad:?}");
+        }
+        for good in [
+            "https://api.openai.com",
+            "http://127.0.0.1:8080",
+            "https://example.azure.com/openai/deployments/d",
+        ] {
+            assert!(validate_base_url(good).is_ok(), "{good:?}");
+        }
+
+        // Plaintext off-host is reported, not refused: a self-hosted
+        // OpenAI-compatible endpoint is a real deployment, loopback is the
+        // ordinary sidecar/mock shape.
+        assert!(base_url_is_plaintext_offhost("http://vllm.internal:8000"));
+        assert!(base_url_is_plaintext_offhost("http://10.0.0.4:8000"));
+        assert!(!base_url_is_plaintext_offhost("http://127.0.0.1:8000"));
+        assert!(!base_url_is_plaintext_offhost("http://localhost:8000"));
+        assert!(!base_url_is_plaintext_offhost("http://[::1]:8000"));
+        assert!(!base_url_is_plaintext_offhost("https://api.openai.com"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_mode(
+            dir.path(),
+            "openai.toml",
+            "provider = \"openai\"\napi_key = \"k\"\nbase_url = \"api.openai.com\"\n\n\
+             [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n",
+            0o600,
+        );
+        assert!(validate_file(&path).unwrap_err().contains("base_url"));
+        assert!(load_file(&path).is_err());
     }
 
     #[test]

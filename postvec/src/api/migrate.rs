@@ -485,6 +485,15 @@ fn migrate(
         );
     }
 
+    // Informed consent before any DDL, the same moment `enable()` and
+    // `adopt()` take it: migrating onto a provider-backed model binds this
+    // column's text to that provider — and under `strategy => 'reembed'`
+    // sends every row that already exists, which is the single largest act
+    // of shipping source text off the host in the product. `provider add`'s
+    // acknowledgement gate cannot see this one: the provider was configured
+    // long before.
+    crate::api::registry::notice_external_provider(new_model, column_name);
+
     let new_dim = resolve_dim(new_model);
     if reindex == "blocking" && new_dim > 2000 {
         error!(
@@ -1091,6 +1100,40 @@ mod tests {
         assert_eq!(kind.as_deref(), Some("direct"));
         assert_eq!(total, Some(3), "three rows carry old vectors");
         let _ = rid;
+    }
+
+    /// Migration is the third way a column becomes bound to a
+    /// provider-backed model, and the only one neither `enable()`'s NOTICE
+    /// nor `provider add`'s acknowledgement gate can cover — the provider was
+    /// configured long before. `strategy => 'reembed'` then sends the entire
+    /// existing corpus to that provider, so it announces the same thing
+    /// `enable()` does.
+    #[pg_test]
+    fn migrate_onto_a_provider_backed_model_announces_the_provider() {
+        docs_enabled();
+        Spi::run(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('openai-text-embedding-3-small', 'embed', 'openai-text-embedding-3-small',
+                     4,
+                     '{\"name\": \"openai-text-embedding-3-small\",
+                       \"extra\": {\"status\": \"provider\", \"provider\": \"openai\"}}'::jsonb)",
+        )
+        .unwrap();
+
+        // The migration itself goes through (reembed: no converter to the
+        // provider's space exists), which is what exercises the NOTICE call
+        // on the real path.
+        let mid = Spi::get_one::<i64>(
+            "SELECT postvec.migrate('docs','body','openai-text-embedding-3-small',
+                                    strategy => 'reembed')",
+        )
+        .unwrap();
+        assert!(mid.is_some());
+        assert_eq!(
+            crate::api::registry::external_provider_of("openai-text-embedding-3-small").as_deref(),
+            Some("openai"),
+            "the predicate the NOTICE fires on"
+        );
     }
 
     #[pg_test]

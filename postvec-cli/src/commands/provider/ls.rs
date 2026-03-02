@@ -27,6 +27,13 @@ struct LsProvider {
     enabled: bool,
     key_source: String,
     file: String,
+    /// `Some(reason)` when the serving host refuses this file outright.
+    /// Without it a broken file's models read as `NOT served (reload or
+    /// restart the host)` — the one remedy that cannot work, which is
+    /// exactly the misdiagnosis `doctor` stopped making when it started
+    /// running the loader's own rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refused: Option<String>,
     models: Vec<LsModel>,
 }
 
@@ -59,6 +66,9 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
+        // The loader's own verdict on this file, so `ls` cannot describe a
+        // file the host refuses as one that merely needs a reload.
+        let refused = providers::config::validate_file(&path).err();
         match ProviderFileDoc::load(&path) {
             Ok(Some(doc)) => {
                 let enabled = doc.enabled();
@@ -78,10 +88,10 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                             .and_then(|m| m.get("dim"))
                             .and_then(toml::Value::as_integer);
                         LsModel {
-                            // A parked file is not expected to be served, so
-                            // do not invite a reload that would change
-                            // nothing.
-                            served: enabled
+                            // A parked or refused file is not expected to be
+                            // served, so do not invite a reload that would
+                            // change nothing.
+                            served: (enabled && refused.is_none())
                                 .then(|| served.as_ref().map(|set| set.contains(&name)))
                                 .flatten(),
                             name,
@@ -96,6 +106,7 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                     enabled,
                     key_source: doc.key_source(),
                     file: path.display().to_string(),
+                    refused,
                     models,
                 });
             }
@@ -135,6 +146,9 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                 "  [enabled = false]"
             }
         ));
+        if let Some(reason) = &provider.refused {
+            output.progress(&format!("  ! the host REFUSES this file: {reason}"));
+        }
         for model in &provider.models {
             output.progress(&format!(
                 "  {:<44} dim {:<6} {}",
@@ -143,11 +157,12 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                     .dim
                     .map(|d| d.to_string())
                     .unwrap_or_else(|| "?".to_string()),
-                match (provider.enabled, model.served) {
-                    (false, _) => "disabled in the file",
-                    (true, Some(true)) => "served",
-                    (true, Some(false)) => "NOT served (reload or restart the host)",
-                    (true, None) => "(no running host to ask)",
+                match (provider.refused.is_some(), provider.enabled, model.served) {
+                    (true, _, _) => "not loadable (see above)",
+                    (false, false, _) => "disabled in the file",
+                    (false, true, Some(true)) => "served",
+                    (false, true, Some(false)) => "NOT served (reload or restart the host)",
+                    (false, true, None) => "(no running host to ask)",
                 }
             ));
         }

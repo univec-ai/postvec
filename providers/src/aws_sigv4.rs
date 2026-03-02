@@ -19,7 +19,7 @@ use crate::EmbeddingError;
 use chrono::Utc;
 use hex::encode as hex_encode;
 use hmac::{Hmac, Mac};
-use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS, NON_ALPHANUMERIC};
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Method, Request, Url};
 use sha2::{Digest, Sha256};
@@ -140,6 +140,18 @@ const AWS_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b'}');
 
+/// Query components encode everything except RFC 3986's unreserved set —
+/// `/` included, unlike the path set above.
+const AWS_QUERY_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
+fn sigv4_encode(raw: &str) -> String {
+    utf8_percent_encode(raw, AWS_QUERY_ENCODE_SET).to_string()
+}
+
 /// Creates the canonical request string.
 fn create_canonical_request(
     method: &Method,
@@ -157,10 +169,15 @@ fn create_canonical_request(
         utf8_percent_encode(path, AWS_PATH_ENCODE_SET).to_string()
     };
 
-    // Canonical Query String, sorted by key.
+    // Canonical Query String, sorted by key. `query_pairs()` hands back
+    // *decoded* names and values, so each half has to be re-encoded with the
+    // same strict set as the path — AWS canonicalizes what it received, and
+    // emitting a decoded space or `&` here would sign a different string
+    // than the service verifies. Inert for Bedrock's `InvokeModel`, which
+    // carries no query string; wrong the first time any endpoint does.
     let mut query_pairs: BTreeMap<String, String> = BTreeMap::new();
     for (key, value) in url.query_pairs() {
-        query_pairs.insert(key.to_string(), value.to_string());
+        query_pairs.insert(sigv4_encode(&key), sigv4_encode(&value));
     }
     let canonical_query_string = query_pairs
         .iter()
@@ -344,6 +361,19 @@ mod tests {
         assert_eq!(lines[2], "a=1&b=2");
         // Headers are lowercased and sorted; signed-headers list matches.
         assert_eq!(signed, "x-abc;x-zed");
+    }
+
+    /// `query_pairs()` decodes; the canonical query string has to be
+    /// re-encoded or the signature covers a different string than the
+    /// service verifies. No endpoint this crate calls carries a query
+    /// string today, which is exactly why this needs a test rather than a
+    /// deployment to notice.
+    #[test]
+    fn canonical_query_values_are_re_encoded() {
+        let url = Url::parse("https://example.com/p?b=x%20y&a=a%2Fb").unwrap();
+        let (canonical, _) = create_canonical_request(&Method::GET, &url, &HeaderMap::new(), None);
+        let lines: Vec<&str> = canonical.split('\n').collect();
+        assert_eq!(lines[2], "a=a%2Fb&b=x%20y");
     }
 
     #[test]

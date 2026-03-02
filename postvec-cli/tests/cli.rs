@@ -1030,3 +1030,113 @@ fn an_awkward_model_id_still_derives_a_name_the_host_accepts() {
         "{body}"
     );
 }
+
+/// `provider add` composes a file the serving host then has to accept as a
+/// **whole** — one bad entry takes that provider's already-working models
+/// down at the next reload. So the rendered document is run through the
+/// loader's own rules before it lands, and a refusal leaves the host exactly
+/// as it was.
+#[test]
+fn provider_add_will_not_write_a_file_the_host_would_refuse() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let root_arg = root.path().to_str().unwrap();
+    let file = root.path().join("providers.d").join("openai.toml");
+
+    // An implausible dimension. Nothing else catches it: --no-verify skips
+    // the probe, and the loader refuses `dim = 0`.
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "some-future-model",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--dim",
+        "0",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    assert!(!file.exists(), "a refused file must not be written");
+
+    // A base_url reqwest cannot parse would fail at request time as a
+    // *transport* error, which the taxonomy classifies transient — so the
+    // rows would be retried to death over a permanent typo.
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--base-url",
+        "api.openai.com",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0);
+    assert!(stderr(&output).contains("base_url"), "{}", stderr(&output));
+    assert!(!file.exists());
+
+    // And an unsupported connector type, which the factory would only
+    // refuse at gateway build, in the host's log.
+    let output = run(&[
+        "provider",
+        "add",
+        "opanai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0);
+    assert!(
+        stderr(&output).contains("unknown provider type"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// A hand-edited file the host refuses reads as a *refusal* in `ls`, not as
+/// "NOT served (reload or restart the host)" — the one remedy that cannot
+/// work. `doctor` stopped making that misdiagnosis when it started running
+/// the loader's rules; `ls` answers the same question.
+#[test]
+fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("providers.d");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let file = dir.join("openai.toml");
+    // A transposed credential field: valid TOML, refused by the host's
+    // `deny_unknown_fields`, and invisible to a permissive read.
+    std::fs::write(
+        &file,
+        "provider = \"openai\"\napi_kee = \"sk-x\"\n\n[[models]]\n\
+         name = \"openai-text-embedding-3-small\"\n\
+         provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
+    )
+    .expect("write");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+    let listed = run(&["provider", "ls", "--path", root.path().to_str().unwrap()]);
+    assert_eq!(code(&listed), 0, "{}", stderr(&listed));
+    let text = format!("{}{}", stdout(&listed), stderr(&listed));
+    assert!(text.contains("REFUSES"), "{text}");
+    assert!(text.contains("api_kee"), "{text}");
+    assert!(
+        !text.contains("reload or restart the host"),
+        "a file the host will never load must not be reported as a stale reload:\n{text}"
+    );
+}

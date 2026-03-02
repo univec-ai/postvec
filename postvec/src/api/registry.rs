@@ -2095,12 +2095,17 @@ pub(crate) fn external_provider_of(model: &str) -> Option<String> {
     .flatten()
 }
 
-/// The informed-consent moment for a NEW column bound to a provider-backed
-/// model (external-providers §7.5): from now on, this column's source text
-/// leaves the database host for the named provider. Existing columns that
-/// upgrade from a bridge route are the CLI's acknowledgement gate, not this
-/// NOTICE.
-fn notice_external_provider(model: &str, source_column: &str) {
+/// The informed-consent moment for a column becoming bound to a
+/// provider-backed model (external-providers §7.5): from now on, this
+/// column's source text leaves the database host for the named provider.
+///
+/// Emitted by all three verbs that bind a column to a model — `enable`,
+/// `adopt` and `migrate`. Migration is the one that is easy to overlook and
+/// the one with the largest consequence: `strategy => 'reembed'` sends the
+/// *entire existing corpus* to the provider, and even `'convert'` leaves the
+/// column sending every future write there. `provider add`'s acknowledgement
+/// gate cannot cover it, because by then the provider is already configured.
+pub(crate) fn notice_external_provider(model: &str, source_column: &str) {
     if let Some(provider) = external_provider_of(model) {
         pgrx::notice!(
             "postvec: model {model:?} is served by external provider {provider:?}; source \

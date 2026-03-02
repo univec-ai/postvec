@@ -26,6 +26,10 @@ pub struct ProviderFileFacts {
     pub models: Vec<(String, Option<i64>)>,
     /// A permission or parse problem with the file itself.
     pub error: Option<String>,
+    /// The file loads, but something about it is worth saying out loud —
+    /// today: a plaintext `base_url` on a non-loopback host, which puts the
+    /// credential on the wire unencrypted.
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +86,7 @@ pub fn gather(dir: &Path) -> ProviderFacts {
                     "{} is readable by other users (mode {mode:o}); the host refuses it",
                     path.display()
                 )),
+                warning: None,
             });
             continue;
         }
@@ -102,6 +107,7 @@ pub fn gather(dir: &Path) -> ProviderFacts {
                 key_problem: None,
                 models: Vec::new(),
                 error: Some(problem),
+                warning: None,
             });
             continue;
         }
@@ -136,6 +142,7 @@ pub fn gather(dir: &Path) -> ProviderFacts {
                     key_problem,
                     models,
                     error: None,
+                    warning: plaintext_transport_warning(&doc),
                 });
             }
             Ok(None) => {}
@@ -147,10 +154,27 @@ pub fn gather(dir: &Path) -> ProviderFacts {
                 key_problem: None,
                 models: Vec::new(),
                 error: Some(e.to_string()),
+                warning: None,
             }),
         }
     }
     facts
+}
+
+/// A `base_url` that reaches a non-loopback host over plain HTTP sends the
+/// provider credential — a bearer token, on every embed — across the network
+/// in cleartext. The loader accepts it deliberately (a self-hosted
+/// OpenAI-compatible endpoint on a private network is a real deployment, and
+/// loopback is the ordinary sidecar shape), so this is where an operator
+/// finds out. The serving host logs the same thing at load.
+fn plaintext_transport_warning(doc: &crate::commands::provider::ProviderFileDoc) -> Option<String> {
+    let base_url = doc.value.get("base_url").and_then(toml::Value::as_str)?;
+    providers::config::base_url_is_plaintext_offhost(base_url).then(|| {
+        format!(
+            "base_url {base_url} is plain HTTP to a non-loopback host: the API key is sent \
+             unencrypted on every request"
+        )
+    })
 }
 
 /// Whether the file's key sources can resolve, without printing any value.
@@ -250,21 +274,27 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
             );
             continue;
         }
-        out.push(CheckResult::pass(
-            "provider.file",
-            scope.clone(),
-            format!(
-                "provider {} — {} model(s), key: {}{}",
-                file.provider.as_deref().unwrap_or("?"),
-                file.models.len(),
-                file.key_source,
-                if file.enabled {
-                    ""
-                } else {
-                    " (enabled = false: parses, serves nothing)"
-                }
-            ),
-        ));
+        let summary = format!(
+            "provider {} — {} model(s), key: {}{}",
+            file.provider.as_deref().unwrap_or("?"),
+            file.models.len(),
+            file.key_source,
+            if file.enabled {
+                ""
+            } else {
+                " (enabled = false: parses, serves nothing)"
+            }
+        );
+        out.push(match &file.warning {
+            // The file loads; something about how it loads is worth saying.
+            Some(warning) => CheckResult::warn(
+                "provider.file",
+                scope.clone(),
+                format!("{summary} — {warning}"),
+            )
+            .with_fix("use an https base_url, or terminate TLS on the inference host itself"),
+            None => CheckResult::pass("provider.file", scope.clone(), summary),
+        });
 
         match &file.key_problem {
             Some(problem) => out.push(
@@ -515,6 +545,92 @@ mod tests {
         for check in &results {
             assert!(!check.summary.contains("sk-secret-value"), "{check:?}");
         }
+    }
+
+    /// The factory refuses an unsupported connector type, and a connector
+    /// with no credential declared, at gateway build — where only the host's
+    /// log sees it. Both must be `provider.file` failures here, or doctor
+    /// reports the file healthy and blames `provider.served` on a reload that
+    /// changes nothing.
+    #[test]
+    fn a_connector_the_host_cannot_build_fails_the_file_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = "\n\n[[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n";
+        for (stem, body, expect) in [
+            (
+                "typo",
+                format!("provider = \"opanai\"\napi_key = \"k\"{models}"),
+                "unsupported",
+            ),
+            ("nokey", format!("provider = \"openai\"{models}"), "API key"),
+            (
+                "aws",
+                format!("provider = \"aws\"\nbearer_token = \"t\"{models}"),
+                "region",
+            ),
+        ] {
+            write_mode(dir.path(), &format!("{stem}.toml"), &body, 0o600);
+            let results = checks(&ProviderInput {
+                facts: &gather(dir.path()),
+                served: Some(&Default::default()),
+            });
+            let file = by_id(&results, "provider.file", &format!("provider:{stem}"));
+            assert_eq!(file.status, CheckStatus::Fail, "{file:?}");
+            assert!(file.summary.contains(expect), "{file:?}");
+            // …and nothing tells the operator to reload.
+            assert!(
+                !results
+                    .iter()
+                    .any(|c| c.id == "provider.served" && c.scope == format!("provider:{stem}")),
+                "a file the host refuses has no served-vs-configured question"
+            );
+            std::fs::remove_file(dir.path().join(format!("{stem}.toml"))).unwrap();
+        }
+    }
+
+    /// A plaintext `base_url` to a non-loopback host puts the API key on the
+    /// network in the clear on every embed. The loader accepts it (a
+    /// self-hosted OpenAI-compatible endpoint is a real deployment), so this
+    /// is where the operator finds out. Loopback — a sidecar, a mock — is
+    /// silent.
+    #[test]
+    fn a_plaintext_off_host_base_url_is_a_warning_and_loopback_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |base_url: &str| {
+            format!(
+                "provider = \"openai\"\napi_key = \"sk\"\nbase_url = \"{base_url}\"\n\n\
+                 [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n"
+            )
+        };
+
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            &file("http://vllm.internal:8000"),
+            0o600,
+        );
+        let results = checks(&ProviderInput {
+            facts: &gather(dir.path()),
+            served: None,
+        });
+        let check = by_id(&results, "provider.file", "provider:openai");
+        assert_eq!(check.status, CheckStatus::Warn, "{check:?}");
+        assert!(check.summary.contains("unencrypted"), "{check:?}");
+
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            &file("http://127.0.0.1:8000"),
+            0o600,
+        );
+        let results = checks(&ProviderInput {
+            facts: &gather(dir.path()),
+            served: None,
+        });
+        assert_eq!(
+            by_id(&results, "provider.file", "provider:openai").status,
+            CheckStatus::Pass
+        );
     }
 
     /// `enabled = false` is a state an operator chose. Reporting it as

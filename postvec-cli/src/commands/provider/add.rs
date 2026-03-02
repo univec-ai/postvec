@@ -26,18 +26,6 @@ use providers::catalog;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// Connector types the factory accepts (plus the CLI aliases).
-const KNOWN_TYPES: &[&str] = &[
-    "openai",
-    "openrouter",
-    "mistral",
-    "google",
-    "gemini",
-    "cohere",
-    "aws",
-    "amazon",
-];
-
 /// Where the key for this file comes from — written to the TOML verbatim
 /// as a *source*, with the inline variant being the only one that stores a
 /// value (in the 0600 file; documented as the least preferred).
@@ -54,14 +42,19 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     let started_at = crate::checks::timestamp_now();
 
     // ---- Validate the request before any host access ----
+    // The connector list is the loader's, not a second copy of it: the whole
+    // point of a `provider add` refusal is that it predicts the host.
     let typed = args.provider_type.to_lowercase();
-    if !KNOWN_TYPES.contains(&typed.as_str()) {
+    let canonical = catalog::canonical_provider(&typed);
+    if !providers::config::SUPPORTED_PROVIDERS.contains(&canonical.as_str()) {
         return Err(CliError::usage(format!(
-            "unknown provider type {typed:?}; expected one of openai, openrouter, mistral, \
-             google (alias: gemini), cohere, aws (alias: amazon)"
+            "unknown provider type {typed:?}; expected one of {} (aliases: gemini, amazon)",
+            providers::config::SUPPORTED_PROVIDERS.join(", ")
         )));
     }
-    let canonical = catalog::canonical_provider(&typed);
+    if let Some(base_url) = &args.base_url {
+        providers::config::validate_base_url(base_url).map_err(CliError::usage)?;
+    }
     if canonical == "aws" {
         let region = args.region.as_deref().unwrap_or("").trim();
         if region.is_empty() {

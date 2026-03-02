@@ -453,14 +453,38 @@ impl ProviderFileDoc {
         (models.len() != before, models.len())
     }
 
-    /// Serialize and write: 0600 file, 0700 directory, chowned to `owner`
-    /// when one is known and we can (root).
-    pub fn write(&self, owner: Option<FileOwner>) -> Result<()> {
-        let body = format!(
+    /// The file as it would be written.
+    fn body(&self) -> Result<String> {
+        Ok(format!(
             "# Managed by `postvec provider`. Comments do not survive a rewrite.\n{}",
             toml::to_string_pretty(&self.value)
                 .map_err(|e| CliError::internal(format!("cannot serialize provider file: {e}")))?
-        );
+        ))
+    }
+
+    /// Serialize and write: 0600 file, 0700 directory, chowned to `owner`
+    /// when one is known and we can (root).
+    ///
+    /// The rendered document is checked against the **loader's own rules**
+    /// first. The serving host refuses a connector file as a whole, so one
+    /// entry this CLI got wrong — an implausible `dim`, a `base_url` the
+    /// connector cannot use, a connector type with no credential — would take
+    /// that provider's already-working models down at the next reload. The
+    /// command composing the file is the last place that can still stop it,
+    /// and running the host's rules rather than restating them is what keeps
+    /// there being one rulebook. No secret is resolved to reach the verdict.
+    pub fn write(&self, owner: Option<FileOwner>) -> Result<()> {
+        let body = self.body()?;
+        let label = self.path.display().to_string();
+        providers::config::validate_str(&body, &label).map_err(|problem| {
+            CliError::precondition(format!(
+                "the resulting {label} is one the inference host would refuse: {problem}"
+            ))
+            .with_fix(
+                "fix the flag (or the hand-edited field) this reports; the file was not \
+                 written, so the host keeps serving whatever it serves now",
+            )
+        })?;
         write_secret_file(&self.path, body.as_bytes(), owner)
     }
 }

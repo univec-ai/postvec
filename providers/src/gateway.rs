@@ -109,16 +109,6 @@ struct Inner {
     models: BTreeMap<String, ModelEntry>,
 }
 
-/// Canonical connector type for descriptors and NOTICEs: the factory arm
-/// name, with the CLI-friendly aliases folded in.
-fn canonical_provider_type(raw: &str) -> String {
-    match raw.to_lowercase().as_str() {
-        "gemini" => "google".to_string(),
-        "amazon" => "aws".to_string(),
-        other => other.to_string(),
-    }
-}
-
 /// The nested HubModel shape `discovery::parse_config` requires (§6.2). A
 /// flat object would be silently dropped by the parser — the round-trip
 /// tests below and in the host pin this.
@@ -151,7 +141,25 @@ impl Inner {
         let mut inner = Inner::default();
 
         'providers: for provider in outcome.providers {
-            let provider_type = canonical_provider_type(&provider.config.provider);
+            let provider_type = crate::catalog::canonical_provider(&provider.config.provider);
+            // Plaintext to something other than loopback puts the provider
+            // credential on the wire in the clear. Not refused — a
+            // self-hosted OpenAI-compatible endpoint on a private network is
+            // a real deployment, and loopback is the ordinary sidecar/mock
+            // shape — but never silent either. `postvec doctor` says the
+            // same thing where an operator will actually see it.
+            if provider
+                .config
+                .base_url
+                .as_deref()
+                .is_some_and(config::base_url_is_plaintext_offhost)
+            {
+                log::warn!(
+                    "providers.d: provider {:?} has a plaintext (http://) base_url on a \
+                     non-loopback host; its credential crosses the network unencrypted",
+                    provider.name
+                );
+            }
             // One fresh reqwest client per provider, rustls via this crate's
             // feature set. Deliberately NOT any shared/discovery client: the
             // hosts' discovery client disables certificate validation, and
