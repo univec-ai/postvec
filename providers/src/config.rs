@@ -13,7 +13,8 @@
 //!   refused with a named error, never silently accepted;
 //! - one broken file must not take down the others: per-file failures are
 //!   reported alongside whatever loaded (the caller logs them);
-//! - duplicate public model names across files: first wins, warning logged.
+//! - a duplicate public model name across files is refused, not resolved:
+//!   which file wins would decide where a bound column's source text is sent.
 
 use crate::ProviderConfig;
 use serde::Deserialize;
@@ -33,6 +34,34 @@ pub const DEFAULT_MAX_BATCH: usize = 96;
 const MAX_MAX_CONCURRENT: usize = 64;
 const MAX_MODELS_PER_FILE: usize = 64;
 const MAX_NAME_BYTES: usize = 128;
+/// A `provider_model_id` goes into a request body and, for Bedrock, into a
+/// signed URL path.
+const MAX_MODEL_ID_BYTES: usize = 256;
+/// The per-attempt HTTP timeout. Anything past a few minutes holds a
+/// provider permit and a tower slot for longer than any caller's deadline.
+const MAX_TIMEOUT_MS: u64 = 300_000;
+/// Items per provider request. Bounds the response budget the connectors
+/// compute, so it must not be operator-unbounded either.
+const MAX_MAX_BATCH: usize = 4096;
+/// pgvector's compile-time ceiling (`VECTOR_MAX_DIM`). A descriptor above it
+/// cannot back a `vector` column at all, so accepting one only produces a
+/// model that fails at `enable()` — and inflates every response envelope
+/// sized from the declared dimension on the way there.
+const MAX_DIM: u32 = 16_000;
+
+/// Directory-wide ceilings. Per-file limits alone bound nothing: a thousand
+/// well-formed files are a thousand times the heap, the semaphores and the
+/// ingress width.
+const MAX_PROVIDER_FILES: usize = 32;
+const MAX_TOTAL_MODELS: usize = 256;
+/// Sum of every file's `max_concurrent`. Both hosts add this to their tower
+/// ingress limit, and each in-flight provider call may hold a bounded
+/// response body, so this is the multiplier on the feature's whole memory
+/// footprint.
+const MAX_TOTAL_CONCURRENT: usize = 256;
+/// A connector file is a few dozen lines. A secret is a token.
+const MAX_FILE_BYTES: u64 = 256 * 1024;
+const MAX_SECRET_BYTES: u64 = 16 * 1024;
 
 /// The connector types [`crate::new_embedding_backend`] implements, in the
 /// canonical spelling. The CLI's `gemini`/`amazon` aliases fold into these
@@ -146,13 +175,43 @@ pub struct LoadOutcome {
     pub errors: Vec<LoadError>,
 }
 
-/// Refuse any file whose mode grants group/other bits — same discipline as
-/// the CLI's credential store. Applies to the TOML itself and to every
-/// referenced secret file: the TOML being secret-free is not enough if the
-/// key file is world-readable.
-fn assert_private(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let meta = std::fs::symlink_metadata(path)
+/// Open a private file and read it, bounded.
+///
+/// One `open` decides everything, and every check is made against the *open
+/// descriptor*. The previous shape — `symlink_metadata`, then a separate
+/// `read_to_string(path)` — asked about one file and read another: anything
+/// able to replace the path between the two calls got its own file read with
+/// the first one's verdict. `O_NOFOLLOW` refuses a symlink at open, and
+/// `fstat` on the returned descriptor cannot be raced at all.
+///
+/// The mode check does the ownership check implicitly: a `0600` file opens
+/// only for its owner (or root, which is the host's other legitimate
+/// identity), so a file this succeeds on is one the serving account owns.
+///
+/// `limit` bounds the read. `providers.d` is operator input to a long-lived
+/// process that, in embedded mode, is the PostgreSQL launcher; a file is a
+/// few dozen lines and a secret is a token, so neither needs to be able to
+/// consume the heap.
+fn read_private(path: &Path, limit: u64) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| match e.raw_os_error() {
+            // ELOOP is what O_NOFOLLOW returns for a symlink; say so, because
+            // "too many levels of symbolic links" reads as a broken path.
+            Some(libc::ELOOP) => format!(
+                "{} is a symlink; provider files and the secrets they name must be regular \
+                 files (a symlink can point at a world-readable one)",
+                path.display()
+            ),
+            _ => format!("cannot open {}: {e}", path.display()),
+        })?;
+    let meta = file
+        .metadata()
         .map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
     if !meta.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
@@ -163,6 +222,56 @@ fn assert_private(path: &Path) -> Result<(), String> {
             "{} is readable by other users (mode {mode:o}); chmod 600 it (and rotate the key \
              if others could have read it)",
             path.display()
+        ));
+    }
+    if meta.size() > limit {
+        return Err(format!(
+            "{} is {} bytes, over the {limit}-byte ceiling for this file",
+            path.display(),
+            meta.size()
+        ));
+    }
+    // Bounded independently of the stat: a file can grow between the two.
+    let mut body = String::new();
+    file.take(limit + 1)
+        .read_to_string(&mut body)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    if body.len() as u64 > limit {
+        return Err(format!(
+            "{} exceeds the {limit}-byte ceiling for this file",
+            path.display()
+        ));
+    }
+    Ok(body)
+}
+
+/// The providers.d directory itself, as a trust boundary.
+///
+/// Group- or world-**write** is refused, not warned about: anyone with write
+/// access to this directory can drop in a connector file, and the host will
+/// load it and start sending source text to whatever endpoint it names. That
+/// is a strictly larger problem than the world-readable key file this module
+/// already refuses. Read and execute bits only disclose which providers are
+/// configured, which is doctor's business rather than a refusal.
+pub fn validate_directory(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(dir)
+        .map_err(|e| format!("cannot stat {}: {e}", dir.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "{} is a symlink; refusing to read credentials through it",
+            dir.display()
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o022 != 0 {
+        return Err(format!(
+            "{} is writable by other users (mode {mode:o}); anyone who can write here can add \
+             a provider file and choose where this host sends source text. chmod 700 it",
+            dir.display()
         ));
     }
     Ok(())
@@ -203,9 +312,7 @@ fn resolve_secret(
     let value = if let Some(v) = inline {
         v.clone()
     } else if let Some(path) = file {
-        assert_private(path)?;
-        std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {field}_file {}: {e}", path.display()))?
+        read_private(path, MAX_SECRET_BYTES).map_err(|e| format!("{field}_file: {e}"))?
     } else if let Some(var) = env {
         std::env::var(var).map_err(|_| {
             format!("{field}_env names {var:?}, which is not set in this process's environment")
@@ -320,6 +427,13 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
         &file.secret_access_key_env,
     );
 
+    // The schema is one flat table because TOML reads better that way, but it
+    // describes a *tagged union*: `provider` selects which fields mean
+    // anything. `deny_unknown_fields` cannot express that — every field below
+    // is a known field — so a file can otherwise carry an `api_key` the AWS
+    // connector never reads, or a `region` OpenAI ignores, and look
+    // configured while behaving otherwise. Each arm therefore rejects the
+    // fields its connector does not consume.
     match crate::catalog::canonical_provider(&file.provider).as_str() {
         "aws" => {
             if file.region.is_none() {
@@ -338,13 +452,40 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                         .to_string(),
                 );
             }
-            if !(bearer || (access_key_id && secret_access_key)) {
+            if api_key {
                 return Err(
-                    "provider \"aws\" needs either a Bedrock bearer token (bearer_token, \
-                     bearer_token_file or bearer_token_env) or both access_key_id and \
-                     secret_access_key"
+                    "provider \"aws\" does not use api_key*: authenticate with a Bedrock \
+                     bearer token or the access_key_id/secret_access_key pair"
                         .to_string(),
                 );
+            }
+            match (bearer, access_key_id || secret_access_key) {
+                (false, false) => {
+                    return Err(
+                        "provider \"aws\" needs either a Bedrock bearer token (bearer_token, \
+                         bearer_token_file or bearer_token_env) or both access_key_id and \
+                         secret_access_key"
+                            .to_string(),
+                    )
+                }
+                // The factory prefers the bearer token when both are present.
+                // Silently, and there is no reading of a file carrying both
+                // that makes the ignored half intentional.
+                (true, true) => {
+                    return Err(
+                        "provider \"aws\" has both a bearer token and SigV4 credentials; the \
+                         connector would use the bearer token and ignore the pair. Keep one"
+                            .to_string(),
+                    )
+                }
+                (true, false) => {}
+                (false, true) => {
+                    if !(access_key_id && secret_access_key) {
+                        return Err("provider \"aws\" SigV4 needs both access_key_id and \
+                             secret_access_key"
+                            .to_string());
+                    }
+                }
             }
         }
         supported if SUPPORTED_PROVIDERS.contains(&supported) => {
@@ -352,6 +493,19 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                 return Err(format!(
                     "provider {:?} needs an API key: set exactly one of api_key_file \
                      (recommended), api_key_env or api_key",
+                    file.provider
+                ));
+            }
+            if file.region.is_some() {
+                return Err(format!(
+                    "region applies only to provider \"aws\"; {:?} ignores it",
+                    file.provider
+                ));
+            }
+            if bearer || access_key_id || secret_access_key {
+                return Err(format!(
+                    "bearer_token* and the AWS SigV4 fields apply only to provider \"aws\"; \
+                     {:?} authenticates with api_key*",
                     file.provider
                 ));
             }
@@ -405,8 +559,7 @@ fn validate_model_name(name: &str) -> Result<(), String> {
 /// more permissive reader that would disagree — and without reading a single
 /// secret.
 pub fn validate_file(path: &Path) -> Result<bool, String> {
-    assert_private(path)?;
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+    let raw = read_private(path, MAX_FILE_BYTES)?;
     validate_str(&raw, &path.display().to_string())
 }
 
@@ -426,8 +579,7 @@ pub fn validate_str(body: &str, label: &str) -> Result<bool, String> {
 }
 
 fn parse_file(path: &Path) -> Result<ProviderFile, String> {
-    assert_private(path)?;
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read: {e}"))?;
+    let raw = read_private(path, MAX_FILE_BYTES)?;
     toml::from_str(&raw).map_err(|e| format!("cannot parse: {e}"))
 }
 
@@ -499,8 +651,8 @@ fn validate_structure(file: &mut ProviderFile, label: &str) -> Result<(), String
             "max_concurrent must be between 1 and {MAX_MAX_CONCURRENT}"
         ));
     }
-    if file.timeout_ms == 0 {
-        return Err("timeout_ms must be positive".to_string());
+    if file.timeout_ms == 0 || file.timeout_ms > MAX_TIMEOUT_MS {
+        return Err(format!("timeout_ms must be between 1 and {MAX_TIMEOUT_MS}"));
     }
     if let Some(region) = &file.region {
         crate::validate_region(region)?;
@@ -516,15 +668,33 @@ fn validate_structure(file: &mut ProviderFile, label: &str) -> Result<(), String
                 model.name
             ));
         }
-        if model.dim == 0 || model.dim as i64 > 100_000 {
+        if model.provider_model_id.len() > MAX_MODEL_ID_BYTES {
             return Err(format!(
-                "[[models]] {:?}: dim {} is not plausible",
+                "[[models]] {:?}: provider_model_id exceeds {MAX_MODEL_ID_BYTES} bytes",
+                model.name
+            ));
+        }
+        // The ceiling is pgvector's, not an arbitrary one: a descriptor above
+        // it cannot back a `vector` column, so it can only produce a model
+        // that fails at `enable()` — after inflating every response envelope
+        // sized from the declared dimension along the way.
+        if model.dim == 0 || model.dim > MAX_DIM {
+            return Err(format!(
+                "[[models]] {:?}: dim {} is outside 1..={MAX_DIM} (pgvector's VECTOR_MAX_DIM)",
                 model.name, model.dim
             ));
         }
-        if model.max_batch == 0 {
+        if model.max_batch == 0 || model.max_batch > MAX_MAX_BATCH {
             return Err(format!(
-                "[[models]] {:?}: max_batch must be ≥ 1",
+                "[[models]] {:?}: max_batch must be between 1 and {MAX_MAX_BATCH}",
+                model.name
+            ));
+        }
+        // Advertised as `sequence_len`; zero would describe a model that can
+        // embed nothing.
+        if model.max_tokens == Some(0) {
+            return Err(format!(
+                "[[models]] {:?}: max_tokens must be positive when set",
                 model.name
             ));
         }
@@ -588,47 +758,88 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutcome, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(outcome),
         Err(e) => return Err(format!("cannot scan {}: {e}", dir.display())),
     };
+    // The directory is the trust boundary; check it before reading anything
+    // inside it.
+    validate_directory(dir)?;
 
     // Lexicographic order makes the duplicate-name rule ("first wins")
     // deterministic across platforms and readdir orders.
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| {
-            path.extension().is_some_and(|ext| ext == "toml")
-                && path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| !n.starts_with('.'))
-        })
-        .collect();
+    //
+    // An entry that cannot be read is an error, not an absence. Swallowing it
+    // turns "the directory is half-unreadable" into "no providers are
+    // configured", which is indistinguishable from the ordinary zero-config
+    // state and would silently take a working provider out of service.
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot read an entry of {}: {e}", dir.display()))?;
+        let path = entry.path();
+        let named = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| !n.starts_with('.'));
+        if path.extension().is_some_and(|ext| ext == "toml") && named {
+            paths.push(path);
+        }
+    }
     paths.sort();
+    if paths.len() > MAX_PROVIDER_FILES {
+        return Err(format!(
+            "{} holds {} provider files, over the {MAX_PROVIDER_FILES}-file ceiling",
+            dir.display(),
+            paths.len()
+        ));
+    }
 
     let mut seen_models: std::collections::BTreeSet<String> = Default::default();
+    let mut total_models = 0usize;
+    let mut total_concurrent = 0usize;
     for path in paths {
         match load_file(&path) {
-            Ok(Some(mut provider)) => {
-                // Duplicate public names across files: first wins.
-                provider.models.retain(|m| {
-                    let fresh = seen_models.insert(m.name.clone());
-                    if !fresh {
-                        log::warn!(
-                            "providers.d: model {:?} in {} duplicates an earlier file; \
-                             first definition wins",
-                            m.name,
-                            path.display()
-                        );
-                    }
-                    fresh
-                });
-                if provider.models.is_empty() {
-                    log::warn!(
-                        "providers.d: every model in {} was already defined earlier; \
-                         the file serves nothing",
-                        path.display()
-                    );
-                } else {
-                    outcome.providers.push(provider);
+            Ok(Some(provider)) => {
+                // A duplicate public name across files is refused, not
+                // resolved. "First wins" was deterministic but it made the
+                // *file order* decide which third party receives a column's
+                // text — so deleting or renaming a file silently moved the
+                // recipient, with no acknowledgement gate anywhere. One name
+                // has one owner, or neither serves.
+                if let Some(duplicate) = provider
+                    .models
+                    .iter()
+                    .find(|m| seen_models.contains(&m.name))
+                {
+                    outcome.errors.push(LoadError {
+                        path,
+                        message: format!(
+                            "model {:?} is already served by an earlier provider file; a \
+                             public name must have exactly one owner, because which file \
+                             wins decides where a bound column's source text is sent",
+                            duplicate.name
+                        ),
+                    });
+                    continue;
                 }
+                // Directory-wide ceilings. Per-file limits bound one file;
+                // these bound the process.
+                if total_models + provider.models.len() > MAX_TOTAL_MODELS {
+                    return Err(format!(
+                        "{} declares more than {MAX_TOTAL_MODELS} provider models in total",
+                        dir.display()
+                    ));
+                }
+                if total_concurrent + provider.max_concurrent > MAX_TOTAL_CONCURRENT {
+                    return Err(format!(
+                        "{} declares more than {MAX_TOTAL_CONCURRENT} total outbound \
+                         concurrency (the sum of every file's max_concurrent, which both \
+                         hosts add to their gRPC ingress width)",
+                        dir.display()
+                    ));
+                }
+                total_models += provider.models.len();
+                total_concurrent += provider.max_concurrent;
+                for model in &provider.models {
+                    seen_models.insert(model.name.clone());
+                }
+                outcome.providers.push(provider);
             }
             Ok(None) => log::info!("providers.d: {} is disabled; skipping", path.display()),
             Err(message) => outcome.errors.push(LoadError { path, message }),
@@ -641,6 +852,15 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutcome, String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// A providers.d is 0700. `tempfile::tempdir()` honours the umask, so
+    /// on a umask-002 host it would otherwise be group-writable — which the
+    /// loader now refuses, correctly.
+    fn private_tempdir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
 
     fn write_mode(dir: &Path, name: &str, body: &str, mode: u32) -> PathBuf {
         let path = dir.join(name);
@@ -664,7 +884,7 @@ max_tokens = 8191
 
     #[test]
     fn loads_a_valid_file_and_applies_defaults() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_mode(dir.path(), "openai.toml", OPENAI_TOML, 0o600);
 
         let outcome = load_dir(dir.path()).unwrap();
@@ -683,7 +903,7 @@ max_tokens = 8191
 
     #[test]
     fn refuses_a_world_readable_toml() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_mode(dir.path(), "openai.toml", OPENAI_TOML, 0o644);
 
         let outcome = load_dir(dir.path()).unwrap();
@@ -700,7 +920,7 @@ max_tokens = 8191
 
     #[test]
     fn refuses_a_world_readable_key_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let key = write_mode(dir.path(), "openai.key", "sk-from-file\n", 0o640);
         let body = format!(
             "provider = \"openai\"\napi_key_file = \"{}\"\n\n[[models]]\nname = \"m1\"\n\
@@ -724,7 +944,7 @@ max_tokens = 8191
 
     #[test]
     fn resolves_key_files_and_trims_trailing_newlines() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let key = write_mode(dir.path(), "openai.key", "sk-from-file\n", 0o600);
         let body = format!(
             "provider = \"openai\"\napi_key_file = \"{}\"\n\n[[models]]\nname = \"m1\"\n\
@@ -742,7 +962,7 @@ max_tokens = 8191
 
     #[test]
     fn key_source_triad_is_mutually_exclusive() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let body = "provider = \"openai\"\napi_key = \"a\"\napi_key_env = \"OPENAI_API_KEY\"\n\n\
                     [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n";
         write_mode(dir.path(), "openai.toml", body, 0o600);
@@ -757,7 +977,7 @@ max_tokens = 8191
 
     #[test]
     fn a_missing_env_var_names_the_variable_not_a_value() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let body = "provider = \"openai\"\napi_key_env = \"POSTVEC_TEST_NO_SUCH_VAR\"\n\n\
                     [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n";
         write_mode(dir.path(), "openai.toml", body, 0o600);
@@ -774,7 +994,7 @@ max_tokens = 8191
 
     #[test]
     fn disabled_files_parse_but_serve_nothing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let body = OPENAI_TOML.replace(
             "provider = \"openai\"",
             "provider = \"openai\"\nenabled = false",
@@ -788,7 +1008,7 @@ max_tokens = 8191
 
     #[test]
     fn one_broken_file_does_not_take_down_the_others() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_mode(dir.path(), "aaa-broken.toml", "not toml at all", 0o600);
         write_mode(dir.path(), "openai.toml", OPENAI_TOML, 0o600);
 
@@ -797,9 +1017,15 @@ max_tokens = 8191
         assert_eq!(outcome.errors.len(), 1);
     }
 
+    /// One public name, one owner. "First wins" was deterministic, but it let
+    /// *file order* decide which third party receives a bound column's source
+    /// text — so renaming or deleting a file silently moved the recipient,
+    /// with no acknowledgement gate anywhere on that path. The second claim is
+    /// now a per-file error, which keeps the isolation rule (a.toml still
+    /// serves) while removing the ambiguity.
     #[test]
-    fn duplicate_model_names_across_files_first_wins() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_duplicate_public_name_across_files_is_refused_not_resolved() {
+        let dir = private_tempdir();
         // Lexicographic order: a.toml before b.toml.
         let a = "provider = \"openai\"\napi_key = \"a\"\n\n[[models]]\nname = \"shared-name\"\n\
                  provider_model_id = \"first\"\ndim = 4\n";
@@ -809,13 +1035,19 @@ max_tokens = 8191
         write_mode(dir.path(), "b.toml", b, 0o600);
 
         let outcome = load_dir(dir.path()).unwrap();
-        assert_eq!(outcome.providers.len(), 1, "b.toml serves nothing");
+        assert_eq!(outcome.providers.len(), 1, "the first owner still serves");
         assert_eq!(outcome.providers[0].models[0].provider_model_id, "first");
+        assert_eq!(outcome.errors.len(), 1, "the second claim is reported");
+        assert!(
+            outcome.errors[0].message.contains("exactly one owner"),
+            "{}",
+            outcome.errors[0]
+        );
     }
 
     #[test]
     fn duplicate_model_names_within_one_file_first_wins() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let body = "provider = \"openai\"\napi_key = \"k\"\n\n\
                     [[models]]\nname = \"dup\"\nprovider_model_id = \"first\"\ndim = 4\n\n\
                     [[models]]\nname = \"dup\"\nprovider_model_id = \"second\"\ndim = 8\n";
@@ -831,7 +1063,7 @@ max_tokens = 8191
 
     #[test]
     fn missing_directory_is_zero_config_not_an_error() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let missing = dir.path().join("providers.d");
         let outcome = load_dir(&missing).unwrap();
         assert!(outcome.providers.is_empty() && outcome.errors.is_empty());
@@ -839,7 +1071,7 @@ max_tokens = 8191
 
     #[test]
     fn dot_files_and_non_toml_are_skipped() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_mode(dir.path(), ".hidden.toml", "garbage", 0o600);
         write_mode(dir.path(), "README.md", "docs", 0o644);
         let outcome = load_dir(dir.path()).unwrap();
@@ -849,7 +1081,7 @@ max_tokens = 8191
     #[test]
     fn unknown_fields_are_a_load_error() {
         // A typo'd credential field must fail loudly, not be ignored.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let body = OPENAI_TOML.replace("api_key =", "api_kee =");
         write_mode(dir.path(), "openai.toml", &body, 0o600);
         let outcome = load_dir(dir.path()).unwrap();
@@ -866,7 +1098,7 @@ max_tokens = 8191
     /// could point signed requests at another host.
     #[test]
     fn a_region_that_could_redirect_the_endpoint_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_mode(
             dir.path(),
             "aws.toml",
@@ -889,7 +1121,7 @@ max_tokens = 8191
     /// secret to reach its verdict.
     #[test]
     fn validate_file_agrees_with_the_loader_without_reading_a_secret() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
 
         // A key file that would be refused if anything resolved it. The
         // structural pass must not care: it never looks at a key source's
@@ -950,7 +1182,7 @@ max_tokens = 8191
     /// `postvec doctor` report from.
     #[test]
     fn a_connector_the_factory_cannot_build_is_a_file_error() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let models = "\n\n[[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n";
         for (marker, body, expect) in [
             (
@@ -978,7 +1210,7 @@ max_tokens = 8191
                 format!(
                     "provider = \"aws\"\nregion = \"us-east-1\"\naccess_key_id = \"AKIA\"{models}"
                 ),
-                "bearer token",
+                "SigV4 needs both",
             ),
             (
                 // The Titan connector never reads base_url; a file carrying
@@ -1052,7 +1284,7 @@ max_tokens = 8191
         assert!(!base_url_is_plaintext_offhost("http://[::1]:8000"));
         assert!(!base_url_is_plaintext_offhost("https://api.openai.com"));
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = write_mode(
             dir.path(),
             "openai.toml",
@@ -1064,9 +1296,198 @@ max_tokens = 8191
         assert!(load_file(&path).is_err());
     }
 
+    /// `providers.d` is operator input to a long-lived process that, in
+    /// embedded mode, is the PostgreSQL launcher. Per-file rules bound one
+    /// file; these bound the process. Every one of them fails the *whole*
+    /// scan rather than half-applying, so a snapshot is never built from a
+    /// directory that broke a ceiling.
+    #[test]
+    fn the_directory_is_bounded_as_a_whole_not_only_per_file() {
+        let dir = private_tempdir();
+        let file = |models: &str| {
+            format!("provider = \"openai\"\napi_key = \"k\"\nmax_concurrent = 64\n{models}")
+        };
+        let one_model = "\n[[models]]\nname = \"m\"\nprovider_model_id = \"m\"\ndim = 4\n";
+
+        // Aggregate outbound concurrency: both hosts add this sum to their
+        // gRPC ingress width, so it is the multiplier on the whole feature's
+        // memory footprint.
+        for i in 0..8 {
+            write_mode(
+                dir.path(),
+                &format!("p{i}.toml"),
+                &file(&one_model.replace("\"m\"", &format!("\"m{i}\""))),
+                0o600,
+            );
+        }
+        let refused = load_dir(dir.path()).unwrap_err();
+        assert!(refused.contains("total outbound concurrency"), "{refused}");
+
+        // File count.
+        let dir = private_tempdir();
+        for i in 0..40 {
+            write_mode(
+                dir.path(),
+                &format!("p{i:02}.toml"),
+                &format!(
+                    "provider = \"openai\"\napi_key = \"k\"\nmax_concurrent = 1{}",
+                    one_model.replace("\"m\"", &format!("\"m{i}\""))
+                ),
+                0o600,
+            );
+        }
+        let refused = load_dir(dir.path()).unwrap_err();
+        assert!(refused.contains("provider files"), "{refused}");
+
+        // A single oversized file, and an oversized secret.
+        let dir = private_tempdir();
+        write_mode(
+            dir.path(),
+            "big.toml",
+            &format!("# {}\nprovider = \"openai\"\n", "x".repeat(300 * 1024)),
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert!(
+            outcome.errors[0].message.contains("ceiling"),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    /// The 0600 rule has to hold for the file that is actually *read*, not
+    /// for whatever the path pointed at when it was stat'ed. `O_NOFOLLOW`
+    /// makes a symlink a refusal at open, and the mode is checked on the
+    /// resulting descriptor.
+    #[test]
+    fn a_symlinked_provider_file_or_secret_is_refused_at_open() {
+        let dir = private_tempdir();
+        let elsewhere = private_tempdir();
+
+        // A world-readable key file a symlink tries to launder.
+        let real_key = write_mode(elsewhere.path(), "leaky.key", "sk-secret", 0o644);
+        let link = dir.path().join("openai.key");
+        std::os::unix::fs::symlink(&real_key, &link).unwrap();
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            &format!(
+                "provider = \"openai\"\napi_key_file = \"{}\"\n\n[[models]]\nname = \"m1\"\n\
+                 provider_model_id = \"m\"\ndim = 4\n",
+                link.display()
+            ),
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert!(outcome.providers.is_empty());
+        assert!(
+            outcome.errors[0].message.contains("symlink"),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(!outcome.errors[0].message.contains("sk-secret"));
+
+        // And the connector file itself.
+        let dir = private_tempdir();
+        let real = write_mode(elsewhere.path(), "real.toml", OPENAI_TOML, 0o600);
+        std::os::unix::fs::symlink(&real, dir.path().join("openai.toml")).unwrap();
+        let outcome = load_dir(dir.path()).unwrap();
+        assert!(outcome.providers.is_empty());
+        assert!(
+            outcome.errors[0].message.contains("symlink"),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    /// A group- or world-writable providers.d is not a warning: anyone who
+    /// can write there can add a connector file and choose where this host
+    /// sends source text. That is strictly worse than the world-readable key
+    /// file this module already refuses.
+    #[test]
+    fn a_writable_providers_directory_is_refused_outright() {
+        let dir = private_tempdir();
+        write_mode(dir.path(), "openai.toml", OPENAI_TOML, 0o600);
+        assert_eq!(load_dir(dir.path()).unwrap().providers.len(), 1);
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        let refused = load_dir(dir.path()).unwrap_err();
+        assert!(refused.contains("writable by other users"), "{refused}");
+
+        // Read and execute bits only disclose which providers exist, which is
+        // doctor's business rather than a refusal.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(load_dir(dir.path()).unwrap().providers.len(), 1);
+    }
+
+    /// The flat TOML schema describes a tagged union: `provider` decides
+    /// which fields mean anything. `deny_unknown_fields` cannot express that,
+    /// so each connector arm rejects the fields it does not consume — an
+    /// operator must never be able to believe one credential is in use while
+    /// the connector reads another (or none).
+    #[test]
+    fn fields_the_selected_connector_ignores_are_refused() {
+        let dir = private_tempdir();
+        let models = "\n\n[[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n";
+        for (marker, body, expect) in [
+            (
+                // The factory silently prefers the bearer token.
+                "aws with both credential families",
+                format!(
+                    "provider = \"aws\"\nregion = \"us-east-1\"\nbearer_token = \"t\"\n\
+                     access_key_id = \"AKIA\"\nsecret_access_key = \"s\"{models}"
+                ),
+                "ignore the pair",
+            ),
+            (
+                "aws with an api_key",
+                format!(
+                    "provider = \"aws\"\nregion = \"us-east-1\"\nbearer_token = \"t\"\n\
+                     api_key = \"sk\"{models}"
+                ),
+                "does not use api_key",
+            ),
+            (
+                "openai with a region",
+                format!("provider = \"openai\"\napi_key = \"k\"\nregion = \"us-east-1\"{models}"),
+                "applies only to provider \"aws\"",
+            ),
+            (
+                "openai with a bearer token",
+                format!("provider = \"openai\"\napi_key = \"k\"\nbearer_token = \"t\"{models}"),
+                "apply only to provider \"aws\"",
+            ),
+            (
+                "a dim pgvector cannot store",
+                "provider = \"openai\"\napi_key = \"k\"\n\n[[models]]\nname = \"m1\"\n\
+                 provider_model_id = \"m\"\ndim = 20000\n"
+                    .to_string(),
+                "VECTOR_MAX_DIM",
+            ),
+            (
+                "an unbounded timeout",
+                format!("provider = \"openai\"\napi_key = \"k\"\ntimeout_ms = 99999999{models}"),
+                "timeout_ms must be between",
+            ),
+            (
+                "a max_tokens of zero",
+                "provider = \"openai\"\napi_key = \"k\"\n\n[[models]]\nname = \"m1\"\n\
+                 provider_model_id = \"m\"\ndim = 4\nmax_tokens = 0\n"
+                    .to_string(),
+                "max_tokens must be positive",
+            ),
+        ] {
+            let path = write_mode(dir.path(), "p.toml", &body, 0o600);
+            let refused = validate_file(&path).unwrap_err();
+            assert!(refused.contains(expect), "case {marker}: {refused}");
+            assert!(load_file(&path).is_err(), "case {marker} (loader)");
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+
     #[test]
     fn implausible_descriptors_are_refused() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         for (marker, body) in [
             (
                 "dim",

@@ -76,7 +76,12 @@ pub fn merged_config_models(
     for descriptor in gateway.models() {
         let name = descriptor["name"].as_str().unwrap_or_default();
         if configs.iter().any(|cfg| cfg.name == name) {
-            log::warn!(
+            // Debug, not warn: `/config` is polled on every discovery
+            // refresh (once a minute per database, per node), and a
+            // deliberate collision is a *steady state*, not an event. At
+            // warn this printed the same line forever. `provider ls` and
+            // `postvec doctor` report the collision where it is actionable.
+            log::debug!(
                 "provider model {name:?} collides with a local engine model; \
                  the local model wins and the provider entry is not served"
             );
@@ -512,6 +517,9 @@ mod tests {
     fn provider_models_merge_into_the_envelope_and_local_wins() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
+        // A providers.d is 0700; the loader refuses a group/world-writable
+        // one, and `tempfile` honours the umask.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().join("openai.toml");
         std::fs::write(
             &path,

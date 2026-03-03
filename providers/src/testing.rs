@@ -20,6 +20,9 @@ pub struct Mock {
     pub url: String,
     /// Bodies of the requests the server has received, in arrival order.
     pub requests: Arc<Mutex<Vec<String>>>,
+    /// Body bytes written by [`flood`], for asserting where a bounded reader
+    /// gave up. `None` for every other server shape.
+    flooded: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl Mock {
@@ -35,6 +38,15 @@ impl Mock {
 
     pub fn request_count(&self) -> usize {
         self.requests.lock().unwrap().len()
+    }
+
+    /// Body bytes a [`flood`] server managed to write before the client
+    /// stopped reading.
+    pub fn flooded_bytes(&self) -> usize {
+        self.flooded
+            .as_ref()
+            .map(|n| n.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
     }
 }
 
@@ -108,12 +120,91 @@ pub async fn spawn(responses: Vec<(u16, String)>) -> Mock {
         }
     });
 
-    Mock { url, requests }
+    Mock {
+        url,
+        requests,
+        flooded: None,
+    }
 }
 
 /// Convenience: a server that returns the same `(status, body)` every time.
 pub async fn always(status: u16, body: &str) -> Mock {
     spawn(vec![(status, body.to_string())]).await
+}
+
+/// A server that answers 200 and then streams **chunked** body forever,
+/// declaring no `Content-Length`, until the client hangs up.
+///
+/// This is the shape a `Content-Length` check cannot defend against, and the
+/// reason the connectors read through a bounded reader rather than
+/// `bytes()`/`text()`: in embedded mode the allocation this would otherwise
+/// make is the PostgreSQL launcher's RSS. `written` reports how many body
+/// bytes the peer accepted before giving up, so a test can assert the client
+/// stopped near its budget instead of at the peer's convenience.
+pub async fn flood(status: u16) -> Mock {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+    let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let reqs = Arc::clone(&requests);
+    let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&written);
+
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let mut buf = [0u8; 8192];
+            let mut data = Vec::new();
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                data.extend_from_slice(&buf[..n]);
+                if let Some(pos) = find(&data, b"\r\n\r\n") {
+                    let need = content_length(&data[..pos]);
+                    if data.len() - (pos + 4) >= need {
+                        break;
+                    }
+                }
+            }
+            reqs.lock().unwrap().push(match find(&data, b"\r\n\r\n") {
+                Some(pos) => String::from_utf8_lossy(&data[pos + 4..]).to_string(),
+                None => String::new(),
+            });
+
+            let head = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\n\
+                 Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            );
+            if socket.write_all(head.as_bytes()).await.is_err() {
+                continue;
+            }
+            // 64 KiB of `x` per chunk, forever.
+            let payload = "x".repeat(64 * 1024);
+            let chunk = format!("{:x}\r\n{payload}\r\n", payload.len());
+            loop {
+                if socket.write_all(chunk.as_bytes()).await.is_err() {
+                    break;
+                }
+                counter.fetch_add(payload.len(), std::sync::atomic::Ordering::Relaxed);
+                // Do not let a runaway peer starve the test runtime.
+                if counter.load(std::sync::atomic::Ordering::Relaxed) > 512 * 1024 * 1024 {
+                    break;
+                }
+            }
+        }
+    });
+
+    Mock {
+        url,
+        requests,
+        flooded: Some(written),
+    }
 }
 
 /// A server that promises more body than it sends and then closes the
@@ -171,5 +262,9 @@ pub async fn truncated(body: &str) -> Mock {
         }
     });
 
-    Mock { url, requests }
+    Mock {
+        url,
+        requests,
+        flooded: None,
+    }
 }

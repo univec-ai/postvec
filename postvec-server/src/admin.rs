@@ -664,6 +664,9 @@ mod tests {
 
         // The operator adds the first provider file, then reloads.
         std::fs::create_dir_all(&providers_path).unwrap();
+        // A providers.d is 0700; the loader refuses a group/world-writable
+        // one, and `create_dir_all` honours the umask.
+        std::fs::set_permissions(&providers_path, std::fs::Permissions::from_mode(0o700)).unwrap();
         let file = providers_path.join("openai.toml");
         std::fs::write(
             &file,

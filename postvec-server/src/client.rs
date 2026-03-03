@@ -73,6 +73,12 @@ struct NodeReport {
     /// (the serving truth is a providers.d file), so the descriptor-drift
     /// checks skip them and the fleet report labels them.
     providers: BTreeMap<String, String>,
+    /// Public name → the secret-free routing identity behind it. Name parity
+    /// alone cannot see two nodes serving one name from different files,
+    /// model ids or dimensions — which round-robin turns into intermittent
+    /// dimension failures, or worse, same-dimension vectors from a different
+    /// model that nothing downstream can detect.
+    fingerprints: BTreeMap<String, String>,
     server: Value,
     cluster: Value,
 }
@@ -102,12 +108,93 @@ fn parse_config(body: &Value) -> NodeReport {
                 .collect()
         })
         .unwrap_or_default();
+    let fingerprints = entries
+        .map(|models| {
+            models
+                .iter()
+                .filter(|m| m.get("provider").and_then(Value::as_str).is_some())
+                .filter_map(|m| Some((m.get("name")?.as_str()?.to_string(), fingerprint(m))))
+                .collect()
+        })
+        .unwrap_or_default();
     NodeReport {
         models,
         providers,
+        fingerprints,
         server: data.get("server").cloned().unwrap_or(Value::Null),
         cluster: data.get("cluster").cloned().unwrap_or(Value::Null),
     }
+}
+
+/// The secret-free routing identity of one provider-backed `/config` entry.
+///
+/// Everything here decides what a caller actually gets back, and nothing here
+/// is a credential: the connector type, the providers.d file stem, the id the
+/// provider's API is asked for, and the declared dimension. `base_url` is
+/// deliberately absent — it is operator-supplied and can carry an internal
+/// hostname, and the three fields above already separate every case a fleet
+/// can get wrong.
+fn fingerprint(entry: &Value) -> String {
+    let field = |name: &str| {
+        entry
+            .get(name)
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string()
+    };
+    let dim = entry
+        .get("configuration")
+        .and_then(|c| c.get("params"))
+        .and_then(|p| p.get("target_dim"))
+        .and_then(Value::as_i64)
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    format!(
+        "{}/{}/{} dim {dim}",
+        field("provider"),
+        field("provider_file"),
+        field("provider_model_id")
+    )
+}
+
+/// Names every node advertises but does not agree on.
+///
+/// Set parity answers "is this name everywhere"; it cannot answer "is it the
+/// same thing everywhere". Two nodes serving `openai-text-embedding-3-small`
+/// from different files, model ids or dimensions are *identical* to a
+/// name-set comparison, while round-robin endpoint selection hands one
+/// caller each. A dimension mismatch shows up as intermittent dead letters;
+/// a same-dimension model mismatch shows up as nothing at all, and poisons
+/// the column silently.
+fn fingerprint_drift(nodes: &[(String, BTreeMap<String, String>)]) -> Vec<String> {
+    if nodes.len() < 2 {
+        return Vec::new();
+    }
+    let names: BTreeSet<&str> = nodes
+        .iter()
+        .flat_map(|(_, prints)| prints.keys().map(String::as_str))
+        .collect();
+    let mut drift = Vec::new();
+    for name in names {
+        let mut seen: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for (address, prints) in nodes {
+            if let Some(print) = prints.get(name) {
+                seen.entry(print.as_str()).or_default().push(address);
+            }
+        }
+        if seen.len() > 1 {
+            let detail: Vec<String> = seen
+                .iter()
+                .map(|(print, addresses)| format!("{print} on {}", addresses.join(", ")))
+                .collect();
+            drift.push(format!(
+                "{name}: served with DIFFERENT provider settings across the fleet — {}. \
+                 Round-robin sends callers to either; fix providers.d so every node agrees",
+                detail.join(" | ")
+            ));
+        }
+    }
+    drift
 }
 
 /// Peers worth querying: alive, in this group, and not this node.
@@ -312,16 +399,18 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
             .and_then(Value::as_str)
             .unwrap_or("this node")
             .to_string();
-        fleet.push((own, report.models.clone()));
+        fleet.push((own.clone(), report.models.clone()));
         // Any node's provider marker labels the union entry: a name that is
         // provider-backed anywhere gets the providers.d diagnosis.
         let mut fleet_providers = report.providers.clone();
+        let mut fleet_prints = vec![(own, report.fingerprints.clone())];
         for address in peer_addresses(&report.cluster) {
             match client.get(format!("{address}/config")).send().await {
                 Ok(response) => match response.json::<Value>().await {
                     Ok(body) => {
                         let peer = parse_config(&body);
                         fleet_providers.extend(peer.providers);
+                        fleet_prints.push((address.clone(), peer.fingerprints));
                         fleet.push((address, peer.models));
                     }
                     Err(e) => warnings.push(format!("peer {address} served invalid /config: {e}")),
@@ -330,6 +419,11 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
             }
         }
         drift = inventory_drift(&fleet, &fleet_providers);
+        // Same name, different thing. Reported alongside the absent-from
+        // lines because the fix is the same kind of work — make providers.d
+        // agree — but the symptom is much worse: nothing is missing, so
+        // nothing looks wrong until callers get vectors from two models.
+        drift.extend(fingerprint_drift(&fleet_prints));
         for line in &drift {
             warnings.push(format!("inventory drift — {line}"));
         }
@@ -585,6 +679,82 @@ mod tests {
             {"address": "https://d:22222", "status": "suspect", "current": false},
         ]});
         assert_eq!(peer_addresses(&cluster), ["https://b:22222"]);
+    }
+
+    /// Set parity answers "is this name everywhere". It cannot answer "is it
+    /// the same thing everywhere" — and with round-robin endpoint selection
+    /// the second question is the one that decides whether a caller gets a
+    /// usable vector. A dimension mismatch surfaces as intermittent dead
+    /// letters; a same-dimension model mismatch surfaces as nothing at all.
+    #[test]
+    fn same_name_different_provider_settings_is_drift() {
+        let node = |file: &str, id: &str, dim: i64| {
+            let mut prints = BTreeMap::new();
+            prints.insert(
+                "openai-text-embedding-3-small".to_string(),
+                fingerprint(&json!({
+                    "name": "openai-text-embedding-3-small",
+                    "provider": "openai",
+                    "provider_file": file,
+                    "provider_model_id": id,
+                    "configuration": { "params": { "target_dim": dim } },
+                })),
+            );
+            prints
+        };
+
+        // Agreement is silent.
+        let agreed = vec![
+            (
+                "a".to_string(),
+                node("openai", "text-embedding-3-small", 1536),
+            ),
+            (
+                "b".to_string(),
+                node("openai", "text-embedding-3-small", 1536),
+            ),
+        ];
+        assert!(fingerprint_drift(&agreed).is_empty());
+
+        // A different declared dimension: intermittent dead letters.
+        let dims = vec![
+            (
+                "a".to_string(),
+                node("openai", "text-embedding-3-small", 1536),
+            ),
+            (
+                "b".to_string(),
+                node("openai", "text-embedding-3-small", 3072),
+            ),
+        ];
+        let drift = fingerprint_drift(&dims);
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert!(
+            drift[0].contains("DIFFERENT provider settings"),
+            "{drift:?}"
+        );
+        assert!(
+            drift[0].contains("dim 1536") && drift[0].contains("dim 3072"),
+            "{drift:?}"
+        );
+
+        // The quiet one: same dimension, different model behind the name.
+        let ids = vec![
+            (
+                "a".to_string(),
+                node("openai", "text-embedding-3-small", 1536),
+            ),
+            (
+                "b".to_string(),
+                node("azure", "text-embedding-ada-002", 1536),
+            ),
+        ];
+        let drift = fingerprint_drift(&ids);
+        assert_eq!(drift.len(), 1, "{drift:?}");
+        assert!(drift[0].contains("text-embedding-ada-002"), "{drift:?}");
+
+        // One node is not a fleet.
+        assert!(fingerprint_drift(&dims[..1]).is_empty());
     }
 
     /// The check `postvec doctor` cannot make today, because its own

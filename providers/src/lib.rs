@@ -88,6 +88,90 @@ pub fn validate_region(region: &str) -> Result<(), String> {
 /// (and, mapped to wire codes, toward PostgreSQL) — bound them at creation.
 const ERROR_BODY_PREVIEW_BYTES: usize = 500;
 
+/// How many bytes of a **non-2xx** body are read at all. The preview is 500;
+/// reading more than this to throw it away only gives a hostile or broken
+/// endpoint a free allocation, once per attempt and once per retry.
+const ERROR_BODY_READ_BYTES: usize = 8 * 1024;
+
+/// Floor and ceiling on the computed success-body budget. The floor keeps a
+/// one-vector response comfortable; the ceiling is the absolute limit no
+/// legitimate embedding response approaches — the largest shape any supported
+/// descriptor can ask for (512 inputs × 3072 components) renders to roughly
+/// 30 MB of JSON.
+const MIN_RESPONSE_BYTES: usize = 256 * 1024;
+const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+/// Bytes of JSON a single float component is allowed to occupy. Real values
+/// render to 10–20; 24 leaves room for exponent forms without inflating the
+/// budget into uselessness.
+const BYTES_PER_COMPONENT: usize = 24;
+
+/// The success-body budget for one request: what a *legitimate* response to
+/// this call could plausibly weigh.
+///
+/// A provider is a third party reached over the internet, sometimes through
+/// an operator-supplied `base_url`. Nothing in HTTP obliges it to send a body
+/// the size it promised — `Content-Length` may be absent or the transfer
+/// chunked — so a broken, compromised or merely misconfigured endpoint can
+/// stream until the reader gives up. `reqwest`'s `bytes()`/`text()` give up
+/// at OOM. In embedded mode that is the PostgreSQL launcher's RSS, which is
+/// the one process whose death restarts the cluster.
+///
+/// `declared_dim` is the descriptor's dimension where the connector knows it;
+/// the fallback covers the connectors that do not carry one (their responses
+/// are still bounded by the input count and the ceiling).
+pub(crate) fn response_budget(texts: usize, declared_dim: Option<usize>) -> usize {
+    let dim = declared_dim.filter(|d| *d > 0).unwrap_or(4096);
+    texts
+        .saturating_mul(dim)
+        .saturating_mul(BYTES_PER_COMPONENT)
+        .saturating_add(64 * 1024)
+        .clamp(MIN_RESPONSE_BYTES, MAX_RESPONSE_BYTES)
+}
+
+/// Read a response body, refusing to allocate more than `limit` bytes.
+///
+/// The one body reader every connector uses, for both success and error
+/// bodies. Six subtly different limits is the failure mode this exists to
+/// prevent.
+///
+/// Classification matters as much as the limit. A body that *exceeds* the
+/// budget is not an outage — retrying it re-runs the same allocation against
+/// the same broken peer — so it comes back as the same `Api { status: 200 }`
+/// sentinel a body that will not parse uses, which the gateway maps to
+/// `InvalidInput` (Permanent). A body that fails mid-read is transport
+/// trouble and stays `Network` (Transient), exactly as before.
+pub(crate) async fn read_bounded(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, EmbeddingError> {
+    // A declared length over the budget is refused before a byte is read;
+    // an absent or lying one is caught by the running total below.
+    if let Some(declared) = response.content_length() {
+        if declared > limit as u64 {
+            return Err(oversized(declared as usize, limit));
+        }
+    }
+    let mut body =
+        Vec::with_capacity(response.content_length().unwrap_or(0).min(64 * 1024) as usize);
+    while let Some(chunk) = response.chunk().await.map_err(EmbeddingError::Network)? {
+        if body.len() + chunk.len() > limit {
+            return Err(oversized(body.len() + chunk.len(), limit));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn oversized(seen: usize, limit: usize) -> EmbeddingError {
+    EmbeddingError::Api {
+        status: 200,
+        message: format!(
+            "response body exceeds the {limit}-byte budget for this request (at least {seen} \
+             bytes); refusing to buffer it"
+        ),
+    }
+}
+
 /// Decode a body that has already been read off a 2xx response.
 ///
 /// Every client reads `response.bytes()` first and then calls this, instead
@@ -104,25 +188,87 @@ pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(
 ) -> Result<T, EmbeddingError> {
     serde_json::from_slice(bytes).map_err(|e| EmbeddingError::Api {
         status: 200,
+        // Position and classification, never content. A 2xx body that will
+        // not parse is the most likely place to find the *source text* echoed
+        // back, and this message is logged and stored durably in
+        // `postvec.jobs_dead.last_error`. Line and column locate the problem
+        // as precisely as a quotation would.
         message: format!(
-            "decode failed ({} bytes): {e}; body={:?}",
-            bytes.len(),
-            body_preview(&String::from_utf8_lossy(bytes))
+            "response body is not the documented shape: {:?} error at line {}, column {} of \
+             {} bytes",
+            e.classify(),
+            e.line(),
+            e.column(),
+            bytes.len()
         ),
     })
 }
 
-/// Truncate a provider response body for inclusion in an error message,
-/// respecting UTF-8 char boundaries.
-pub(crate) fn body_preview(body: &str) -> String {
-    if body.len() <= ERROR_BODY_PREVIEW_BYTES {
-        return body.to_string();
+/// Build the `Api` error for a non-2xx response: read a bounded slice of the
+/// body, strip anything that could forge a log line, and remove the
+/// credential if the peer echoed it.
+///
+/// Every connector routes its non-2xx path through this. The three rules it
+/// enforces exist because this message does not stay in the process: it is
+/// logged by both hosts, crosses tonic as a status, and can be stored
+/// durably in `postvec.jobs_dead.last_error`.
+///
+/// - **401/403 bodies are never included.** An authentication failure is the
+///   one response most likely to quote the credential back, and the status
+///   alone is the whole diagnosis.
+/// - **Control characters are stripped.** An upstream — especially one behind
+///   an operator-supplied `base_url` — must not be able to write a second,
+///   forged line into a PostgreSQL log.
+/// - **The configured secret is redacted**, in case the peer echoes it inside
+///   an otherwise ordinary error body.
+pub(crate) async fn api_error(response: reqwest::Response, secret: Option<&str>) -> EmbeddingError {
+    let status = response.status().as_u16();
+    if matches!(status, 401 | 403) {
+        return EmbeddingError::Api {
+            status,
+            message: "authentication rejected by the provider (response body withheld: it is \
+                      the response most likely to quote the credential back)"
+                .to_string(),
+        };
     }
-    let mut end = ERROR_BODY_PREVIEW_BYTES;
-    while !body.is_char_boundary(end) {
-        end -= 1;
+    let message = match read_bounded(response, ERROR_BODY_READ_BYTES).await {
+        Ok(body) => sanitize_preview(&String::from_utf8_lossy(&body), secret),
+        Err(_) => "unknown error (the response body could not be read)".to_string(),
+    };
+    EmbeddingError::Api { status, message }
+}
+
+/// Truncate a provider response body for inclusion in an error message —
+/// respecting UTF-8 char boundaries, on one line, with the credential
+/// removed. See [`api_error`] for why each of those matters.
+pub(crate) fn sanitize_preview(body: &str, secret: Option<&str>) -> String {
+    // Scrub before truncating: a secret cut in half by the cap would keep a
+    // usable prefix otherwise.
+    let scrubbed;
+    let body = match secret.filter(|s| s.len() >= 8) {
+        Some(secret) if body.contains(secret) => {
+            scrubbed = body.replace(secret, "<redacted>");
+            scrubbed.as_str()
+        }
+        _ => body,
+    };
+    let mut out = String::with_capacity(body.len().min(ERROR_BODY_PREVIEW_BYTES));
+    let mut truncated = false;
+    for ch in body.chars() {
+        // Bound on the *encoded* length, so the cap is a memory bound and not
+        // a character count.
+        if out.len() + ch.len_utf8() > ERROR_BODY_PREVIEW_BYTES {
+            truncated = true;
+            break;
+        }
+        // Newlines, carriage returns and everything else in the control range
+        // become a space: a log line is one line.
+        out.push(if ch.is_control() { ' ' } else { ch });
     }
-    format!("{}… ({} bytes total)", &body[..end], body.len())
+    if truncated {
+        out.push_str(&format!("… ({} bytes total)", body.len()));
+    }
+    out
 }
 
 /// Represents a single successfully generated embedding vector.
@@ -268,12 +414,64 @@ mod tests {
     #[test]
     fn body_preview_truncates_on_char_boundaries() {
         let short = "short body";
-        assert_eq!(body_preview(short), short);
+        assert_eq!(sanitize_preview(short, None), short);
 
         // 600 multi-byte chars: the cut must land on a boundary and note the size.
         let long: String = "é".repeat(600);
-        let preview = body_preview(&long);
+        let preview = sanitize_preview(&long, None);
         assert!(preview.len() < long.len());
         assert!(preview.contains("1200 bytes total"), "{preview}");
+    }
+
+    /// This message is logged by both hosts, crosses tonic, and can be stored
+    /// durably in `postvec.jobs_dead.last_error`. An upstream reached through
+    /// an operator-supplied `base_url` must not be able to write a second,
+    /// forged line into a PostgreSQL log, and must not be able to put the
+    /// credential there by quoting it back.
+    #[test]
+    fn a_preview_is_one_line_and_carries_no_credential() {
+        let hostile = "line one\nERROR:  forged postgres line\r\n\tkey=sk-live-abcdefghijklmnop";
+        let preview = sanitize_preview(hostile, Some("sk-live-abcdefghijklmnop"));
+        assert!(
+            !preview.contains('\n') && !preview.contains('\r'),
+            "{preview}"
+        );
+        assert!(!preview.contains('\t'), "{preview}");
+        assert!(!preview.contains("sk-live-abcdefghijklmnop"), "{preview}");
+        assert!(preview.contains("<redacted>"), "{preview}");
+
+        // A secret cut in half by the truncation cap must not survive as a
+        // usable prefix: the scrub runs before the cut.
+        let secret = "sk-live-abcdefghijklmnopqrstuvwxyz";
+        let padded = format!("{}{secret}", "x".repeat(ERROR_BODY_PREVIEW_BYTES - 10));
+        let preview = sanitize_preview(&padded, Some(secret));
+        assert!(!preview.contains("sk-live-abcdef"), "{preview}");
+
+        // A short "secret" is not used as a redaction pattern: it would
+        // scribble over ordinary words.
+        assert_eq!(
+            sanitize_preview("a short body", Some("short")),
+            "a short body"
+        );
+    }
+
+    /// A legitimate response is comfortably inside the budget; a hostile one
+    /// cannot make the host allocate without bound. The largest shape any
+    /// supported descriptor can request is 512 inputs × 3072 components.
+    #[test]
+    fn the_response_budget_fits_real_answers_and_bounds_hostile_ones() {
+        // One small vector still gets a workable floor.
+        assert_eq!(response_budget(1, Some(1024)), MIN_RESPONSE_BYTES);
+        // The largest legitimate OpenAI batch: ~30 MB of JSON, budget above it.
+        let big = response_budget(512, Some(3072));
+        assert!(big > 512 * 3072 * 12, "must fit a real answer: {big}");
+        assert!(big <= MAX_RESPONSE_BYTES);
+        // No declared dimension still bounds by input count.
+        assert!(response_budget(96, None) < MAX_RESPONSE_BYTES);
+        // Absurd inputs saturate at the ceiling rather than overflowing.
+        assert_eq!(
+            response_budget(usize::MAX, Some(usize::MAX)),
+            MAX_RESPONSE_BYTES
+        );
     }
 }

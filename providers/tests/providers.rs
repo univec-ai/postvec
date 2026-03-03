@@ -137,7 +137,12 @@ async fn openrouter_decode_failure_becomes_api_200() {
     match err {
         EmbeddingError::Api { status, message } => {
             assert_eq!(status, 200);
-            assert!(message.contains("decode failed"), "{message}");
+            // Position and classification, never the body: a 2xx that will
+            // not parse is the likeliest place to find the *source text*
+            // echoed back, and this message is logged and stored durably.
+            assert!(message.contains("not the documented shape"), "{message}");
+            assert!(!message.contains("model unavailable"), "{message}");
+            assert!(!message.contains("not json"), "{message}");
         }
         other => panic!("expected Api decode error, got {other:?}"),
     }
@@ -186,7 +191,12 @@ async fn mistral_decode_failure_becomes_api_200() {
     match err {
         EmbeddingError::Api { status, message } => {
             assert_eq!(status, 200);
-            assert!(message.contains("decode failed"), "{message}");
+            // Position and classification, never the body: a 2xx that will
+            // not parse is the likeliest place to find the *source text*
+            // echoed back, and this message is logged and stored durably.
+            assert!(message.contains("not the documented shape"), "{message}");
+            assert!(!message.contains("model unavailable"), "{message}");
+            assert!(!message.contains("not json"), "{message}");
         }
         other => panic!("expected Api decode error, got {other:?}"),
     }
@@ -541,6 +551,9 @@ fn the_gateway_loads_with_no_tokio_runtime_on_the_thread() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
+    // A providers.d is 0700; the loader refuses a group/world-writable one,
+    // and `tempfile` honours the umask.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let path = dir.path().join("openai.toml");
     std::fs::write(
         &path,
@@ -554,4 +567,149 @@ fn the_gateway_loads_with_no_tokio_runtime_on_the_thread() {
     let gateway = providers::gateway::Gateway::load(dir.path());
     assert!(gateway.owns("openai-text-embedding-3-small"));
     assert_eq!(gateway.inflight_budget(), 4);
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial upstreams
+// ---------------------------------------------------------------------------
+
+/// Nothing in HTTP obliges a peer to send the body size it promised — or to
+/// promise one at all. A chunked response with no `Content-Length` can stream
+/// until the reader gives up, and `bytes()`/`text()` give up at OOM. In
+/// embedded mode that allocation is the PostgreSQL launcher's RSS.
+///
+/// The client must stop near its own budget, and must classify the refusal as
+/// **permanent**: retrying re-runs the same allocation against the same broken
+/// peer.
+#[tokio::test]
+async fn an_endless_chunked_success_body_is_refused_without_buffering_it() {
+    use providers::OpenAIClient;
+    let m = mock::flood(200).await;
+    let client = OpenAIClient::new(
+        "text-embedding-3-small".to_string(),
+        "sk-test".to_string(),
+        // dim 2 over 1 input: the budget floors at 256 KiB, far below what a
+        // flooding peer would otherwise hand us.
+        Some(2),
+        m.url.clone(),
+        None,
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let err = client.embed(&["x"], Some(deadline)).await.unwrap_err();
+    match err {
+        EmbeddingError::Api { status, message } => {
+            assert_eq!(status, 200, "permanent, not a retriable outage: {message}");
+            assert!(message.contains("budget"), "{message}");
+        }
+        other => panic!("expected a bounded-body refusal, got {other:?}"),
+    }
+    // The peer got nowhere near unbounded: a few budgets' worth at most,
+    // counting the socket buffers it filled after we stopped reading.
+    assert!(
+        m.flooded_bytes() < 64 * 1024 * 1024,
+        "the client kept reading: {} bytes accepted",
+        m.flooded_bytes()
+    );
+}
+
+/// The same bound applies to *error* bodies, which is the worse case: an
+/// error is retried, so an unbounded diagnostic allocation would happen once
+/// per attempt.
+#[tokio::test]
+async fn an_endless_error_body_is_bounded_and_not_retried_into_oblivion() {
+    use providers::MistralClient;
+    let m = mock::flood(400).await;
+    let client = MistralClient::new(
+        "mistral-embed".to_string(),
+        "mi-test".to_string(),
+        m.url.clone(),
+        None,
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let err = client.embed(&["x"], Some(deadline)).await.unwrap_err();
+    match err {
+        EmbeddingError::Api { status, message } => {
+            assert_eq!(status, 400);
+            // 400 is permanent, so exactly one attempt was made.
+            assert_eq!(m.request_count(), 1, "a 4xx must not be retried");
+            assert!(
+                message.len() < 4096,
+                "the preview is bounded: {}",
+                message.len()
+            );
+        }
+        other => panic!("expected a bounded Api error, got {other:?}"),
+    }
+}
+
+/// The credential is the thing a 401 body is likeliest to quote back, and a
+/// 401 body explains nothing the status does not. A provider — especially one
+/// behind an operator-supplied `base_url` — also must not be able to write a
+/// second, forged line into the PostgreSQL log.
+#[tokio::test]
+async fn a_hostile_error_body_reaches_no_log_and_carries_no_key() {
+    use providers::{CohereClient, OpenAIClient};
+
+    const KEY: &str = "sk-live-0123456789abcdefghij";
+
+    // 401: the body is withheld entirely.
+    let m = mock::always(401, &format!(r#"{{"error":"bad key {KEY}"}}"#)).await;
+    let client = OpenAIClient::new(
+        "text-embedding-3-small".to_string(),
+        KEY.to_string(),
+        None,
+        m.url.clone(),
+        None,
+    );
+    let err = client.embed(&["x"], None).await.unwrap_err();
+    assert!(!err.to_string().contains(KEY), "{err}");
+
+    // Any other status: the body is previewed, but scrubbed and flattened.
+    let hostile = format!(
+        "{{\"error\":\"key {KEY} rejected\\nERROR:  forged log line\\r\\nsource: secret text\"}}"
+    );
+    let m = mock::always(400, &hostile).await;
+    let client = CohereClient::new(
+        "embed-v4.0".to_string(),
+        KEY.to_string(),
+        "search_document".to_string(),
+        m.url.clone(),
+        None,
+    );
+    let err = client.embed(&["x"], None).await.unwrap_err();
+    let text = err.to_string();
+    assert!(!text.contains(KEY), "the key was echoed back: {text}");
+    assert!(text.contains("<redacted>"), "{text}");
+    assert!(!text.contains('\n') && !text.contains('\r'), "{text}");
+}
+
+/// The Gemini key travels in `x-goog-api-key`, the header Google documents,
+/// and never in the URL — where every proxy and reverse-proxy access log on
+/// the path would record it.
+#[tokio::test]
+async fn the_gemini_key_is_a_header_not_a_query_parameter() {
+    use providers::GeminiClient;
+    let m = mock::always(200, r#"{"embeddings":[{"values":[0.5]}]}"#).await;
+    let client = GeminiClient::new(
+        "gemini-embedding-001".to_string(),
+        "g-secret-key-value".to_string(),
+        m.url.clone(),
+        None,
+    );
+    client.embed(&["hi"], None).await.expect("embed ok");
+
+    // The mock records request bodies, so assert on the client's own view:
+    // an error carries no URL, and the URL it builds has no query at all.
+    let m2 = mock::always(500, "boom").await;
+    let client = GeminiClient::new(
+        "gemini-embedding-001".to_string(),
+        "g-secret-key-value".to_string(),
+        m2.url.clone(),
+        None,
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    let err = client.embed(&["hi"], Some(deadline)).await.unwrap_err();
+    assert!(!err.to_string().contains("g-secret-key-value"), "{err}");
+    assert!(!err.to_string().contains("key="), "{err}");
 }

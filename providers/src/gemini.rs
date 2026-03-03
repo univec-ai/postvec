@@ -3,7 +3,7 @@
 //!
 //! Implementation of the `EmbeddingBackend` trait for Google's Gemini models.
 //!
-use crate::{body_preview, retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
+use crate::{retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -84,9 +84,17 @@ impl GeminiClient {
     }
 }
 
-/// Gemini authenticates via a `?key=…` URL query parameter, and
-/// `reqwest::Error`'s Display includes the request URL — so every network
-/// error from this client strips the URL before it can reach a log line.
+/// The header Google documents for REST access. It replaced a `?key=…` query
+/// parameter here, which is the same credential in the one place that is
+/// logged by every intermediary between this process and Google: proxy access
+/// logs, reverse-proxy request lines, and anything an operator points
+/// `base_url` at. A header is not logged by default anywhere on that path.
+const GEMINI_KEY_HEADER: &str = "x-goog-api-key";
+
+/// `reqwest::Error`'s `Display` includes the request URL. The URL no longer
+/// carries the key (see [`GEMINI_KEY_HEADER`]), so this is now defence rather
+/// than the load-bearing redaction it used to be — kept because a URL in a
+/// log line buys nothing and a future `base_url` could carry a token again.
 fn redacted_network(e: reqwest::Error) -> EmbeddingError {
     EmbeddingError::Network(e.without_url())
 }
@@ -114,18 +122,19 @@ impl EmbeddingBackend for GeminiClient {
 
         let request_body = GeminiBatchRequest { requests };
 
-        // Construct the full URL. Authentication is done via a URL query parameter.
-        let url = format!(
-            "{}/v1beta/{}:batchEmbedContents?key={}",
-            self.base_url, model_path, self.api_key
-        );
+        // The URL carries no credential: the key rides `x-goog-api-key`.
+        let url = format!("{}/v1beta/{}:batchEmbedContents", self.base_url, model_path);
 
+        // What a legitimate response to *this* call can weigh. Computed once,
+        // outside the retry so every attempt shares one bound.
+        let budget = crate::response_budget(texts.len(), None);
         // Execute the request using the exponential backoff helper.
         let api_response: GeminiBatchResponse = retry_with_backoff(deadline, || async {
             // Send the POST request.
             let response = self
                 .client
                 .post(&url)
+                .header(GEMINI_KEY_HEADER, &self.api_key)
                 .json(&request_body)
                 .send()
                 .await
@@ -133,20 +142,14 @@ impl EmbeddingBackend for GeminiClient {
 
             // Handle non-successful responses.
             if !response.status().is_success() {
-                let status = response.status().as_u16();
-                let message = response
-                    .text()
-                    .await
-                    .map(|body| body_preview(&body))
-                    .unwrap_or_else(|_| "Unknown error".to_string());
-                // Return an Api error for the retry logic to inspect.
-                return Err(EmbeddingError::Api { status, message });
+                return Err(crate::api_error(response, Some(&self.api_key)).await);
             }
 
             // Read the body first, then decode it. A failure to read is
             // transport trouble (retriable `Network`, URL stripped); a body
-            // that will not parse is permanent. See `decode_json`.
-            let bytes = response.bytes().await.map_err(redacted_network)?;
+            // that will not parse — or one that will not fit — is permanent.
+            // See `decode_json` and `read_bounded`.
+            let bytes = crate::read_bounded(response, budget).await?;
             crate::decode_json::<GeminiBatchResponse>(&bytes)
         })
         .await?;

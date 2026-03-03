@@ -174,6 +174,21 @@ struct InferenceService {
     /// Engine path only — the provider path never takes a slot (§7.3, see
     /// the dispatch comment in `embed_texts_inner`).
     response_slots: Arc<Semaphore>,
+    /// The same mechanism for the provider path, on its own budget.
+    ///
+    /// The provider path deliberately skips `response_slots` so a network
+    /// call never queues behind CPU-bound ONNX — but "no admission gate" and
+    /// "no *response-lifetime* bound" are different things, and it had
+    /// neither. A completed unary response is encoded lazily after the
+    /// handler returns, so the per-provider semaphore and the tower ingress
+    /// permit are both released while the prost tree is still resident. A
+    /// slow or abandoned reader could accumulate them without limit.
+    ///
+    /// Sized at the gateway's boot-time inflight budget — the sum of the
+    /// per-provider `max_concurrent` caps — so it can never be the binding
+    /// constraint on *admission* (those semaphores already are), and only
+    /// bites when responses linger, which is exactly the condition to bound.
+    provider_response_slots: Arc<Semaphore>,
     /// External-provider gateway (docs/external-providers.md §8). Empty in
     /// the zero-config case; `owns()` decides routing after the engine
     /// readiness check.
@@ -448,6 +463,20 @@ impl InferenceService {
             )));
         }
 
+        // Taken BEFORE the call, so no paid embedding is ever thrown away for
+        // want of a slot, and released only when the encoded body is dropped
+        // (see `ResponsePermit` below). Bounded by the caller's deadline like
+        // every other wait on this path.
+        let response_permit = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.provider_response_slots.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| {
+            Status::deadline_exceeded("deadline exhausted waiting for provider response capacity")
+        })?
+        .map_err(|_| Status::unavailable("provider response-capacity gate closed"))?;
+
         let input_type = InputType::from_wire(&req.input_type);
         let vectors = self
             .gateway
@@ -455,10 +484,18 @@ impl InferenceService {
             .await
             .map_err(gateway_error_to_status)?;
 
-        Ok(Response::new(EmbedTextsResponse {
+        let mut response = Response::new(EmbedTextsResponse {
             embeddings: Some(vectors_to_list_value(vectors, deadline)?),
             usage: None,
-        }))
+        });
+        // The permit rides the response body: `ResponsePermitLayer` moves it
+        // into `PermitBody`, which holds it until hyper finishes or drops the
+        // encoding. This is the whole fix — a completed provider tree is not
+        // "done" until the bytes leave.
+        response
+            .extensions_mut()
+            .insert(ResponsePermit(Arc::new(response_permit)));
+        Ok(response)
     }
 
     async fn convert_embeddings_inner(
@@ -750,11 +787,18 @@ pub async fn serve(
     // `response_slots` — extra decoded RSS exists only when providers are
     // configured, and callers still carry `grpc-timeout`.
     let ingress_limit = max_inflight.max(1) + gateway.inflight_budget();
+    // The response-lifetime bound for the provider path. Same width as the
+    // ingress widening above and for the same reason: the per-provider
+    // semaphores already cap concurrent provider *calls* at exactly this
+    // number, so this can only ever be contended by responses that have
+    // outlived their handler — which is what it exists to bound.
+    let provider_response_slots = Arc::new(Semaphore::new(gateway.inflight_budget().max(1)));
     let service = NinferenceServiceServer::new(InferenceService {
         engine,
         metrics,
         predict_timeout,
         response_slots,
+        provider_response_slots,
         gateway,
     })
     .max_encoding_message_size(MAX_ENCODE_MESSAGE_SIZE)
@@ -1226,6 +1270,7 @@ mod deadline_tests {
             metrics: metrics.clone(),
             predict_timeout: Duration::from_secs(30),
             response_slots: Arc::new(Semaphore::new(1)),
+            provider_response_slots: Arc::new(Semaphore::new(4)),
             gateway: Arc::new(Gateway::empty()),
         };
 
@@ -1303,6 +1348,9 @@ mod gateway_tests {
         use std::os::unix::fs::PermissionsExt;
         let providers_dir = dir.join("providers.d");
         std::fs::create_dir_all(&providers_dir).unwrap();
+        // A providers.d is 0700; the loader refuses a group/world-writable
+        // one, and `create_dir_all` honours the umask.
+        std::fs::set_permissions(&providers_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = providers_dir.join("openai.toml");
         std::fs::write(
             &path,
@@ -1317,7 +1365,11 @@ mod gateway_tests {
         Arc::new(Gateway::load(&providers_dir))
     }
 
-    fn service(engine: Arc<InferenceEngine>, gateway: Arc<Gateway>) -> InferenceService {
+    fn service_with(
+        engine: Arc<InferenceEngine>,
+        gateway: Arc<Gateway>,
+        provider_response_slots: Arc<Semaphore>,
+    ) -> InferenceService {
         InferenceService {
             engine,
             metrics: Arc::new(Metrics::new()),
@@ -1325,8 +1377,65 @@ mod gateway_tests {
             // Zero permits: anything that waits on response_slots can never
             // proceed — which is exactly what the provider path must not do.
             response_slots: Arc::new(Semaphore::new(0)),
+            provider_response_slots,
             gateway,
         }
+    }
+
+    /// The ordinary shape: a provider response budget wide enough not to be
+    /// the thing under test.
+    fn service(engine: Arc<InferenceEngine>, gateway: Arc<Gateway>) -> InferenceService {
+        service_with(engine, gateway, Arc::new(Semaphore::new(4)))
+    }
+
+    /// A completed unary response is encoded *lazily*, after the handler
+    /// future has returned — so by the time the bytes are written, the
+    /// per-provider semaphore and the tower ingress permit are both long
+    /// released. Without a response-lifetime permit, a slow or abandoned
+    /// reader could accumulate finished provider trees without limit; in
+    /// embedded mode that is the PostgreSQL launcher's RSS.
+    ///
+    /// The engine path has held such a permit since it was written. This is
+    /// the same mechanism on its own budget, and the assertion is the one
+    /// that matters: the permit is still held when the handler has returned.
+    #[test]
+    fn a_provider_response_holds_its_permit_until_the_body_is_dropped() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mock = runtime.block_on(provider_mock::always(
+            200,
+            r#"{"data":[{"embedding":[0.25,0.5],"index":0}]}"#,
+        ));
+        let gateway = gateway_for(root.path(), &mock.url);
+        let slots = Arc::new(Semaphore::new(1));
+        let svc = service_with(test_engine(root.path()), gateway, slots.clone());
+
+        let response = runtime
+            .block_on(svc.embed_texts(Request::new(EmbedTextsRequest {
+                model: "openai-text-embedding-3-small".to_string(),
+                texts: vec!["hello".to_string()],
+                ..Default::default()
+            })))
+            .expect("provider embed");
+
+        // The handler has returned and the vectors are in hand — and the
+        // budget is still spent, because the response has not been written.
+        assert_eq!(
+            slots.available_permits(),
+            0,
+            "a finished-but-unsent provider response must still hold its permit"
+        );
+        assert!(
+            response.extensions().get::<ResponsePermit>().is_some(),
+            "the permit must ride the response for ResponsePermitLayer to move \
+             into the body"
+        );
+        drop(response);
+        assert_eq!(
+            slots.available_permits(),
+            1,
+            "dropping it releases the budget"
+        );
     }
 
     /// A provider-only name serves (the gateway is consulted before the
@@ -1439,6 +1548,7 @@ mod gateway_tests {
             metrics: Arc::new(Metrics::new()),
             predict_timeout: Duration::from_secs(5),
             response_slots: Arc::new(Semaphore::new(1)),
+            provider_response_slots: Arc::new(Semaphore::new(4)),
             gateway,
         };
         let req = Request::new(EmbedTextsRequest {

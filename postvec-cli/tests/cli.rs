@@ -1140,3 +1140,192 @@ fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
         "a file the host will never load must not be reported as a stale reload:\n{text}"
     );
 }
+
+/// This command runs under `sudo`. A providers.d another account can write
+/// to lets that account choose what a root-run `provider add` creates — and,
+/// with a planted `.NAME.postvec.tmp` symlink, what it truncates. The
+/// serving host refuses such a directory outright; the CLI refuses to write
+/// into one, and names the fix rather than repairing it silently.
+#[test]
+fn provider_add_refuses_a_world_writable_providers_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("providers.d");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--path",
+        root.path().to_str().unwrap(),
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let err = stderr(&output);
+    assert!(err.contains("writable by other users"), "{err}");
+    assert!(
+        !dir.join("openai.toml").exists(),
+        "nothing may be written into an unsafe directory"
+    );
+}
+
+/// The temporary file a privileged writer creates must be *created*, not
+/// opened: a pre-planted symlink at the temp path would otherwise be followed
+/// and truncated. `create_new` + `O_NOFOLLOW` makes that a refusal even if
+/// the directory check above were somehow passed.
+#[test]
+fn provider_add_will_not_follow_a_planted_temporary_symlink() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("providers.d");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+
+    // The file an attacker wants truncated.
+    let victim = root.path().join("precious");
+    std::fs::write(&victim, "must survive").expect("write");
+    std::os::unix::fs::symlink(&victim, dir.join(".openai.toml.postvec.tmp")).expect("symlink");
+
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--path",
+        root.path().to_str().unwrap(),
+        "--no-verify",
+        "--yes",
+    ]);
+    // Either the symlink is refused, or it was removed as a stale temp file
+    // and a fresh regular file was created — never followed.
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap_or_default(),
+        "must survive",
+        "a planted temp symlink was followed and truncated: {}",
+        stderr(&output)
+    );
+}
+
+/// A hand-edited `models = 3` is an operator mistake. It must be a refusal
+/// naming the file, not a panic in a command run under `sudo`.
+#[test]
+fn a_malformed_models_field_is_an_error_not_a_panic() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("providers.d");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let file = dir.join("openai.toml");
+    std::fs::write(
+        &file,
+        "provider = \"openai\"\napi_key = \"sk\"\nmodels = 3\n",
+    )
+    .expect("write");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--path",
+        root.path().to_str().unwrap(),
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0);
+    let err = stderr(&output);
+    assert!(!err.contains("panicked"), "{err}");
+    assert!(err.contains("models"), "{err}");
+}
+
+/// Moving `base_url` or `region` on an existing file is a **recipient**
+/// change: the same public names, the same bound columns, a different
+/// organisation receiving their source text. The privacy gate was built from
+/// newly added names only, which for an endpoint-only edit is the empty set —
+/// so the one gate this feature is designed around never fired for the one
+/// edit that most needs it.
+///
+/// With `--path` there is no cluster to scan, so the command must say so
+/// rather than silently treating "no columns found" as "no columns".
+#[test]
+fn moving_an_endpoint_announces_that_the_recipient_changes() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let root_arg = root.path().to_str().unwrap();
+
+    let first = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--base-url",
+        "https://api.openai.com",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&first), 0, "{}", stderr(&first));
+
+    // Same models, same key, different endpoint.
+    let moved = run(&[
+        "provider",
+        "add",
+        "openai",
+        // Already declared, so this adds nothing — the endpoint is the change.
+        "--model",
+        "text-embedding-3-small",
+        "--base-url",
+        "https://someone-else.example",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&moved), 0, "{}", stderr(&moved));
+    let text = format!("{}{}", stdout(&moved), stderr(&moved));
+    assert!(
+        text.contains("where source text is SENT"),
+        "an endpoint move must announce the recipient change:\n{text}"
+    );
+
+    // A key-source rotation to the same endpoint is NOT a recipient change,
+    // and must not raise the same alarm — over-prompting is how a gate stops
+    // being read.
+    let rotated = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-env",
+        "OPENAI_API_KEY_NEW",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&rotated), 0, "{}", stderr(&rotated));
+    let text = format!("{}{}", stdout(&rotated), stderr(&rotated));
+    assert!(
+        !text.contains("where source text is SENT"),
+        "a key rotation is not a recipient change:\n{text}"
+    );
+}

@@ -136,6 +136,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     }
 
     reload_host(&target, cli.timeout, &mut journal).await;
+    // Mirror of `provider add`: without this the removed name stays in
+    // `postvec.models` until the worker's next discovery cycle, so a route
+    // that no longer exists remains selectable and produces avoidable
+    // model-not-found retries and failover attempts.
+    super::refresh_databases(&mut target, &mut journal).await;
 
     let result = finish(&target, plan, journal, Vec::new(), started, started_at);
     output.show_result(&result)?;

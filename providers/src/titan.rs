@@ -14,9 +14,7 @@
 //!
 //! It also handles different request schemas for different Titan model versions.
 //!
-use crate::{
-    aws_sigv4, body_preview, retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError,
-};
+use crate::{aws_sigv4, retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -55,6 +53,19 @@ pub enum TitanAuth {
         secret_key: String,
     },
     BearerToken(String),
+}
+
+impl TitanAuth {
+    /// The credential an upstream could plausibly quote back in an error
+    /// body, for redaction. The SigV4 secret key never appears in a request
+    /// — only the derived signature does — so the access key id, which rides
+    /// the `Authorization` header verbatim, is the one to scrub.
+    fn echoable_secret(&self) -> Option<&str> {
+        match self {
+            TitanAuth::BearerToken(token) => Some(token),
+            TitanAuth::SigV4 { access_key, .. } => Some(access_key),
+        }
+    }
 }
 
 // ---- Client Implementation ----
@@ -129,6 +140,8 @@ impl EmbeddingBackend for TitanClient {
         deadline: Option<Instant>,
     ) -> Result<Vec<Embedding>, EmbeddingError> {
         let mut results = Vec::with_capacity(texts.len());
+        // One text per InvokeModel call, so one vector's worth of body.
+        let budget = crate::response_budget(1, Some(self.dimension.max(0) as usize));
 
         for (index, text) in texts.iter().enumerate() {
             let host = format!("bedrock-runtime.{}.amazonaws.com", self.region);
@@ -196,19 +209,16 @@ impl EmbeddingBackend for TitanClient {
 
                 // Check for API errors (e.g., 429, 503)
                 if !response.status().is_success() {
-                    let status = response.status().as_u16();
-                    let message = response
-                        .text()
-                        .await
-                        .map(|body| body_preview(&body))
-                        .unwrap_or_else(|_| "Unknown error".to_string());
-                    // This error will be inspected by the retry logic.
-                    return Err(EmbeddingError::Api { status, message });
+                    return Err(crate::api_error(response, self.auth.echoable_secret()).await);
                 }
 
-                // Read the response text. This can fail if the connection drops.
-                // Map this to a retriable Network error.
-                response.text().await.map_err(EmbeddingError::Network)
+                // Read the body, bounded. Titan invokes one text per request,
+                // so the budget is one vector's worth.
+                let bytes = crate::read_bounded(response, budget).await?;
+                String::from_utf8(bytes.clone()).map_err(|_| EmbeddingError::Api {
+                    status: 200,
+                    message: format!("response body is not valid UTF-8 ({} bytes)", bytes.len()),
+                })
             })
             .await
             .map_err(|e| {

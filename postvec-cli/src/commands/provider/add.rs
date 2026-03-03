@@ -118,13 +118,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         .unwrap_or_default();
 
     // The descriptors this run adds: skip ids the file already declares.
-    struct NewModel {
-        id: String,
-        public_name: String,
-        dim: Option<u32>,
-        max_tokens: Option<u32>,
-        max_batch: Option<usize>,
-    }
     let mut new_models: Vec<NewModel> = Vec::new();
     for id in &model_ids {
         if already_declared.iter().any(|(_, existing)| existing == id) {
@@ -205,14 +198,61 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         );
     }
 
+    // ---- What this run actually changes ----
+    // Read the effective values *from the document*, not from the flags: a
+    // rerun that adds a model to an existing file with a custom `base_url`
+    // does not repeat `--base-url`, and everything downstream — the probe,
+    // the privacy scan — has to reason about the endpoint that will serve,
+    // not the one the command line mentioned.
+    let recorded = |field: &str| {
+        existing.as_ref().and_then(|doc| {
+            doc.value
+                .get(field)
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+        })
+    };
+    let effective_base_url = args.base_url.clone().or_else(|| recorded("base_url"));
+    let effective_region = args.region.clone().or_else(|| recorded("region"));
+    let base_url_changes = args.base_url.is_some() && args.base_url != recorded("base_url");
+    let region_changes = args.region.is_some() && args.region != recorded("region");
+    // An endpoint move is a **recipient** change: the same public names, the
+    // same bound columns, a different organisation, network or jurisdiction
+    // receiving their source text. The privacy gate exists for exactly that
+    // event and was scanning only newly added names — which for an
+    // endpoint-only edit is the empty set, so the gate never fired.
+    let endpoint_changes = base_url_changes || region_changes;
+    // A new key source for the same endpoint is not a recipient change: the
+    // text goes to the same place. It does change what the host will do, so
+    // it is worth *verifying*, but it must not demand a privacy
+    // acknowledgement — over-prompting is how a gate stops being read.
+    let credential_changes = matches!(key, KeySpec::File(_) | KeySpec::Env(_) | KeySpec::Inline(_));
+
     // ---- Privacy gate + plan ----
-    let public_names: Vec<String> = new_models.iter().map(|m| m.public_name.clone()).collect();
+    let new_names: Vec<String> = new_models.iter().map(|m| m.public_name.clone()).collect();
+    // Every name this file will serve, when the recipient moves; only the
+    // new ones otherwise.
+    let public_names: Vec<String> = if endpoint_changes {
+        let mut all: Vec<String> = already_declared.iter().map(|(n, _)| n.clone()).collect();
+        all.extend(new_names.iter().cloned());
+        all
+    } else {
+        new_names.clone()
+    };
     let scanned = matches!(target, ProviderTarget::Embedded { .. });
     let (columns, unknown_databases) = if scanned && !public_names.is_empty() {
         columns_bound_to(&mut target, &public_names, cli.timeout).await
     } else {
         (Vec::new(), Vec::new())
     };
+    // `--path` has no cluster to scan, so an endpoint move there cannot list
+    // the affected columns — and silently treating the scan set as empty is
+    // the one outcome a privacy gate must never produce. Say it plainly.
+    if endpoint_changes && !scanned {
+        output.note(
+            "--path: this changes where source text is SENT for every model in this file, and              no cluster is in scope to list the bound columns. Check `postvec.registry` on the              database hosts that use this node before proceeding",
+        );
+    }
 
     let mut plan = Plan::new("provider add", target.label());
     for name in &public_names {
@@ -236,21 +276,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // front moves, a Bedrock deployment changes region). Without these two
     // terms the plan would be a no-op and the flag would be dropped in
     // silence.
-    let recorded = |field: &str| {
-        existing.as_ref().and_then(|doc| {
-            doc.value
-                .get(field)
-                .and_then(toml::Value::as_str)
-                .map(str::to_string)
-        })
-    };
-    let base_url_changes = args.base_url.is_some() && args.base_url != recorded("base_url");
-    let region_changes = args.region.is_some() && args.region != recorded("region");
-    if !new_models.is_empty()
-        || matches!(key, KeySpec::File(_) | KeySpec::Env(_) | KeySpec::Inline(_))
-        || base_url_changes
-        || region_changes
-    {
+    if !new_models.is_empty() || credential_changes || endpoint_changes {
         plan.push(PlanStep::WriteConfig {
             path: file_path.clone(),
             before_sha256: existing.as_ref().map(|_| "existing".to_string()),
@@ -323,60 +349,47 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // probe failure still leaves the host exactly as it was.
     if probe {
         let secret = probe_secret(&key, existing.as_ref())?;
+        // The configuration the *host* will serve with, not the one the
+        // command line mentioned. Probing `args.base_url` meant that adding a
+        // model to a file with a custom endpoint verified the public default
+        // and then wrote and reloaded the custom one — a green check for a
+        // request that was never made against the endpoint that matters.
         let config = providers::ProviderConfig {
             provider: canonical.clone(),
             api_key: (canonical != "aws").then(|| secret.clone()),
-            base_url: args.base_url.clone(),
-            region: args.region.clone(),
+            base_url: effective_base_url.clone(),
+            region: effective_region.clone(),
             bearer_token: (canonical == "aws").then(|| secret.clone()),
             access_key_id: None,
             secret_access_key: None,
         };
-        for model in &mut new_models {
-            let backend = providers::new_embedding_backend(
-                &config,
-                &model.id,
-                model.dim.unwrap_or(0) as i32,
-                "search_document",
-                None,
-            )
-            .map_err(|e| CliError::precondition(format!("{}: {e}", model.id)))?;
-            let deadline = std::time::Instant::now() + cli.timeout;
-            let embeddings = backend
-                .embed(&["postvec verification probe"], Some(deadline))
-                .await
-                .map_err(|e| {
-                    CliError::precondition(format!(
-                        "verification embed for {} failed: {e}",
-                        model.id
-                    ))
-                    .with_fix(
-                        "check the key, model id and network; pass --no-verify to write the \
-                         file anyway (the probe costs one paid API call per model)",
-                    )
-                })?;
-            let measured = embeddings.first().map(|e| e.vector.len()).unwrap_or(0) as u32;
-            if measured == 0 {
-                return Err(CliError::precondition(format!(
-                    "verification embed for {} returned an empty vector",
-                    model.id
-                )));
-            }
-            match model.dim {
+
+        // What gets a live call. An additive run verifies what it adds. A
+        // change to the *connector* — a rotated key, a moved endpoint —
+        // changes what every model in the file does, and verifying none of
+        // them (which is what "probe the new models" meant for a run that
+        // adds none) let a key rotation report success without a single
+        // request. That is the failure this command exists to prevent.
+        for (id, public_name, declared) in probe_targets(
+            &new_models,
+            &already_declared,
+            existing.as_ref(),
+            credential_changes || endpoint_changes,
+        ) {
+            let measured = probe_one(&config, &id, declared, cli.timeout).await?;
+            match declared {
                 Some(declared) if declared != measured => {
                     return Err(CliError::precondition(format!(
-                        "{}: the probe returned {measured} dimensions but {declared} was \
-                         declared; fix --dim (or drop it to use the measured value)",
-                        model.id
+                        "{id}: the probe returned {measured} dimensions but {declared} was \
+                         declared; fix --dim (or drop it to use the measured value)"
                     )));
                 }
                 Some(_) => {}
                 None => {
-                    output.progress(&format!(
-                        "{}: measured dimension {measured}",
-                        model.public_name
-                    ));
-                    model.dim = Some(measured);
+                    output.progress(&format!("{public_name}: measured dimension {measured}"));
+                    if let Some(model) = new_models.iter_mut().find(|m| m.id == id) {
+                        model.dim = Some(measured);
+                    }
                 }
             }
         }
@@ -422,7 +435,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         if let Some(max_tokens) = model.max_tokens {
             entry.insert("max_tokens".into(), toml::Value::Integer(max_tokens as i64));
         }
-        doc.push_model(toml::Value::Table(entry));
+        doc.push_model(toml::Value::Table(entry))?;
     }
 
     doc.write(target.owner())?;
@@ -442,6 +455,12 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     }
 
     reload_host(&target, cli.timeout, &mut journal).await;
+    // The host now serves the model; the databases do not know it exists.
+    // `enable()` resolves through `postvec.models`, so without this the
+    // documented `provider add` → `enable` sequence fails until the worker's
+    // next discovery cycle (up to a minute plus jitter). A `--path` target
+    // has no cluster and is skipped inside.
+    super::refresh_databases(&mut target, &mut journal).await;
 
     let result = finish(&target, plan, journal, Vec::new(), started, started_at);
     output.show_result(&result)?;
@@ -450,6 +469,107 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
 
 fn scanned_note_needed(public_names: &[String]) -> bool {
     !public_names.is_empty()
+}
+
+/// One descriptor this run is adding.
+struct NewModel {
+    id: String,
+    public_name: String,
+    dim: Option<u32>,
+    max_tokens: Option<u32>,
+    max_batch: Option<usize>,
+}
+
+/// Which models get a live verification call: `(provider id, public name,
+/// declared dimension)`.
+///
+/// Always the models being added. Plus, when the connector itself changed —
+/// a rotated key, a moved endpoint — every model the file already declares,
+/// because those are exactly the ones whose behaviour the change alters and
+/// which nothing else in this command would touch. Before this, a key
+/// rotation with no new model made **zero** verification calls while the
+/// command and the documentation both said it verified.
+fn probe_targets(
+    new_models: &[NewModel],
+    already_declared: &[(String, String)],
+    existing: Option<&ProviderFileDoc>,
+    connector_changed: bool,
+) -> Vec<(String, String, Option<u32>)> {
+    let mut targets: Vec<(String, String, Option<u32>)> = new_models
+        .iter()
+        .map(|m| (m.id.clone(), m.public_name.clone(), m.dim))
+        .collect();
+    if !connector_changed {
+        return targets;
+    }
+    let declared_dim = |name: &str| -> Option<u32> {
+        existing?
+            .value
+            .get("models")?
+            .as_array()?
+            .iter()
+            .find(|m| m.get("name").and_then(toml::Value::as_str) == Some(name))?
+            .get("dim")?
+            .as_integer()
+            .and_then(|d| u32::try_from(d).ok())
+    };
+    for (public_name, id) in already_declared {
+        targets.push((id.clone(), public_name.clone(), declared_dim(public_name)));
+    }
+    targets
+}
+
+/// One live single-input embed. Costs a paid API call.
+///
+/// The response contract is the serving gateway's, applied here: **exactly
+/// one** vector, reported for input `0`, non-empty. Accepting "the first
+/// vector, whatever it is" meant the probe passed against a provider whose
+/// response was already the shape that would dead-letter every batch later.
+async fn probe_one(
+    config: &providers::ProviderConfig,
+    id: &str,
+    declared_dim: Option<u32>,
+    timeout: std::time::Duration,
+) -> Result<u32> {
+    let backend = providers::new_embedding_backend(
+        config,
+        id,
+        declared_dim.unwrap_or(0) as i32,
+        "search_document",
+        None,
+    )
+    .map_err(|e| CliError::precondition(format!("{id}: {e}")))?;
+    let deadline = std::time::Instant::now() + timeout;
+    let embeddings = backend
+        .embed(&["postvec verification probe"], Some(deadline))
+        .await
+        .map_err(|e| {
+            CliError::precondition(format!("verification embed for {id} failed: {e}")).with_fix(
+                "check the key, model id and network; pass --no-verify to write the file \
+                 anyway (the probe costs one paid API call per model)",
+            )
+        })?;
+    if embeddings.len() != 1 {
+        return Err(CliError::precondition(format!(
+            "verification embed for {id} returned {} vectors for one input; the serving host \
+             refuses a response that is not row-parallel to the request",
+            embeddings.len()
+        )));
+    }
+    let embedding = &embeddings[0];
+    if embedding.text_index != 0 {
+        return Err(CliError::precondition(format!(
+            "verification embed for {id} reported its vector as input {} of one; the serving \
+             host refuses a response that is not row-parallel to the request",
+            embedding.text_index
+        )));
+    }
+    if embedding.vector.is_empty() {
+        return Err(CliError::precondition(format!(
+            "verification embed for {id} returned an empty vector"
+        )));
+    }
+    Ok(embedding.vector.len() as u32)
 }
 
 /// Which key source this run records. No flag + an existing keyed file keeps

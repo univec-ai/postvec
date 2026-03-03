@@ -112,7 +112,11 @@ struct Inner {
 /// The nested HubModel shape `discovery::parse_config` requires (§6.2). A
 /// flat object would be silently dropped by the parser — the round-trip
 /// tests below and in the host pin this.
-fn descriptor_json(provider_type: &str, model: &ModelDescriptor) -> serde_json::Value {
+fn descriptor_json(
+    provider_type: &str,
+    provider_name: &str,
+    model: &ModelDescriptor,
+) -> serde_json::Value {
     let mut params = serde_json::json!({
         "model_type": "embed",
         "target_model": model.name,
@@ -125,6 +129,15 @@ fn descriptor_json(provider_type: &str, model: &ModelDescriptor) -> serde_json::
         "name": model.name,
         "status": "provider",
         "provider": provider_type,
+        // The routing identity behind the public name, secret-free: the file
+        // stem an operator administers and the id the provider's API is
+        // asked for. A provider-backed model has no on-disk descriptor to
+        // compare, so without these two a fleet check can only compare
+        // *names* — and two nodes serving `openai-text-embedding-3-small`
+        // from different files, model ids or dimensions look identical while
+        // round-robin hands a caller vectors from either.
+        "provider_file": provider_name,
+        "provider_model_id": model.provider_model_id,
         "configuration": {
             "name": model.name,
             "enabled": true,
@@ -166,6 +179,16 @@ impl Inner {
             // provider calls carry credentials over the public internet.
             let client = match reqwest::Client::builder()
                 .timeout(std::time::Duration::from_millis(provider.timeout_ms))
+                // No redirects. An embeddings POST has no legitimate reason
+                // to be redirected, and following one carries the credential
+                // to wherever the response points. `reqwest` strips
+                // `Authorization` across origins but not a provider-specific
+                // auth header — Gemini's `x-goog-api-key` would ride along —
+                // so this is the rule that holds for every connector rather
+                // than for most of them. A moved endpoint is a `base_url`
+                // change, which is an operator decision with a privacy gate
+                // in front of it, not something an upstream announces.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
             {
                 Ok(client) => client,
@@ -223,7 +246,7 @@ impl Inner {
                         query,
                         dim: model.dim,
                         max_batch: model.max_batch,
-                        descriptor: descriptor_json(&provider_type, model),
+                        descriptor: descriptor_json(&provider_type, &provider.name, model),
                     },
                 ));
             }
@@ -477,8 +500,14 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
         // body that will not parse arrives as `Api { status: 200 }` below
         // (see `crate::decode_json`).
         EmbeddingError::Network(_) => ErrorCode::UpstreamServiceUnavailable,
+        // 408 and 424 are here because of Bedrock, which is the only
+        // supported provider that uses them: `ModelTimeoutException` is HTTP
+        // 408 and `ModelErrorException` is HTTP 424 on `InvokeModel`. Both
+        // describe the *model* failing to answer, not the row failing to be
+        // acceptable, so classifying them with the rest of 4xx would
+        // dead-letter healthy rows over an upstream hiccup.
         EmbeddingError::Api {
-            status: 429 | 500..=599,
+            status: 408 | 424 | 429 | 500..=599,
             ..
         } => ErrorCode::UpstreamServiceUnavailable,
         // Bad or revoked credential: an ops problem, classified Config
@@ -488,9 +517,17 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
         } => ErrorCode::UpstreamAuthFailed,
         // Unknown model id at the provider: Config (retried, failover).
         EmbeddingError::Api { status: 404, .. } => ErrorCode::ModelNotFound,
-        // Input too long: PoisonRow — the queue's bisection isolates the row.
+        // 413 is definitionally "your request was too big", with no wording to
+        // interpret — so it maps to PoisonRow unconditionally and lets the
+        // queue's bisection shrink the batch and isolate the offending row.
+        // Reading the body to decide would make a healthy batch's fate depend
+        // on whether a provider happens to phrase its 413 in English.
+        EmbeddingError::Api { status: 413, .. } => ErrorCode::ContextLengthExceeded,
+        // 400/422 say nothing by themselves, so the bounded heuristic is
+        // still what separates "this input is too long" from "this request is
+        // malformed". 401/403/429 have already been matched above.
         EmbeddingError::Api {
-            status: 400 | 413 | 422,
+            status: 400 | 422,
             message,
         } if looks_like_context_length(message) => ErrorCode::ContextLengthExceeded,
         // Any other 4xx, and the clients' 200-decode-failure sentinel:
@@ -530,6 +567,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
+    /// A providers.d is 0700; `tempfile::tempdir()` honours the umask.
+    fn private_tempdir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     fn write_provider(dir: &Path, file: &str, body: &str) {
         let path = dir.join(file);
         std::fs::write(&path, body).unwrap();
@@ -554,7 +598,7 @@ mod tests {
     /// would be silently dropped there).
     #[tokio::test]
     async fn descriptors_use_the_nested_hubmodel_shape() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(
             dir.path(),
             "openai.toml",
@@ -588,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn gemini_alias_normalizes_to_google_in_descriptors() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(
             dir.path(),
             "gemini.toml",
@@ -612,7 +656,7 @@ mod tests {
         ])
         .await;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 2));
         let gateway = Gateway::load(dir.path());
 
@@ -636,7 +680,7 @@ mod tests {
     async fn wrong_count_and_wrong_dim_are_invalid_input_not_internal() {
         // One embedding for two inputs.
         let m = mock::always(200, r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
         let gateway = Gateway::load(dir.path());
 
@@ -653,7 +697,7 @@ mod tests {
 
         // Right count, wrong dimension (3 instead of the declared 2).
         let m = mock::always(200, r#"{"data":[{"embedding":[1.0,2.0,3.0],"index":0}]}"#).await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
         let gateway = Gateway::load(dir.path());
 
@@ -681,7 +725,7 @@ mod tests {
             r#"{"data":[{"embedding":[1.0,2.0],"index":0},{"embedding":[3.0,4.0],"index":0}]}"#,
         )
         .await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
         let gateway = Gateway::load(dir.path());
 
@@ -726,6 +770,25 @@ mod tests {
                 r#"{"error":"maximum context length is 8192 tokens"}"#,
                 ErrorCode::ContextLengthExceeded,
             ),
+            // Bedrock's ModelTimeoutException / ModelErrorException: the
+            // model failed to answer, so the rows are not poison.
+            (
+                408,
+                r#"{"message":"ModelTimeoutException"}"#,
+                ErrorCode::UpstreamServiceUnavailable,
+            ),
+            (
+                424,
+                r#"{"message":"ModelErrorException"}"#,
+                ErrorCode::UpstreamServiceUnavailable,
+            ),
+            // 413 says "too big" with no wording to interpret: bisection,
+            // not a dead letter, and not conditional on English phrasing.
+            (
+                413,
+                r#"{"message":"Request Entity Too Large"}"#,
+                ErrorCode::ContextLengthExceeded,
+            ),
             (
                 400,
                 r#"{"error":"malformed input"}"#,
@@ -735,7 +798,7 @@ mod tests {
         ];
         for (status, body, expected) in cases {
             let m = mock::always(status, body).await;
-            let dir = tempfile::tempdir().unwrap();
+            let dir = private_tempdir();
             write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
             let gateway = Gateway::load(dir.path());
 
@@ -759,7 +822,7 @@ mod tests {
             drop(l);
             format!("http://{addr}")
         };
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&closed, 2, 512));
         let gateway = Gateway::load(dir.path());
         let err = gateway
@@ -805,7 +868,7 @@ mod tests {
     #[tokio::test]
     async fn a_truncated_response_body_is_transient_not_a_dead_letter() {
         let m = mock::truncated(r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
         let gateway = Gateway::load(dir.path());
 
@@ -827,7 +890,7 @@ mod tests {
     async fn cohere_query_purpose_selects_the_query_backend() {
         let body = r#"{"embeddings":[[0.1,0.2]]}"#;
         let m = mock::always(200, body).await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(
             dir.path(),
             "cohere.toml",
@@ -874,7 +937,7 @@ mod tests {
     #[tokio::test]
     async fn the_max_concurrent_semaphore_bounds_the_call_within_the_deadline() {
         let m = mock::always(200, r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
         let gateway = Gateway::load(dir.path());
 
@@ -915,7 +978,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_swaps_atomically_and_a_failed_reload_keeps_the_snapshot() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml("http://x", 4, 8));
         let gateway = Gateway::load(dir.path());
         assert!(gateway.owns("openai-text-embedding-3-small"));
@@ -930,7 +993,7 @@ mod tests {
         );
 
         // Successful reload of a different directory swaps the set.
-        let other = tempfile::tempdir().unwrap();
+        let other = private_tempdir();
         write_provider(
             other.path(),
             "mistral.toml",
@@ -951,7 +1014,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_broken_provider_file_is_isolated_from_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         write_provider(dir.path(), "aaa-broken.toml", "provider = 42");
         write_provider(dir.path(), "openai.toml", &openai_toml("http://x", 4, 8));
         // Unsupported connector type: isolated at gateway build.

@@ -3,7 +3,7 @@
 //!
 //! Implementation of the `EmbeddingBackend` trait for OpenAI's embedding models.
 //!
-use crate::{body_preview, retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
+use crate::{retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -116,6 +116,9 @@ impl EmbeddingBackend for OpenAIClient {
         // Execute the request using the exponential backoff helper.
         // The closure captures `self`, `url`, and `request_body` by reference.
         // It defines the atomic operation to be retried.
+        // What a legitimate response to *this* call can weigh. Computed once,
+        // outside the retry so every attempt shares one bound.
+        let budget = crate::response_budget(texts.len(), self.dimensions);
         let api_response: OpenAIResponse = retry_with_backoff(deadline, || async {
             // Send the asynchronous POST request.
             let response = self
@@ -129,21 +132,13 @@ impl EmbeddingBackend for OpenAIClient {
 
             // Check if the request was successful.
             if !response.status().is_success() {
-                let status = response.status().as_u16();
-                let message = response
-                    .text()
-                    .await
-                    .map(|body| body_preview(&body))
-                    .unwrap_or_else(|_| "Unknown error".to_string());
-                // Return an Api error. The retry logic will inspect the status
-                // to decide whether to retry.
-                return Err(EmbeddingError::Api { status, message });
+                return Err(crate::api_error(response, Some(&self.api_key)).await);
             }
 
             // Read the body first, then decode it. A failure to read is
             // transport trouble (retriable `Network`); a body that will not
             // parse is permanent for this response. See `decode_json`.
-            let bytes = response.bytes().await.map_err(EmbeddingError::Network)?;
+            let bytes = crate::read_bounded(response, budget).await?;
             crate::decode_json::<OpenAIResponse>(&bytes)
         })
         .await?;

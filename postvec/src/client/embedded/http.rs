@@ -68,7 +68,12 @@ pub(crate) fn config_envelope(configs: &[ModelConfiguration], gateway: &Gateway)
         if configs.iter().any(|cfg| cfg.name == name) {
             // Local-by-default: an on-disk engine model keeps its name even
             // when a provider file claims it.
-            log::warn!(
+            // Debug, not warn: `/config` is polled on every discovery
+            // refresh (once a minute per database, per node), and a
+            // deliberate collision is a *steady state*, not an event. At
+            // warn this printed the same line forever. `provider ls` and
+            // `postvec doctor` report the collision where it is actionable.
+            log::debug!(
                 "provider model {name:?} collides with a local engine model; \
                  the local model wins and the provider entry is not served"
             );
@@ -778,6 +783,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = root.join("providers.d");
         std::fs::create_dir_all(&dir).unwrap();
+        // A providers.d is 0700; the loader refuses a group/world-writable
+        // one, and `create_dir_all` honours the umask.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.join(file);
         std::fs::write(&path, body).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();

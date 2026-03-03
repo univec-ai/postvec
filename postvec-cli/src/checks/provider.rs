@@ -233,11 +233,29 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
     }
     // The directory holds credentials, so its own mode matters. `setup` and
     // `provider add` create it 0700 and deliberately leave an existing one
-    // alone, which is why nothing else notices when it drifts. Group or
-    // other bits do not expose a key (the files are 0600) but they do expose
-    // which providers a host is configured for, so this is a warning rather
-    // than a failure.
+    // alone, which is why nothing else notices when it drifts.
+    //
+    // Read and write are different findings, and conflating them was wrong.
+    // Group/other **read** discloses which providers a host is configured
+    // for — worth saying, not worth failing. Group/other **write** lets
+    // anyone with access drop in a connector file and choose where this host
+    // sends source text, which is a larger problem than the world-readable
+    // key file the loader already refuses. The loader refuses it too; doctor
+    // says so first, and in the operator's own words.
     match facts.mode {
+        Some(mode) if mode & 0o022 != 0 => out.push(
+            CheckResult::fail(
+                "provider.directory",
+                "providers",
+                format!(
+                    "{} is mode {mode:o}: other users can WRITE here, so anyone with access \
+                     can add a provider file and choose where this host sends source text. \
+                     The serving host refuses the directory outright",
+                    facts.dir.display()
+                ),
+            )
+            .with_fix(format!("chmod 700 {}", facts.dir.display())),
+        ),
         Some(mode) if mode & 0o077 != 0 => out.push(
             CheckResult::warn(
                 "provider.directory",

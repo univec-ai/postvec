@@ -291,6 +291,10 @@ fn target_from_settings(
 // file. Comments do not survive a rewrite — the header says the file is
 // CLI-managed.
 
+/// The loader's per-file ceiling, restated here so the CLI refuses at the
+/// same point rather than reading a file the host would not.
+const MAX_PROVIDER_FILE_BYTES: u64 = 256 * 1024;
+
 /// A providers.d file as an editable TOML document.
 pub struct ProviderFileDoc {
     pub path: PathBuf,
@@ -299,9 +303,28 @@ pub struct ProviderFileDoc {
 
 impl ProviderFileDoc {
     pub fn load(path: &Path) -> Result<Option<Self>> {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(raw) => raw,
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // `O_NOFOLLOW`, because this path is about to be *rewritten* by a
+        // root-run command: following a symlink here would make the rename
+        // below land somewhere the operator did not name. Bounded for the
+        // same reason the loader bounds it — a connector file is a few dozen
+        // lines.
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                return Err(CliError::precondition(format!(
+                    "{} is a symlink; provider files must be regular files",
+                    path.display()
+                ))
+                .with_fix("replace the symlink with a regular file, or remove it"))
+            }
             Err(e) => {
                 return Err(CliError::precondition(format!(
                     "cannot read {}: {e}",
@@ -309,6 +332,16 @@ impl ProviderFileDoc {
                 )))
             }
         };
+        let mut raw = String::new();
+        file.take(MAX_PROVIDER_FILE_BYTES)
+            .read_to_string(&mut raw)
+            .map_err(|e| CliError::precondition(format!("cannot read {}: {e}", path.display())))?;
+        if raw.len() as u64 >= MAX_PROVIDER_FILE_BYTES {
+            return Err(CliError::precondition(format!(
+                "{} is larger than {MAX_PROVIDER_FILE_BYTES} bytes; the serving host refuses it",
+                path.display()
+            )));
+        }
         let value: toml::Value = raw
             .parse()
             .map_err(|e| CliError::precondition(format!("cannot parse {}: {e}", path.display())))?;
@@ -421,14 +454,35 @@ impl ProviderFileDoc {
         "none".to_string()
     }
 
-    pub fn push_model(&mut self, entry: toml::Value) {
-        let table = self.value.as_table_mut().expect("provider file is a table");
-        table
+    /// The file's mutable top-level table. A TOML document always is one, so
+    /// this cannot fail on anything `load` accepted.
+    fn table(&mut self) -> &mut toml::map::Map<String, toml::Value> {
+        self.value
+            .as_table_mut()
+            .expect("a parsed TOML document is a table")
+    }
+
+    /// A hand-edited `models = 3` is an operator mistake, not an invariant
+    /// violation — so it is a refusal with the file named, never a panic in a
+    /// command an operator ran under `sudo`.
+    pub fn push_model(&mut self, entry: toml::Value) -> Result<()> {
+        let path = self.path.clone();
+        let models = self
+            .table()
             .entry("models")
-            .or_insert_with(|| toml::Value::Array(Vec::new()))
-            .as_array_mut()
-            .expect("models is an array")
-            .push(entry);
+            .or_insert_with(|| toml::Value::Array(Vec::new()));
+        match models.as_array_mut() {
+            Some(array) => {
+                array.push(entry);
+                Ok(())
+            }
+            None => Err(CliError::precondition(format!(
+                "{} has a `models` field that is not a [[models]] array; the serving host \
+                 refuses the file as it stands",
+                path.display()
+            ))
+            .with_fix("fix or remove the `models` field by hand, then rerun")),
+        }
     }
 
     /// Remove one model by public name or provider id; the remaining count
@@ -504,6 +558,20 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
     use std::os::unix::fs::PermissionsExt;
 
     if dir.exists() {
+        // An existing directory keeps its mode and ownership — but it still
+        // has to be a *directory*, reached without following a symlink, that
+        // nobody else can write to. This command runs under `sudo`; a
+        // group-writable providers.d means another account chooses what a
+        // root-run `provider add` creates and where the serving host sends
+        // source text. Refuse and name the fix rather than repairing it
+        // implicitly: silently chmod-ing someone's directory is its own
+        // surprise. The serving host applies the identical rule at load
+        // (`providers::config::validate_directory`), which is why this can be
+        // that same function rather than a second opinion.
+        providers::config::validate_directory(dir).map_err(|problem| {
+            CliError::precondition(problem)
+                .with_fix("chmod 700 the providers.d directory (and make sure it is not a symlink)")
+        })?;
         return Ok(false);
     }
     // Parents (`/etc/postvec`) keep the default mode: only the leaf holds
@@ -519,36 +587,109 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
 /// Create `path`'s parent 0700 and write `path` 0600, atomically (write to a
 /// sibling temp file, then rename), chowning both to `owner` when running
 /// as root on their behalf.
+///
+/// Every step here is the way it is because this runs as **root**:
+///
+/// - the temporary file is `create_new` with `O_NOFOLLOW`. The previous
+///   `create(true).truncate(true)` on a predictable `.NAME.tmp` was a
+///   file-truncation primitive: in a providers.d another account could write
+///   to, that account plants `.openai.toml.tmp` as a symlink to any
+///   root-writable file and the next `sudo postvec provider add` truncates
+///   it. `ensure_private_dir` now refuses such a directory, and this refuses
+///   the symlink even if one appears anyway — two independent barriers,
+///   because the cost of getting it wrong is somebody else's file.
+/// - the destination is checked the same way, so a symlink or a hard-linked
+///   `openai.toml` cannot redirect the rename either.
+/// - `sync_all` must **succeed**, and the directory is synced after the
+///   rename. `sync_all().ok()` meant "atomic" described only the rename and
+///   not the data: a crash could leave a file this command already reported
+///   as written.
 pub fn write_secret_file(path: &Path, body: &[u8], owner: Option<FileOwner>) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
     let dir = path
         .parent()
         .ok_or_else(|| CliError::internal(format!("{} has no parent", path.display())))?;
     ensure_private_dir(dir, owner)?;
+
+    // An existing destination must be an ordinary, singly-linked file.
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(CliError::precondition(format!(
+                "{} is a symlink; refusing to write a credential through it",
+                path.display()
+            ))
+            .with_fix("remove the symlink and rerun"))
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(CliError::precondition(format!(
+                "{} exists and is not a regular file",
+                path.display()
+            )))
+        }
+        Ok(meta) if meta.nlink() != 1 => {
+            return Err(CliError::precondition(format!(
+                "{} has {} hard links; refusing to replace it",
+                path.display(),
+                meta.nlink()
+            )))
+        }
+        _ => {}
+    }
+
     let tmp = dir.join(format!(
-        ".{}.tmp",
+        ".{}.postvec.tmp",
         path.file_name().unwrap_or_default().to_string_lossy()
     ));
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| CliError::apply(format!("cannot create {}: {e}", tmp.display())))?;
-        file.write_all(body)
-            .map_err(|e| CliError::apply(format!("cannot write {}: {e}", tmp.display())))?;
-        file.sync_all().ok();
+    // A leftover from an interrupted run is ours to clear; anything else
+    // fails `create_new` below rather than being followed.
+    let _ = std::fs::remove_file(&tmp);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(&tmp)
+        .map_err(|e| CliError::apply(format!("cannot create {}: {e}", tmp.display())))?;
+    let written = (|| -> std::io::Result<()> {
+        file.write_all(body)?;
+        file.flush()?;
+        // The rename is only atomic with respect to a crash if the data is
+        // on disk first.
+        file.sync_all()
+    })();
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CliError::apply(format!(
+            "cannot write {}: {e}",
+            tmp.display()
+        )));
     }
-    // Mode again, in case the file pre-existed the OpenOptions mode.
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| CliError::apply(format!("cannot chmod {}: {e}", tmp.display())))?;
-    chown_if_root(&tmp, owner)?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| CliError::apply(format!("cannot move {} into place: {e}", tmp.display())))?;
+    // Mode again: the `mode` on OpenOptions is masked by the umask.
+    if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CliError::apply(format!(
+            "cannot chmod {}: {e}",
+            tmp.display()
+        )));
+    }
+    if let Err(e) = chown_if_root(&tmp, owner) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CliError::apply(format!(
+            "cannot move {} into place: {e}",
+            tmp.display()
+        )));
+    }
+    // Durability of the rename itself.
+    if let Ok(dir) = std::fs::File::open(dir) {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 
@@ -789,6 +930,51 @@ fn unreachable_host(target: &ProviderTarget, journal: &mut ApplyJournal, detail:
     }
 }
 
+/// Refresh `postvec.models` in every configured database after a successful
+/// provider change.
+///
+/// Without this, `provider add` reported success and `enable()` on the new
+/// name failed until the worker's next discovery cycle — up to
+/// `postvec.model_refresh_interval_ms` (60 s by default) plus jitter — because
+/// `resolve_embed_route` refuses a name the cache does not carry. The
+/// documented quick start is `provider add` then `enable`, back to back.
+/// Removal has the mirror problem: a stale route stays selectable and
+/// produces avoidable model-not-found retries.
+///
+/// This is deliberately the same shape as the `model` family's
+/// `refresh_databases` — the same journal vocabulary, the same
+/// per-database isolation — because it is the same operation. A `--path`
+/// target has no cluster and is left alone; the caller says so.
+pub async fn refresh_databases(target: &mut ProviderTarget, journal: &mut ApplyJournal) {
+    let ProviderTarget::Embedded {
+        context, settings, ..
+    } = target
+    else {
+        return;
+    };
+    let databases = settings.configured_databases();
+    if databases.is_empty() {
+        return;
+    }
+    let Some(context) = context.as_mut() else {
+        journal.incomplete(
+            "could not refresh postvec.models: no database connection (the worker picks the \
+             change up on its next discovery cycle)"
+                .to_string(),
+        );
+        return;
+    };
+    for database in databases {
+        match context.db.refresh_models(&database).await {
+            Ok(count) => journal.record(format!("refreshed {database}: {count} models in cache")),
+            Err(e) => journal.incomplete(format!(
+                "could not refresh postvec.models in {database}: {e} (the worker refreshes \
+                 automatically on its next cycle, so this is a delay rather than a failure)"
+            )),
+        }
+    }
+}
+
 // ---- The privacy / in-use scan -------------------------------------------
 
 /// Every managed column bound to one of `names`, across every configured
@@ -944,6 +1130,9 @@ mod tests {
     #[test]
     fn provider_files_round_trip_and_report_the_key_source_never_the_key() {
         let dir = tempfile::tempdir().unwrap();
+        // A providers.d is 0700; `write` refuses a group/world-writable one,
+        // and `tempfile` honours the umask.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().join("openai.toml");
         let doc = ProviderFileDoc {
             path: path.clone(),
@@ -975,14 +1164,16 @@ mod tests {
         assert_eq!(loaded.models().len(), 1);
 
         // Adding a model preserves the rest of the document.
-        loaded.push_model(
-            toml::toml! {
-                name = "openai-text-embedding-3-large"
-                provider_model_id = "text-embedding-3-large"
-                dim = 3072
-            }
-            .into(),
-        );
+        loaded
+            .push_model(
+                toml::toml! {
+                    name = "openai-text-embedding-3-large"
+                    provider_model_id = "text-embedding-3-large"
+                    dim = 3072
+                }
+                .into(),
+            )
+            .unwrap();
         loaded.write(None).unwrap();
         let reloaded = ProviderFileDoc::load(&path).unwrap().unwrap();
         assert_eq!(reloaded.models().len(), 2);

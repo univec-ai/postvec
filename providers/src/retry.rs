@@ -12,7 +12,8 @@ use tokio::time::sleep;
 
 // --- Constants for Backoff Logic ---
 
-/// The initial delay to wait before the first retry (1 second).
+/// The base delay before the first retry. Jitter multiplies it by 1.0–2.0,
+/// so the first wait is 1–2 s and the second 2–4 s.
 const INITIAL_DELAY_MS: u64 = 1000;
 /// The base for the exponential calculation (e.g., 2^retry_num).
 const EXPONENTIAL_BASE: f64 = 2.0;
@@ -100,6 +101,14 @@ where
                     EmbeddingError::Api {
                         status: 500..=599, ..
                     } => true,
+                    // 408 and 424: Bedrock's `ModelTimeoutException` and
+                    // `ModelErrorException` on `InvokeModel`. The model failed
+                    // to answer; the input was not rejected. Kept in step with
+                    // the gateway's §6.4 mapping, which classifies both
+                    // `UpstreamServiceUnavailable`.
+                    EmbeddingError::Api {
+                        status: 408 | 424, ..
+                    } => true,
                     // Network errors (transient)
                     EmbeddingError::Network(_) => true,
                     // All other errors (4xx client errors, auth, config,
@@ -124,21 +133,25 @@ where
                 }
 
                 // --- Jitter Calculation ---
-                // We must calculate the new delay *before* the await,
-                // and the `rng` must be created and dropped within a scope
-                // that does not cross the await.
-                {
-                    // Create the thread-local RNG here, in a tight scope.
+                // Jitter the *current* delay and only then grow it, so the
+                // first retry waits INITIAL_DELAY_MS..2×, as documented. The
+                // previous order multiplied before sleeping and made the
+                // first wait 2–4 s — a large slice of a `search()` budget,
+                // and not what the constant said.
+                let wait = {
+                    // Create the thread-local RNG here, in a tight scope, and
+                    // drop it before the await: `ThreadRng` is not `Send`.
                     let mut rng = rand::thread_rng();
-
-                    // Calculate the jittered delay
                     // jitter_multiplier = 1.0 + (random value between 0.0 and 1.0)
                     let jitter_multiplier = 1.0 + rng.gen_range(0.0..=1.0);
-                    // delay = delay * base * (1 + jitter)
-                    let new_delay_ms =
-                        delay.as_millis() as f64 * EXPONENTIAL_BASE * jitter_multiplier;
-                    delay = Duration::from_millis(new_delay_ms as u64);
-                } // <-- `rng` is dropped here, *before* the await.
+                    let wait = Duration::from_millis(
+                        (delay.as_millis() as f64 * jitter_multiplier) as u64,
+                    );
+                    delay =
+                        Duration::from_millis((delay.as_millis() as f64 * EXPONENTIAL_BASE) as u64);
+                    wait
+                }; // <-- `rng` is dropped here, *before* the await.
+                let delay = wait;
 
                 // Deadline awareness: if waiting out the backoff would land
                 // past the caller's budget, stop now with the real error.
@@ -262,9 +275,62 @@ mod tests {
         );
     }
 
+    /// The upstream statuses that mean "the model did not answer", not "this
+    /// input is unacceptable". Bedrock's `ModelTimeoutException` (408) and
+    /// `ModelErrorException` (424) are the reason these are here; classifying
+    /// them with the rest of 4xx dead-lettered healthy rows.
+    #[tokio::test(start_paused = true)]
+    async fn bedrock_model_failures_are_retried_like_any_other_outage() {
+        for status in [408, 424] {
+            let calls = AtomicU32::new(0);
+            let result: Result<i32, EmbeddingError> = retry_with_backoff(None, || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    Err(EmbeddingError::Api {
+                        status,
+                        message: "model unavailable".into(),
+                    })
+                }
+            })
+            .await;
+            assert!(matches!(result, Err(EmbeddingError::Api { .. })));
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1 + MAX_RETRIES,
+                "status {status} must be retried"
+            );
+        }
+    }
+
+    /// `INITIAL_DELAY_MS` is the *first* wait, not the one before it. The
+    /// previous order multiplied before sleeping, so a constant documented as
+    /// 1 s produced a 2–4 s first retry — a large slice of a `search()`
+    /// budget. A 1.5 s deadline must therefore still fit one retry.
+    #[tokio::test]
+    async fn the_first_backoff_is_the_documented_one() {
+        let calls = AtomicU32::new(0);
+        let deadline = Instant::now() + Duration::from_millis(2_500);
+        let result: Result<i32, EmbeddingError> = retry_with_backoff(Some(deadline), || {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    Err(EmbeddingError::Api {
+                        status: 503,
+                        message: "transient".into(),
+                    })
+                } else {
+                    Ok(9)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 9, "one retry must fit a 2.5s budget");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
     async fn deadline_that_cannot_fit_a_retry_stops_early() {
-        // The first backoff is ≥ 2s; a 50ms budget cannot fit it, so exactly
+        // The first backoff is ≥ 1s; a 50ms budget cannot fit it, so exactly
         // one attempt runs and the transient error surfaces immediately.
         let calls = AtomicU32::new(0);
         let deadline = Instant::now() + Duration::from_millis(50);

@@ -24,8 +24,10 @@ name = "providers"
 # gateway. Split out of `wire` so the CLI can tell an operator that the
 # serving host will refuse a file — and why — using the loader's own rules
 # instead of a second, permissive reader that disagrees with it. Pulls in
-# `toml` and nothing else; no `shared`, no gateway, no secret resolution.
-config = ["dep:toml"]
+# `toml` (and `libc`, for the O_NOFOLLOW open that makes the 0600 rule a
+# check on the opened descriptor rather than on a path that can be swapped);
+# no `shared`, no gateway, no secret resolution.
+config = ["dep:toml", "dep:libc"]
 # The providers.d config + descriptor + gateway layer (docs/external-providers.md §6).
 wire = ["config", "dep:shared", "tokio/sync"]
 # Expose the in-process mock HTTP server (src/testing.rs) to other crates'
@@ -56,6 +58,8 @@ tokio = { version = "1", features = ["time"] }
 # `wire` only.
 shared = { path = "../shared", optional = true }
 toml = { version = "0.8", optional = true }
+# `config` only: O_NOFOLLOW and ELOOP for the provider-file open.
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 # Self-dependency so `cargo test -p postvec-providers` builds the lib with

@@ -3069,6 +3069,7 @@ dependencies = [
  "chrono",
  "hex",
  "hmac",
+ "libc",
  "log",
  "percent-encoding",
  "postvec-providers",
