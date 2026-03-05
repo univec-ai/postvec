@@ -233,7 +233,12 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // node, mounted beside the engine. `load` isolates per-provider/per-file
     // failures internally — a broken provider file never degrades local
     // models — and a missing directory is the ordinary zero-config case.
-    let gateway = Arc::new(providers::gateway::Gateway::load(&settings.providers_path));
+    let local_models: std::collections::BTreeSet<String> =
+        engine.get_active_models().into_iter().collect();
+    let gateway = Arc::new(providers::gateway::Gateway::load(
+        &settings.providers_path,
+        &local_models,
+    ));
 
     // --- 5. Cluster ------------------------------------------------------
     let (seeds, problems) = net::resolve_peers(&settings.peers, settings.gossip_port).await;

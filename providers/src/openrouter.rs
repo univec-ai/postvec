@@ -126,7 +126,7 @@ impl EmbeddingBackend for OpenRouterClient {
 
             // Check if the request was successful.
             if !response.status().is_success() {
-                return Err(crate::api_error(response, Some(&self.api_key)).await);
+                return Err(crate::api_error(response).await);
             }
 
             // Read the body first, then decode it. A failure to read is

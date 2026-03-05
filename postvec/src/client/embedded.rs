@@ -508,7 +508,15 @@ fn try_init() -> Result<(), String> {
     // models), and a missing directory is the ordinary zero-config case —
     // an empty gateway changes nothing observable, including the
     // embedded_max_inflight ingress bound.
-    let gateway = Arc::new(providers::gateway::Gateway::load(&cfg.providers_path));
+    // The engine's own model names, so a provider file claiming one is
+    // refused at load rather than left dormant behind it — see the
+    // collision arm in `Inner::build`.
+    let local_models: std::collections::BTreeSet<String> =
+        engine.get_active_models().into_iter().collect();
+    let gateway = Arc::new(providers::gateway::Gateway::load(
+        &cfg.providers_path,
+        &local_models,
+    ));
     // The §7.3 ingress width the gRPC server is about to be sized with;
     // the reload endpoint warns when a later reload outgrows it.
     let startup_provider_budget = gateway.inflight_budget();

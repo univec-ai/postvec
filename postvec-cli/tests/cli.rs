@@ -769,7 +769,9 @@ fn provider_add_applies_a_base_url_change_to_an_existing_file() {
     ]);
     assert_eq!(code(&first), 0, "{}", stderr(&first));
 
-    // Same model, same key, new front end.
+    // Same model, same key, new front end. Moving the endpoint of an
+    // *existing* file is a recipient change, so it needs the privacy
+    // acknowledgement as well as --yes.
     let second = run(&[
         "provider",
         "add",
@@ -781,6 +783,7 @@ fn provider_add_applies_a_base_url_change_to_an_existing_file() {
         "--path",
         root_arg,
         "--no-verify",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&second), 0, "{}", stderr(&second));
@@ -1284,8 +1287,11 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
     ]);
     assert_eq!(code(&first), 0, "{}", stderr(&first));
 
-    // Same models, same key, different endpoint.
-    let moved = run(&[
+    // Same models, same key, different endpoint. `--yes` alone must NOT get
+    // through: it answers "change the configuration", not "may this text go
+    // to someone else". With --path there is no cluster to list the affected
+    // columns, and an unanswerable question is not a clean answer.
+    let moved_args = [
         "provider",
         "add",
         "openai",
@@ -1298,13 +1304,26 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
         root_arg,
         "--no-verify",
         "--yes",
-    ]);
-    assert_eq!(code(&moved), 0, "{}", stderr(&moved));
-    let text = format!("{}{}", stdout(&moved), stderr(&moved));
+    ];
+    let refused = run(&moved_args);
+    assert_ne!(
+        code(&refused),
+        0,
+        "--yes must not answer a recipient change:\n{}",
+        stdout(&refused)
+    );
+    let text = format!("{}{}", stdout(&refused), stderr(&refused));
     assert!(
         text.contains("where source text is SENT"),
         "an endpoint move must announce the recipient change:\n{text}"
     );
+    assert!(text.contains("--acknowledge-in-use"), "{text}");
+
+    // With the acknowledgement it proceeds.
+    let mut acked = moved_args.to_vec();
+    acked.push("--acknowledge-in-use");
+    let moved = run(&acked);
+    assert_eq!(code(&moved), 0, "{}", stderr(&moved));
 
     // A key-source rotation to the same endpoint is NOT a recipient change,
     // and must not raise the same alarm — over-prompting is how a gate stops

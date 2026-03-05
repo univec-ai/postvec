@@ -28,9 +28,22 @@ struct GeminiContent<'a> {
 
 /// Represents a single embedding request within a batch.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiRequest<'a> {
     model: String,
     content: GeminiContent<'a>,
+    /// `RETRIEVAL_QUERY` / `RETRIEVAL_DOCUMENT`. Gemini documents these as
+    /// quality-relevant for retrieval, and the purpose already travels this
+    /// far — the gateway builds one client per purpose exactly as it does for
+    /// Cohere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_type: Option<&'a str>,
+    /// Truncates the native embedding to the requested size. Without it a
+    /// descriptor's `dim` was only honoured at the model's native width,
+    /// while the file documents `dim` as authoritative and the gateway checks
+    /// every response against it — so any other value failed every call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_dimensionality: Option<usize>,
 }
 
 /// The top-level request body for a batch embedding operation.
@@ -59,6 +72,11 @@ pub struct GeminiClient {
     base_url: String,
     api_key: String,
     model_name: String,
+    /// The descriptor's declared dimension, requested explicitly.
+    dimensions: Option<usize>,
+    /// The Gemini task type for this client's purpose, or `None` to let the
+    /// API apply its own default.
+    task_type: Option<&'static str>,
 }
 
 impl GeminiClient {
@@ -72,6 +90,8 @@ impl GeminiClient {
     pub fn new(
         model_name: String,
         api_key: String,
+        dimensions: Option<usize>,
+        input_type: &str,
         base_url: String,
         http_client: Option<Client>,
     ) -> Self {
@@ -80,6 +100,15 @@ impl GeminiClient {
             base_url,
             api_key,
             model_name,
+            dimensions,
+            // The gateway's vocabulary is Cohere's; Gemini spells the same
+            // two purposes differently. Anything else means "unspecified",
+            // which is the API's own default.
+            task_type: match input_type {
+                "search_query" => Some("RETRIEVAL_QUERY"),
+                "search_document" => Some("RETRIEVAL_DOCUMENT"),
+                _ => None,
+            },
         }
     }
 }
@@ -117,6 +146,8 @@ impl EmbeddingBackend for GeminiClient {
                 content: GeminiContent {
                     parts: vec![GeminiPart { text }],
                 },
+                task_type: self.task_type,
+                output_dimensionality: self.dimensions,
             })
             .collect();
 
@@ -127,7 +158,7 @@ impl EmbeddingBackend for GeminiClient {
 
         // What a legitimate response to *this* call can weigh. Computed once,
         // outside the retry so every attempt shares one bound.
-        let budget = crate::response_budget(texts.len(), None);
+        let budget = crate::response_budget(texts.len(), self.dimensions);
         // Execute the request using the exponential backoff helper.
         let api_response: GeminiBatchResponse = retry_with_backoff(deadline, || async {
             // Send the POST request.
@@ -142,7 +173,7 @@ impl EmbeddingBackend for GeminiClient {
 
             // Handle non-successful responses.
             if !response.status().is_success() {
-                return Err(crate::api_error(response, Some(&self.api_key)).await);
+                return Err(crate::api_error(response).await);
             }
 
             // Read the body first, then decode it. A failure to read is

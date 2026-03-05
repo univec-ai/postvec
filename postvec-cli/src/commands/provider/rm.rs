@@ -23,6 +23,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     // deletes.
     validate_provider_name(&args.name, "NAME")?;
     let mut target = resolve_target(cli, args.path.as_deref(), output, true).await?;
+    // Same read-modify-write, same lock: a concurrent `add` must not have its
+    // append removed by this command's rewrite, or vice versa.
+    let _lock = (!args.dry_run)
+        .then(|| super::lock_provider_dir(target.dir(), target.owner()))
+        .transpose()?;
     let file_path = target.dir().join(format!("{}.toml", args.name));
     let Some(mut doc) = ProviderFileDoc::load(&file_path)? else {
         return Err(CliError::precondition(format!(
@@ -120,6 +125,10 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     if remove_file {
         std::fs::remove_file(&file_path)
             .map_err(|e| CliError::apply(format!("cannot remove {}: {e}", file_path.display())))?;
+        // Same durability as the write path: a removal this command reports
+        // must not come back after a crash, still serving a provider the
+        // operator took away.
+        super::sync_directory(target.dir(), &file_path)?;
         journal.record(format!("removed {}", file_path.display()));
     } else {
         let id_or_name = args.model.as_deref().expect("partial removal has --model");

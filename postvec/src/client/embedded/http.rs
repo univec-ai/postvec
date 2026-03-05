@@ -610,6 +610,9 @@ pub(super) fn spawn(
     let load_allowed = Arc::new(allowed_models);
     let admin_lifecycle = Arc::new(tokio::sync::Mutex::new(()));
     let load_lifecycle = admin_lifecycle.clone();
+    // The reload route needs the engine too: a provider file claiming a name
+    // the engine serves is refused at reload time, not left dormant.
+    let reload_engine = engine.clone();
     let unload_engine = engine;
     let unload_root = root.to_path_buf();
     let unload_lifecycle = admin_lifecycle;
@@ -626,6 +629,7 @@ pub(super) fn spawn(
             "/admin/providers/reload",
             post(move |ConnectInfo(peer): ConnectInfo<SocketAddr>| {
                 let gateway = reload_gateway.clone();
+                let engine = reload_engine.clone();
                 let path = providers_path.clone();
                 // The directory this host actually reads. Reported in the
                 // body because `postvec provider … --path DIR` has to try
@@ -642,7 +646,9 @@ pub(super) fn spawn(
                     // key files) — keep it off the 2-thread engine runtime,
                     // like the other admin handlers.
                     let outcome = tokio::task::spawn_blocking(move || {
-                        let report = gateway.reload(&path)?;
+                        let local: std::collections::BTreeSet<String> =
+                            engine.get_active_models().into_iter().collect();
+                        let report = gateway.reload(&path, &local)?;
                         Ok::<_, String>((report, gateway.inflight_budget()))
                     })
                     .await;
@@ -882,7 +888,7 @@ dim = 999
     fn provider_models_merge_into_the_envelope_and_local_wins() {
         let root = super::super::tests::empty_engine_root();
         let dir = plant_provider(&root, "openai.toml", OPENAI_PROVIDER_TOML);
-        let gateway = Gateway::load(&dir);
+        let gateway = Gateway::load(&dir, &Default::default());
 
         let configs = vec![cfg(
             "baai-bge-m3",
@@ -929,7 +935,7 @@ dim = 999
         let engine = super::super::tests::test_engine(&root);
         // Start with an empty (nonexistent) providers.d.
         let providers_dir = root.join("providers.d");
-        let gateway = Arc::new(Gateway::load(&providers_dir));
+        let gateway = Arc::new(Gateway::load(&providers_dir, &Default::default()));
         let (server, addr) = spawn(
             engine,
             &runtime,

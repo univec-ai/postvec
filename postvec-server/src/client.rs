@@ -150,10 +150,11 @@ fn fingerprint(entry: &Value) -> String {
         .map(|d| d.to_string())
         .unwrap_or_else(|| "?".to_string());
     format!(
-        "{}/{}/{} dim {dim}",
+        "{}/{}/{} dim {dim} endpoint {}",
         field("provider"),
         field("provider_file"),
-        field("provider_model_id")
+        field("provider_model_id"),
+        field("provider_endpoint")
     )
 }
 
@@ -392,6 +393,9 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
     // The fleet half.
     let mut fleet: Vec<(String, Vec<String>)> = Vec::new();
     let mut drift: Vec<String> = Vec::new();
+    // Set separately from `drift`: a name absent from one node is a report,
+    // a name that means two different things is a readiness failure.
+    let mut fleet_incompatible = false;
     if args.fleet {
         let own = report
             .server
@@ -421,9 +425,14 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
         drift = inventory_drift(&fleet, &fleet_providers);
         // Same name, different thing. Reported alongside the absent-from
         // lines because the fix is the same kind of work — make providers.d
-        // agree — but the symptom is much worse: nothing is missing, so
-        // nothing looks wrong until callers get vectors from two models.
-        drift.extend(fingerprint_drift(&fleet_prints));
+        // agree — but treated more harshly in the exit code: a name missing
+        // from one node is what a rolling restart looks like, while a name
+        // that *means* two things is a fleet that hands callers vectors from
+        // two different models under one identity. The first is a report;
+        // the second is a readiness failure.
+        let incompatible = fingerprint_drift(&fleet_prints);
+        fleet_incompatible = !incompatible.is_empty();
+        drift.extend(incompatible);
         for line in &drift {
             warnings.push(format!("inventory drift — {line}"));
         }
@@ -460,7 +469,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
         }
     }
 
-    Ok(if ready && warnings.is_empty() {
+    Ok(if ready && warnings.is_empty() && !fleet_incompatible {
         EXIT_OK
     } else {
         EXIT_DEGRADED

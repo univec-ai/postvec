@@ -103,6 +103,11 @@ struct ProviderFile {
     api_key_env: Option<String>,
 
     base_url: Option<String>,
+    /// Opt in to a plaintext `base_url` on a non-loopback host. Off by
+    /// default: `http://` there puts the API key, and every document the
+    /// column embeds, on the network in the clear.
+    #[serde(default)]
+    allow_insecure_transport: bool,
     #[serde(default = "default_max_concurrent")]
     max_concurrent: usize,
     #[serde(default = "default_timeout_ms")]
@@ -216,6 +221,13 @@ fn read_private(path: &Path, limit: u64) -> Result<String, String> {
     if !meta.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
+    if meta.nlink() != 1 {
+        return Err(format!(
+            "{} has {} hard links; a credential must not be reachable under a second name",
+            path.display(),
+            meta.nlink()
+        ));
+    }
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
         return Err(format!(
@@ -253,8 +265,8 @@ fn read_private(path: &Path, limit: u64) -> Result<String, String> {
 /// is a strictly larger problem than the world-readable key file this module
 /// already refuses. Read and execute bits only disclose which providers are
 /// configured, which is doctor's business rather than a refusal.
-pub fn validate_directory(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+pub fn validate_directory(dir: &Path, expected_uid: Option<u32>) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let meta = std::fs::symlink_metadata(dir)
         .map_err(|e| format!("cannot stat {}: {e}", dir.display()))?;
     if meta.file_type().is_symlink() {
@@ -274,7 +286,27 @@ pub fn validate_directory(dir: &Path) -> Result<(), String> {
             dir.display()
         ));
     }
+    // Mode alone is not enough when the reader is **root**: a 0700 directory
+    // owned by another account passes every permission test and root can read
+    // straight through it. The owner has to be the identity that is supposed
+    // to own it — the serving account, or the cluster owner the CLI is acting
+    // for — or root itself.
+    let owner = meta.uid();
+    let expected = expected_uid.unwrap_or_else(current_uid);
+    if owner != 0 && owner != expected {
+        return Err(format!(
+            "{} is owned by uid {owner}, not {expected}; a credential directory owned by \
+             another account is not this host's to read",
+            dir.display()
+        ));
+    }
     Ok(())
+}
+
+/// The effective uid of this process.
+fn current_uid() -> u32 {
+    // Safety: `geteuid` is always successful and takes no arguments.
+    unsafe { libc::geteuid() }
 }
 
 /// Exactly one source per secret triad. Checked separately from resolution
@@ -357,6 +389,17 @@ pub fn validate_base_url(raw: &str) -> Result<(), String> {
              appends its own path to it"
         ));
     }
+    // The docs said userinfo was refused before the code did. It has no
+    // meaning for any connector here — every one of them authenticates with a
+    // header — so a `user:pass@` in a base_url is a credential written
+    // somewhere nothing reads it, and one that leaks into any diagnostic that
+    // ever prints a URL.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!(
+            "base_url {raw:?} carries userinfo; connectors authenticate with a header, so a \
+             user:password in the URL is a credential nothing reads"
+        ));
+    }
     if raw.ends_with('/') {
         return Err(format!(
             "base_url {raw:?} must not end with '/': the connector appends its own path, so \
@@ -406,6 +449,21 @@ pub fn base_url_is_plaintext_offhost(raw: &str) -> bool {
 /// `provider.served` blaming a reload, and the actual cause — a missing
 /// `api_key_file`, or `provider = "opanai"` — visible nowhere the operator
 /// looks.
+/// A referenced secret path must be absolute: the CLI, the embedded launcher
+/// and postvec-server all resolve it, and none of them share a working
+/// directory. A relative path means three readers can disagree about which
+/// file is the credential.
+fn check_absolute(field: &str, path: &Option<PathBuf>) -> Result<(), String> {
+    match path {
+        Some(path) if !path.is_absolute() => Err(format!(
+            "{field} {} must be an absolute path: the CLI, the launcher and postvec-server \
+             resolve it from different working directories",
+            path.display()
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn validate_connector(file: &ProviderFile) -> Result<(), String> {
     let declared = |inline: &Option<String>, path: &Option<PathBuf>, env: &Option<String>| {
         inline.is_some() || path.is_some() || env.is_some()
@@ -434,6 +492,15 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
     // connector never reads, or a `region` OpenAI ignores, and look
     // configured while behaving otherwise. Each arm therefore rejects the
     // fields its connector does not consume.
+    for (field, path) in [
+        ("api_key_file", &file.api_key_file),
+        ("bearer_token_file", &file.bearer_token_file),
+        ("access_key_id_file", &file.access_key_id_file),
+        ("secret_access_key_file", &file.secret_access_key_file),
+    ] {
+        check_absolute(field, path)?;
+    }
+
     match crate::catalog::canonical_provider(&file.provider).as_str() {
         "aws" => {
             if file.region.is_none() {
@@ -659,6 +726,20 @@ fn validate_structure(file: &mut ProviderFile, label: &str) -> Result<(), String
     }
     if let Some(base_url) = &file.base_url {
         validate_base_url(base_url)?;
+        // Plaintext to something other than loopback is refused unless the
+        // file says, in writing, that it is intended. A self-hosted
+        // OpenAI-compatible endpoint on a private network is a real
+        // deployment and stays possible — but "the API key and every embedded
+        // document cross the network unencrypted" is not a thing to arrive at
+        // by leaving out an `s`. Loopback (a sidecar, a mock) needs no
+        // ceremony.
+        if base_url_is_plaintext_offhost(base_url) && !file.allow_insecure_transport {
+            return Err(format!(
+                "base_url {base_url:?} is plain HTTP to a non-loopback host: the API key and \
+                 every document embedded through it cross the network unencrypted. Use https, \
+                 or set allow_insecure_transport = true to accept that deliberately"
+            ));
+        }
     }
     for model in &file.models {
         validate_model_name(&model.name).map_err(|e| format!("[[models]]: {e}"))?;
@@ -753,6 +834,14 @@ fn validate_structure(file: &mut ProviderFile, label: &str) -> Result<(), String
 /// a structural error (`Err`), distinct from per-file failures.
 pub fn load_dir(dir: &Path) -> Result<LoadOutcome, String> {
     let mut outcome = LoadOutcome::default();
+    // The directory is the trust boundary, so it is validated **before**
+    // anything inside it is enumerated — otherwise the scan and the checks
+    // could describe different objects.
+    match std::fs::symlink_metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(outcome),
+        Err(e) => return Err(format!("cannot stat {}: {e}", dir.display())),
+        Ok(_) => validate_directory(dir, None)?,
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(outcome),
@@ -760,7 +849,6 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutcome, String> {
     };
     // The directory is the trust boundary; check it before reading anything
     // inside it.
-    validate_directory(dir)?;
 
     // Lexicographic order makes the duplicate-name rule ("first wins")
     // deterministic across platforms and readdir orders.
@@ -1263,6 +1351,10 @@ max_tokens = 8191
             "https://",
             "https://api.openai.com/",
             "https://api.openai.com/v1?key=x",
+            // Userinfo: no connector reads it (they all authenticate with a
+            // header), so it is a credential written where nothing looks and
+            // everything that prints a URL leaks.
+            "https://user:pass@api.openai.com",
         ] {
             assert!(validate_base_url(bad).is_err(), "{bad:?}");
         }
@@ -1274,9 +1366,7 @@ max_tokens = 8191
             assert!(validate_base_url(good).is_ok(), "{good:?}");
         }
 
-        // Plaintext off-host is reported, not refused: a self-hosted
-        // OpenAI-compatible endpoint is a real deployment, loopback is the
-        // ordinary sidecar/mock shape.
+        // Plaintext off-host needs an explicit opt-in; loopback does not.
         assert!(base_url_is_plaintext_offhost("http://vllm.internal:8000"));
         assert!(base_url_is_plaintext_offhost("http://10.0.0.4:8000"));
         assert!(!base_url_is_plaintext_offhost("http://127.0.0.1:8000"));
@@ -1483,6 +1573,82 @@ max_tokens = 8191
             assert!(load_file(&path).is_err(), "case {marker} (loader)");
             std::fs::remove_file(&path).unwrap();
         }
+    }
+
+    /// Plaintext to a non-loopback host puts the API key **and every
+    /// document the column embeds** on the network in the clear. A
+    /// self-hosted OpenAI-compatible endpoint on a private network is a real
+    /// deployment, so it stays possible — but only in writing. Loopback (a
+    /// sidecar, a mock) needs no ceremony.
+    #[test]
+    fn plaintext_off_host_needs_an_explicit_opt_in() {
+        let dir = private_tempdir();
+        let file = |base_url: &str, opt_in: &str| {
+            format!(
+                "provider = \"openai\"\napi_key = \"k\"\nbase_url = \"{base_url}\"\n{opt_in}\n\
+                 [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n"
+            )
+        };
+
+        let path = write_mode(
+            dir.path(),
+            "p.toml",
+            &file("http://vllm.internal:8000", ""),
+            0o600,
+        );
+        let refused = validate_file(&path).unwrap_err();
+        assert!(refused.contains("allow_insecure_transport"), "{refused}");
+        assert!(load_file(&path).is_err());
+
+        let path = write_mode(
+            dir.path(),
+            "p.toml",
+            &file(
+                "http://vllm.internal:8000",
+                "allow_insecure_transport = true",
+            ),
+            0o600,
+        );
+        assert_eq!(validate_file(&path), Ok(true), "the opt-in is honoured");
+
+        // Loopback is allowed without it.
+        let path = write_mode(
+            dir.path(),
+            "p.toml",
+            &file("http://127.0.0.1:8000", ""),
+            0o600,
+        );
+        assert_eq!(validate_file(&path), Ok(true));
+    }
+
+    /// The CLI, the embedded launcher and postvec-server all resolve a
+    /// referenced secret path, and none of them share a working directory.
+    #[test]
+    fn a_relative_secret_path_is_refused() {
+        let dir = private_tempdir();
+        let path = write_mode(
+            dir.path(),
+            "p.toml",
+            "provider = \"openai\"\napi_key_file = \"keys/openai.key\"\n\n[[models]]\n\
+             name = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n",
+            0o600,
+        );
+        let refused = validate_file(&path).unwrap_err();
+        assert!(refused.contains("absolute path"), "{refused}");
+    }
+
+    /// Mode alone is not a trust boundary when the reader is root: a 0700
+    /// directory owned by another account passes every permission test, and
+    /// root reads straight through it.
+    #[test]
+    fn a_directory_owned_by_someone_else_is_refused() {
+        let dir = private_tempdir();
+        let mine = unsafe { libc::geteuid() };
+        assert!(validate_directory(dir.path(), None).is_ok());
+        assert!(validate_directory(dir.path(), Some(mine)).is_ok());
+        // Root-owned is always acceptable; a third identity is not.
+        let refused = validate_directory(dir.path(), Some(mine.wrapping_add(4242))).unwrap_err();
+        assert!(refused.contains("owned by uid"), "{refused}");
     }
 
     #[test]

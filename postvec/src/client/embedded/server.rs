@@ -105,6 +105,31 @@ const OUTPUT_TREE_BUDGET_BYTES: u64 = 96 * 1024 * 1024;
 /// a prost message + `Vec` header on the wire side and a
 /// `Value::Array(Vec<Value>)` row on the JSON side. Deliberately generous.
 const TREE_ITEM_OVERHEAD_BYTES: u64 = 256;
+
+/// Aggregate resident ceiling, in MiB, for provider responses that have been
+/// built but not yet written. Chosen against the shape of a real answer: the
+/// largest batch any supported descriptor can ask for (512 × 3072) encodes to
+/// roughly 24 MiB of prost tree, so this holds several concurrent maxima
+/// while capping the pathological case — a client that opens calls and never
+/// reads them — at a number that fits beside the engine's own envelopes
+/// rather than dwarfing them.
+const PROVIDER_RESPONSE_BUDGET_MIB: u32 = 256;
+
+/// What a provider response of this shape will occupy once built, in MiB,
+/// rounded up and clamped into the budget. The estimate uses the same
+/// per-component and per-item constants the envelope check uses, so the
+/// permit and the refusal agree about what a response weighs.
+fn provider_response_mib(rows: usize, dim: i32) -> u32 {
+    let components = (rows as u64).saturating_mul(dim.max(0) as u64);
+    let bytes = components
+        .saturating_mul(PROST_COMPONENT_BYTES)
+        .saturating_add((rows as u64).saturating_mul(TREE_ITEM_OVERHEAD_BYTES));
+    let mib = bytes.div_ceil(1024 * 1024).max(1);
+    u32::try_from(mib)
+        .unwrap_or(PROVIDER_RESPONSE_BUDGET_MIB)
+        .min(PROVIDER_RESPONSE_BUDGET_MIB)
+}
+
 const JSON_COMPONENT_BYTES: u64 = std::mem::size_of::<Value>() as u64;
 const PROST_COMPONENT_BYTES: u64 = std::mem::size_of::<ProstValue>() as u64;
 const INPUT_COMPONENT_TRANSIENT_BYTES: u64 =
@@ -165,21 +190,32 @@ struct EmbeddedService {
     /// Engine path only — the provider path never takes a slot (§7.3, see
     /// the dispatch comment in `embed_texts`).
     response_slots: Arc<Semaphore>,
-    /// The same mechanism for the provider path, on its own budget.
+    /// The response-lifetime bound for the provider path, denominated in
+    /// **mebibytes of response tree**, not in responses.
     ///
     /// The provider path deliberately skips `response_slots` so a network
     /// call never queues behind CPU-bound ONNX — but "no admission gate" and
-    /// "no *response-lifetime* bound" are different things, and it had
-    /// neither. A completed unary response is encoded lazily after the
-    /// handler returns, so the per-provider semaphore and the tower ingress
-    /// permit are both released while the prost tree is still resident. A
-    /// slow or abandoned reader could accumulate them without limit.
+    /// "no *response-lifetime* bound" are different things. A completed unary
+    /// response is encoded lazily after the handler returns, so the
+    /// per-provider semaphore and the tower ingress permit are both released
+    /// while the prost tree is still resident, and a slow or abandoned reader
+    /// could accumulate them.
     ///
-    /// Sized at the gateway's boot-time inflight budget — the sum of the
-    /// per-provider `max_concurrent` caps — so it can never be the binding
-    /// constraint on *admission* (those semaphores already are), and only
-    /// bites when responses linger, which is exactly the condition to bound.
-    provider_response_slots: Arc<Semaphore>,
+    /// Counting responses does not bound memory. A permit was one response of
+    /// *any* size, so a budget of N permits formally allowed N × the 96 MiB
+    /// envelope — tens of gigabytes at the configuration ceiling. Weighting by
+    /// the size the response actually is makes the number mean what it says:
+    /// [`PROVIDER_RESPONSE_BUDGET_MIB`] is the aggregate resident ceiling for
+    /// finished-but-unsent provider responses, and one oversized response
+    /// costs proportionally.
+    ///
+    /// It is deliberately **one shared budget** rather than one per provider:
+    /// memory is a single resource, and a per-provider budget would multiply
+    /// the ceiling by the number of files. The consequence is intended
+    /// backpressure — a provider whose callers do not read can make another
+    /// provider's callers wait — bounded by every caller's own deadline, and
+    /// the same shape the engine path's `response_slots` has always had.
+    provider_response_bytes: Arc<Semaphore>,
     /// External-provider gateway (docs/external-providers.md). Empty in the
     /// zero-config case; `owns()` decides routing before any engine check.
     gateway: Arc<Gateway>,
@@ -529,16 +565,23 @@ impl EmbeddedService {
         }
 
         // Taken BEFORE the call, so no paid embedding is ever thrown away for
-        // want of a slot, and released only when the encoded body is dropped
-        // (see `ResponsePermit` below). Bounded by the caller's deadline like
-        // every other wait on this path.
+        // want of capacity, and released only when the encoded body is
+        // dropped (see `ResponsePermit` below). Weighted by what this
+        // response will actually occupy, and bounded by the caller's deadline
+        // like every other wait on this path.
+        let weight = provider_response_mib(req.texts.len(), dim);
         let response_permit = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
-            self.provider_response_slots.clone().acquire_owned(),
+            self.provider_response_bytes
+                .clone()
+                .acquire_many_owned(weight),
         )
         .await
         .map_err(|_| {
-            Status::deadline_exceeded("deadline exhausted waiting for provider response capacity")
+            Status::deadline_exceeded(format!(
+                "deadline exhausted waiting for {weight} MiB of provider response capacity \
+                 (aggregate budget {PROVIDER_RESPONSE_BUDGET_MIB} MiB)"
+            ))
         })?
         .map_err(|_| Status::unavailable("provider response-capacity gate closed"))?;
 
@@ -572,10 +615,14 @@ impl EmbeddedService {
 fn gateway_error_to_status(e: GatewayError) -> Status {
     let code = e.code;
     let message = e.message;
-    log::warn!(
-        "embedded gRPC provider request failed [{}]: {message}",
-        code.as_str()
-    );
+    // The code and the provider name, never the message. The message can
+    // carry a bounded slice of a provider's error body, and a provider can
+    // echo the *source text* it was asked to embed — which in remote mode
+    // would put a fragment of a database's content into a different
+    // machine's log. It still travels to the caller, over the wire, to the
+    // database the text came from: that is the one place it is not a
+    // disclosure, and the one place it is useful.
+    log::warn!("embedded gRPC provider request failed [{}]", code.as_str());
     let mut status = match code {
         shared::ErrorCode::Timeout => Status::deadline_exceeded(message),
         shared::ErrorCode::ModelNotFound => Status::not_found(message),
@@ -831,17 +878,16 @@ fn spawn_inner(
     // decoded RSS exists only when providers are configured, and callers
     // still carry `grpc-timeout`.
     let ingress_limit = max_inflight.max(1) + gateway.inflight_budget();
-    // The response-lifetime bound for the provider path. Same width as the
-    // ingress widening above and for the same reason: the per-provider
-    // semaphores already cap concurrent provider *calls* at exactly this
-    // number, so this can only ever be contended by responses that have
-    // outlived their handler — which is what it exists to bound.
-    let provider_response_slots = Arc::new(Semaphore::new(gateway.inflight_budget().max(1)));
+    // The response-lifetime bound for the provider path, in MiB of response
+    // tree. Fixed rather than derived from the provider count: it is an
+    // aggregate memory ceiling, and memory does not grow because a second
+    // connector file appeared.
+    let provider_response_bytes = Arc::new(Semaphore::new(PROVIDER_RESPONSE_BUDGET_MIB as usize));
     let service = NinferenceServiceServer::new(EmbeddedService {
         engine,
         predict_timeout,
         response_slots,
-        provider_response_slots,
+        provider_response_bytes,
         gateway,
     })
     .max_encoding_message_size(MAX_ENCODE_MESSAGE_SIZE)
@@ -1191,6 +1237,8 @@ mod tests {
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
+            // A deliberately tiny budget: one MiB, which is what a one-row,
+            // two-component response weighs after rounding up.
             let slots = Arc::new(Semaphore::new(1));
             let permit = slots.clone().try_acquire_owned().unwrap();
             let mut service = ResponsePermitLayer {
@@ -1255,7 +1303,9 @@ mod deadline_tests {
             engine,
             predict_timeout: Duration::from_secs(30),
             response_slots: Arc::new(Semaphore::new(1)),
-            provider_response_slots: Arc::new(Semaphore::new(4)),
+            provider_response_bytes: Arc::new(Semaphore::new(
+                PROVIDER_RESPONSE_BUDGET_MIB as usize,
+            )),
             gateway: Arc::new(Gateway::empty()),
         };
 
@@ -1331,7 +1381,7 @@ mod gateway_tests {
             predict_timeout: Duration::from_secs(5),
             // Zero engine permits: the provider path must not touch them.
             response_slots: Arc::new(Semaphore::new(0)),
-            provider_response_slots: slots.clone(),
+            provider_response_bytes: slots.clone(),
             gateway: gateway_for(&mock.url),
         };
 
@@ -1345,6 +1395,7 @@ mod gateway_tests {
 
         // The handler has returned and the vectors are in hand — and the
         // budget is still spent, because the response has not been written.
+        // The permit is weighted: this response's own MiB, not "one response".
         assert_eq!(
             slots.available_permits(),
             0,
@@ -1383,7 +1434,7 @@ mod gateway_tests {
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let gateway = Arc::new(Gateway::load(&dir));
+        let gateway = Arc::new(Gateway::load(&dir, &Default::default()));
         let _ = std::fs::remove_dir_all(&dir);
         gateway
     }
@@ -1520,7 +1571,7 @@ mod gateway_tests {
         let engine = crate::client::embedded::tests::test_engine(&root);
 
         let providers_dir = root.join("providers.d");
-        let gateway = Arc::new(Gateway::load(&providers_dir));
+        let gateway = Arc::new(Gateway::load(&providers_dir, &Default::default()));
         assert!(gateway.is_empty(), "zero-config start");
 
         let (server, addr) = spawn_for_test(
@@ -1553,7 +1604,7 @@ mod gateway_tests {
         )
         .unwrap();
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let report = gateway.reload(&providers_dir).unwrap();
+        let report = gateway.reload(&providers_dir, &Default::default()).unwrap();
         assert_eq!(report.models, 1, "{:?}", report.errors);
 
         let out = crate::runtime::block_on(client.embed(
@@ -1606,7 +1657,7 @@ mod gateway_tests {
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let gateway = Arc::new(Gateway::load(&dir));
+        let gateway = Arc::new(Gateway::load(&dir, &Default::default()));
 
         let (server, addr) = spawn_for_test(
             engine,
@@ -1713,7 +1764,9 @@ mod gateway_tests {
             // Zero permits: anything that waits on response_slots can never
             // proceed. The provider path must not notice.
             response_slots: Arc::new(Semaphore::new(0)),
-            provider_response_slots: Arc::new(Semaphore::new(4)),
+            provider_response_bytes: Arc::new(Semaphore::new(
+                PROVIDER_RESPONSE_BUDGET_MIB as usize,
+            )),
             gateway: gateway_for(&mock.url),
         };
 

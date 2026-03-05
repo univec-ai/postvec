@@ -29,6 +29,11 @@ struct CohereRequest<'a> {
     input_type: &'a str,
     /// The types of embeddings to return. Using ["float"] for standard float vectors.
     embedding_types: Vec<&'a str>,
+    /// v4 models accept an output size; v3 models have a fixed one and
+    /// ignore the field. Sent because the descriptor's `dim` is
+    /// authoritative and the gateway checks every response against it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_dimension: Option<usize>,
 }
 
 /// Represents the nested embeddings structure in the Cohere v2 API response (v4+ models).
@@ -79,6 +84,8 @@ pub struct CohereClient {
     model_name: String,
     /// The input type for the embeddings (e.g., "search_document").
     input_type: String,
+    /// The descriptor's declared dimension, requested explicitly.
+    dimensions: Option<usize>,
 }
 
 impl CohereClient {
@@ -97,6 +104,7 @@ impl CohereClient {
         model_name: String,
         api_key: String,
         input_type: String,
+        dimensions: Option<usize>,
         base_url: String,
         http_client: Option<Client>,
     ) -> Self {
@@ -113,6 +121,7 @@ impl CohereClient {
             api_key,
             model_name,
             input_type,
+            dimensions,
         }
     }
 }
@@ -130,6 +139,7 @@ impl EmbeddingBackend for CohereClient {
             texts,
             input_type: &self.input_type,
             embedding_types: vec!["float"],
+            output_dimension: self.dimensions,
         };
 
         let url = format!("{}/v2/embed", self.base_url);
@@ -137,7 +147,7 @@ impl EmbeddingBackend for CohereClient {
         // Execute the request using the exponential backoff helper.
         // What a legitimate response to *this* call can weigh. Computed once,
         // outside the retry so every attempt shares one bound.
-        let budget = crate::response_budget(texts.len(), None);
+        let budget = crate::response_budget(texts.len(), self.dimensions);
         let api_response: CohereResponse = retry_with_backoff(deadline, || async {
             // Send the POST request with Bearer token authentication.
             let response = self
@@ -151,7 +161,7 @@ impl EmbeddingBackend for CohereClient {
 
             // Handle non-successful responses.
             if !response.status().is_success() {
-                return Err(crate::api_error(response, Some(&self.api_key)).await);
+                return Err(crate::api_error(response).await);
             }
 
             // Read the body first, then decode it. A failure to read is

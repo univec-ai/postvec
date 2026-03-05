@@ -79,7 +79,7 @@ async fn openai_omits_dimensions_for_legacy_models() {
 #[tokio::test]
 async fn openai_maps_4xx_to_api_error() {
     use providers::OpenAIClient;
-    let m = mock::always(400, r#"{"error":"bad request"}"#).await;
+    let m = mock::always(400, r#"{"error":{"code":"invalid_request_error"}}"#).await;
     let client = OpenAIClient::new(
         "text-embedding-3-small".to_string(),
         "sk-test".to_string(),
@@ -91,7 +91,8 @@ async fn openai_maps_4xx_to_api_error() {
     match err {
         EmbeddingError::Api { status, message } => {
             assert_eq!(status, 400);
-            assert!(message.contains("bad request"), "{message}");
+            // The status and the provider's own code — never its prose.
+            assert!(message.contains("invalid_request_error"), "{message}");
         }
         other => panic!("expected Api error, got {other:?}"),
     }
@@ -217,6 +218,8 @@ async fn gemini_parses_batch_in_order() {
     let client = GeminiClient::new(
         "gemini-embedding-001".to_string(),
         "g-test".to_string(),
+        None,
+        "search_document",
         m.url.clone(),
         None,
     );
@@ -243,6 +246,8 @@ async fn gemini_maps_error_status() {
     let client = GeminiClient::new(
         "gemini-embedding-001".to_string(),
         "g-test".to_string(),
+        None,
+        "search_document",
         m.url.clone(),
         None,
     );
@@ -306,13 +311,28 @@ async fn no_error_display_ever_contains_the_api_key() {
             "m".into(),
             KEY.into(),
             "search_document".into(),
+            None,
             url.clone(),
             None,
         )),
         // API-error path with the key in the URL:
-        Box::new(GeminiClient::new("m".into(), KEY.into(), url, None)),
+        Box::new(GeminiClient::new(
+            "m".into(),
+            KEY.into(),
+            None,
+            "search_document",
+            url,
+            None,
+        )),
         // Network-error path with the key in the URL:
-        Box::new(GeminiClient::new("m".into(), KEY.into(), closed_port, None)),
+        Box::new(GeminiClient::new(
+            "m".into(),
+            KEY.into(),
+            None,
+            "search_document",
+            closed_port,
+            None,
+        )),
     ];
 
     for client in clients {
@@ -371,6 +391,7 @@ async fn cohere_parses_v4_nested_float() {
         "embed-v4.0".to_string(),
         "co-test".to_string(),
         "search_document".to_string(),
+        None,
         m.url.clone(),
         None,
     );
@@ -392,6 +413,7 @@ async fn cohere_parses_v3_direct_array() {
         "embed-english-v3.0".to_string(),
         "co-test".to_string(),
         "search_query".to_string(),
+        None,
         m.url.clone(),
         None,
     );
@@ -564,7 +586,7 @@ fn the_gateway_loads_with_no_tokio_runtime_on_the_thread() {
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    let gateway = providers::gateway::Gateway::load(dir.path());
+    let gateway = providers::gateway::Gateway::load(dir.path(), &Default::default());
     assert!(gateway.owns("openai-text-embedding-3-small"));
     assert_eq!(gateway.inflight_budget(), 4);
 }
@@ -643,18 +665,28 @@ async fn an_endless_error_body_is_bounded_and_not_retried_into_oblivion() {
     }
 }
 
-/// The credential is the thing a 401 body is likeliest to quote back, and a
-/// 401 body explains nothing the status does not. A provider — especially one
-/// behind an operator-supplied `base_url` — also must not be able to write a
-/// second, forged line into the PostgreSQL log.
+/// The body of an upstream error never leaves the connector.
+///
+/// Scrubbing the *known* credential out of an arbitrary body defends against
+/// the case you thought of. It cannot remove the **source text** a provider
+/// echoes back in a 400 — in whatever form it chooses — and that text belongs
+/// to a database while this message is logged by the inference host (a
+/// different machine in remote mode) and stored in
+/// `postvec.jobs_dead.last_error`. So only a short, code-shaped identifier is
+/// forwarded, and everything else is dropped.
 #[tokio::test]
-async fn a_hostile_error_body_reaches_no_log_and_carries_no_key() {
+async fn no_part_of_an_upstream_error_body_reaches_diagnostics() {
     use providers::{CohereClient, OpenAIClient};
 
     const KEY: &str = "sk-live-0123456789abcdefghij";
+    const SOURCE: &str = "quarterly revenue guidance increased materially";
 
     // 401: the body is withheld entirely.
-    let m = mock::always(401, &format!(r#"{{"error":"bad key {KEY}"}}"#)).await;
+    let m = mock::always(
+        401,
+        &format!(r#"{{"error":{{"message":"bad key {KEY}"}}}}"#),
+    )
+    .await;
     let client = OpenAIClient::new(
         "text-embedding-3-small".to_string(),
         KEY.to_string(),
@@ -662,26 +694,82 @@ async fn a_hostile_error_body_reaches_no_log_and_carries_no_key() {
         m.url.clone(),
         None,
     );
-    let err = client.embed(&["x"], None).await.unwrap_err();
+    let err = client.embed(&[SOURCE], None).await.unwrap_err();
     assert!(!err.to_string().contains(KEY), "{err}");
 
-    // Any other status: the body is previewed, but scrubbed and flattened.
-    let hostile = format!(
-        "{{\"error\":\"key {KEY} rejected\\nERROR:  forged log line\\r\\nsource: secret text\"}}"
-    );
-    let m = mock::always(400, &hostile).await;
-    let client = CohereClient::new(
-        "embed-v4.0".to_string(),
+    // Any other status: the credential, the echoed source text, its
+    // fragments and any control characters are all absent — only the code
+    // survives.
+    for status in [400u16, 429, 500] {
+        let hostile = format!(
+            "{{\"error\":{{\"code\":\"invalid_request_error\",\"message\":\"key {KEY} \
+             rejected for input '{SOURCE}'\\nERROR:  forged log line\"}}}}"
+        );
+        let m = mock::always(status, &hostile).await;
+        let client = CohereClient::new(
+            "embed-v4.0".to_string(),
+            KEY.to_string(),
+            "search_document".to_string(),
+            None,
+            m.url.clone(),
+            None,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        let err = client.embed(&[SOURCE], Some(deadline)).await.unwrap_err();
+        let text = err.to_string();
+        assert!(!text.contains(KEY), "status {status}: {text}");
+        assert!(!text.contains(SOURCE), "status {status}: {text}");
+        for fragment in ["quarterly", "revenue", "guidance", "materially", "forged"] {
+            assert!(
+                !text.contains(fragment),
+                "status {status} leaked {fragment:?}: {text}"
+            );
+        }
+        assert!(!text.contains('\n') && !text.contains('\r'), "{text}");
+        // The one thing that does survive: a machine-readable code.
+        assert!(
+            text.contains("invalid_request_error"),
+            "status {status}: {text}"
+        );
+    }
+
+    // A body with no code-shaped field forwards nothing at all.
+    let m = mock::always(400, "the model said: quarterly revenue guidance increased").await;
+    let client = OpenAIClient::new(
+        "text-embedding-3-small".to_string(),
         KEY.to_string(),
-        "search_document".to_string(),
+        None,
+        m.url.clone(),
+        None,
+    );
+    let err = client.embed(&[SOURCE], None).await.unwrap_err();
+    assert!(!err.to_string().contains("quarterly"), "{err}");
+}
+
+/// A token-limit refusal is classified where the body is, so the body does
+/// not have to travel to the gateway for the gateway to know.
+#[tokio::test]
+async fn a_token_limit_refusal_is_classified_at_the_connector() {
+    use providers::OpenAIClient;
+    let m = mock::always(
+        400,
+        r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#,
+    )
+    .await;
+    let client = OpenAIClient::new(
+        "text-embedding-3-small".to_string(),
+        "sk-test".to_string(),
+        None,
         m.url.clone(),
         None,
     );
     let err = client.embed(&["x"], None).await.unwrap_err();
-    let text = err.to_string();
-    assert!(!text.contains(KEY), "the key was echoed back: {text}");
-    assert!(text.contains("<redacted>"), "{text}");
-    assert!(!text.contains('\n') && !text.contains('\r'), "{text}");
+    assert!(
+        matches!(err, EmbeddingError::InputTooLong { status: 400 }),
+        "{err:?}"
+    );
+    // …and it says so without quoting the provider.
+    assert!(!err.to_string().contains("8192"), "{err}");
 }
 
 /// The Gemini key travels in `x-goog-api-key`, the header Google documents,
@@ -694,6 +782,8 @@ async fn the_gemini_key_is_a_header_not_a_query_parameter() {
     let client = GeminiClient::new(
         "gemini-embedding-001".to_string(),
         "g-secret-key-value".to_string(),
+        None,
+        "search_document",
         m.url.clone(),
         None,
     );
@@ -705,6 +795,8 @@ async fn the_gemini_key_is_a_header_not_a_query_parameter() {
     let client = GeminiClient::new(
         "gemini-embedding-001".to_string(),
         "g-secret-key-value".to_string(),
+        None,
+        "search_document",
         m2.url.clone(),
         None,
     );
@@ -712,4 +804,59 @@ async fn the_gemini_key_is_a_header_not_a_query_parameter() {
     let err = client.embed(&["hi"], Some(deadline)).await.unwrap_err();
     assert!(!err.to_string().contains("g-secret-key-value"), "{err}");
     assert!(!err.to_string().contains("key="), "{err}");
+}
+
+/// The file documents `dim` as authoritative and the gateway checks every
+/// response against it — so a descriptor asking for anything but a model's
+/// native width has to actually *ask* for it. Gemini takes
+/// `outputDimensionality`; Cohere v4 takes `output_dimension`. Both also get
+/// the query/document purpose, which Gemini spells as `taskType`.
+#[tokio::test]
+async fn gemini_and_cohere_request_the_declared_dimension_and_purpose() {
+    use providers::{CohereClient, GeminiClient};
+
+    let m = mock::always(200, r#"{"embeddings":[{"values":[0.1,0.2]}]}"#).await;
+    let client = GeminiClient::new(
+        "gemini-embedding-001".to_string(),
+        "g-test".to_string(),
+        Some(1536),
+        "search_query",
+        m.url.clone(),
+        None,
+    );
+    client.embed(&["q"], None).await.expect("embed ok");
+    let sent = m.last_request();
+    assert!(sent.contains("\"outputDimensionality\":1536"), "{sent}");
+    assert!(sent.contains("\"taskType\":\"RETRIEVAL_QUERY\""), "{sent}");
+
+    // Documents get the other task type.
+    let client = GeminiClient::new(
+        "gemini-embedding-001".to_string(),
+        "g-test".to_string(),
+        None,
+        "search_document",
+        m.url.clone(),
+        None,
+    );
+    client.embed(&["d"], None).await.expect("embed ok");
+    let sent = m.last_request();
+    assert!(
+        sent.contains("\"taskType\":\"RETRIEVAL_DOCUMENT\""),
+        "{sent}"
+    );
+    // No declared dimension: the field is omitted, not sent as null.
+    assert!(!sent.contains("outputDimensionality"), "{sent}");
+
+    let m = mock::always(200, r#"{"embeddings":{"float":[[0.1,0.2]]}}"#).await;
+    let client = CohereClient::new(
+        "embed-v4.0".to_string(),
+        "co-test".to_string(),
+        "search_document".to_string(),
+        Some(1024),
+        m.url.clone(),
+        None,
+    );
+    client.embed(&["d"], None).await.expect("embed ok");
+    let sent = m.last_request();
+    assert!(sent.contains("\"output_dimension\":1024"), "{sent}");
 }

@@ -109,12 +109,31 @@ struct Inner {
     models: BTreeMap<String, ModelEntry>,
 }
 
+/// A stable, secret-free digest of the endpoint a provider file will actually
+/// reach: the AWS region and the `base_url` override, which together are the
+/// only things that decide *where* a request goes once the connector type and
+/// model id are fixed.
+///
+/// Hashed rather than published because `base_url` is operator-supplied and
+/// routinely names an internal host, while `/config` is read by every node in
+/// a fleet. A digest answers the only question a fleet needs to ask — "do all
+/// the nodes reach the same place?" — without publishing the answer.
+fn endpoint_digest(region: Option<&str>, base_url: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(region.unwrap_or("").as_bytes());
+    hasher.update(b"|");
+    hasher.update(base_url.unwrap_or("").as_bytes());
+    hex::encode(hasher.finalize())[..16].to_string()
+}
+
 /// The nested HubModel shape `discovery::parse_config` requires (§6.2). A
 /// flat object would be silently dropped by the parser — the round-trip
 /// tests below and in the host pin this.
 fn descriptor_json(
     provider_type: &str,
     provider_name: &str,
+    endpoint: &str,
     model: &ModelDescriptor,
 ) -> serde_json::Value {
     let mut params = serde_json::json!({
@@ -138,6 +157,8 @@ fn descriptor_json(
         // round-robin hands a caller vectors from either.
         "provider_file": provider_name,
         "provider_model_id": model.provider_model_id,
+        // Region and base_url, digested — the rest of "where does this go".
+        "provider_endpoint": endpoint,
         "configuration": {
             "name": model.name,
             "enabled": true,
@@ -149,7 +170,10 @@ fn descriptor_json(
 impl Inner {
     /// Build a snapshot from a scanned directory. Provider-level factory
     /// failures are isolated to that provider, mirroring the per-file rule.
-    fn build(outcome: LoadOutcome) -> (Inner, Vec<String>) {
+    fn build(
+        outcome: LoadOutcome,
+        local_models: &std::collections::BTreeSet<String>,
+    ) -> (Inner, Vec<String>) {
         let mut errors: Vec<String> = outcome.errors.iter().map(|e| e.to_string()).collect();
         let mut inner = Inner::default();
 
@@ -198,6 +222,34 @@ impl Inner {
                 }
             };
             let permits = Arc::new(Semaphore::new(provider.max_concurrent));
+            let endpoint = endpoint_digest(
+                provider.config.region.as_deref(),
+                provider.config.base_url.as_deref(),
+            );
+
+            // A provider file claiming a name the engine already has is
+            // refused, not quietly shadowed. Shadowing was deterministic —
+            // local wins — but it left a *dormant* provider entry behind the
+            // local one, and unloading or deactivating the local model made
+            // that entry start serving: a column's source text began leaving
+            // the host with no `enable()` NOTICE and no `provider add`
+            // acknowledgement, because neither ran. Refusing keeps the same
+            // "local by default" outcome and removes the dormant state
+            // instead of scheduling it.
+            if let Some(clash) = provider
+                .models
+                .iter()
+                .find(|m| local_models.contains(&m.name))
+            {
+                errors.push(format!(
+                    "provider {:?}: model {:?} is already served by a local engine model; a \
+                     public name must have exactly one owner. Rename the [[models]] entry — \
+                     leaving it would let the provider take the name over the moment the \
+                     local model is unloaded",
+                    provider.name, clash.name
+                ));
+                continue 'providers;
+            }
 
             let mut entries = Vec::with_capacity(provider.models.len());
             for model in &provider.models {
@@ -246,7 +298,12 @@ impl Inner {
                         query,
                         dim: model.dim,
                         max_batch: model.max_batch,
-                        descriptor: descriptor_json(&provider_type, &provider.name, model),
+                        descriptor: descriptor_json(
+                            &provider_type,
+                            &provider.name,
+                            &endpoint,
+                            model,
+                        ),
                     },
                 ));
             }
@@ -276,9 +333,9 @@ impl Gateway {
     /// are logged and isolated; the returned gateway always exists and
     /// serves whatever loaded (possibly nothing). A missing directory is
     /// the ordinary zero-config case and logs nothing.
-    pub fn load(dir: &Path) -> Self {
+    pub fn load(dir: &Path, local_models: &std::collections::BTreeSet<String>) -> Self {
         let gateway = Gateway::empty();
-        match gateway.reload(dir) {
+        match gateway.reload(dir, local_models) {
             Ok(report) => {
                 for error in &report.errors {
                     log::warn!("providers.d: {error}");
@@ -303,9 +360,13 @@ impl Gateway {
     /// `Err` = structural failure (the directory exists but cannot be
     /// scanned): the previous snapshot is KEPT, never half-replaced.
     /// Per-file failures are isolated as before and reported in the `Ok`.
-    pub fn reload(&self, dir: &Path) -> Result<ReloadReport, String> {
+    pub fn reload(
+        &self,
+        dir: &Path,
+        local_models: &std::collections::BTreeSet<String>,
+    ) -> Result<ReloadReport, String> {
         let outcome = config::load_dir(dir)?;
-        let (inner, errors) = Inner::build(outcome);
+        let (inner, errors) = Inner::build(outcome, local_models);
         let report = ReloadReport {
             providers: inner
                 .models
@@ -384,6 +445,24 @@ impl Gateway {
                 format!("model {model:?} is not served by any configured provider"),
             )
         })?;
+
+        // An empty input is a *row* problem, and providers report it as a
+        // batch one. OpenAI documents `input` as required to be non-empty and
+        // answers a whole request containing `""` with a 400 — so
+        // `[good, "", good]` would map to InvalidInput and dead-letter three
+        // rows for one bad one. Classifying it here as ContextLengthExceeded
+        // hands it to the queue's bisection, which halves the batch until the
+        // empty row is alone and dead-letters only that. Checked before the
+        // request rather than after: no reason to pay for the round trip.
+        if let Some(position) = texts.iter().position(|text| text.is_empty()) {
+            return Err(GatewayError::new(
+                ErrorCode::ContextLengthExceeded,
+                format!(
+                    "input {position} is empty, which providers reject for the whole request; \
+                     isolating it rather than failing its neighbours"
+                ),
+            ));
+        }
 
         let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(entry.max_batch.max(1)) {
@@ -520,16 +599,12 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
         // 413 is definitionally "your request was too big", with no wording to
         // interpret — so it maps to PoisonRow unconditionally and lets the
         // queue's bisection shrink the batch and isolate the offending row.
-        // Reading the body to decide would make a healthy batch's fate depend
-        // on whether a provider happens to phrase its 413 in English.
         EmbeddingError::Api { status: 413, .. } => ErrorCode::ContextLengthExceeded,
-        // 400/422 say nothing by themselves, so the bounded heuristic is
-        // still what separates "this input is too long" from "this request is
-        // malformed". 401/403/429 have already been matched above.
-        EmbeddingError::Api {
-            status: 400 | 422,
-            message,
-        } if looks_like_context_length(message) => ErrorCode::ContextLengthExceeded,
+        // A 400/422 the connector already classified from the body it read.
+        // The decision is made where the body is, so the body never has to
+        // travel here — which is what lets the public error carry no upstream
+        // text at all (see `crate::api_error`).
+        EmbeddingError::InputTooLong { .. } => ErrorCode::ContextLengthExceeded,
         // Any other 4xx, and the clients' 200-decode-failure sentinel:
         // permanent for this input/response shape.
         EmbeddingError::Api { .. } => ErrorCode::InvalidInput,
@@ -544,22 +619,6 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
     GatewayError::new(code, format!("provider {provider:?}: {e}"))
 }
 
-/// Provider-specific "input too long" detection over a 4xx body. Heuristic
-/// on purpose: OpenAI says "maximum context length … tokens", Cohere "total
-/// number of tokens … exceeds", Mistral "too many tokens". 401/403/429 are
-/// matched before this is consulted, so auth/rate-limit wording cannot
-/// reach it.
-fn looks_like_context_length(body: &str) -> bool {
-    let body = body.to_lowercase();
-    body.contains("token")
-        && (body.contains("exceed")
-            || body.contains("too long")
-            || body.contains("too many")
-            || body.contains("maximum")
-            || body.contains("max_tokens")
-            || body.contains("context length"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,6 +627,11 @@ mod tests {
     use std::time::Duration;
 
     /// A providers.d is 0700; `tempfile::tempdir()` honours the umask.
+    /// No local engine model in scope: the ordinary case for these tests.
+    fn no_local() -> std::collections::BTreeSet<String> {
+        Default::default()
+    }
+
     fn private_tempdir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -602,9 +666,9 @@ mod tests {
         write_provider(
             dir.path(),
             "openai.toml",
-            &openai_toml("http://x", 1536, 512),
+            &openai_toml("http://127.0.0.1:1", 1536, 512),
         );
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         let models = gateway.models();
         assert_eq!(models.len(), 1);
@@ -639,7 +703,7 @@ mod tests {
             "provider = \"gemini\"\napi_key = \"g\"\n\n[[models]]\nname = \"gemini-embedding-001\"\n\
              provider_model_id = \"gemini-embedding-001\"\ndim = 4\n",
         );
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
         assert_eq!(gateway.models()[0]["provider"], "google");
     }
 
@@ -658,7 +722,7 @@ mod tests {
 
         let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 2));
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         let texts: Vec<String> = (0..5).map(|i| format!("text {i}")).collect();
         let out = gateway
@@ -682,7 +746,7 @@ mod tests {
         let m = mock::always(200, r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
         let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         let err = gateway
             .embed(
@@ -699,7 +763,7 @@ mod tests {
         let m = mock::always(200, r#"{"data":[{"embedding":[1.0,2.0,3.0],"index":0}]}"#).await;
         let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         let err = gateway
             .embed(
@@ -727,7 +791,7 @@ mod tests {
         .await;
         let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         let err = gateway
             .embed(
@@ -800,7 +864,7 @@ mod tests {
             let m = mock::always(status, body).await;
             let dir = private_tempdir();
             write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
-            let gateway = Gateway::load(dir.path());
+            let gateway = Gateway::load(dir.path(), &no_local());
 
             let deadline = Instant::now() + Duration::from_millis(300);
             let err = gateway
@@ -824,7 +888,7 @@ mod tests {
         };
         let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&closed, 2, 512));
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
         let err = gateway
             .embed(
                 "openai-text-embedding-3-small",
@@ -870,7 +934,7 @@ mod tests {
         let m = mock::truncated(r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
         let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         let err = gateway
             .embed(
@@ -900,7 +964,7 @@ mod tests {
                 m.url
             ),
         );
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         gateway
             .embed(
@@ -939,7 +1003,7 @@ mod tests {
         let m = mock::always(200, r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
         let dir = private_tempdir();
         write_provider(dir.path(), "openai.toml", &openai_toml(&m.url, 2, 512));
-        let gateway = Gateway::load(dir.path());
+        let gateway = Gateway::load(dir.path(), &no_local());
 
         // Hold the provider's only permit: an embed with a short deadline
         // times out WAITING, without a request ever reaching the provider.
@@ -979,14 +1043,18 @@ mod tests {
     #[tokio::test]
     async fn reload_swaps_atomically_and_a_failed_reload_keeps_the_snapshot() {
         let dir = private_tempdir();
-        write_provider(dir.path(), "openai.toml", &openai_toml("http://x", 4, 8));
-        let gateway = Gateway::load(dir.path());
+        write_provider(
+            dir.path(),
+            "openai.toml",
+            &openai_toml("http://127.0.0.1:1", 4, 8),
+        );
+        let gateway = Gateway::load(dir.path(), &no_local());
         assert!(gateway.owns("openai-text-embedding-3-small"));
 
         // Structural failure (the path is a file, not a directory): Err,
         // and the previous snapshot still serves.
         let not_a_dir = dir.path().join("openai.toml");
-        assert!(gateway.reload(&not_a_dir).is_err());
+        assert!(gateway.reload(&not_a_dir, &no_local()).is_err());
         assert!(
             gateway.owns("openai-text-embedding-3-small"),
             "failed reload keeps the previous snapshot"
@@ -1000,14 +1068,16 @@ mod tests {
             "provider = \"mistral\"\napi_key = \"mi\"\n\n[[models]]\nname = \"mistral-mistral-embed\"\n\
              provider_model_id = \"mistral-embed\"\ndim = 4\n",
         );
-        let report = gateway.reload(other.path()).unwrap();
+        let report = gateway.reload(other.path(), &no_local()).unwrap();
         assert_eq!((report.providers, report.models), (1, 1));
         assert!(report.errors.is_empty(), "{:?}", report.errors);
         assert!(!gateway.owns("openai-text-embedding-3-small"));
         assert!(gateway.owns("mistral-mistral-embed"));
 
         // Reload to an empty (missing) directory: back to zero-config.
-        let report = gateway.reload(&other.path().join("missing")).unwrap();
+        let report = gateway
+            .reload(&other.path().join("missing"), &no_local())
+            .unwrap();
         assert_eq!(report.models, 0);
         assert!(gateway.is_empty());
     }
@@ -1016,7 +1086,11 @@ mod tests {
     async fn a_broken_provider_file_is_isolated_from_the_rest() {
         let dir = private_tempdir();
         write_provider(dir.path(), "aaa-broken.toml", "provider = 42");
-        write_provider(dir.path(), "openai.toml", &openai_toml("http://x", 4, 8));
+        write_provider(
+            dir.path(),
+            "openai.toml",
+            &openai_toml("http://127.0.0.1:1", 4, 8),
+        );
         // Unsupported connector type: isolated at gateway build.
         write_provider(
             dir.path(),
@@ -1026,28 +1100,51 @@ mod tests {
         );
 
         let gateway = Gateway::empty();
-        let report = gateway.reload(dir.path()).unwrap();
+        let report = gateway.reload(dir.path(), &no_local()).unwrap();
         assert_eq!(report.models, 1, "the good provider still serves");
         assert_eq!(report.errors.len(), 2, "{:?}", report.errors);
         assert!(gateway.owns("openai-text-embedding-3-small"));
         assert!(!gateway.owns("frob-1"));
     }
 
-    #[test]
-    fn context_length_heuristic_is_bounded() {
-        for positive in [
-            "This model's maximum context length is 8192 tokens, however you requested 10000",
-            "total number of tokens in the batch exceeds the limit",
-            "too many tokens in request",
-        ] {
-            assert!(looks_like_context_length(positive), "{positive}");
-        }
-        for negative in [
-            "invalid api token",
-            "malformed request body",
-            "field `input` is required",
-        ] {
-            assert!(!looks_like_context_length(negative), "{negative}");
-        }
+    /// A provider file claiming a name the engine already serves is refused
+    /// at load, not shadowed.
+    ///
+    /// Shadowing was deterministic — local wins — but it left a *dormant*
+    /// provider entry behind the local model, and unloading or deactivating
+    /// that local model made the entry start serving: a bound column's source
+    /// text began leaving the host with no `enable()` NOTICE and no `provider
+    /// add` acknowledgement, because neither ran. Refusing keeps the same
+    /// local-by-default outcome and deletes the dormant state rather than
+    /// scheduling it.
+    #[tokio::test]
+    async fn a_name_the_engine_already_serves_is_refused_at_load() {
+        let dir = private_tempdir();
+        write_provider(
+            dir.path(),
+            "openai.toml",
+            "provider = \"openai\"\napi_key = \"sk\"\n\n[[models]]\n\
+             name = \"baai-bge-m3\"\nprovider_model_id = \"pretend\"\ndim = 4\n\n\
+             [[models]]\nname = \"openai-text-embedding-3-small\"\n\
+             provider_model_id = \"text-embedding-3-small\"\ndim = 8\n",
+        );
+
+        // Without a local model of that name the file serves normally.
+        let gateway = Gateway::load(dir.path(), &no_local());
+        assert!(gateway.owns("baai-bge-m3"));
+
+        // With one, the whole file is refused — the provider is a unit, and
+        // half-serving it would leave the same dormant entry behind.
+        let local: std::collections::BTreeSet<String> = ["baai-bge-m3".to_string()].into();
+        let gateway = Gateway::empty();
+        let report = gateway.reload(dir.path(), &local).unwrap();
+        assert_eq!(report.models, 0);
+        assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+        assert!(
+            report.errors[0].contains("already served by a local engine model"),
+            "{:?}",
+            report.errors
+        );
+        assert!(!gateway.owns("openai-text-embedding-3-small"));
     }
 }

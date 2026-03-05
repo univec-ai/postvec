@@ -100,6 +100,12 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
 
     // ---- Resolve the target and the existing file ----
     let mut target = resolve_target(cli, args.path.as_deref(), output, true).await?;
+    // Held for the whole read-modify-write. Two concurrent `provider add`
+    // runs would otherwise both load the file, both append, and the second
+    // rename would silently discard the first one's model.
+    let _lock = (!args.dry_run)
+        .then(|| super::lock_provider_dir(target.dir(), target.owner()))
+        .transpose()?;
     let file_path = target.dir().join(format!("{stem}.toml"));
     let existing = ProviderFileDoc::load(&file_path)?;
     if let Some(existing) = &existing {
@@ -221,7 +227,10 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // receiving their source text. The privacy gate exists for exactly that
     // event and was scanning only newly added names — which for an
     // endpoint-only edit is the empty set, so the gate never fired.
-    let endpoint_changes = base_url_changes || region_changes;
+    // Only for a file that already exists: writing a *new* connector file is
+    // an ordinary add, covered by the ordinary scan over its new names.
+    // Nothing is being moved because nothing was there.
+    let endpoint_changes = existing.is_some() && (base_url_changes || region_changes);
     // A new key source for the same endpoint is not a recipient change: the
     // text goes to the same place. It does change what the host will do, so
     // it is worth *verifying*, but it must not demand a privacy
@@ -245,15 +254,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     } else {
         (Vec::new(), Vec::new())
     };
-    // `--path` has no cluster to scan, so an endpoint move there cannot list
-    // the affected columns — and silently treating the scan set as empty is
-    // the one outcome a privacy gate must never produce. Say it plainly.
-    if endpoint_changes && !scanned {
-        output.note(
-            "--path: this changes where source text is SENT for every model in this file, and              no cluster is in scope to list the bound columns. Check `postvec.registry` on the              database hosts that use this node before proceeding",
-        );
-    }
-
     let mut plan = Plan::new("provider add", target.label());
     for name in &public_names {
         let mine: Vec<crate::plan::InUseColumn> = columns
@@ -261,15 +261,34 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             .filter(|column| &column.model == name)
             .cloned()
             .collect();
-        if mine.is_empty() && unknown_databases.is_empty() {
+        // `--path` has no cluster, so an endpoint move there cannot list the
+        // affected columns. That is not the same as there being none, and
+        // treating an unanswerable question as a clean answer is the one
+        // outcome a privacy gate must never produce — so the step is pushed
+        // anyway, with the databases marked UNKNOWN. `--yes` is not an answer
+        // to "may this text go somewhere else"; the step is what makes
+        // `--acknowledge-in-use` (or the typed confirmation) the way through.
+        let unknown = if endpoint_changes && !scanned {
+            vec!["every database served by this node (not inspectable from --path)".to_string()]
+        } else {
+            unknown_databases.clone()
+        };
+        if mine.is_empty() && unknown.is_empty() {
             continue;
         }
         plan.push(PlanStep::AcknowledgeProviderPrivacy {
             provider: canonical.clone(),
             model: name.clone(),
             columns: mine,
-            unknown_databases: unknown_databases.clone(),
+            unknown_databases: unknown,
         });
+    }
+    if endpoint_changes && !scanned && !public_names.is_empty() {
+        output.note(
+            "--path: this changes where source text is SENT for every model in this file, and \
+             no cluster is in scope to list the bound columns. Check `postvec.registry` on the \
+             database hosts that use this node",
+        );
     }
     // Editing `base_url` or `region` on an existing file is a legitimate
     // reason to run this command with no new model and no new key (an Azure

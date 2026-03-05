@@ -128,7 +128,7 @@ impl EmbeddingBackend for MistralClient {
                 .map_err(EmbeddingError::Network)?;
 
             if !response.status().is_success() {
-                return Err(crate::api_error(response, Some(&self.api_key)).await);
+                return Err(crate::api_error(response).await);
             }
 
             // Read the body first, then decode it. A failure to read is

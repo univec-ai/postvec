@@ -530,7 +530,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let gateway = providers::gateway::Gateway::load(dir.path());
+        let gateway = providers::gateway::Gateway::load(dir.path(), &Default::default());
 
         let configs = [model(
             "baai-bge-m3",

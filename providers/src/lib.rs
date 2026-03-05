@@ -83,11 +83,6 @@ pub fn validate_region(region: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Ceiling on provider response-body bytes copied into an error message.
-/// Bodies can be arbitrarily large and these messages travel into host logs
-/// (and, mapped to wire codes, toward PostgreSQL) — bound them at creation.
-const ERROR_BODY_PREVIEW_BYTES: usize = 500;
-
 /// How many bytes of a **non-2xx** body are read at all. The preview is 500;
 /// reading more than this to throw it away only gives a hostile or broken
 /// endpoint a free allocation, once per attempt and once per retry.
@@ -216,59 +211,104 @@ pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(
 /// - **401/403 bodies are never included.** An authentication failure is the
 ///   one response most likely to quote the credential back, and the status
 ///   alone is the whole diagnosis.
-/// - **Control characters are stripped.** An upstream — especially one behind
-///   an operator-supplied `base_url` — must not be able to write a second,
-///   forged line into a PostgreSQL log.
-/// - **The configured secret is redacted**, in case the peer echoes it inside
-///   an otherwise ordinary error body.
-pub(crate) async fn api_error(response: reqwest::Response, secret: Option<&str>) -> EmbeddingError {
+/// - **No control characters can survive**, because no free text does: an
+///   upstream must not be able to write a second, forged line into a
+///   PostgreSQL log.
+/// - **Nothing else from the body is forwarded.** Only a short, code-shaped
+///   identifier survives (see [`provider_error_code`]); the text itself never
+///   leaves this function, so neither an echoed credential nor an echoed
+///   fragment of the row's own source text can reach a log, a tonic status or
+///   `postvec.jobs_dead.last_error`.
+pub(crate) async fn api_error(response: reqwest::Response) -> EmbeddingError {
     let status = response.status().as_u16();
     if matches!(status, 401 | 403) {
         return EmbeddingError::Api {
             status,
-            message: "authentication rejected by the provider (response body withheld: it is \
-                      the response most likely to quote the credential back)"
-                .to_string(),
+            message: "authentication rejected by the provider (response body withheld)".to_string(),
         };
     }
-    let message = match read_bounded(response, ERROR_BODY_READ_BYTES).await {
-        Ok(body) => sanitize_preview(&String::from_utf8_lossy(&body), secret),
-        Err(_) => "unknown error (the response body could not be read)".to_string(),
+    let body = match read_bounded(response, ERROR_BODY_READ_BYTES).await {
+        Ok(body) => body,
+        Err(_) => {
+            return EmbeddingError::Api {
+                status,
+                message: "the response body could not be read".to_string(),
+            }
+        }
     };
-    EmbeddingError::Api { status, message }
+    let body = String::from_utf8_lossy(&body);
+
+    // Classify here, while the body is in hand. The gateway used to sniff the
+    // *message* for token-limit wording, which is the only reason the body had
+    // to survive this far.
+    if matches!(status, 400 | 413 | 422) && looks_like_context_length(&body) {
+        return EmbeddingError::InputTooLong { status };
+    }
+    EmbeddingError::Api {
+        status,
+        message: match provider_error_code(&body) {
+            Some(code) => format!("provider error code {code:?}"),
+            None => "no recognisable provider error code in the response".to_string(),
+        },
+    }
 }
 
-/// Truncate a provider response body for inclusion in an error message —
-/// respecting UTF-8 char boundaries, on one line, with the credential
-/// removed. See [`api_error`] for why each of those matters.
-pub(crate) fn sanitize_preview(body: &str, secret: Option<&str>) -> String {
-    // Scrub before truncating: a secret cut in half by the cap would keep a
-    // usable prefix otherwise.
-    let scrubbed;
-    let body = match secret.filter(|s| s.len() >= 8) {
-        Some(secret) if body.contains(secret) => {
-            scrubbed = body.replace(secret, "<redacted>");
-            scrubbed.as_str()
-        }
-        _ => body,
-    };
-    let mut out = String::with_capacity(body.len().min(ERROR_BODY_PREVIEW_BYTES));
-    let mut truncated = false;
-    for ch in body.chars() {
-        // Bound on the *encoded* length, so the cap is a memory bound and not
-        // a character count.
-        if out.len() + ch.len_utf8() > ERROR_BODY_PREVIEW_BYTES {
-            truncated = true;
-            break;
-        }
-        // Newlines, carriage returns and everything else in the control range
-        // become a space: a log line is one line.
-        out.push(if ch.is_control() { ' ' } else { ch });
-    }
-    if truncated {
-        out.push_str(&format!("… ({} bytes total)", body.len()));
-    }
-    out
+/// Characters a machine-readable provider error code may contain, and the
+/// length past which a "code" is prose.
+const MAX_ERROR_CODE_BYTES: usize = 64;
+
+/// The one thing extracted from an upstream error body: a short, code-shaped
+/// identifier from one of the fields providers use for exactly that
+/// (`error.code`, `error.type`, `error.status`, `code`, `status`).
+///
+/// The body itself never leaves this function, and that is the point.
+/// Scrubbing a *known* credential out of an arbitrary body defends against
+/// the case you thought of; it cannot remove the **source text** a provider
+/// echoes back in a 400, in whatever form it chooses to echo it. That text
+/// belongs to a database and this message is logged by the inference host —
+/// a different machine in remote mode — and stored in
+/// `postvec.jobs_dead.last_error`. An allow-list inverts the burden: a value
+/// is only forwarded if it is short and looks like an identifier, which no
+/// document does.
+fn provider_error_code(body: &str) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    [
+        "/error/code",
+        "/error/type",
+        "/error/status",
+        "/code",
+        "/status",
+    ]
+    .into_iter()
+    .filter_map(|pointer| parsed.pointer(pointer))
+    .filter_map(|value| match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    })
+    .find(|code| {
+        !code.is_empty()
+            && code.len() <= MAX_ERROR_CODE_BYTES
+            && code
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    })
+}
+
+/// Provider-specific "input too long" detection over a 4xx body. Heuristic on
+/// purpose: OpenAI says "maximum context length … tokens", Cohere "total
+/// number of tokens … exceeds", Mistral "too many tokens". 401/403/429 never
+/// reach it — [`api_error`] returns before this for the first two, and the
+/// status match excludes the third.
+fn looks_like_context_length(body: &str) -> bool {
+    let body = body.to_lowercase();
+    body.contains("token")
+        && (body.contains("exceed")
+            || body.contains("too long")
+            || body.contains("too many")
+            || body.contains("maximum")
+            || body.contains("max_tokens")
+            || body.contains("context length"))
 }
 
 /// Represents a single successfully generated embedding vector.
@@ -314,6 +354,16 @@ pub enum EmbeddingError {
     /// An authentication-related error occurred, typically a missing API key.
     #[error("Authentication error: {0}")]
     Authentication(String),
+
+    /// The provider rejected the request because an input was too long.
+    ///
+    /// A distinct variant rather than a marker inside [`EmbeddingError::Api`]'s
+    /// message, because it is the one classification that used to be recovered
+    /// by *re-reading the response body* one layer up. Deciding it here — where
+    /// the body is, and before the body is discarded — is what lets the public
+    /// error carry no upstream text at all.
+    #[error("Provider rejected an input as too long (status {status})")]
+    InputTooLong { status: u16 },
 
     /// The caller's deadline was exhausted before the operation (including
     /// any in-client retries) could complete.
@@ -409,50 +459,6 @@ mod tests {
         ] {
             assert!(validate_region(bad).is_err(), "{bad:?}");
         }
-    }
-
-    #[test]
-    fn body_preview_truncates_on_char_boundaries() {
-        let short = "short body";
-        assert_eq!(sanitize_preview(short, None), short);
-
-        // 600 multi-byte chars: the cut must land on a boundary and note the size.
-        let long: String = "é".repeat(600);
-        let preview = sanitize_preview(&long, None);
-        assert!(preview.len() < long.len());
-        assert!(preview.contains("1200 bytes total"), "{preview}");
-    }
-
-    /// This message is logged by both hosts, crosses tonic, and can be stored
-    /// durably in `postvec.jobs_dead.last_error`. An upstream reached through
-    /// an operator-supplied `base_url` must not be able to write a second,
-    /// forged line into a PostgreSQL log, and must not be able to put the
-    /// credential there by quoting it back.
-    #[test]
-    fn a_preview_is_one_line_and_carries_no_credential() {
-        let hostile = "line one\nERROR:  forged postgres line\r\n\tkey=sk-live-abcdefghijklmnop";
-        let preview = sanitize_preview(hostile, Some("sk-live-abcdefghijklmnop"));
-        assert!(
-            !preview.contains('\n') && !preview.contains('\r'),
-            "{preview}"
-        );
-        assert!(!preview.contains('\t'), "{preview}");
-        assert!(!preview.contains("sk-live-abcdefghijklmnop"), "{preview}");
-        assert!(preview.contains("<redacted>"), "{preview}");
-
-        // A secret cut in half by the truncation cap must not survive as a
-        // usable prefix: the scrub runs before the cut.
-        let secret = "sk-live-abcdefghijklmnopqrstuvwxyz";
-        let padded = format!("{}{secret}", "x".repeat(ERROR_BODY_PREVIEW_BYTES - 10));
-        let preview = sanitize_preview(&padded, Some(secret));
-        assert!(!preview.contains("sk-live-abcdef"), "{preview}");
-
-        // A short "secret" is not used as a redaction pattern: it would
-        // scribble over ordinary words.
-        assert_eq!(
-            sanitize_preview("a short body", Some("short")),
-            "a short body"
-        );
     }
 
     /// A legitimate response is comfortably inside the budget; a hostile one

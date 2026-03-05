@@ -568,7 +568,7 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
         // surprise. The serving host applies the identical rule at load
         // (`providers::config::validate_directory`), which is why this can be
         // that same function rather than a second opinion.
-        providers::config::validate_directory(dir).map_err(|problem| {
+        providers::config::validate_directory(dir, owner.map(|o| o.uid)).map_err(|problem| {
             CliError::precondition(problem)
                 .with_fix("chmod 700 the providers.d directory (and make sure it is not a symlink)")
         })?;
@@ -638,13 +638,16 @@ pub fn write_secret_file(path: &Path, body: &[u8], owner: Option<FileOwner>) -> 
         _ => {}
     }
 
+    // A per-process temp name, not a shared one. A single predictable
+    // `.NAME.tmp` meant concurrent writers could unlink each other's file
+    // between create and rename; with the pid in the name they cannot
+    // collide, and `create_new` refuses anything already sitting there rather
+    // than removing a file this process did not create.
     let tmp = dir.join(format!(
-        ".{}.postvec.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy()
+        ".{}.{}.postvec.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
     ));
-    // A leftover from an interrupted run is ours to clear; anything else
-    // fails `create_new` below rather than being followed.
-    let _ = std::fs::remove_file(&tmp);
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -652,32 +655,30 @@ pub fn write_secret_file(path: &Path, body: &[u8], owner: Option<FileOwner>) -> 
         .mode(0o600)
         .open(&tmp)
         .map_err(|e| CliError::apply(format!("cannot create {}: {e}", tmp.display())))?;
-    let written = (|| -> std::io::Result<()> {
+
+    // Everything below acts on the **descriptor**, never on the path, and in
+    // this order: content, then metadata, then one sync that covers both.
+    // Doing chmod/chown by path after the sync left a window where the file
+    // could be replaced, and left the metadata unsynced.
+    let prepared = (|| -> std::io::Result<()> {
         file.write_all(body)?;
         file.flush()?;
-        // The rename is only atomic with respect to a crash if the data is
-        // on disk first.
+        // The `mode` on OpenOptions is masked by the umask, so set it again.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        if let Some(owner) = owner.filter(|_| crate::proc::is_root()) {
+            std::os::unix::fs::fchown(&file, Some(owner.uid), Some(owner.gid))?;
+        }
+        // The rename is only atomic with respect to a crash if the data and
+        // the metadata are on disk first.
         file.sync_all()
     })();
     drop(file);
-    if let Err(e) = written {
+    if let Err(e) = prepared {
         let _ = std::fs::remove_file(&tmp);
         return Err(CliError::apply(format!(
             "cannot write {}: {e}",
             tmp.display()
         )));
-    }
-    // Mode again: the `mode` on OpenOptions is masked by the umask.
-    if let Err(e) = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(CliError::apply(format!(
-            "cannot chmod {}: {e}",
-            tmp.display()
-        )));
-    }
-    if let Err(e) = chown_if_root(&tmp, owner) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
@@ -686,11 +687,25 @@ pub fn write_secret_file(path: &Path, body: &[u8], owner: Option<FileOwner>) -> 
             tmp.display()
         )));
     }
-    // Durability of the rename itself.
-    if let Ok(dir) = std::fs::File::open(dir) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
+    sync_directory(dir, path)
+}
+
+/// Flush the directory entry a rename or removal just changed.
+///
+/// Checked, not best-effort: without it a crash can lose a change the command
+/// already reported as applied, which is the exact outcome an atomic write
+/// exists to prevent. A previous pass claimed this and then dropped the
+/// error.
+pub fn sync_directory(dir: &Path, changed: &Path) -> Result<()> {
+    std::fs::File::open(dir)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|e| {
+            CliError::apply(format!(
+                "applied {} but could not flush {}: {e}; the change may not survive a crash",
+                changed.display(),
+                dir.display()
+            ))
+        })
 }
 
 fn chown_if_root(path: &Path, owner: Option<FileOwner>) -> Result<()> {
@@ -731,10 +746,65 @@ pub fn require_private_secret_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Read a referenced key file (0600-checked) for the verification probe.
+/// The loader's ceiling on a referenced secret.
+const MAX_SECRET_BYTES: u64 = 16 * 1024;
+
+/// Read a referenced key file for the verification probe.
+///
+/// One `O_NOFOLLOW` open, then every check on the resulting descriptor, then
+/// a bounded read from that same descriptor — the shape the serving host
+/// uses, and for the same reason. `require_private_secret_file` followed by a
+/// separate `read_to_string(path)` asked about one file and read another, and
+/// this runs as root: winning that race means root reads a file the operator
+/// did not name.
 pub fn read_secret_file(path: &Path) -> Result<String> {
-    require_private_secret_file(path)?;
-    let raw = std::fs::read_to_string(path)
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::ELOOP) => CliError::precondition(format!(
+                "{} is a symlink; a key file must be a regular file (a symlink can point at a \
+                 world-readable one)",
+                path.display()
+            )),
+            _ => CliError::precondition(format!("cannot read {}: {e}", path.display())).with_fix(
+                "the key file must exist on the inference host before the provider serves",
+            ),
+        })?;
+    let meta = file
+        .metadata()
+        .map_err(|e| CliError::precondition(format!("cannot stat {}: {e}", path.display())))?;
+    if !meta.is_file() {
+        return Err(CliError::precondition(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(CliError::precondition(format!(
+            "{} is readable by other users (mode {mode:o}); the host refuses such key files",
+            path.display()
+        ))
+        .with_fix(format!(
+            "chmod 600 {} (and rotate the key if others could have read it)",
+            path.display()
+        )));
+    }
+    if meta.size() > MAX_SECRET_BYTES {
+        return Err(CliError::precondition(format!(
+            "{} is {} bytes; the host refuses a secret over {MAX_SECRET_BYTES}",
+            path.display(),
+            meta.size()
+        )));
+    }
+    let mut raw = String::new();
+    file.take(MAX_SECRET_BYTES)
+        .read_to_string(&mut raw)
         .map_err(|e| CliError::precondition(format!("cannot read {}: {e}", path.display())))?;
     let key = raw.trim().to_string();
     if key.is_empty() {
@@ -928,6 +998,32 @@ fn unreachable_host(target: &ProviderTarget, journal: &mut ApplyJournal, detail:
         ProviderTarget::Embedded { .. } => journal.incomplete(format!("{detail}; {tail}")),
         ProviderTarget::Path { .. } => journal.record(format!("{detail}; {tail}")),
     }
+}
+
+/// Serialize provider-file mutations against other `postvec` commands on this
+/// host.
+///
+/// `provider add` and `provider rm` are read-modify-write over a TOML
+/// document: two concurrent runs both load the file, both append, and the
+/// second rename silently discards the first one's model. The lock is the
+/// same advisory `flock` the `model` family already uses — held only for the
+/// life of the process, so a killed command releases it and there is no stale
+/// lock to clean up, which is why the earlier decision to skip it was wrong.
+///
+/// The lock file sits beside the connector files rather than inside them:
+/// `.lock` is not `*.toml`, so the loader never sees it, and a `--path` root
+/// on a server node gets the same protection as a cluster's providers.d.
+pub fn lock_provider_dir(
+    dir: &Path,
+    owner: Option<FileOwner>,
+) -> Result<crate::config::owned::HostLock> {
+    ensure_private_dir(dir, owner)?;
+    let lock = crate::config::owned::HostLock::acquire_labeled(
+        &dir.join(".lock"),
+        "this providers.d directory",
+    )?;
+    chown_if_root(&dir.join(".lock"), owner)?;
+    Ok(lock)
 }
 
 /// Refresh `postvec.models` in every configured database after a successful

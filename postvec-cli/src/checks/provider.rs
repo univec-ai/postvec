@@ -161,18 +161,26 @@ pub fn gather(dir: &Path) -> ProviderFacts {
     facts
 }
 
-/// A `base_url` that reaches a non-loopback host over plain HTTP sends the
-/// provider credential — a bearer token, on every embed — across the network
-/// in cleartext. The loader accepts it deliberately (a self-hosted
-/// OpenAI-compatible endpoint on a private network is a real deployment, and
-/// loopback is the ordinary sidecar shape), so this is where an operator
-/// finds out. The serving host logs the same thing at load.
+/// A file that took the `allow_insecure_transport` opt-in.
+///
+/// The loader refuses plaintext to a non-loopback host **unless** the file
+/// says so in writing, and `provider.file` reports that refusal like any
+/// other. This is the other half: a file that opted in loads fine, and the
+/// operator should still be reminded on every doctor run that the API key —
+/// and every document the column embeds — crosses the network in the clear.
+/// An accepted risk is not the same as an invisible one.
 fn plaintext_transport_warning(doc: &crate::commands::provider::ProviderFileDoc) -> Option<String> {
     let base_url = doc.value.get("base_url").and_then(toml::Value::as_str)?;
-    providers::config::base_url_is_plaintext_offhost(base_url).then(|| {
+    let opted_in = doc
+        .value
+        .get("allow_insecure_transport")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false);
+    (opted_in && providers::config::base_url_is_plaintext_offhost(base_url)).then(|| {
         format!(
-            "base_url {base_url} is plain HTTP to a non-loopback host: the API key is sent \
-             unencrypted on every request"
+            "base_url {base_url} is plain HTTP to a non-loopback host (accepted via \
+             allow_insecure_transport): the API key and every embedded document cross the \
+             network unencrypted"
         )
     })
 }
@@ -606,49 +614,42 @@ mod tests {
         }
     }
 
-    /// A plaintext `base_url` to a non-loopback host puts the API key on the
-    /// network in the clear on every embed. The loader accepts it (a
-    /// self-hosted OpenAI-compatible endpoint is a real deployment), so this
-    /// is where the operator finds out. Loopback — a sidecar, a mock — is
-    /// silent.
+    /// Plaintext to a non-loopback host is a **failure** unless the file
+    /// opted in, and a standing **warning** when it did. An accepted risk is
+    /// not an invisible one. Loopback — a sidecar, a mock — is silent.
     #[test]
-    fn a_plaintext_off_host_base_url_is_a_warning_and_loopback_is_not() {
+    fn plaintext_off_host_fails_unless_opted_in_and_then_warns_forever() {
         let dir = tempfile::tempdir().unwrap();
-        let file = |base_url: &str| {
+        let file = |base_url: &str, opt_in: &str| {
             format!(
-                "provider = \"openai\"\napi_key = \"sk\"\nbase_url = \"{base_url}\"\n\n\
+                "provider = \"openai\"\napi_key = \"sk\"\nbase_url = \"{base_url}\"\n{opt_in}\n\
                  [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n"
             )
         };
+        let status_of = |body: &str| {
+            write_mode(dir.path(), "openai.toml", body, 0o600);
+            let facts = gather(dir.path());
+            let results = checks(&ProviderInput {
+                facts: &facts,
+                served: None,
+            });
+            let check = by_id(&results, "provider.file", "provider:openai");
+            (check.status, check.summary.clone())
+        };
 
-        write_mode(
-            dir.path(),
-            "openai.toml",
-            &file("http://vllm.internal:8000"),
-            0o600,
-        );
-        let results = checks(&ProviderInput {
-            facts: &gather(dir.path()),
-            served: None,
-        });
-        let check = by_id(&results, "provider.file", "provider:openai");
-        assert_eq!(check.status, CheckStatus::Warn, "{check:?}");
-        assert!(check.summary.contains("unencrypted"), "{check:?}");
+        let (status, summary) = status_of(&file("http://vllm.internal:8000", ""));
+        assert_eq!(status, CheckStatus::Fail, "{summary}");
+        assert!(summary.contains("allow_insecure_transport"), "{summary}");
 
-        write_mode(
-            dir.path(),
-            "openai.toml",
-            &file("http://127.0.0.1:8000"),
-            0o600,
-        );
-        let results = checks(&ProviderInput {
-            facts: &gather(dir.path()),
-            served: None,
-        });
-        assert_eq!(
-            by_id(&results, "provider.file", "provider:openai").status,
-            CheckStatus::Pass
-        );
+        let (status, summary) = status_of(&file(
+            "http://vllm.internal:8000",
+            "allow_insecure_transport = true",
+        ));
+        assert_eq!(status, CheckStatus::Warn, "{summary}");
+        assert!(summary.contains("unencrypted"), "{summary}");
+
+        let (status, summary) = status_of(&file("http://127.0.0.1:8000", ""));
+        assert_eq!(status, CheckStatus::Pass, "{summary}");
     }
 
     /// `enabled = false` is a state an operator chose. Reporting it as

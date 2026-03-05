@@ -151,9 +151,15 @@ pub fn new_embedding_backend(
         }
         // "gemini" is a CLI-friendly alias; the canonical connector type
         // stays "google".
+        // Gemini takes both the purpose and the output size: `taskType` is
+        // quality-relevant for retrieval, and `outputDimensionality` is what
+        // makes a descriptor's `dim` mean anything other than the model's
+        // native width.
         "google" | "gemini" => Ok(Box::new(GeminiClient::new(
             provider_model_id.to_string(),
             config.require_api_key()?,
+            dimensions_opt,
+            input_type,
             config.base_url_or(DEFAULT_GEMINI_BASE_URL),
             http_client,
         ))),
@@ -161,6 +167,10 @@ pub fn new_embedding_backend(
             provider_model_id.to_string(),
             config.require_api_key()?,
             input_type.to_string(),
+            // embed-v4.0 accepts an output size; the v3 models ignore it.
+            // Same reason as Gemini: the descriptor's `dim` is authoritative
+            // and the gateway checks every response against it.
+            dimensions_opt,
             config.base_url_or(DEFAULT_COHERE_BASE_URL),
             http_client,
         ))),

@@ -388,6 +388,9 @@ async fn admin_unload(state: Arc<ServerState>, names: Vec<String>) -> (StatusCod
 async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) {
     let gateway = state.gateway.clone();
     let path = state.settings.providers_path.clone();
+    // Read fresh at reload time, not at boot: a provider file claiming a name
+    // the engine now serves must be refused now.
+    let engine = state.engine.clone();
     // The directory this node actually reads. Reported in the body because
     // `postvec provider … --path DIR` has to try loopback listeners blind:
     // without it, whichever host answers first would be credited with a
@@ -396,7 +399,9 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
     // providers.d scanning is filesystem work (stat, read, key files) —
     // keep it off the serving runtime's workers like the other admin routes.
     let outcome = tokio::task::spawn_blocking(move || {
-        let report = gateway.reload(&path)?;
+        let local: std::collections::BTreeSet<String> =
+            engine.get_active_models().into_iter().collect();
+        let report = gateway.reload(&path, &local)?;
         Ok::<_, String>((report, gateway.inflight_budget()))
     })
     .await;
@@ -650,7 +655,10 @@ mod tests {
             frontend: "http://127.0.0.1:22222".to_string(),
         };
         // Boot with an empty (nonexistent) providers.d: budget 0.
-        let gateway = Arc::new(providers::gateway::Gateway::load(&settings.providers_path));
+        let gateway = Arc::new(providers::gateway::Gateway::load(
+            &settings.providers_path,
+            &Default::default(),
+        ));
         let providers_path = settings.providers_path.clone();
         let state = ServerState::new(
             engine,

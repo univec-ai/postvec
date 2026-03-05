@@ -55,19 +55,6 @@ pub enum TitanAuth {
     BearerToken(String),
 }
 
-impl TitanAuth {
-    /// The credential an upstream could plausibly quote back in an error
-    /// body, for redaction. The SigV4 secret key never appears in a request
-    /// — only the derived signature does — so the access key id, which rides
-    /// the `Authorization` header verbatim, is the one to scrub.
-    fn echoable_secret(&self) -> Option<&str> {
-        match self {
-            TitanAuth::BearerToken(token) => Some(token),
-            TitanAuth::SigV4 { access_key, .. } => Some(access_key),
-        }
-    }
-}
-
 // ---- Client Implementation ----
 
 /// A client for generating embeddings using AWS Titan models on Bedrock.
@@ -209,7 +196,7 @@ impl EmbeddingBackend for TitanClient {
 
                 // Check for API errors (e.g., 429, 503)
                 if !response.status().is_success() {
-                    return Err(crate::api_error(response, self.auth.echoable_secret()).await);
+                    return Err(crate::api_error(response).await);
                 }
 
                 // Read the body, bounded. Titan invokes one text per request,
