@@ -214,11 +214,12 @@ pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(
 /// - **No control characters can survive**, because no free text does: an
 ///   upstream must not be able to write a second, forged line into a
 ///   PostgreSQL log.
-/// - **Nothing else from the body is forwarded.** Only a short, code-shaped
-///   identifier survives (see [`provider_error_code`]); the text itself never
-///   leaves this function, so neither an echoed credential nor an echoed
-///   fragment of the row's own source text can reach a log, a tonic status or
-///   `postvec.jobs_dead.last_error`.
+/// - **Nothing from the body is forwarded but a code this crate already
+///   knows.** [`provider_error_code`] matches against a closed list, so
+///   neither an echoed credential nor an echoed fragment of the row's own
+///   source text can reach a log, a tonic status or
+///   `postvec.jobs_dead.last_error` — not because it is unlikely to fit a
+///   grammar, but because the value has to be one of ours.
 pub(crate) async fn api_error(response: reqwest::Response) -> EmbeddingError {
     let status = response.status().as_u16();
     if matches!(status, 401 | 403) {
@@ -248,29 +249,67 @@ pub(crate) async fn api_error(response: reqwest::Response) -> EmbeddingError {
         status,
         message: match provider_error_code(&body) {
             Some(code) => format!("provider error code {code:?}"),
-            None => "no recognisable provider error code in the response".to_string(),
+            None => "no recognised provider error code in the response".to_string(),
         },
     }
 }
 
-/// Characters a machine-readable provider error code may contain, and the
-/// length past which a "code" is prose.
-const MAX_ERROR_CODE_BYTES: usize = 64;
-
-/// The one thing extracted from an upstream error body: a short, code-shaped
-/// identifier from one of the fields providers use for exactly that
-/// (`error.code`, `error.type`, `error.status`, `code`, `status`).
+/// The error codes this crate is willing to repeat back.
 ///
-/// The body itself never leaves this function, and that is the point.
-/// Scrubbing a *known* credential out of an arbitrary body defends against
-/// the case you thought of; it cannot remove the **source text** a provider
-/// echoes back in a 400, in whatever form it chooses to echo it. That text
-/// belongs to a database and this message is logged by the inference host —
-/// a different machine in remote mode — and stored in
-/// `postvec.jobs_dead.last_error`. An allow-list inverts the burden: a value
-/// is only forwarded if it is short and looks like an identifier, which no
-/// document does.
-fn provider_error_code(body: &str) -> Option<String> {
+/// A **closed** vocabulary, not a grammar. The previous version forwarded any
+/// short `[A-Za-z0-9_.-]` value found in a provider's error field, which is
+/// still upstream-controlled: a provider — or anything behind an
+/// operator-supplied `base_url` — can put a spaceless fragment of the row's
+/// own source text in `error.code` and it would have travelled to the host's
+/// log, across tonic, and into `postvec.jobs_dead.last_error`.
+///
+/// Matching against a list *we* wrote makes the leak impossible rather than
+/// unlikely. The cost is bounded and visible: an unrecognised code is
+/// reported as absent, so a new provider code means slightly less detail in
+/// one message — never a disclosure. Add to this list when a provider
+/// documents a code worth distinguishing.
+const KNOWN_PROVIDER_ERROR_CODES: &[&str] = &[
+    // OpenAI / OpenRouter / Azure-compatible
+    "insufficient_quota",
+    "invalid_api_key",
+    "invalid_organization",
+    "invalid_request_error",
+    "model_not_found",
+    "rate_limit_exceeded",
+    "server_error",
+    "tokens_exceeded",
+    "context_length_exceeded",
+    "billing_hard_limit_reached",
+    "unsupported_value",
+    "invalid_value",
+    // Cohere
+    "invalid_argument",
+    "not_found",
+    "too_many_requests",
+    "unavailable",
+    // Google
+    "INVALID_ARGUMENT",
+    "PERMISSION_DENIED",
+    "RESOURCE_EXHAUSTED",
+    "FAILED_PRECONDITION",
+    "UNAVAILABLE",
+    "INTERNAL",
+    // AWS Bedrock
+    "ValidationException",
+    "ThrottlingException",
+    "ModelTimeoutException",
+    "ModelErrorException",
+    "ModelNotReadyException",
+    "ServiceQuotaExceededException",
+    "AccessDeniedException",
+];
+
+/// The one thing extracted from an upstream error body: a code this crate
+/// already knows, found in one of the fields providers use for exactly that.
+///
+/// The body itself never leaves this function, and neither does any value
+/// that is not in [`KNOWN_PROVIDER_ERROR_CODES`].
+fn provider_error_code(body: &str) -> Option<&'static str> {
     let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
     [
         "/error/code",
@@ -278,20 +317,17 @@ fn provider_error_code(body: &str) -> Option<String> {
         "/error/status",
         "/code",
         "/status",
+        "/message",
+        "/__type",
     ]
     .into_iter()
     .filter_map(|pointer| parsed.pointer(pointer))
-    .filter_map(|value| match value {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    })
-    .find(|code| {
-        !code.is_empty()
-            && code.len() <= MAX_ERROR_CODE_BYTES
-            && code
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    .filter_map(|value| value.as_str())
+    .find_map(|candidate| {
+        KNOWN_PROVIDER_ERROR_CODES
+            .iter()
+            .find(|known| **known == candidate)
+            .copied()
     })
 }
 

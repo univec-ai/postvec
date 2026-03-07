@@ -233,8 +233,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // node, mounted beside the engine. `load` isolates per-provider/per-file
     // failures internally — a broken provider file never degrades local
     // models — and a missing directory is the ordinary zero-config case.
-    let local_models: std::collections::BTreeSet<String> =
-        engine.get_active_models().into_iter().collect();
+    let local_models = crate::models::reserved_local_names(&settings.root, &engine);
     let gateway = Arc::new(providers::gateway::Gateway::load(
         &settings.providers_path,
         &local_models,

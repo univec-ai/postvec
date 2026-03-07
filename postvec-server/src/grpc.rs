@@ -1429,6 +1429,11 @@ mod gateway_tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `create_dir_all` honours the umask.
         std::fs::set_permissions(&providers_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // …and its parent: the loader refuses a providers.d whose ancestor is
+        // group-writable, and `tempfile`/`create_dir_all` honour the umask.
+        if let Some(parent) = &providers_dir.parent() {
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let path = providers_dir.join("openai.toml");
         std::fs::write(
             &path,

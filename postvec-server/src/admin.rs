@@ -389,8 +389,9 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
     let gateway = state.gateway.clone();
     let path = state.settings.providers_path.clone();
     // Read fresh at reload time, not at boot: a provider file claiming a name
-    // the engine now serves must be refused now.
+    // the engine now owns must be refused now.
     let engine = state.engine.clone();
+    let root = state.settings.root.clone();
     // The directory this node actually reads. Reported in the body because
     // `postvec provider … --path DIR` has to try loopback listeners blind:
     // without it, whichever host answers first would be credited with a
@@ -399,8 +400,7 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
     // providers.d scanning is filesystem work (stat, read, key files) —
     // keep it off the serving runtime's workers like the other admin routes.
     let outcome = tokio::task::spawn_blocking(move || {
-        let local: std::collections::BTreeSet<String> =
-            engine.get_active_models().into_iter().collect();
+        let local = models::reserved_local_names(&root, &engine);
         let report = gateway.reload(&path, &local)?;
         Ok::<_, String>((report, gateway.inflight_budget()))
     })
@@ -675,6 +675,11 @@ mod tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `create_dir_all` honours the umask.
         std::fs::set_permissions(&providers_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // …and its parent: the loader refuses a providers.d whose ancestor is
+        // group-writable, and `tempfile`/`create_dir_all` honour the umask.
+        if let Some(parent) = &providers_path.parent() {
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let file = providers_path.join("openai.toml");
         std::fs::write(
             &file,

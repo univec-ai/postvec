@@ -547,6 +547,20 @@ fn setup_without_yes_is_refused_before_touching_anything_when_not_interactive() 
 
 // ---- external providers (`postvec provider …`) --------------------------
 
+/// A `--path` root for the provider tests.
+///
+/// `tempfile` honours the umask, so on a umask-002 host the root is
+/// group-writable — and the loader refuses a providers.d whose *ancestor* can
+/// be replaced by another account. A real root (`/var/lib/postvec-server`,
+/// `/etc/postvec`) is not group-writable, so this restores the deployed
+/// shape rather than relaxing the rule.
+fn provider_root() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    dir
+}
+
 #[test]
 fn provider_help_lists_every_verb_and_the_key_rules() {
     let output = run(&["provider", "--help"]);
@@ -605,7 +619,7 @@ fn no_provider_verb_accepts_a_key_on_the_command_line() {
 fn provider_add_ls_rm_round_trip_on_a_path_root() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let key = root.path().join("openai.key");
     std::fs::write(&key, "sk-test-key-value\n").unwrap();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -624,6 +638,9 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
         root_arg,
         // No paid API call in a test, and no cluster is in scope.
         "--no-verify",
+        // --path cannot inspect a cluster, so every name this makes live
+        // gets the UNKNOWN privacy step; `--yes` does not answer it.
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
@@ -690,7 +707,7 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
 fn provider_add_dry_run_makes_no_provider_call_and_writes_nothing() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let key = root.path().join("openai.key");
     std::fs::write(&key, "sk-test-key-value\n").unwrap();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -726,7 +743,7 @@ fn provider_add_dry_run_makes_no_provider_call_and_writes_nothing() {
 /// credential directory nothing reads.
 #[test]
 fn provider_add_refuses_a_path_root_that_does_not_exist() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let missing = root.path().join("no-such-root");
 
     let output = run(&["provider", "ls", "--path", missing.to_str().unwrap()]);
@@ -746,7 +763,7 @@ fn provider_add_refuses_a_path_root_that_does_not_exist() {
 fn provider_add_applies_a_base_url_change_to_an_existing_file() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let key = root.path().join("openai.key");
     std::fs::write(&key, "sk-test-key-value\n").unwrap();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -765,6 +782,9 @@ fn provider_add_applies_a_base_url_change_to_an_existing_file() {
         "--path",
         root_arg,
         "--no-verify",
+        // --path cannot inspect a cluster, so every name it makes live gets
+        // the UNKNOWN privacy step. `--yes` does not answer it.
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&first), 0, "{}", stderr(&first));
@@ -806,7 +826,7 @@ fn provider_add_applies_a_base_url_change_to_an_existing_file() {
 fn provider_add_refuses_a_world_readable_key_file() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let key = root.path().join("leaky.key");
     std::fs::write(&key, "sk-test-key-value\n").unwrap();
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -822,6 +842,7 @@ fn provider_add_refuses_a_world_readable_key_file() {
         "--path",
         root.path().to_str().unwrap(),
         "--no-verify",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0);
@@ -837,7 +858,7 @@ fn provider_add_refuses_a_world_readable_key_file() {
 /// says so instead of guessing one.
 #[test]
 fn an_unknown_model_needs_a_dim_when_verification_is_skipped() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let output = run(&[
         "provider",
         "add",
@@ -849,6 +870,7 @@ fn an_unknown_model_needs_a_dim_when_verification_is_skipped() {
         "--path",
         root.path().to_str().unwrap(),
         "--no-verify",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0);
@@ -860,7 +882,7 @@ fn an_unknown_model_needs_a_dim_when_verification_is_skipped() {
 /// so the file matches the factory arm.
 #[test]
 fn the_gemini_alias_writes_the_google_connector_type() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let output = run(&[
         "provider",
         "add",
@@ -872,6 +894,7 @@ fn the_gemini_alias_writes_the_google_connector_type() {
         "--path",
         root.path().to_str().unwrap(),
         "--no-verify",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
@@ -888,7 +911,7 @@ fn the_gemini_alias_writes_the_google_connector_type() {
 /// system directory — must be refused before it is joined onto anything.
 #[test]
 fn a_traversing_provider_name_is_refused_by_every_verb() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let outside = root.path().join("outside.toml");
     std::fs::write(&outside, "provider = 'openai'\n").expect("write");
     let providers_d = root.path().join("providers.d");
@@ -928,7 +951,7 @@ fn a_traversing_provider_name_is_refused_by_every_verb() {
 /// ignores. The region itself becomes a hostname, so it is validated too.
 #[test]
 fn aws_refuses_a_base_url_and_a_region_that_could_move_the_endpoint() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let base = |extra: &[&'static str]| -> Vec<&'static str> {
         let root_arg: &'static str =
             Box::leak(root.path().to_str().unwrap().to_string().into_boxed_str());
@@ -943,6 +966,7 @@ fn aws_refuses_a_base_url_and_a_region_that_could_move_the_endpoint() {
             "--path",
             root_arg,
             "--no-verify",
+            "--acknowledge-in-use",
             "--yes",
         ];
         args.extend_from_slice(extra);
@@ -975,7 +999,7 @@ fn aws_refuses_a_base_url_and_a_region_that_could_move_the_endpoint() {
 #[test]
 fn provider_ls_reports_a_disabled_file_as_disabled() {
     use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let providers_d = root.path().join("providers.d");
     std::fs::create_dir(&providers_d).expect("mkdir");
     let path = providers_d.join("openai.toml");
@@ -1004,7 +1028,7 @@ fn provider_ls_reports_a_disabled_file_as_disabled() {
 /// down with it — so the derivation has to be total.
 #[test]
 fn an_awkward_model_id_still_derives_a_name_the_host_accepts() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let output = run(&[
         "provider",
         "add",
@@ -1018,6 +1042,7 @@ fn an_awkward_model_id_still_derives_a_name_the_host_accepts() {
         "--no-verify",
         "--dim",
         "8",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
@@ -1041,7 +1066,7 @@ fn an_awkward_model_id_still_derives_a_name_the_host_accepts() {
 /// as it was.
 #[test]
 fn provider_add_will_not_write_a_file_the_host_would_refuse() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let root_arg = root.path().to_str().unwrap();
     let file = root.path().join("providers.d").join("openai.toml");
 
@@ -1060,6 +1085,9 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
         "--path",
         root_arg,
         "--no-verify",
+        // --path cannot inspect a cluster, so every name it makes live gets
+        // the UNKNOWN privacy step. `--yes` does not answer it.
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
@@ -1081,6 +1109,9 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
         "--path",
         root_arg,
         "--no-verify",
+        // --path cannot inspect a cluster, so every name it makes live gets
+        // the UNKNOWN privacy step. `--yes` does not answer it.
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0);
@@ -1100,6 +1131,9 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
         "--path",
         root_arg,
         "--no-verify",
+        // --path cannot inspect a cluster, so every name it makes live gets
+        // the UNKNOWN privacy step. `--yes` does not answer it.
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0);
@@ -1118,7 +1152,7 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
 fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let dir = root.path().join("providers.d");
     std::fs::create_dir_all(&dir).expect("mkdir");
     let file = dir.join("openai.toml");
@@ -1153,7 +1187,7 @@ fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
 fn provider_add_refuses_a_world_writable_providers_directory() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let dir = root.path().join("providers.d");
     std::fs::create_dir_all(&dir).expect("mkdir");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
@@ -1169,6 +1203,7 @@ fn provider_add_refuses_a_world_writable_providers_directory() {
         "--path",
         root.path().to_str().unwrap(),
         "--no-verify",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
@@ -1188,7 +1223,7 @@ fn provider_add_refuses_a_world_writable_providers_directory() {
 fn provider_add_will_not_follow_a_planted_temporary_symlink() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let dir = root.path().join("providers.d");
     std::fs::create_dir_all(&dir).expect("mkdir");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
@@ -1209,6 +1244,7 @@ fn provider_add_will_not_follow_a_planted_temporary_symlink() {
         "--path",
         root.path().to_str().unwrap(),
         "--no-verify",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     // Either the symlink is refused, or it was removed as a stale temp file
@@ -1227,7 +1263,7 @@ fn provider_add_will_not_follow_a_planted_temporary_symlink() {
 fn a_malformed_models_field_is_an_error_not_a_panic() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let dir = root.path().join("providers.d");
     std::fs::create_dir_all(&dir).expect("mkdir");
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
@@ -1248,6 +1284,7 @@ fn a_malformed_models_field_is_an_error_not_a_panic() {
         "--path",
         root.path().to_str().unwrap(),
         "--no-verify",
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0);
@@ -1267,7 +1304,7 @@ fn a_malformed_models_field_is_an_error_not_a_panic() {
 /// rather than silently treating "no columns found" as "no columns".
 #[test]
 fn moving_an_endpoint_announces_that_the_recipient_changes() {
-    let root = tempfile::tempdir().expect("tempdir");
+    let root = provider_root();
     let root_arg = root.path().to_str().unwrap();
 
     let first = run(&[
@@ -1283,6 +1320,9 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
         "--path",
         root_arg,
         "--no-verify",
+        // --path cannot inspect a cluster, so every name it makes live gets
+        // the UNKNOWN privacy step. `--yes` does not answer it.
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&first), 0, "{}", stderr(&first));
@@ -1303,6 +1343,7 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
         "--path",
         root_arg,
         "--no-verify",
+        // Deliberately WITHOUT --acknowledge-in-use: that is the point.
         "--yes",
     ];
     let refused = run(&moved_args);
@@ -1339,6 +1380,9 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
         "--path",
         root_arg,
         "--no-verify",
+        // --path cannot inspect a cluster, so every name it makes live gets
+        // the UNKNOWN privacy step. `--yes` does not answer it.
+        "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&rotated), 0, "{}", stderr(&rotated));

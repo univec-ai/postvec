@@ -261,14 +261,23 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             .filter(|column| &column.model == name)
             .cloned()
             .collect();
-        // `--path` has no cluster, so an endpoint move there cannot list the
-        // affected columns. That is not the same as there being none, and
-        // treating an unanswerable question as a clean answer is the one
-        // outcome a privacy gate must never produce — so the step is pushed
-        // anyway, with the databases marked UNKNOWN. `--yes` is not an answer
-        // to "may this text go somewhere else"; the step is what makes
+        // `--path` has no cluster, so nothing here can list the affected
+        // columns. That is not the same as there being none, and treating an
+        // unanswerable question as a clean answer is the one outcome a
+        // privacy gate must never produce — so the step is pushed anyway,
+        // with the databases marked UNKNOWN. `--yes` is not an answer to "may
+        // this text go somewhere else"; the step is what makes
         // `--acknowledge-in-use` (or the typed confirmation) the way through.
-        let unknown = if endpoint_changes && !scanned {
+        //
+        // Every name this run makes newly live, not only an endpoint move: a
+        // *first* `provider add --path openai --model …` on a fleet node is
+        // exactly the bridge-upgrade event — a column already bound to that
+        // public name and served through a converter starts being embedded by
+        // the provider on the next worker cycle. On a cluster target the scan
+        // answers that question; here nothing can, and `--path` is the
+        // documented way to administer remote nodes, so it must not be the
+        // one mode with no gate.
+        let unknown = if !scanned {
             vec!["every database served by this node (not inspectable from --path)".to_string()]
         } else {
             unknown_databases.clone()

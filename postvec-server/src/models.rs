@@ -98,6 +98,32 @@ pub type DescriptorIndex = BTreeMap<String, Vec<PathBuf>>;
 /// Dot-directories are never backends or models — the CLI stages downloads in
 /// `models/.staging`, and a half-written descriptor there must not be visible
 /// to a scan.
+/// Every model name this node's engine owns: loaded now, plus every
+/// descriptor on disk.
+///
+/// Wider than `get_active_models()` on purpose. A model that is configured
+/// but currently failing to load is absent from the engine's map, so
+/// reserving only loaded names would let a provider file declaring that name
+/// take it over — and a column bound to it would start sending source text to
+/// a third party because a local model was broken. A failed scan falls back
+/// to the loaded set with a warning.
+pub fn reserved_local_names(
+    root: &Path,
+    engine: &engine::InferenceEngine,
+) -> std::collections::BTreeSet<String> {
+    let mut names: std::collections::BTreeSet<String> =
+        engine.get_active_models().into_iter().collect();
+    match descriptor_index(root) {
+        Ok(index) => names.extend(index.into_keys()),
+        Err(e) => log::warn!(
+            "providers.d: could not scan {} for local model names ({e}); only loaded models \
+             are reserved against a provider name collision",
+            root.display()
+        ),
+    }
+    names
+}
+
 pub fn descriptor_index(root: &Path) -> Result<DescriptorIndex, String> {
     let models_dir = root.join(MODELS_DIR);
     let backends = std::fs::read_dir(&models_dir).map_err(|e| {

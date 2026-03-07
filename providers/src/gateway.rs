@@ -273,11 +273,17 @@ impl Inner {
                         continue 'providers;
                     }
                 };
-                // Purpose changes the request body only for Cohere; one
-                // backend per purpose keeps `input_type` a constructor
-                // concern (the copied client's shape) instead of a per-call
-                // trait parameter.
-                let query = if provider_type == "cohere" {
+                // Purpose changes the request body for Cohere (`input_type`)
+                // and for Gemini (`taskType`); one backend per purpose keeps
+                // it a constructor concern (the copied client's shape)
+                // instead of a per-call trait parameter.
+                //
+                // Google belongs in this list. Adding `taskType` to the
+                // client without adding it here meant every Gemini query was
+                // still embedded as `RETRIEVAL_DOCUMENT` — the parameter was
+                // built and never reached, which is worse than not having it,
+                // because the descriptor claims the distinction is honoured.
+                let query = if matches!(provider_type.as_str(), "cohere" | "google") {
                     match build("search_query") {
                         Ok(backend) => Some(backend),
                         Err(e) => {
@@ -605,8 +611,25 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
         // travel here — which is what lets the public error carry no upstream
         // text at all (see `crate::api_error`).
         EmbeddingError::InputTooLong { .. } => ErrorCode::ContextLengthExceeded,
-        // Any other 4xx, and the clients' 200-decode-failure sentinel:
-        // permanent for this input/response shape.
+        // Every remaining **request-side** 4xx is attributed to the rows
+        // until bisection proves otherwise.
+        //
+        // The line this draws is between a rejected *request* and a malformed
+        // *response*. A 4xx says the provider looked at what we sent and
+        // refused it, and providers refuse a whole request over one bad item
+        // — OpenAI documents `input` as required to be non-empty and answers
+        // `[good, "", good]` with a single 400. Dead-lettering the batch there
+        // destroys healthy rows for one poisoned neighbour, and the operator
+        // has no way to tell which. PoisonRow costs a bounded log2(n) extra
+        // calls when the fault really is batch-wide (4xx are not billed for
+        // tokens) and ends in the same place; when it is one row, it isolates
+        // that row and saves the rest. The asymmetry decides it.
+        EmbeddingError::Api { status, .. } if (400..500).contains(status) => {
+            ErrorCode::ContextLengthExceeded
+        }
+        // Everything else, including the clients' 200-decode-failure
+        // sentinel: a response the provider produced, which is not about any
+        // row and cannot be bisected into working.
         EmbeddingError::Api { .. } => ErrorCode::InvalidInput,
         EmbeddingError::Deserialization(_) => ErrorCode::InvalidInput,
         EmbeddingError::Deadline(_) => ErrorCode::Timeout,
@@ -815,11 +838,6 @@ mod tests {
             (401, r#"{"error":"bad key"}"#, ErrorCode::UpstreamAuthFailed),
             (403, r#"{"error":"revoked"}"#, ErrorCode::UpstreamAuthFailed),
             (
-                404,
-                r#"{"error":"no such model"}"#,
-                ErrorCode::ModelNotFound,
-            ),
-            (
                 429,
                 r#"{"error":"rate limited"}"#,
                 ErrorCode::UpstreamServiceUnavailable,
@@ -853,10 +871,19 @@ mod tests {
                 r#"{"message":"Request Entity Too Large"}"#,
                 ErrorCode::ContextLengthExceeded,
             ),
+            // A request-side 4xx is attributed to the rows until bisection
+            // proves otherwise: providers refuse a whole request over one
+            // bad item, and dead-lettering the batch would destroy healthy
+            // neighbours for it.
             (
                 400,
                 r#"{"error":"malformed input"}"#,
-                ErrorCode::InvalidInput,
+                ErrorCode::ContextLengthExceeded,
+            ),
+            (
+                404,
+                r#"{"error":{"code":"model_not_found"}}"#,
+                ErrorCode::ModelNotFound,
             ),
             (200, "garbage that is not json", ErrorCode::InvalidInput),
         ];

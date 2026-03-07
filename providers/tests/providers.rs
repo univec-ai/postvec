@@ -733,7 +733,26 @@ async fn no_part_of_an_upstream_error_body_reaches_diagnostics() {
         );
     }
 
-    // A body with no code-shaped field forwards nothing at all.
+    // A code-*shaped* value that is not one this crate knows forwards
+    // nothing: the vocabulary is closed, not a grammar, so a provider cannot
+    // smuggle a spaceless fragment of the row through `error.code`.
+    let m = mock::always(
+        400,
+        r#"{"error":{"code":"quarterly_revenue_guidance_increased_materially"}}"#,
+    )
+    .await;
+    let client = OpenAIClient::new(
+        "text-embedding-3-small".to_string(),
+        KEY.to_string(),
+        None,
+        m.url.clone(),
+        None,
+    );
+    let err = client.embed(&[SOURCE], None).await.unwrap_err();
+    assert!(!err.to_string().contains("quarterly"), "{err}");
+    assert!(!err.to_string().contains("revenue"), "{err}");
+
+    // A body with no recognised code forwards nothing at all.
     let m = mock::always(400, "the model said: quarterly revenue guidance increased").await;
     let client = OpenAIClient::new(
         "text-embedding-3-small".to_string(),

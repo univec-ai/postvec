@@ -610,9 +610,11 @@ pub(super) fn spawn(
     let load_allowed = Arc::new(allowed_models);
     let admin_lifecycle = Arc::new(tokio::sync::Mutex::new(()));
     let load_lifecycle = admin_lifecycle.clone();
-    // The reload route needs the engine too: a provider file claiming a name
-    // the engine serves is refused at reload time, not left dormant.
+    // The reload route needs the engine and the model root: a provider file
+    // claiming a name the engine *owns* — loaded or merely configured — is
+    // refused at reload time, not left dormant.
     let reload_engine = engine.clone();
+    let reload_root = root.to_path_buf();
     let unload_engine = engine;
     let unload_root = root.to_path_buf();
     let unload_lifecycle = admin_lifecycle;
@@ -630,6 +632,7 @@ pub(super) fn spawn(
             post(move |ConnectInfo(peer): ConnectInfo<SocketAddr>| {
                 let gateway = reload_gateway.clone();
                 let engine = reload_engine.clone();
+                let root = reload_root.clone();
                 let path = providers_path.clone();
                 // The directory this host actually reads. Reported in the
                 // body because `postvec provider … --path DIR` has to try
@@ -646,8 +649,7 @@ pub(super) fn spawn(
                     // key files) — keep it off the 2-thread engine runtime,
                     // like the other admin handlers.
                     let outcome = tokio::task::spawn_blocking(move || {
-                        let local: std::collections::BTreeSet<String> =
-                            engine.get_active_models().into_iter().collect();
+                        let local = crate::client::embedded::reserved_local_names(&root, &engine);
                         let report = gateway.reload(&path, &local)?;
                         Ok::<_, String>((report, gateway.inflight_budget()))
                     })
@@ -792,6 +794,11 @@ mod tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `create_dir_all` honours the umask.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // …and its parent: the loader refuses a providers.d whose ancestor is
+        // group-writable, and `tempfile`/`create_dir_all` honour the umask.
+        if let Some(parent) = &dir.parent() {
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let path = dir.join(file);
         std::fs::write(&path, body).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();

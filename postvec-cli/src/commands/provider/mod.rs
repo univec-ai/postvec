@@ -574,8 +574,29 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
         })?;
         return Ok(false);
     }
-    // Parents (`/etc/postvec`) keep the default mode: only the leaf holds
+    // Parents (`/etc/postvec`) are 0755, not 0700: only the leaf holds
     // credentials, and a 0700 `/etc/postvec` would hide unrelated files.
+    //
+    // Explicitly 0755, because `create_dir_all` honours the umask — on a
+    // umask-002 host it produces a group-writable parent, and the loader
+    // refuses a providers.d whose ancestor can be replaced. postvec would
+    // otherwise create a directory its own serving host then rejects.
+    let mut missing: Vec<&Path> = Vec::new();
+    let mut cursor = dir.parent();
+    while let Some(ancestor) = cursor {
+        if ancestor.exists() {
+            break;
+        }
+        missing.push(ancestor);
+        cursor = ancestor.parent();
+    }
+    for ancestor in missing.into_iter().rev() {
+        std::fs::create_dir(ancestor)
+            .map_err(|e| CliError::apply(format!("cannot create {}: {e}", ancestor.display())))?;
+        std::fs::set_permissions(ancestor, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| CliError::apply(format!("cannot chmod {}: {e}", ancestor.display())))?;
+        chown_if_root(ancestor, owner)?;
+    }
     std::fs::create_dir_all(dir)
         .map_err(|e| CliError::apply(format!("cannot create {}: {e}", dir.display())))?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
@@ -1197,6 +1218,9 @@ mod tests {
     #[test]
     fn ensure_private_dir_creates_0700_once_and_leaves_an_existing_one_alone() {
         let root = tempfile::tempdir().unwrap();
+        // `tempfile` honours the umask; the loader refuses a providers.d whose
+        // ancestor is group-writable, and a real `/etc/postvec` is not.
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let dir = root.path().join("postvec/providers.d");
 
         assert!(ensure_private_dir(&dir, None).unwrap(), "created");
@@ -1345,6 +1369,7 @@ mod tests {
     #[test]
     fn secret_writes_create_a_private_directory() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let nested = dir.path().join("providers.d").join("openai.toml");
         write_secret_file(&nested, b"provider = \"openai\"\n", None).unwrap();
         assert_eq!(

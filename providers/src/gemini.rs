@@ -128,6 +128,23 @@ fn redacted_network(e: reqwest::Error) -> EmbeddingError {
     EmbeddingError::Network(e.without_url())
 }
 
+/// Scale a vector to unit L2 norm. A zero (or non-finite) vector is returned
+/// untouched: there is no meaningful direction to preserve, and the hosts
+/// already refuse a non-finite component further up.
+fn l2_normalize(mut values: Vec<f32>) -> Vec<f32> {
+    let norm = values
+        .iter()
+        .map(|v| (*v as f64) * (*v as f64))
+        .sum::<f64>()
+        .sqrt();
+    if norm.is_finite() && norm > 0.0 {
+        for value in &mut values {
+            *value = (*value as f64 / norm) as f32;
+        }
+    }
+    values
+}
+
 #[async_trait]
 impl EmbeddingBackend for GeminiClient {
     async fn embed(
@@ -193,7 +210,20 @@ impl EmbeddingBackend for GeminiClient {
             .enumerate()
             .map(|(index, data)| Embedding {
                 text_index: index,
-                vector: data.values,
+                // Google normalises `gemini-embedding-001` at its native
+                // width and documents that a *reduced* output is not
+                // normalised — the caller must do it. Skipping that leaves
+                // vectors whose L2 norm is not 1, which silently changes what
+                // cosine distance and inner product mean against everything
+                // else in the column. Renormalising a vector that is already
+                // unit-length is a no-op, so this is applied whenever a size
+                // was requested rather than guessing which model is native at
+                // which width.
+                vector: if self.dimensions.is_some() {
+                    l2_normalize(data.values)
+                } else {
+                    data.values
+                },
             })
             .collect();
 

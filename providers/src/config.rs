@@ -300,6 +300,42 @@ pub fn validate_directory(dir: &Path, expected_uid: Option<u32>) -> Result<(), S
             dir.display()
         ));
     }
+    validate_ancestry(dir)
+}
+
+/// No ancestor of the credential directory may be writable by other users
+/// without the sticky bit.
+///
+/// The leaf's own mode and owner say nothing about whether the *path to it*
+/// can be rewritten. If any parent is group- or world-writable, another
+/// account can rename the directory away and put its own in place — between
+/// this validation and the enumeration that follows it, which is the race an
+/// `openat`-relative store exists to remove. `postvec.providers_path` and
+/// `--providers-path` are operator-configurable, so "it lives under
+/// /etc/postvec" is an assumption and not a fact.
+///
+/// The sticky bit is the exception that makes `/tmp` usable: with `+t` only
+/// an entry's owner may rename or remove it, which is exactly the property
+/// being checked for.
+fn validate_ancestry(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut cursor = dir.parent();
+    while let Some(ancestor) = cursor {
+        let meta = std::fs::symlink_metadata(ancestor)
+            .map_err(|e| format!("cannot stat {}: {e}", ancestor.display()))?;
+        let mode = meta.permissions().mode();
+        let sticky = mode & 0o1000 != 0;
+        if mode & 0o022 != 0 && !sticky {
+            return Err(format!(
+                "{} is writable by other users (mode {:o}), so the path to {} can be \
+                 replaced. chmod go-w it",
+                ancestor.display(),
+                mode & 0o7777,
+                dir.display()
+            ));
+        }
+        cursor = ancestor.parent();
+    }
     Ok(())
 }
 
@@ -1635,6 +1671,33 @@ max_tokens = 8191
         );
         let refused = validate_file(&path).unwrap_err();
         assert!(refused.contains("absolute path"), "{refused}");
+    }
+
+    /// The leaf's own mode says nothing about whether the *path to it* can be
+    /// rewritten. `postvec.providers_path` is operator-configurable, so "it
+    /// lives under /etc/postvec" is an assumption; a writable ancestor lets
+    /// another account swap the directory between validation and enumeration.
+    /// The sticky bit is the exception that keeps `/tmp` usable.
+    #[test]
+    fn a_writable_ancestor_is_refused_unless_it_is_sticky() {
+        let root = private_tempdir();
+        let parent = root.path().join("open");
+        let dir = parent.join("providers.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(validate_directory(&dir, None).is_ok(), "read bits are fine");
+
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let refused = validate_directory(&dir, None).unwrap_err();
+        assert!(refused.contains("replaced"), "{refused}");
+        assert!(refused.contains("open"), "{refused}");
+
+        // Sticky: only an entry's owner may rename it, which is the property
+        // being checked for — so `/tmp`-shaped ancestors stay usable.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(validate_directory(&dir, None).is_ok(), "sticky is safe");
     }
 
     /// Mode alone is not a trust boundary when the reader is root: a 0700

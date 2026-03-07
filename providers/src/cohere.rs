@@ -133,13 +133,22 @@ impl EmbeddingBackend for CohereClient {
         texts: &[&str],
         deadline: Option<Instant>,
     ) -> Result<Vec<Embedding>, EmbeddingError> {
+        // `output_dimension` is a v4+ capability. The v3 models have a fixed
+        // output width and reject the field, so sending it would turn a
+        // working `embed-english-v3.0` descriptor into a 400 on every call.
+        // Same shape as OpenAI's `text-embedding-3` check: the model id is
+        // what says whether the parameter exists.
+        let output_dimension = self
+            .dimensions
+            .filter(|_| self.model_name.starts_with("embed-v4"));
+
         // Construct the request body for Cohere v2 API.
         let request_body = CohereRequest {
             model: &self.model_name,
             texts,
             input_type: &self.input_type,
             embedding_types: vec!["float"],
-            output_dimension: self.dimensions,
+            output_dimension,
         };
 
         let url = format!("{}/v2/embed", self.base_url);

@@ -300,6 +300,34 @@ fn visit_resident_model(
 /// dependency that `load_model`/executor build can pull in. The previous
 /// enabled-descriptor count omitted disabled dependency descriptors, so 16
 /// enabled bridge roots could still create far more than 16 pools/sessions.
+/// Every model name the *engine* owns: what is loaded now, plus every
+/// descriptor on disk.
+///
+/// Deliberately wider than `get_active_models()`. A model that is configured
+/// but currently failing to load is not in the engine's map, so reserving
+/// only loaded names would let a provider file declaring that same name take
+/// it over — and a column bound to it would start sending its source text to
+/// a third party because a local model was broken. The reservation has to
+/// cover intent, not just current state.
+///
+/// A descriptor scan that fails falls back to the loaded set with a warning:
+/// reserving fewer names is a smaller failure than refusing to start.
+pub(crate) fn reserved_local_names(
+    root: &std::path::Path,
+    engine: &InferenceEngine,
+) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = engine.get_active_models().into_iter().collect();
+    match descriptor_index(root) {
+        Ok(index) => names.extend(index.into_keys()),
+        Err(e) => log::warn!(
+            "providers.d: could not scan {} for local model names ({e}); only loaded models \
+             are reserved against a provider name collision",
+            root.display()
+        ),
+    }
+    names
+}
+
 fn planned_resident_models(
     root: &std::path::Path,
     explicit: &[String],
@@ -508,11 +536,10 @@ fn try_init() -> Result<(), String> {
     // models), and a missing directory is the ordinary zero-config case —
     // an empty gateway changes nothing observable, including the
     // embedded_max_inflight ingress bound.
-    // The engine's own model names, so a provider file claiming one is
-    // refused at load rather than left dormant behind it — see the
-    // collision arm in `Inner::build`.
-    let local_models: std::collections::BTreeSet<String> =
-        engine.get_active_models().into_iter().collect();
+    // The names the engine owns, so a provider file claiming one is refused
+    // at load rather than left dormant behind it (see the collision arm in
+    // `Inner::build`).
+    let local_models = reserved_local_names(&cfg.root, &engine);
     let gateway = Arc::new(providers::gateway::Gateway::load(
         &cfg.providers_path,
         &local_models,

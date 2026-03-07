@@ -520,6 +520,7 @@ mod tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `tempfile` honours the umask.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        // …and its parent (`/tmp` is sticky, so only the tempdir matters).
         let path = dir.path().join("openai.toml");
         std::fs::write(
             &path,

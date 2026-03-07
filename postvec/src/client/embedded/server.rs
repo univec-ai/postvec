@@ -1423,6 +1423,9 @@ mod gateway_tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `create_dir_all` honours the umask.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // The parent here is `/tmp`, which is sticky and therefore accepted
+        // by the ancestor rule — nothing to adjust, and chmod-ing it would
+        // fail anyway.
         let path = dir.join("openai.toml");
         std::fs::write(
             &path,
@@ -1592,6 +1595,11 @@ mod gateway_tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `create_dir_all` honours the umask.
         std::fs::set_permissions(&providers_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // …and its parent: the loader refuses a providers.d whose ancestor is
+        // group-writable, and `tempfile`/`create_dir_all` honour the umask.
+        if let Some(parent) = &providers_dir.parent() {
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let file = providers_dir.join("openai.toml");
         std::fs::write(
             &file,
@@ -1642,9 +1650,10 @@ mod gateway_tests {
         ));
         let dir = root.join("providers.d");
         std::fs::create_dir_all(&dir).unwrap();
-        // A providers.d is 0700; the loader refuses a group/world-writable
-        // one, and `create_dir_all` honours the umask.
+        // A providers.d is 0700 and its ancestors are not group-writable;
+        // `create_dir_all` honours the umask, so set both.
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = dir.join("cohere.toml");
         std::fs::write(
             &path,
