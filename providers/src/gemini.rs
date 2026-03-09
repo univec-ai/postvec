@@ -95,12 +95,14 @@ impl GeminiClient {
         base_url: String,
         http_client: Option<Client>,
     ) -> Self {
+        let model_name_for_options = model_name.clone();
         Self {
             client: http_client.unwrap_or_default(),
             base_url,
             api_key,
             model_name,
-            dimensions,
+            // Only for a model documented to take them.
+            dimensions: dimensions.filter(|_| takes_request_options(&model_name_for_options)),
             // The gateway's vocabulary is Cohere's; Gemini spells the same
             // two purposes differently. Anything else means "unspecified",
             // which is the API's own default.
@@ -108,7 +110,8 @@ impl GeminiClient {
                 "search_query" => Some("RETRIEVAL_QUERY"),
                 "search_document" => Some("RETRIEVAL_DOCUMENT"),
                 _ => None,
-            },
+            }
+            .filter(|_| takes_request_options(&model_name_for_options)),
         }
     }
 }
@@ -120,12 +123,35 @@ impl GeminiClient {
 /// `base_url` at. A header is not logged by default anywhere on that path.
 const GEMINI_KEY_HEADER: &str = "x-goog-api-key";
 
+/// Model ids known to accept `taskType` and `outputDimensionality` on
+/// `batchEmbedContents`.
+///
+/// A list, not an assumption. Google's embedding models do not share one
+/// request contract — a newer generation can drop `taskType` in favour of
+/// prompt instructions, and sending a field a model rejects turns a working
+/// descriptor into a 400 on every call. Since the crate documents that
+/// *arbitrary* model ids work, an id outside this list gets neither
+/// parameter: it embeds at the model's native width with the API's default
+/// task type, which is the behaviour that cannot break. A descriptor
+/// declaring a non-native `dim` for such a model then fails the gateway's
+/// dimension check with a message naming both numbers, which is the legible
+/// failure rather than the mysterious one.
+const GEMINI_MODELS_WITH_REQUEST_OPTIONS: &[&str] = &[
+    "gemini-embedding-001",
+    "text-embedding-004",
+    "embedding-001",
+];
+
 /// `reqwest::Error`'s `Display` includes the request URL. The URL no longer
 /// carries the key (see [`GEMINI_KEY_HEADER`]), so this is now defence rather
 /// than the load-bearing redaction it used to be — kept because a URL in a
 /// log line buys nothing and a future `base_url` could carry a token again.
 fn redacted_network(e: reqwest::Error) -> EmbeddingError {
     EmbeddingError::Network(e.without_url())
+}
+
+fn takes_request_options(model_name: &str) -> bool {
+    GEMINI_MODELS_WITH_REQUEST_OPTIONS.contains(&model_name)
 }
 
 /// Scale a vector to unit L2 norm. A zero (or non-finite) vector is returned

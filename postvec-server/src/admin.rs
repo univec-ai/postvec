@@ -400,7 +400,9 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
     // providers.d scanning is filesystem work (stat, read, key files) —
     // keep it off the serving runtime's workers like the other admin routes.
     let outcome = tokio::task::spawn_blocking(move || {
-        let local = models::reserved_local_names(&root, &engine);
+        // Fail closed: a scan failure keeps the previous snapshot rather
+        // than reloading against a narrowed reservation.
+        let local = models::reserved_local_names(&root, &engine)?;
         let report = gateway.reload(&path, &local)?;
         Ok::<_, String>((report, gateway.inflight_budget()))
     })

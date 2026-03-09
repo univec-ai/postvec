@@ -233,11 +233,24 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // node, mounted beside the engine. `load` isolates per-provider/per-file
     // failures internally — a broken provider file never degrades local
     // models — and a missing directory is the ordinary zero-config case.
-    let local_models = crate::models::reserved_local_names(&settings.root, &engine);
-    let gateway = Arc::new(providers::gateway::Gateway::load(
-        &settings.providers_path,
-        &local_models,
-    ));
+    // If the local-model list cannot be built, no provider serves: a
+    // narrowed reservation is exactly how a provider takes a local name.
+    let gateway = Arc::new(
+        match crate::models::reserved_local_names(&settings.root, &engine) {
+            Ok(local_models) => {
+                providers::gateway::Gateway::load(&settings.providers_path, &local_models)
+            }
+            Err(e) => {
+                log::error!(
+                    "cannot enumerate local models under {} ({e}); serving no external \
+                     providers this start, because a partial list could let one claim a \
+                     local model's name. Local models are unaffected",
+                    settings.root.display()
+                );
+                providers::gateway::Gateway::empty()
+            }
+        },
+    );
 
     // --- 5. Cluster ------------------------------------------------------
     let (seeds, problems) = net::resolve_peers(&settings.peers, settings.gossip_port).await;

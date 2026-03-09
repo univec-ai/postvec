@@ -1658,9 +1658,12 @@ mod gateway_tests {
         std::fs::write(
             &path,
             format!(
+                // A v3 model: fixed output width, so a 2-component mock is
+                // legal. `embed-v4.0` produces only 256/512/1024/1536 and the
+                // loader refuses anything else.
                 "provider = \"cohere\"\napi_key = \"co-test\"\nbase_url = \"{}\"\n\n\
-                 [[models]]\nname = \"cohere-embed-v4-0\"\n\
-                 provider_model_id = \"embed-v4.0\"\ndim = 2\n",
+                 [[models]]\nname = \"cohere-embed-english-v3-0\"\n\
+                 provider_model_id = \"embed-english-v3.0\"\ndim = 2\n",
                 mock.url
             ),
         )
@@ -1681,7 +1684,7 @@ mod gateway_tests {
         // What `search()` sends.
         crate::runtime::block_on(client.embed(
             &["a query".to_string()],
-            "cohere-embed-v4-0",
+            "cohere-embed-english-v3-0",
             &EmbedRoute::default().with_purpose(crate::client::EmbedPurpose::Query),
         ))
         .expect("query embed");
@@ -1696,7 +1699,7 @@ mod gateway_tests {
         // what a default-constructed route means.
         crate::runtime::block_on(client.embed(
             &["stored content".to_string()],
-            "cohere-embed-v4-0",
+            "cohere-embed-english-v3-0",
             &EmbedRoute::default(),
         ))
         .expect("document embed");

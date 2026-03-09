@@ -879,3 +879,43 @@ async fn gemini_and_cohere_request_the_declared_dimension_and_purpose() {
     let sent = m.last_request();
     assert!(sent.contains("\"output_dimension\":1024"), "{sent}");
 }
+
+/// Google's embedding models do not share one request contract, and the
+/// crate documents that arbitrary model ids work. Sending `taskType` or
+/// `outputDimensionality` to a model that does not accept them turns a
+/// working descriptor into a 400 on every call, so an id outside the known
+/// list gets neither and embeds at its native width.
+#[tokio::test]
+async fn gemini_sends_request_options_only_to_models_documented_to_take_them() {
+    use providers::GeminiClient;
+
+    let m = mock::always(200, r#"{"embeddings":[{"values":[0.6,0.8]}]}"#).await;
+    let known = GeminiClient::new(
+        "gemini-embedding-001".to_string(),
+        "g".to_string(),
+        Some(1536),
+        "search_query",
+        m.url.clone(),
+        None,
+    );
+    known.embed(&["q"], None).await.expect("embed ok");
+    let sent = m.last_request();
+    assert!(sent.contains("\"taskType\""), "{sent}");
+    assert!(sent.contains("\"outputDimensionality\""), "{sent}");
+
+    let unknown = GeminiClient::new(
+        "some-future-embedding-model".to_string(),
+        "g".to_string(),
+        Some(1536),
+        "search_query",
+        m.url.clone(),
+        None,
+    );
+    unknown.embed(&["q"], None).await.expect("embed ok");
+    let sent = m.last_request();
+    assert!(
+        !sent.contains("taskType"),
+        "an unknown id must get neither: {sent}"
+    );
+    assert!(!sent.contains("outputDimensionality"), "{sent}");
+}

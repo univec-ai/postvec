@@ -452,19 +452,33 @@ impl Gateway {
             )
         })?;
 
-        // An empty input is a *row* problem, and providers report it as a
-        // batch one. OpenAI documents `input` as required to be non-empty and
-        // answers a whole request containing `""` with a 400 — so
-        // `[good, "", good]` would map to InvalidInput and dead-letter three
-        // rows for one bad one. Classifying it here as ContextLengthExceeded
-        // hands it to the queue's bisection, which halves the batch until the
-        // empty row is alone and dead-letters only that. Checked before the
-        // request rather than after: no reason to pay for the round trip.
-        if let Some(position) = texts.iter().position(|text| text.is_empty()) {
+        // The failures that belong to **one row** and that a provider reports
+        // as a failure of the whole request. Both are detectable here, with
+        // no round trip and no guessing: an empty string (OpenAI documents
+        // `input` as required to be non-empty) and one containing a NUL
+        // (rejected outright). `[good, "", good]` would otherwise come back
+        // as a single 400 and dead-letter three rows for one bad one.
+        //
+        // PoisonRow hands them to the queue's bisection, which halves the
+        // batch until the offending row is alone. That is safe *here*
+        // precisely because the classification is evidence-based: bisection
+        // converges on one row rather than walking the whole tree, which is
+        // what a guess on a generic 4xx would do (see `map_embedding_error`).
+        let culprit = texts
+            .iter()
+            .position(|text| text.is_empty())
+            .map(|at| (at, "is empty"))
+            .or_else(|| {
+                texts
+                    .iter()
+                    .position(|text| text.contains('\0'))
+                    .map(|at| (at, "contains a NUL byte"))
+            });
+        if let Some((position, why)) = culprit {
             return Err(GatewayError::new(
                 ErrorCode::ContextLengthExceeded,
                 format!(
-                    "input {position} is empty, which providers reject for the whole request; \
+                    "input {position} {why}, which providers reject for the whole request; \
                      isolating it rather than failing its neighbours"
                 ),
             ));
@@ -611,25 +625,26 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
         // travel here — which is what lets the public error carry no upstream
         // text at all (see `crate::api_error`).
         EmbeddingError::InputTooLong { .. } => ErrorCode::ContextLengthExceeded,
-        // Every remaining **request-side** 4xx is attributed to the rows
-        // until bisection proves otherwise.
+        // Any other 4xx, and the clients' 200-decode-failure sentinel:
+        // permanent for this input/response shape.
         //
-        // The line this draws is between a rejected *request* and a malformed
-        // *response*. A 4xx says the provider looked at what we sent and
-        // refused it, and providers refuse a whole request over one bad item
-        // — OpenAI documents `input` as required to be non-empty and answers
-        // `[good, "", good]` with a single 400. Dead-lettering the batch there
-        // destroys healthy rows for one poisoned neighbour, and the operator
-        // has no way to tell which. PoisonRow costs a bounded log2(n) extra
-        // calls when the fault really is batch-wide (4xx are not billed for
-        // tokens) and ends in the same place; when it is one row, it isolates
-        // that row and saves the rest. The asymmetry decides it.
-        EmbeddingError::Api { status, .. } if (400..500).contains(status) => {
-            ErrorCode::ContextLengthExceeded
-        }
-        // Everything else, including the clients' 200-decode-failure
-        // sentinel: a response the provider produced, which is not about any
-        // row and cannot be bisected into working.
+        // A previous pass sent every request-side 4xx to PoisonRow so that
+        // bisection could isolate a bad row, on the arithmetic that a
+        // batch-wide fault would cost a bounded `log2(n)` extra calls. That
+        // was simply wrong: `bisect_embed` recurses into **both** halves when
+        // a batch fails, so a request-wide refusal walks the whole tree —
+        // `2n-1` calls — and each recursive call starts a *fresh*
+        // `timeout_ms`. Guessing "maybe one row did this" against a provider
+        // that is already refusing us is an amplification path, not a
+        // recovery.
+        //
+        // The two failures that genuinely belong to one row are caught
+        // precisely instead, and before any request: an empty input and one
+        // containing a NUL, both of which providers reject for the whole
+        // batch. A token-limit refusal arrives as `InputTooLong`. What is
+        // left has no evidence of being row-attributable, so it dead-letters
+        // with a message naming the status and `postvec.retry_dead()`
+        // re-drives it once the cause is fixed.
         EmbeddingError::Api { .. } => ErrorCode::InvalidInput,
         EmbeddingError::Deserialization(_) => ErrorCode::InvalidInput,
         EmbeddingError::Deadline(_) => ErrorCode::Timeout,
@@ -871,14 +886,13 @@ mod tests {
                 r#"{"message":"Request Entity Too Large"}"#,
                 ErrorCode::ContextLengthExceeded,
             ),
-            // A request-side 4xx is attributed to the rows until bisection
-            // proves otherwise: providers refuse a whole request over one
-            // bad item, and dead-lettering the batch would destroy healthy
-            // neighbours for it.
+            // A generic 4xx dead-letters: there is no evidence it belongs
+            // to any one row, and bisecting on a guess walks the whole tree
+            // (2n-1 calls, each with a fresh timeout).
             (
                 400,
                 r#"{"error":"malformed input"}"#,
-                ErrorCode::ContextLengthExceeded,
+                ErrorCode::InvalidInput,
             ),
             (
                 404,
@@ -986,8 +1000,12 @@ mod tests {
             dir.path(),
             "cohere.toml",
             &format!(
+                // A v3 model: fixed output width, so a 2-component mock is
+                // legal. `embed-v4.0` only produces 256/512/1024/1536 and the
+                // loader now refuses anything else.
                 "provider = \"cohere\"\napi_key = \"co\"\nbase_url = \"{}\"\n\n[[models]]\n\
-                 name = \"cohere-embed-v4-0\"\nprovider_model_id = \"embed-v4.0\"\ndim = 2\n",
+                 name = \"cohere-embed-english-v3-0\"\n\
+                 provider_model_id = \"embed-english-v3.0\"\ndim = 2\n",
                 m.url
             ),
         );
@@ -995,7 +1013,7 @@ mod tests {
 
         gateway
             .embed(
-                "cohere-embed-v4-0",
+                "cohere-embed-english-v3-0",
                 &["q".to_string()],
                 InputType::Query,
                 far_deadline(),
@@ -1010,7 +1028,7 @@ mod tests {
 
         gateway
             .embed(
-                "cohere-embed-v4-0",
+                "cohere-embed-english-v3-0",
                 &["d".to_string()],
                 InputType::Document,
                 far_deadline(),

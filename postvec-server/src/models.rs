@@ -105,23 +105,19 @@ pub type DescriptorIndex = BTreeMap<String, Vec<PathBuf>>;
 /// but currently failing to load is absent from the engine's map, so
 /// reserving only loaded names would let a provider file declaring that name
 /// take it over — and a column bound to it would start sending source text to
-/// a third party because a local model was broken. A failed scan falls back
-/// to the loaded set with a warning.
+/// a third party because a local model was broken.
+///
+/// A failed scan is an **error**, not a smaller reservation: narrowing this
+/// list is precisely how a provider claims a local name, so the caller keeps
+/// the previous gateway snapshot (reload) or serves no providers (boot).
 pub fn reserved_local_names(
     root: &Path,
     engine: &engine::InferenceEngine,
-) -> std::collections::BTreeSet<String> {
+) -> Result<std::collections::BTreeSet<String>, String> {
     let mut names: std::collections::BTreeSet<String> =
         engine.get_active_models().into_iter().collect();
-    match descriptor_index(root) {
-        Ok(index) => names.extend(index.into_keys()),
-        Err(e) => log::warn!(
-            "providers.d: could not scan {} for local model names ({e}); only loaded models \
-             are reserved against a provider name collision",
-            root.display()
-        ),
-    }
-    names
+    names.extend(descriptor_index(root)?.into_keys());
+    Ok(names)
 }
 
 pub fn descriptor_index(root: &Path) -> Result<DescriptorIndex, String> {

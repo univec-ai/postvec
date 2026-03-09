@@ -649,7 +649,10 @@ pub(super) fn spawn(
                     // key files) — keep it off the 2-thread engine runtime,
                     // like the other admin handlers.
                     let outcome = tokio::task::spawn_blocking(move || {
-                        let local = crate::client::embedded::reserved_local_names(&root, &engine);
+                        // Fail closed: a scan failure keeps the previous
+                        // snapshot rather than reloading against a narrowed
+                        // reservation.
+                        let local = crate::client::embedded::reserved_local_names(&root, &engine)?;
                         let report = gateway.reload(&path, &local)?;
                         Ok::<_, String>((report, gateway.inflight_budget()))
                     })

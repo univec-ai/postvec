@@ -300,25 +300,31 @@ pub fn validate_directory(dir: &Path, expected_uid: Option<u32>) -> Result<(), S
             dir.display()
         ));
     }
-    validate_ancestry(dir)
+    validate_ancestry(dir, expected)
 }
 
-/// No ancestor of the credential directory may be writable by other users
-/// without the sticky bit.
+/// Every ancestor of the credential directory must be one that only root or
+/// the expected identity can rewrite.
 ///
 /// The leaf's own mode and owner say nothing about whether the *path to it*
-/// can be rewritten. If any parent is group- or world-writable, another
-/// account can rename the directory away and put its own in place — between
-/// this validation and the enumeration that follows it, which is the race an
-/// `openat`-relative store exists to remove. `postvec.providers_path` and
-/// `--providers-path` are operator-configurable, so "it lives under
-/// /etc/postvec" is an assumption and not a fact.
+/// can be rewritten. `postvec.providers_path` and `--providers-path` are
+/// operator-configurable, so "it lives under /etc/postvec" is an assumption
+/// and not a fact.
 ///
-/// The sticky bit is the exception that makes `/tmp` usable: with `+t` only
-/// an entry's owner may rename or remove it, which is exactly the property
-/// being checked for.
-fn validate_ancestry(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+/// Two rules, and both are needed:
+///
+/// - **Not group- or world-writable**, unless sticky. Anyone with write
+///   access to a directory can rename its children, so a `0777` parent means
+///   the component below it can be swapped between this validation and the
+///   enumeration that follows.
+/// - **Owned by root or by `expected_uid`.** Permission bits alone miss the
+///   case the fourth-pass audit named: a `0755` directory owned by *another*
+///   account is writable by that account — its owner can replace the
+///   component below it at will. This also closes the sticky-directory hole,
+///   because a `1777` parent (`/tmp`) delegates exactly that power to each
+///   child's owner, so the child has to be ours.
+fn validate_ancestry(dir: &Path, expected_uid: u32) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let mut cursor = dir.parent();
     while let Some(ancestor) = cursor {
         let meta = std::fs::symlink_metadata(ancestor)
@@ -331,6 +337,15 @@ fn validate_ancestry(dir: &Path) -> Result<(), String> {
                  replaced. chmod go-w it",
                 ancestor.display(),
                 mode & 0o7777,
+                dir.display()
+            ));
+        }
+        let owner = meta.uid();
+        if owner != 0 && owner != expected_uid {
+            return Err(format!(
+                "{} is owned by uid {owner}, not {expected_uid} or root; its owner can \
+                 replace the path to {} at will, whatever the mode says",
+                ancestor.display(),
                 dir.display()
             ));
         }
@@ -500,6 +515,34 @@ fn check_absolute(field: &str, path: &Option<PathBuf>) -> Result<(), String> {
     }
 }
 
+/// Cohere's v4 embedding models produce exactly these widths.
+const COHERE_V4_DIMS: &[u32] = &[256, 512, 1024, 1536];
+
+/// The AWS-only fields, refused for every other connector. Factored out so
+/// the two key-authenticated arms cannot drift apart.
+fn reject_aws_only_fields(
+    file: &ProviderFile,
+    region: bool,
+    bearer: bool,
+    access_key_id: bool,
+    secret_access_key: bool,
+) -> Result<(), String> {
+    if region {
+        return Err(format!(
+            "region applies only to provider \"aws\"; {:?} ignores it",
+            file.provider
+        ));
+    }
+    if bearer || access_key_id || secret_access_key {
+        return Err(format!(
+            "bearer_token* and the AWS SigV4 fields apply only to provider \"aws\"; {:?} \
+             authenticates with api_key*",
+            file.provider
+        ));
+    }
+    Ok(())
+}
+
 fn validate_connector(file: &ProviderFile) -> Result<(), String> {
     let declared = |inline: &Option<String>, path: &Option<PathBuf>, env: &Option<String>| {
         inline.is_some() || path.is_some() || env.is_some()
@@ -536,6 +579,8 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
     ] {
         check_absolute(field, path)?;
     }
+
+    let region_declared = file.region.is_some();
 
     match crate::catalog::canonical_provider(&file.provider).as_str() {
         "aws" => {
@@ -591,6 +636,44 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                 }
             }
         }
+        "cohere" => {
+            if !api_key {
+                return Err(format!(
+                    "provider {:?} needs an API key: set exactly one of api_key_file \
+                     (recommended), api_key_env or api_key",
+                    file.provider
+                ));
+            }
+            reject_aws_only_fields(
+                file,
+                region_declared,
+                bearer,
+                access_key_id,
+                secret_access_key,
+            )?;
+            // Cohere's v4 models accept only these output widths, and the v3
+            // models have a fixed one. A descriptor asking for anything else
+            // is a 400 on every call — caught here rather than at the first
+            // insert, because the file is the serving truth and this is the
+            // one provider whose accepted widths are enumerated.
+            for model in &file.models {
+                if model.provider_model_id.starts_with("embed-v4")
+                    && !COHERE_V4_DIMS.contains(&model.dim)
+                {
+                    return Err(format!(
+                        "[[models]] {:?}: dim {} is not one Cohere v4 produces ({}); the \
+                         request would be refused on every call",
+                        model.name,
+                        model.dim,
+                        COHERE_V4_DIMS
+                            .iter()
+                            .map(|d| d.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+        }
         supported if SUPPORTED_PROVIDERS.contains(&supported) => {
             if !api_key {
                 return Err(format!(
@@ -599,19 +682,13 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                     file.provider
                 ));
             }
-            if file.region.is_some() {
-                return Err(format!(
-                    "region applies only to provider \"aws\"; {:?} ignores it",
-                    file.provider
-                ));
-            }
-            if bearer || access_key_id || secret_access_key {
-                return Err(format!(
-                    "bearer_token* and the AWS SigV4 fields apply only to provider \"aws\"; \
-                     {:?} authenticates with api_key*",
-                    file.provider
-                ));
-            }
+            reject_aws_only_fields(
+                file,
+                region_declared,
+                bearer,
+                access_key_id,
+                secret_access_key,
+            )?;
         }
         _ => {
             return Err(format!(
@@ -1698,6 +1775,50 @@ max_tokens = 8191
         // being checked for — so `/tmp`-shaped ancestors stay usable.
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o1777)).unwrap();
         assert!(validate_directory(&dir, None).is_ok(), "sticky is safe");
+
+        // Ownership, not only permissions. A 0755 ancestor owned by another
+        // account is writable **by that account**, so its owner can replace
+        // the component below it whatever the mode says — which is also what
+        // makes a sticky parent safe only when the child is ours. Exercised
+        // through `validate_ancestry` directly, because the leaf's own owner
+        // check would otherwise fire first.
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mine = unsafe { libc::geteuid() };
+        assert!(validate_ancestry(&dir, mine).is_ok());
+        let refused = validate_ancestry(&dir, mine.wrapping_add(4242)).unwrap_err();
+        assert!(refused.contains("owned by uid"), "{refused}");
+        assert!(refused.contains("replace the path"), "{refused}");
+    }
+
+    /// Cohere v4 produces exactly four widths. A descriptor asking for
+    /// another is a 400 on every call, so the file is refused rather than the
+    /// first insert.
+    #[test]
+    fn a_cohere_v4_dimension_outside_the_supported_set_is_refused() {
+        let dir = private_tempdir();
+        let file = |id: &str, dim: u32| {
+            format!(
+                "provider = \"cohere\"\napi_key = \"k\"\n\n[[models]]\n\
+                 name = \"m1\"\nprovider_model_id = \"{id}\"\ndim = {dim}\n"
+            )
+        };
+        for dim in [256, 512, 1024, 1536] {
+            let path = write_mode(dir.path(), "p.toml", &file("embed-v4.0", dim), 0o600);
+            assert_eq!(validate_file(&path), Ok(true), "v4 accepts {dim}");
+        }
+        let path = write_mode(dir.path(), "p.toml", &file("embed-v4.0", 768), 0o600);
+        let refused = validate_file(&path).unwrap_err();
+        assert!(refused.contains("Cohere v4 produces"), "{refused}");
+
+        // v3 widths are fixed per model and not enumerated here, so the rule
+        // does not apply to them.
+        let path = write_mode(
+            dir.path(),
+            "p.toml",
+            &file("embed-english-v3.0", 1024),
+            0o600,
+        );
+        assert_eq!(validate_file(&path), Ok(true));
     }
 
     /// Mode alone is not a trust boundary when the reader is root: a 0700

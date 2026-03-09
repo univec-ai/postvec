@@ -310,22 +310,20 @@ fn visit_resident_model(
 /// a third party because a local model was broken. The reservation has to
 /// cover intent, not just current state.
 ///
-/// A descriptor scan that fails falls back to the loaded set with a warning:
-/// reserving fewer names is a smaller failure than refusing to start.
+/// A descriptor scan that fails is an **error**, not a smaller reservation.
+/// Falling back to the loaded set narrows the very list that decides whether
+/// a provider may claim a name, so a transient scan failure during reload
+/// could let a provider take over a configured-but-unloaded local model and
+/// start sending that column's text to a third party. Fail closed: the
+/// caller keeps the previous gateway snapshot (reload) or serves no providers
+/// (boot). Local models are unaffected either way.
 pub(crate) fn reserved_local_names(
     root: &std::path::Path,
     engine: &InferenceEngine,
-) -> BTreeSet<String> {
+) -> Result<BTreeSet<String>, String> {
     let mut names: BTreeSet<String> = engine.get_active_models().into_iter().collect();
-    match descriptor_index(root) {
-        Ok(index) => names.extend(index.into_keys()),
-        Err(e) => log::warn!(
-            "providers.d: could not scan {} for local model names ({e}); only loaded models \
-             are reserved against a provider name collision",
-            root.display()
-        ),
-    }
-    names
+    names.extend(descriptor_index(root)?.into_keys());
+    Ok(names)
 }
 
 fn planned_resident_models(
@@ -538,12 +536,20 @@ fn try_init() -> Result<(), String> {
     // embedded_max_inflight ingress bound.
     // The names the engine owns, so a provider file claiming one is refused
     // at load rather than left dormant behind it (see the collision arm in
-    // `Inner::build`).
-    let local_models = reserved_local_names(&cfg.root, &engine);
-    let gateway = Arc::new(providers::gateway::Gateway::load(
-        &cfg.providers_path,
-        &local_models,
-    ));
+    // `Inner::build`). If that list cannot be built, no provider serves: a
+    // narrowed reservation is exactly how a provider takes a local name.
+    let gateway = Arc::new(match reserved_local_names(&cfg.root, &engine) {
+        Ok(local_models) => providers::gateway::Gateway::load(&cfg.providers_path, &local_models),
+        Err(e) => {
+            pgrx::warning!(
+                "postvec: cannot enumerate local models under {} ({e}); serving no external \
+                 providers this start, because a partial list could let one claim a local \
+                 model's name. Local models are unaffected",
+                cfg.root.display()
+            );
+            providers::gateway::Gateway::empty()
+        }
+    });
     // The §7.3 ingress width the gRPC server is about to be sized with;
     // the reload endpoint warns when a later reload outgrows it.
     let startup_provider_budget = gateway.inflight_budget();
