@@ -557,22 +557,40 @@ impl ProviderFileDoc {
 pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> {
     use std::os::unix::fs::PermissionsExt;
 
+    let expected_uid = owner.map(|o| o.uid);
+    let refuse = |problem: String| {
+        CliError::precondition(problem)
+            .with_fix("chmod 700 the providers.d directory (and make sure it is not a symlink)")
+    };
     if dir.exists() {
         // An existing directory keeps its mode and ownership — but it still
-        // has to be a *directory*, reached without following a symlink, that
-        // nobody else can write to. This command runs under `sudo`; a
-        // group-writable providers.d means another account chooses what a
+        // has to be a *directory*, reached without following a symlink,
+        // through a chain nobody else can rewrite. This command runs under
+        // `sudo`; a group-writable providers.d, or one reached through a
+        // parent somebody else owns, means another account chooses what a
         // root-run `provider add` creates and where the serving host sends
         // source text. Refuse and name the fix rather than repairing it
         // implicitly: silently chmod-ing someone's directory is its own
         // surprise. The serving host applies the identical rule at load
         // (`providers::config::validate_directory`), which is why this can be
         // that same function rather than a second opinion.
-        providers::config::validate_directory(dir, owner.map(|o| o.uid)).map_err(|problem| {
-            CliError::precondition(problem)
-                .with_fix("chmod 700 the providers.d directory (and make sure it is not a symlink)")
-        })?;
+        providers::config::validate_directory(dir, expected_uid).map_err(refuse)?;
         return Ok(false);
+    }
+
+    // The **create** path needs the same check, before it creates anything.
+    // It had none: `ensure_private_dir` validated only a directory that
+    // already existed, so the first `provider add` on a host built a
+    // credential tree — and then a `.lock` file and a `chown` — under a
+    // parent chain nobody had looked at. The deepest existing ancestor is
+    // what the new directory will hang from, so it is what has to be safe.
+    let mut anchor = dir.parent();
+    while let Some(candidate) = anchor {
+        if candidate.exists() {
+            providers::config::validate_directory(candidate, expected_uid).map_err(refuse)?;
+            break;
+        }
+        anchor = candidate.parent();
     }
     // Parents (`/etc/postvec`) are 0755, not 0700: only the leaf holds
     // credentials, and a 0700 `/etc/postvec` would hide unrelated files.
@@ -602,6 +620,9 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| CliError::apply(format!("cannot chmod {}: {e}", dir.display())))?;
     chown_if_root(dir, owner)?;
+    // And the result, now that it exists: the same predicate the serving host
+    // will apply, before anything privileged is written into it.
+    providers::config::validate_directory(dir, expected_uid).map_err(refuse)?;
     Ok(true)
 }
 
@@ -734,7 +755,10 @@ fn chown_if_root(path: &Path, owner: Option<FileOwner>) -> Result<()> {
     if !crate::proc::is_root() {
         return Ok(());
     }
-    std::os::unix::fs::chown(path, Some(owner.uid), Some(owner.gid))
+    // `lchown`, not `chown`: this runs as root over paths in a directory the
+    // command is still in the middle of establishing, and following a symlink
+    // here would hand ownership of somebody else's file to the cluster owner.
+    std::os::unix::fs::lchown(path, Some(owner.uid), Some(owner.gid))
         .map_err(|e| CliError::apply(format!("cannot chown {}: {e}", path.display())))
 }
 

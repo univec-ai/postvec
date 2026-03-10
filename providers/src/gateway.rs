@@ -993,19 +993,25 @@ mod tests {
 
     #[tokio::test]
     async fn cohere_query_purpose_selects_the_query_backend() {
-        let body = r#"{"embeddings":[[0.1,0.2]]}"#;
-        let m = mock::always(200, body).await;
+        // The real width of `embed-english-v3.0`. A descriptor claiming
+        // anything else is refused at load, so the mock has to answer with
+        // what the model actually produces — a two-component "Cohere v3"
+        // response is not a shape this test is allowed to assume.
+        const DIM: usize = 1024;
+        let vector = (0..DIM)
+            .map(|i| format!("{}", i as f32 / DIM as f32))
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!(r#"{{"embeddings":{{"float":[[{vector}]]}}}}"#);
+        let m = mock::always(200, &body).await;
         let dir = private_tempdir();
         write_provider(
             dir.path(),
             "cohere.toml",
             &format!(
-                // A v3 model: fixed output width, so a 2-component mock is
-                // legal. `embed-v4.0` only produces 256/512/1024/1536 and the
-                // loader now refuses anything else.
                 "provider = \"cohere\"\napi_key = \"co\"\nbase_url = \"{}\"\n\n[[models]]\n\
                  name = \"cohere-embed-english-v3-0\"\n\
-                 provider_model_id = \"embed-english-v3.0\"\ndim = 2\n",
+                 provider_model_id = \"embed-english-v3.0\"\ndim = {DIM}\n",
                 m.url
             ),
         );

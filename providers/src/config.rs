@@ -515,8 +515,42 @@ fn check_absolute(field: &str, path: &Option<PathBuf>) -> Result<(), String> {
     }
 }
 
+/// Gemini model ids whose `batchEmbedContents` request contract this crate
+/// knows: they accept `taskType` and `outputDimensionality`.
+///
+/// Google's embedding generations do **not** share one request contract — a
+/// newer one can reject `taskType` and expect retrieval intent as a prompt
+/// prefix instead. Serving an id outside this list would mean embedding
+/// queries and documents identically while the descriptor claims otherwise:
+/// a silent, permanent quality loss in `search()` that nothing downstream can
+/// detect. So the loader refuses it and names what to do, rather than
+/// serving something subtly wrong.
+///
+/// Extending this is a two-line change *plus verification*: the request
+/// options and any required prompt prefixes must be read off Google's current
+/// documentation for that exact model, never inferred. A wrong prefix changes
+/// every vector the column stores.
+const GEMINI_KNOWN_MODELS: &[&str] = &[
+    "gemini-embedding-001",
+    "text-embedding-004",
+    "embedding-001",
+];
+
 /// Cohere's v4 embedding models produce exactly these widths.
 const COHERE_V4_DIMS: &[u32] = &[256, 512, 1024, 1536];
+
+/// Cohere's v3 models have a **fixed** width apiece, so a descriptor is
+/// either right or refused — there is nothing to negotiate and no field to
+/// send. Enumerated here rather than left to the first insert, because "dim
+/// is authoritative" means the gateway compares every response against it: a
+/// wrong number turns into a dimension mismatch on every call, which reads
+/// like a provider fault rather than a typo.
+const COHERE_FIXED_DIMS: &[(&str, u32)] = &[
+    ("embed-english-v3.0", 1024),
+    ("embed-multilingual-v3.0", 1024),
+    ("embed-english-light-v3.0", 384),
+    ("embed-multilingual-light-v3.0", 384),
+];
 
 /// The AWS-only fields, refused for every other connector. Factored out so
 /// the two key-authenticated arms cannot drift apart.
@@ -670,6 +704,49 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                             .map(|d| d.to_string())
                             .collect::<Vec<_>>()
                             .join(", ")
+                    ));
+                }
+                if let Some((_, fixed)) = COHERE_FIXED_DIMS
+                    .iter()
+                    .find(|(id, _)| *id == model.provider_model_id)
+                {
+                    if model.dim != *fixed {
+                        return Err(format!(
+                            "[[models]] {:?}: {} always returns {fixed} components, not {}; \
+                             every response would fail the dimension check",
+                            model.name, model.provider_model_id, model.dim
+                        ));
+                    }
+                }
+            }
+        }
+        "google" => {
+            if !api_key {
+                return Err(format!(
+                    "provider {:?} needs an API key: set exactly one of api_key_file \
+                     (recommended), api_key_env or api_key",
+                    file.provider
+                ));
+            }
+            reject_aws_only_fields(
+                file,
+                region_declared,
+                bearer,
+                access_key_id,
+                secret_access_key,
+            )?;
+            for model in &file.models {
+                if !GEMINI_KNOWN_MODELS.contains(&model.provider_model_id.as_str()) {
+                    return Err(format!(
+                        "[[models]] {:?}: Gemini model {:?} is not one whose request contract \
+                         this postvec knows ({}). Google's embedding generations differ in \
+                         whether they accept taskType and outputDimensionality and in whether \
+                         retrieval intent is a prompt prefix, and guessing would embed your \
+                         queries and documents identically while claiming otherwise. Use a \
+                         listed model, or update postvec",
+                        model.name,
+                        model.provider_model_id,
+                        GEMINI_KNOWN_MODELS.join(", ")
                     ));
                 }
             }
@@ -1435,7 +1512,6 @@ max_tokens = 8191
         // AWS credential variants.
         for (marker, body) in [
             ("openai", "provider = \"openai\"\napi_key_env = \"K\""),
-            ("google alias", "provider = \"gemini\"\napi_key = \"k\""),
             (
                 "amazon alias",
                 "provider = \"amazon\"\nregion = \"us-east-1\"\nbearer_token = \"t\"",
@@ -1790,11 +1866,47 @@ max_tokens = 8191
         assert!(refused.contains("replace the path"), "{refused}");
     }
 
-    /// Cohere v4 produces exactly four widths. A descriptor asking for
-    /// another is a 400 on every call, so the file is refused rather than the
-    /// first insert.
+    /// Google's embedding generations differ in whether they take `taskType`
+    /// and `outputDimensionality`, and in whether retrieval intent is a
+    /// prompt prefix instead. Serving a model whose contract is unknown would
+    /// embed queries and documents identically while the descriptor claims
+    /// the distinction is honoured — a silent, permanent quality loss in
+    /// `search()`. So it is refused, not degraded.
     #[test]
-    fn a_cohere_v4_dimension_outside_the_supported_set_is_refused() {
+    fn an_unknown_gemini_model_is_refused_rather_than_served_without_its_semantics() {
+        let dir = private_tempdir();
+        let file = |id: &str, dim: u32| {
+            format!(
+                "provider = \"google\"\napi_key = \"k\"\n\n[[models]]\n\
+                 name = \"m1\"\nprovider_model_id = \"{id}\"\ndim = {dim}\n"
+            )
+        };
+        let path = write_mode(
+            dir.path(),
+            "p.toml",
+            &file("gemini-embedding-001", 3072),
+            0o600,
+        );
+        assert_eq!(validate_file(&path), Ok(true));
+
+        let path = write_mode(
+            dir.path(),
+            "p.toml",
+            &file("gemini-embedding-2", 1536),
+            0o600,
+        );
+        let refused = validate_file(&path).unwrap_err();
+        assert!(refused.contains("request contract"), "{refused}");
+        assert!(refused.contains("gemini-embedding-001"), "{refused}");
+        assert!(load_file(&path).is_err());
+    }
+
+    /// Cohere v4 produces exactly four widths and each v3 model exactly one.
+    /// A descriptor asking for another is a 400 (v4) or a dimension mismatch
+    /// on every response (v3), so the file is refused rather than the first
+    /// insert.
+    #[test]
+    fn a_cohere_dimension_the_model_cannot_produce_is_refused() {
         let dir = private_tempdir();
         let file = |id: &str, dim: u32| {
             format!(

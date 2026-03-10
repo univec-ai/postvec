@@ -106,13 +106,35 @@ impl ServerState {
         self.draining.load(Ordering::SeqCst)
     }
 
-    /// Models resident *and* able to answer — pool and executor both built.
+    /// Every model name this node can answer for **right now** — engine and
+    /// gateway alike.
+    ///
+    /// The gateway half is not decoration. A node configured purely as a
+    /// provider gateway holds no engine models, so counting only those left
+    /// it reporting 503 forever while it served `EmbedTexts` perfectly well:
+    /// a load balancer would never route to a node that works. Readiness has
+    /// to mean "can this node serve a request", and for a provider-backed
+    /// name it can.
+    ///
+    /// Still strictly node-local — it asks what *this* process serves, never
+    /// what a peer thinks.
     pub fn ready_models(&self) -> Vec<String> {
-        self.engine
+        let mut names: Vec<String> = self
+            .engine
             .get_active_models()
             .into_iter()
             .filter(|name| self.engine.is_model_ready(name))
-            .collect()
+            .collect();
+        names.extend(
+            self.gateway
+                .models()
+                .iter()
+                .filter_map(|m| m["name"].as_str())
+                .map(str::to_string),
+        );
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Readiness in the load-balancer sense: this node can serve an

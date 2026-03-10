@@ -1392,3 +1392,46 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
         "a key rotation is not a recipient change:\n{text}"
     );
 }
+
+/// `ensure_private_dir` validated only a providers.d that *already existed*,
+/// so the very first `provider add` on a host created the credential
+/// directory — and then a `.lock` file and a `chown` — under a parent chain
+/// nobody had looked at. The deepest existing ancestor is what the new
+/// directory hangs from, so it is what has to be safe.
+#[test]
+fn creating_a_providers_directory_checks_the_chain_it_hangs_from() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = provider_root();
+    // A world-writable parent for the not-yet-existing providers.d: anyone
+    // could swap the directory out from under the command that is about to
+    // create and chown it.
+    let hostile = root.path().join("hostile");
+    std::fs::create_dir(&hostile).expect("mkdir");
+    std::fs::set_permissions(&hostile, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+
+    let output = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-3-small",
+        "--api-key-env",
+        "OPENAI_API_KEY",
+        "--path",
+        hostile.to_str().unwrap(),
+        "--no-verify",
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    assert!(
+        stderr(&output).contains("writable by other users"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        !hostile.join("providers.d").exists(),
+        "nothing may be created under an unchecked chain"
+    );
+}

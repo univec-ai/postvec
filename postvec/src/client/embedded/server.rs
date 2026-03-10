@@ -1644,10 +1644,12 @@ mod gateway_tests {
         let runtime = crate::client::embedded::tests::engine_runtime();
         let engine = crate::client::embedded::tests::test_engine(&root);
 
-        let mock = runtime.block_on(provider_mock::always(
-            200,
-            r#"{"embeddings":{"float":[[0.25,0.5]]}}"#,
-        ));
+        let vector = (0..1024)
+            .map(|i| format!("{}", i as f32 / 1024.0))
+            .collect::<Vec<_>>()
+            .join(",");
+        let body = format!(r#"{{"embeddings":{{"float":[[{vector}]]}}}}"#);
+        let mock = runtime.block_on(provider_mock::always(200, &body));
         let dir = root.join("providers.d");
         std::fs::create_dir_all(&dir).unwrap();
         // A providers.d is 0700 and its ancestors are not group-writable;
@@ -1658,12 +1660,12 @@ mod gateway_tests {
         std::fs::write(
             &path,
             format!(
-                // A v3 model: fixed output width, so a 2-component mock is
-                // legal. `embed-v4.0` produces only 256/512/1024/1536 and the
-                // loader refuses anything else.
+                // The real width of `embed-english-v3.0`: the loader refuses
+                // a descriptor that claims another, so the mock answers with
+                // what the model actually produces.
                 "provider = \"cohere\"\napi_key = \"co-test\"\nbase_url = \"{}\"\n\n\
                  [[models]]\nname = \"cohere-embed-english-v3-0\"\n\
-                 provider_model_id = \"embed-english-v3.0\"\ndim = 2\n",
+                 provider_model_id = \"embed-english-v3.0\"\ndim = 1024\n",
                 mock.url
             ),
         )
