@@ -515,6 +515,94 @@ fn check_absolute(field: &str, path: &Option<PathBuf>) -> Result<(), String> {
     }
 }
 
+/// Everything the loader can say about one `(provider, model id, dim)` on its
+/// own, without seeing the rest of the file.
+///
+/// Split out so that **`provider add` and `provider test` can apply it before
+/// spending a paid API call.** Those two build a backend straight from the
+/// factory, which knows nothing about per-model contracts — so a descriptor
+/// naming a Gemini model postvec cannot serve, or a Cohere width the model
+/// does not produce, used to be probed (and billed) and only then refused at
+/// the write. The rule has to live where both the loader and the CLI can
+/// reach it, and this is that place.
+///
+/// `dim` is optional because `provider add` may not know it yet — the probe
+/// is what measures an unknown one. The model-id rules apply either way.
+pub fn validate_model_for_provider(
+    provider: &str,
+    provider_model_id: &str,
+    dim: Option<u32>,
+) -> Result<(), String> {
+    match crate::catalog::canonical_provider(provider).as_str() {
+        // Cohere's v4 models accept only these output widths, and the v3
+        // models have a fixed one apiece. A descriptor asking for anything
+        // else is a 400 on every call (v4) or a dimension mismatch on every
+        // response (v3).
+        "cohere" => {
+            let Some(dim) = dim else { return Ok(()) };
+            if provider_model_id.starts_with("embed-v4") && !COHERE_V4_DIMS.contains(&dim) {
+                return Err(format!(
+                    "dim {dim} is not one Cohere v4 produces ({}); the request would be \
+                     refused on every call",
+                    COHERE_V4_DIMS
+                        .iter()
+                        .map(|d| d.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if let Some((_, fixed)) = COHERE_FIXED_DIMS
+                .iter()
+                .find(|(id, _)| *id == provider_model_id)
+            {
+                if dim != *fixed {
+                    return Err(format!(
+                        "{provider_model_id} always returns {fixed} components, not {dim}; \
+                         every response would fail the dimension check"
+                    ));
+                }
+            }
+            Ok(())
+        }
+        // Checked against the **same table the client builds its request
+        // from** (`gemini::GEMINI_CONTRACTS`), so the two cannot drift.
+        // Google's embedding generations differ in whether they accept
+        // `taskType` and `outputDimensionality` and in what widths they
+        // produce; guessing does not fail, it silently changes every vector a
+        // column stores.
+        "google" => {
+            let Some(contract) = crate::gemini::gemini_contract(provider_model_id) else {
+                return Err(format!(
+                    "Gemini model {provider_model_id:?} is not one whose request contract this \
+                     postvec knows ({}). The generations differ in whether they accept \
+                     taskType and outputDimensionality and in whether retrieval intent is a \
+                     prompt prefix instead — guessing would embed your queries and documents \
+                     identically while claiming otherwise. Use a listed model, or update \
+                     postvec",
+                    crate::gemini::GEMINI_CONTRACTS
+                        .iter()
+                        .map(|c| c.model_id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            };
+            match (contract.dims, dim) {
+                (Some((low, high)), Some(dim)) if dim < low || dim > high => Err(format!(
+                    "{} produces {low}..={high} components, not {dim}",
+                    contract.model_id
+                )),
+                (None, Some(_)) => Err(format!(
+                    "{} does not accept a requested output width, so `dim` must be its native \
+                     one",
+                    contract.model_id
+                )),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Cohere's v4 embedding models produce exactly these widths.
 const COHERE_V4_DIMS: &[u32] = &[256, 512, 1024, 1536];
 
@@ -664,39 +752,9 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                 access_key_id,
                 secret_access_key,
             )?;
-            // Cohere's v4 models accept only these output widths, and the v3
-            // models have a fixed one. A descriptor asking for anything else
-            // is a 400 on every call — caught here rather than at the first
-            // insert, because the file is the serving truth and this is the
-            // one provider whose accepted widths are enumerated.
             for model in &file.models {
-                if model.provider_model_id.starts_with("embed-v4")
-                    && !COHERE_V4_DIMS.contains(&model.dim)
-                {
-                    return Err(format!(
-                        "[[models]] {:?}: dim {} is not one Cohere v4 produces ({}); the \
-                         request would be refused on every call",
-                        model.name,
-                        model.dim,
-                        COHERE_V4_DIMS
-                            .iter()
-                            .map(|d| d.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                }
-                if let Some((_, fixed)) = COHERE_FIXED_DIMS
-                    .iter()
-                    .find(|(id, _)| *id == model.provider_model_id)
-                {
-                    if model.dim != *fixed {
-                        return Err(format!(
-                            "[[models]] {:?}: {} always returns {fixed} components, not {}; \
-                             every response would fail the dimension check",
-                            model.name, model.provider_model_id, model.dim
-                        ));
-                    }
-                }
+                validate_model_for_provider("cohere", &model.provider_model_id, Some(model.dim))
+                    .map_err(|e| format!("[[models]] {:?}: {e}", model.name))?;
             }
         }
         "google" => {
@@ -714,47 +772,9 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                 access_key_id,
                 secret_access_key,
             )?;
-            // Validated against the **same table the client builds its
-            // request from** (`gemini::GEMINI_CONTRACTS`), so the two cannot
-            // drift. Google's embedding generations differ in whether they
-            // accept `taskType` and `outputDimensionality` and in what widths
-            // they produce; guessing does not fail, it silently changes every
-            // vector a column stores.
             for model in &file.models {
-                let Some(contract) = crate::gemini::gemini_contract(&model.provider_model_id)
-                else {
-                    return Err(format!(
-                        "[[models]] {:?}: Gemini model {:?} is not one whose request contract \
-                         this postvec knows ({}). The generations differ in whether they \
-                         accept taskType and outputDimensionality and in whether retrieval \
-                         intent is a prompt prefix instead — guessing would embed your queries \
-                         and documents identically while claiming otherwise. Use a listed \
-                         model, or update postvec",
-                        model.name,
-                        model.provider_model_id,
-                        crate::gemini::GEMINI_CONTRACTS
-                            .iter()
-                            .map(|c| c.model_id)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                };
-                match contract.dims {
-                    Some((low, high)) if model.dim < low || model.dim > high => {
-                        return Err(format!(
-                            "[[models]] {:?}: {} produces {low}..={high} components, not {}",
-                            model.name, contract.model_id, model.dim
-                        ))
-                    }
-                    Some(_) => {}
-                    None => {
-                        return Err(format!(
-                            "[[models]] {:?}: {} does not accept a requested output width, so \
-                             `dim` must be its native one",
-                            model.name, contract.model_id
-                        ))
-                    }
-                }
+                validate_model_for_provider("google", &model.provider_model_id, Some(model.dim))
+                    .map_err(|e| format!("[[models]] {:?}: {e}", model.name))?;
             }
         }
         supported if SUPPORTED_PROVIDERS.contains(&supported) => {
@@ -1970,15 +1990,29 @@ max_tokens = 8191
         let refused = validate_file(&path).unwrap_err();
         assert!(refused.contains("Cohere v4 produces"), "{refused}");
 
-        // v3 widths are fixed per model and not enumerated here, so the rule
-        // does not apply to them.
-        let path = write_mode(
-            dir.path(),
-            "p.toml",
-            &file("embed-english-v3.0", 1024),
-            0o600,
-        );
-        assert_eq!(validate_file(&path), Ok(true));
+        // v3 widths are fixed per model, so they are checked *exactly*
+        // rather than against a set — a descriptor claiming another number
+        // would fail the gateway's dimension check on every response.
+        for (id, dim) in COHERE_FIXED_DIMS {
+            let path = write_mode(dir.path(), "p.toml", &file(id, *dim), 0o600);
+            assert_eq!(validate_file(&path), Ok(true), "{id} at its real width");
+
+            let path = write_mode(dir.path(), "p.toml", &file(id, dim + 1), 0o600);
+            let refused = validate_file(&path).unwrap_err();
+            assert!(
+                refused.contains(&format!("always returns {dim}")),
+                "{id}: {refused}"
+            );
+            assert!(load_file(&path).is_err(), "{id}");
+        }
+        // Explicitly including the light models, whose 384 is the width most
+        // likely to be assumed to be 1024 like its siblings.
+        assert!(COHERE_FIXED_DIMS
+            .iter()
+            .any(|(id, dim)| *id == "embed-english-light-v3.0" && *dim == 384));
+        assert!(COHERE_FIXED_DIMS
+            .iter()
+            .any(|(id, dim)| *id == "embed-multilingual-light-v3.0" && *dim == 384));
     }
 
     /// Mode alone is not a trust boundary when the reader is root: a 0700

@@ -898,6 +898,75 @@ pub fn resolve_doc_secret(doc: &ProviderFileDoc) -> Result<String> {
     ))
 }
 
+/// One live single-input embed. Costs a paid API call.
+///
+/// Shared by `provider add` and `provider test` so the two cannot disagree
+/// about what a good answer looks like — `test` had its own copy that
+/// accepted "the first vector, whatever it is", and would therefore report
+/// success for a response the serving gateway rejects.
+///
+/// The response contract is the serving gateway's, applied here: **exactly
+/// one** vector, reported for input `0`, non-empty. Accepting "the first
+/// vector, whatever it is" meant the probe passed against a provider whose
+/// response was already the shape that would dead-letter every batch later.
+pub async fn probe_one(
+    config: &providers::ProviderConfig,
+    id: &str,
+    declared_dim: Option<u32>,
+    timeout: std::time::Duration,
+) -> Result<u32> {
+    // Before spending anything: the loader's own per-model rule. The factory
+    // knows nothing about per-model contracts, so without this a descriptor
+    // naming a Gemini model postvec cannot serve — or a Cohere width the
+    // model does not produce — was probed, billed, and only then refused at
+    // the write.
+    providers::config::validate_model_for_provider(&config.provider, id, declared_dim).map_err(
+        |e| {
+            CliError::precondition(format!("{id}: {e}"))
+                .with_fix("the serving host would refuse this model, so there is nothing to verify")
+        },
+    )?;
+    let backend = providers::new_embedding_backend(
+        config,
+        id,
+        declared_dim.unwrap_or(0) as i32,
+        "search_document",
+        None,
+    )
+    .map_err(|e| CliError::precondition(format!("{id}: {e}")))?;
+    let deadline = std::time::Instant::now() + timeout;
+    let embeddings = backend
+        .embed(&["postvec verification probe"], Some(deadline))
+        .await
+        .map_err(|e| {
+            CliError::precondition(format!("verification embed for {id} failed: {e}")).with_fix(
+                "check the key, model id and network; pass --no-verify to write the file \
+                 anyway (the probe costs one paid API call per model)",
+            )
+        })?;
+    if embeddings.len() != 1 {
+        return Err(CliError::precondition(format!(
+            "verification embed for {id} returned {} vectors for one input; the serving host \
+             refuses a response that is not row-parallel to the request",
+            embeddings.len()
+        )));
+    }
+    let embedding = &embeddings[0];
+    if embedding.text_index != 0 {
+        return Err(CliError::precondition(format!(
+            "verification embed for {id} reported its vector as input {} of one; the serving \
+             host refuses a response that is not row-parallel to the request",
+            embedding.text_index
+        )));
+    }
+    if embedding.vector.is_empty() {
+        return Err(CliError::precondition(format!(
+            "verification embed for {id} returned an empty vector"
+        )));
+    }
+    Ok(embedding.vector.len() as u32)
+}
+
 // ---- Reload client -------------------------------------------------------
 
 /// What `POST /admin/providers/reload` reported.

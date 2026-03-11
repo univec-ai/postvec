@@ -1435,3 +1435,64 @@ fn creating_a_providers_directory_checks_the_chain_it_hangs_from() {
         "nothing may be created under an unchecked chain"
     );
 }
+
+/// The probe is a **paid** call, so it must not be spent on a model the
+/// serving host would refuse. `provider add` validated the composed document
+/// only at the *write*, which happens after the probe — so a Gemini id
+/// postvec cannot serve, or a Cohere width the model does not produce, got
+/// billed first and refused second.
+///
+/// The key resolves (so the run really would reach the network) and the
+/// refusal still arrives before any request: if the gate regressed, the
+/// failure would be a `verification embed` error from a live call, which the
+/// second assertion catches.
+#[test]
+fn a_model_the_host_would_refuse_is_never_probed() {
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+
+    for (provider, model, dim) in [
+        // Not in the Gemini contract table.
+        ("gemini", "gemini-embedding-2", "1536"),
+        // A width `embed-english-v3.0` never produces.
+        ("cohere", "embed-english-v3.0", "512"),
+    ] {
+        let output = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                provider,
+                "--model",
+                model,
+                "--dim",
+                dim,
+                "--api-key-env",
+                "POSTVEC_PROBE_GATE_KEY",
+                "--path",
+                root_arg,
+                // Deliberately NOT --no-verify: the probe is what must be
+                // skipped, and it can only be skipped by the gate.
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            // Resolvable, so the command would otherwise go to the network.
+            .env("POSTVEC_PROBE_GATE_KEY", "not-a-real-key")
+            .output()
+            .expect("run postvec");
+
+        assert_ne!(code(&output), 0, "{provider}/{model}: {}", stdout(&output));
+        let text = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            !text.contains("verification embed"),
+            "{provider}/{model} reached the network: {text}"
+        );
+        assert!(
+            text.contains("would refuse")
+                || text.contains("request contract")
+                || text.contains("always returns"),
+            "{provider}/{model}: {text}"
+        );
+    }
+}

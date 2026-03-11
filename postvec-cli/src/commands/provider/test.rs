@@ -2,7 +2,9 @@
 //! single-input embed per configured model, dimensions checked against the
 //! file. Costs one paid API call per model probed.
 
-use super::{resolve_doc_secret, resolve_target, validate_provider_name, ProviderFileDoc};
+use super::{
+    probe_one, resolve_doc_secret, resolve_target, validate_provider_name, ProviderFileDoc,
+};
 use crate::cli::{Cli, ProviderTestArgs};
 use crate::error::{CliError, Exit, Result};
 use crate::output::Output;
@@ -109,7 +111,17 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
     let mut failed = false;
     for (name, id) in &selected {
         let declared = declared_dim(name);
-        let outcome = probe(&config, id, declared, cli.timeout).await;
+        // The same probe `provider add` runs: one aligned, non-empty vector
+        // and nothing less. `test`'s own copy accepted "the first vector,
+        // whatever it is", so it reported success for responses the serving
+        // gateway refuses.
+        let outcome = probe_one(
+            &config,
+            id,
+            declared.and_then(|d| u32::try_from(d).ok()),
+            cli.timeout,
+        )
+        .await;
         match outcome {
             Ok(measured) => {
                 let ok = declared.is_none_or(|d| d == measured as i64);
@@ -120,7 +132,7 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
                     model: name.clone(),
                     provider_model_id: id.clone(),
                     ok,
-                    measured_dim: Some(measured),
+                    measured_dim: Some(measured as usize),
                     declared_dim: declared,
                     error: (!ok).then(|| {
                         format!(
@@ -166,30 +178,4 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
         }
     }
     Ok(if failed { Exit::Failure } else { Exit::Success })
-}
-
-async fn probe(
-    config: &providers::ProviderConfig,
-    id: &str,
-    declared_dim: Option<i64>,
-    timeout: std::time::Duration,
-) -> Result<usize> {
-    let backend = providers::new_embedding_backend(
-        config,
-        id,
-        declared_dim.unwrap_or(0) as i32,
-        "search_document",
-        None,
-    )
-    .map_err(|e| CliError::precondition(e.to_string()))?;
-    let deadline = std::time::Instant::now() + timeout;
-    let embeddings = backend
-        .embed(&["postvec verification probe"], Some(deadline))
-        .await
-        .map_err(|e| CliError::precondition(e.to_string()))?;
-    let measured = embeddings.first().map(|e| e.vector.len()).unwrap_or(0);
-    if measured == 0 {
-        return Err(CliError::precondition("the probe returned an empty vector"));
-    }
-    Ok(measured)
 }

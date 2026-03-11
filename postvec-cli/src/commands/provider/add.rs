@@ -404,7 +404,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             existing.as_ref(),
             credential_changes || endpoint_changes,
         ) {
-            let measured = probe_one(&config, &id, declared, cli.timeout).await?;
+            let measured = super::probe_one(&config, &id, declared, cli.timeout).await?;
             match declared {
                 Some(declared) if declared != measured => {
                     return Err(CliError::precondition(format!(
@@ -545,59 +545,6 @@ fn probe_targets(
         targets.push((id.clone(), public_name.clone(), declared_dim(public_name)));
     }
     targets
-}
-
-/// One live single-input embed. Costs a paid API call.
-///
-/// The response contract is the serving gateway's, applied here: **exactly
-/// one** vector, reported for input `0`, non-empty. Accepting "the first
-/// vector, whatever it is" meant the probe passed against a provider whose
-/// response was already the shape that would dead-letter every batch later.
-async fn probe_one(
-    config: &providers::ProviderConfig,
-    id: &str,
-    declared_dim: Option<u32>,
-    timeout: std::time::Duration,
-) -> Result<u32> {
-    let backend = providers::new_embedding_backend(
-        config,
-        id,
-        declared_dim.unwrap_or(0) as i32,
-        "search_document",
-        None,
-    )
-    .map_err(|e| CliError::precondition(format!("{id}: {e}")))?;
-    let deadline = std::time::Instant::now() + timeout;
-    let embeddings = backend
-        .embed(&["postvec verification probe"], Some(deadline))
-        .await
-        .map_err(|e| {
-            CliError::precondition(format!("verification embed for {id} failed: {e}")).with_fix(
-                "check the key, model id and network; pass --no-verify to write the file \
-                 anyway (the probe costs one paid API call per model)",
-            )
-        })?;
-    if embeddings.len() != 1 {
-        return Err(CliError::precondition(format!(
-            "verification embed for {id} returned {} vectors for one input; the serving host \
-             refuses a response that is not row-parallel to the request",
-            embeddings.len()
-        )));
-    }
-    let embedding = &embeddings[0];
-    if embedding.text_index != 0 {
-        return Err(CliError::precondition(format!(
-            "verification embed for {id} reported its vector as input {} of one; the serving \
-             host refuses a response that is not row-parallel to the request",
-            embedding.text_index
-        )));
-    }
-    if embedding.vector.is_empty() {
-        return Err(CliError::precondition(format!(
-            "verification embed for {id} returned an empty vector"
-        )));
-    }
-    Ok(embedding.vector.len() as u32)
 }
 
 /// Which key source this run records. No flag + an existing keyed file keeps
