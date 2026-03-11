@@ -904,6 +904,8 @@ async fn gemini_sends_request_options_only_to_models_documented_to_take_them() {
     assert!(sent.contains("\"outputDimensionality\""), "{sent}");
 
     let unknown = GeminiClient::new(
+        // An id with no contract. The loader refuses to configure one at all,
+        // so this only proves the client's own belt-and-braces.
         "some-future-embedding-model".to_string(),
         "g".to_string(),
         Some(1536),

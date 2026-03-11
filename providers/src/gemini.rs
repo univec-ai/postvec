@@ -101,8 +101,12 @@ impl GeminiClient {
             base_url,
             api_key,
             model_name,
-            // Only for a model documented to take them.
-            dimensions: dimensions.filter(|_| takes_request_options(&model_name_for_options)),
+            // Only what this model's contract says it accepts. An id the
+            // table does not know cannot be configured at all (the loader
+            // refuses it), so `None` here is belt-and-braces.
+            dimensions: dimensions.filter(|_| {
+                gemini_contract(&model_name_for_options).is_some_and(|c| c.dims.is_some())
+            }),
             // The gateway's vocabulary is Cohere's; Gemini spells the same
             // two purposes differently. Anything else means "unspecified",
             // which is the API's own default.
@@ -111,7 +115,7 @@ impl GeminiClient {
                 "search_document" => Some("RETRIEVAL_DOCUMENT"),
                 _ => None,
             }
-            .filter(|_| takes_request_options(&model_name_for_options)),
+            .filter(|_| gemini_contract(&model_name_for_options).is_some_and(|c| c.task_type)),
         }
     }
 }
@@ -123,24 +127,50 @@ impl GeminiClient {
 /// `base_url` at. A header is not logged by default anywhere on that path.
 const GEMINI_KEY_HEADER: &str = "x-goog-api-key";
 
-/// Model ids known to accept `taskType` and `outputDimensionality` on
-/// `batchEmbedContents`.
+/// The request contract for one Gemini embedding model.
 ///
-/// A list, not an assumption. Google's embedding models do not share one
-/// request contract — a newer generation can drop `taskType` in favour of
-/// prompt instructions, and sending a field a model rejects turns a working
-/// descriptor into a 400 on every call. Since the crate documents that
-/// *arbitrary* model ids work, an id outside this list gets neither
-/// parameter: it embeds at the model's native width with the API's default
-/// task type, which is the behaviour that cannot break. A descriptor
-/// declaring a non-native `dim` for such a model then fails the gateway's
-/// dimension check with a message naming both numbers, which is the legible
-/// failure rather than the mysterious one.
-const GEMINI_MODELS_WITH_REQUEST_OPTIONS: &[&str] = &[
-    "gemini-embedding-001",
-    "text-embedding-004",
-    "embedding-001",
-];
+/// **One table, consulted by both sides.** The loader validates a descriptor
+/// against it (`config::validate_connector`) and this client builds its
+/// request from it, so there is no second list to drift. A previous version
+/// kept the ids here and a near-copy in the config layer; they disagreed
+/// within one pass.
+///
+/// Google's embedding generations do not share a contract — whether
+/// `taskType` is accepted, whether `outputDimensionality` is, and the range of
+/// widths a model can produce all vary, and a newer generation expresses
+/// retrieval intent as a prompt prefix instead. Getting that wrong does not
+/// fail: it silently changes every vector a column stores. So this table
+/// carries only models whose contract has been read off Google's
+/// documentation, and the loader refuses anything else.
+pub struct GeminiContract {
+    pub model_id: &'static str,
+    /// Accepts `taskType` on `batchEmbedContents`.
+    pub task_type: bool,
+    /// Accepts `outputDimensionality`, and the inclusive width range it can
+    /// produce.
+    pub dims: Option<(u32, u32)>,
+}
+
+/// The models this crate is willing to serve.
+///
+/// Deliberately one entry. `text-embedding-004` and `embedding-001` are
+/// retired by Google and were listed by an earlier pass without checking
+/// their lifecycle — an allow-list of dead models is worse than no
+/// allow-list, because it reads as verification. Adding a model means reading
+/// its current contract, not copying a neighbour's.
+pub const GEMINI_CONTRACTS: &[GeminiContract] = &[GeminiContract {
+    model_id: "gemini-embedding-001",
+    task_type: true,
+    // Google documents 128..=3072, with 3072 the native (normalised) width.
+    dims: Some((128, 3072)),
+}];
+
+/// The contract for `model_id`, or `None` when this crate does not know it.
+pub fn gemini_contract(model_id: &str) -> Option<&'static GeminiContract> {
+    GEMINI_CONTRACTS
+        .iter()
+        .find(|contract| contract.model_id == model_id)
+}
 
 /// `reqwest::Error`'s `Display` includes the request URL. The URL no longer
 /// carries the key (see [`GEMINI_KEY_HEADER`]), so this is now defence rather
@@ -148,10 +178,6 @@ const GEMINI_MODELS_WITH_REQUEST_OPTIONS: &[&str] = &[
 /// log line buys nothing and a future `base_url` could carry a token again.
 fn redacted_network(e: reqwest::Error) -> EmbeddingError {
     EmbeddingError::Network(e.without_url())
-}
-
-fn takes_request_options(model_name: &str) -> bool {
-    GEMINI_MODELS_WITH_REQUEST_OPTIONS.contains(&model_name)
 }
 
 /// Scale a vector to unit L2 norm. A zero (or non-finite) vector is returned

@@ -568,40 +568,6 @@ mod tests {
         assert_eq!(provider.rest.get("provider"), Some(&json!("openai")));
     }
 
-    /// A node configured purely as a provider gateway holds no engine
-    /// models. Counting only those left it answering 503 forever while it
-    /// served `EmbedTexts` perfectly well — a load balancer would never route
-    /// to a node that works.
-    #[test]
-    fn a_provider_only_node_is_ready() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = dir.path().join("openai.toml");
-        std::fs::write(
-            &path,
-            "provider = \"openai\"\napi_key = \"sk-test\"\n\n[[models]]\n\
-             name = \"openai-text-embedding-3-small\"\n\
-             provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let gateway = providers::gateway::Gateway::load(dir.path(), &Default::default());
-
-        // The readiness predicate, over an engine with nothing loaded.
-        let names: Vec<String> = gateway
-            .models()
-            .iter()
-            .filter_map(|m| m["name"].as_str())
-            .map(str::to_string)
-            .collect();
-        assert_eq!(names, ["openai-text-embedding-3-small"]);
-        assert!(
-            !names.is_empty(),
-            "a provider-only node must have something to be ready with"
-        );
-    }
-
     #[test]
     fn the_system_object_has_the_expected_keys() {
         let system = system_object();

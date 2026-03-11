@@ -56,7 +56,15 @@ async fn start(flags: ServeArgs) -> Node {
     start_in(root, flags).await
 }
 
-async fn start_in(root: tempfile::TempDir, mut flags: ServeArgs) -> Node {
+async fn start_in(root: tempfile::TempDir, flags: ServeArgs) -> Node {
+    start_with_gateway(root, flags, Arc::new(providers::gateway::Gateway::empty())).await
+}
+
+async fn start_with_gateway(
+    root: tempfile::TempDir,
+    mut flags: ServeArgs,
+    gateway: Arc<providers::gateway::Gateway>,
+) -> Node {
     // Plain HTTP and ephemeral ports: these tests are about routing and
     // status codes, not about TLS or about the well-known port numbers.
     flags.insecure = true;
@@ -77,7 +85,7 @@ async fn start_in(root: tempfile::TempDir, mut flags: ServeArgs) -> Node {
         identity,
         Arc::new(Metrics::new()),
         None,
-        Arc::new(providers::gateway::Gateway::empty()),
+        gateway,
     );
 
     let admin_socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -210,9 +218,61 @@ async fn readiness_is_503_until_a_model_can_answer() {
     assert_eq!(body["data"]["ready"], json!(false));
     assert_eq!(
         body["data"]["reason"],
-        json!("no model is loaded and ready")
+        json!("no model is loaded and ready, and no external provider is configured")
     );
     assert_eq!(body["data"]["models"], json!([]));
+}
+
+/// A node configured purely as a provider gateway holds no engine models.
+/// Counting only those left it answering 503 forever while it served
+/// `EmbedTexts` perfectly well — a load balancer would never route to a node
+/// that works.
+///
+/// Driven through the real `/ready` route over a real socket, deliberately.
+/// A previous version of this test rebuilt the readiness predicate inline
+/// from `gateway.models()` and asserted on that, which would have stayed
+/// green with the production fix reverted — the exact failure this suite
+/// exists to prevent.
+#[tokio::test]
+async fn a_provider_only_node_is_ready() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("models")).unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let providers_dir = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_dir).unwrap();
+    std::fs::set_permissions(&providers_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = providers_dir.join("openai.toml");
+    std::fs::write(
+        &file,
+        "provider = \"openai\"\napi_key = \"sk-test\"\n\n[[models]]\n\
+         name = \"openai-text-embedding-3-small\"\n\
+         provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let gateway = Arc::new(providers::gateway::Gateway::load(
+        &providers_dir,
+        &Default::default(),
+    ));
+    assert!(!gateway.is_empty(), "the provider file must have loaded");
+
+    let node = start_with_gateway(root, ServeArgs::default(), gateway).await;
+    let (status, body) = node.get_json(node.public, "/ready").await;
+    assert_eq!(status, 200, "a provider-only node must be routable: {body}");
+    assert_eq!(body["data"]["ready"], json!(true));
+    assert_eq!(
+        body["data"]["models"],
+        json!(["openai-text-embedding-3-small"])
+    );
+
+    // And a drain still takes it out, provider models or not.
+    node.state.begin_drain();
+    let (status, body) = node.get_json(node.public, "/ready").await;
+    assert_eq!(status, 503);
+    assert_eq!(body["data"]["reason"], json!("draining"));
 }
 
 #[tokio::test]

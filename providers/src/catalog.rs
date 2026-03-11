@@ -287,12 +287,12 @@ mod tests {
     #[test]
     fn aliases_derive_one_public_name() {
         assert_eq!(
-            public_name("google", "text-embedding-004"),
-            public_name("gemini", "text-embedding-004")
+            public_name("google", "some-future-model"),
+            public_name("gemini", "some-future-model")
         );
         assert_eq!(
-            public_name("google", "text-embedding-004"),
-            "gemini-text-embedding-004"
+            public_name("google", "some-future-model"),
+            "gemini-some-future-model"
         );
         assert_eq!(
             public_name("amazon", "some.future-model"),

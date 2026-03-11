@@ -515,27 +515,6 @@ fn check_absolute(field: &str, path: &Option<PathBuf>) -> Result<(), String> {
     }
 }
 
-/// Gemini model ids whose `batchEmbedContents` request contract this crate
-/// knows: they accept `taskType` and `outputDimensionality`.
-///
-/// Google's embedding generations do **not** share one request contract — a
-/// newer one can reject `taskType` and expect retrieval intent as a prompt
-/// prefix instead. Serving an id outside this list would mean embedding
-/// queries and documents identically while the descriptor claims otherwise:
-/// a silent, permanent quality loss in `search()` that nothing downstream can
-/// detect. So the loader refuses it and names what to do, rather than
-/// serving something subtly wrong.
-///
-/// Extending this is a two-line change *plus verification*: the request
-/// options and any required prompt prefixes must be read off Google's current
-/// documentation for that exact model, never inferred. A wrong prefix changes
-/// every vector the column stores.
-const GEMINI_KNOWN_MODELS: &[&str] = &[
-    "gemini-embedding-001",
-    "text-embedding-004",
-    "embedding-001",
-];
-
 /// Cohere's v4 embedding models produce exactly these widths.
 const COHERE_V4_DIMS: &[u32] = &[256, 512, 1024, 1536];
 
@@ -735,19 +714,46 @@ fn validate_connector(file: &ProviderFile) -> Result<(), String> {
                 access_key_id,
                 secret_access_key,
             )?;
+            // Validated against the **same table the client builds its
+            // request from** (`gemini::GEMINI_CONTRACTS`), so the two cannot
+            // drift. Google's embedding generations differ in whether they
+            // accept `taskType` and `outputDimensionality` and in what widths
+            // they produce; guessing does not fail, it silently changes every
+            // vector a column stores.
             for model in &file.models {
-                if !GEMINI_KNOWN_MODELS.contains(&model.provider_model_id.as_str()) {
+                let Some(contract) = crate::gemini::gemini_contract(&model.provider_model_id)
+                else {
                     return Err(format!(
                         "[[models]] {:?}: Gemini model {:?} is not one whose request contract \
-                         this postvec knows ({}). Google's embedding generations differ in \
-                         whether they accept taskType and outputDimensionality and in whether \
-                         retrieval intent is a prompt prefix, and guessing would embed your \
-                         queries and documents identically while claiming otherwise. Use a \
-                         listed model, or update postvec",
+                         this postvec knows ({}). The generations differ in whether they \
+                         accept taskType and outputDimensionality and in whether retrieval \
+                         intent is a prompt prefix instead — guessing would embed your queries \
+                         and documents identically while claiming otherwise. Use a listed \
+                         model, or update postvec",
                         model.name,
                         model.provider_model_id,
-                        GEMINI_KNOWN_MODELS.join(", ")
+                        crate::gemini::GEMINI_CONTRACTS
+                            .iter()
+                            .map(|c| c.model_id)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
+                };
+                match contract.dims {
+                    Some((low, high)) if model.dim < low || model.dim > high => {
+                        return Err(format!(
+                            "[[models]] {:?}: {} produces {low}..={high} components, not {}",
+                            model.name, contract.model_id, model.dim
+                        ))
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(format!(
+                            "[[models]] {:?}: {} does not accept a requested output width, so \
+                             `dim` must be its native one",
+                            model.name, contract.model_id
+                        ))
+                    }
                 }
             }
         }
@@ -1889,16 +1895,58 @@ max_tokens = 8191
         );
         assert_eq!(validate_file(&path), Ok(true));
 
+        // A reduced-but-legal width is accepted; the documented range is
+        // 128..=3072 and the client asks for it explicitly.
         let path = write_mode(
             dir.path(),
             "p.toml",
-            &file("gemini-embedding-2", 1536),
+            &file("gemini-embedding-001", 768),
             0o600,
         );
-        let refused = validate_file(&path).unwrap_err();
-        assert!(refused.contains("request contract"), "{refused}");
-        assert!(refused.contains("gemini-embedding-001"), "{refused}");
-        assert!(load_file(&path).is_err());
+        assert_eq!(validate_file(&path), Ok(true));
+
+        // Outside that range: refused, rather than 400-ing on every call.
+        for dim in [4, 127, 3073] {
+            let path = write_mode(
+                dir.path(),
+                "p.toml",
+                &file("gemini-embedding-001", dim),
+                0o600,
+            );
+            let refused = validate_file(&path).unwrap_err();
+            assert!(refused.contains("128..=3072"), "dim {dim}: {refused}");
+        }
+
+        // An id this crate has no contract for — including Google's retired
+        // ones, which an earlier pass listed without checking their
+        // lifecycle. An allow-list of dead models is worse than none: it
+        // reads as verification.
+        for id in ["gemini-embedding-2", "text-embedding-004", "embedding-001"] {
+            let path = write_mode(dir.path(), "p.toml", &file(id, 768), 0o600);
+            let refused = validate_file(&path).unwrap_err();
+            assert!(refused.contains("request contract"), "{id}: {refused}");
+            assert!(refused.contains("gemini-embedding-001"), "{id}: {refused}");
+            assert!(load_file(&path).is_err(), "{id}");
+        }
+    }
+
+    /// The loader and the client must read the *same* table: a second list is
+    /// how a validated descriptor ends up sending a field the model rejects.
+    #[test]
+    fn the_gemini_contract_has_exactly_one_source() {
+        for contract in crate::gemini::GEMINI_CONTRACTS {
+            assert!(
+                crate::gemini::gemini_contract(contract.model_id).is_some(),
+                "{} must be reachable through the lookup the client uses",
+                contract.model_id
+            );
+            if let Some((low, high)) = contract.dims {
+                assert!(low > 0 && low <= high, "{}", contract.model_id);
+            }
+        }
+        // Retired models are absent, not listed.
+        assert!(crate::gemini::gemini_contract("text-embedding-004").is_none());
+        assert!(crate::gemini::gemini_contract("embedding-001").is_none());
     }
 
     /// Cohere v4 produces exactly four widths and each v3 model exactly one.

@@ -738,8 +738,10 @@ mod tests {
         write_provider(
             dir.path(),
             "gemini.toml",
+            // A real width for this model: the loader validates `dim`
+            // against Gemini's documented 128..=3072 range.
             "provider = \"gemini\"\napi_key = \"g\"\n\n[[models]]\nname = \"gemini-embedding-001\"\n\
-             provider_model_id = \"gemini-embedding-001\"\ndim = 4\n",
+             provider_model_id = \"gemini-embedding-001\"\ndim = 3072\n",
         );
         let gateway = Gateway::load(dir.path(), &no_local());
         assert_eq!(gateway.models()[0]["provider"], "google");
