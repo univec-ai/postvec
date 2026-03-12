@@ -515,6 +515,36 @@ fn check_absolute(field: &str, path: &Option<PathBuf>) -> Result<(), String> {
     }
 }
 
+/// A dimension this provider's per-model rules accept, for the one moment
+/// `provider add` has to validate a file whose real dimension the probe has
+/// not measured yet.
+///
+/// The alternative was to leave those models *out* of the pre-probe document,
+/// which is what a previous pass did — and it silently removed them from every
+/// other structural check too. A brand-new file with one uncatalogued model
+/// then failed with "no `[[models]]` entries" and could never reach dimension
+/// discovery at all, while in an existing file the omitted entries skipped the
+/// per-file count, the id-length rule and the duplicate-name rule and were
+/// probed before any of them applied.
+///
+/// A placeholder is honest about what it is: it exists so the *other* rules
+/// can run, and the real dimension is validated at the write. Every value here
+/// satisfies [`validate_model_for_provider`], which the test below pins.
+pub fn placeholder_dim(provider: &str, provider_model_id: &str) -> u32 {
+    match crate::catalog::canonical_provider(provider).as_str() {
+        "cohere" => COHERE_FIXED_DIMS
+            .iter()
+            .find(|(id, _)| *id == provider_model_id)
+            .map(|(_, dim)| *dim)
+            .unwrap_or(1024),
+        "google" => crate::gemini::gemini_contract(provider_model_id)
+            .and_then(|c| c.dims)
+            .map(|(_, native)| native)
+            .unwrap_or(3072),
+        _ => 1536,
+    }
+}
+
 /// Everything the loader can say about one `(provider, model id, dim)` on its
 /// own, without seeing the rest of the file.
 ///
@@ -853,11 +883,12 @@ pub fn validate_file(path: &Path) -> Result<bool, String> {
 /// next reload — and the command that composed it is the last place that can
 /// still stop it.
 pub fn validate_str(body: &str, label: &str) -> Result<bool, String> {
-    let mut file: ProviderFile = toml::from_str(body).map_err(|e| format!("cannot parse: {e}"))?;
+    let _ = label;
+    let file: ProviderFile = toml::from_str(body).map_err(|e| format!("cannot parse: {e}"))?;
     if !file.enabled {
         return Ok(false);
     }
-    validate_structure(&mut file, label)?;
+    validate_structure(&file)?;
     Ok(true)
 }
 
@@ -869,11 +900,11 @@ fn parse_file(path: &Path) -> Result<ProviderFile, String> {
 /// Parse and resolve one provider file. `Ok(None)` = disabled (parses, serves
 /// nothing).
 fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
-    let mut file = parse_file(path)?;
+    let file = parse_file(path)?;
     if !file.enabled {
         return Ok(None);
     }
-    validate_structure(&mut file, &path.display().to_string())?;
+    validate_structure(&file)?;
 
     let config = ProviderConfig {
         provider: file.provider.clone(),
@@ -919,7 +950,7 @@ fn load_file(path: &Path) -> Result<Option<ResolvedProvider>, String> {
     }))
 }
 
-fn validate_structure(file: &mut ProviderFile, label: &str) -> Result<(), String> {
+fn validate_structure(file: &ProviderFile) -> Result<(), String> {
     if file.models.is_empty() {
         return Err("no [[models]] entries; an enabled provider must serve something".to_string());
     }
@@ -996,21 +1027,21 @@ fn validate_structure(file: &mut ProviderFile, label: &str) -> Result<(), String
             ));
         }
     }
-    // Same-file duplicates follow the same rule as cross-file ones: first
-    // definition wins, warning logged — never a silent last-wins overwrite
-    // further down the pipeline.
+    // Same-file duplicates follow the same rule as cross-file ones, and for
+    // the same reason: which entry wins decides which model a bound column's
+    // text is embedded by. First-wins was deterministic and silent — the
+    // losing entry simply vanished, so `provider add` could report two models
+    // added and write one. One name, one entry, or the file is refused.
     let mut seen = std::collections::BTreeSet::new();
-    file.models.retain(|model| {
-        let fresh = seen.insert(model.name.clone());
-        if !fresh {
-            log::warn!(
-                "providers.d: {label} defines model {:?} more than once; the first \
-                 definition wins",
+    for model in &file.models {
+        if !seen.insert(model.name.clone()) {
+            return Err(format!(
+                "[[models]] defines {:?} more than once; a public name must have exactly one \
+                 entry, because which one wins decides what a bound column is embedded by",
                 model.name
-            );
+            ));
         }
-        fresh
-    });
+    }
 
     // One source per secret, checked here rather than only inside
     // `resolve_secret`, so a structural pass sees it too: a file with both
@@ -1349,20 +1380,23 @@ max_tokens = 8191
         );
     }
 
+    /// One name, one entry — within a file as well as across them. First-wins
+    /// was deterministic and *silent*: the losing entry simply vanished, so
+    /// `provider add` could report two models added and write one, and which
+    /// entry survived decided what a bound column was embedded by.
     #[test]
-    fn duplicate_model_names_within_one_file_first_wins() {
+    fn a_duplicate_public_name_within_one_file_is_refused() {
         let dir = private_tempdir();
         let body = "provider = \"openai\"\napi_key = \"k\"\n\n\
                     [[models]]\nname = \"dup\"\nprovider_model_id = \"first\"\ndim = 4\n\n\
                     [[models]]\nname = \"dup\"\nprovider_model_id = \"second\"\ndim = 8\n";
-        write_mode(dir.path(), "openai.toml", body, 0o600);
+        let path = write_mode(dir.path(), "openai.toml", body, 0o600);
 
+        let refused = validate_file(&path).unwrap_err();
+        assert!(refused.contains("more than once"), "{refused}");
         let outcome = load_dir(dir.path()).unwrap();
-        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
-        let models = &outcome.providers[0].models;
-        assert_eq!(models.len(), 1, "first wins, duplicate dropped");
-        assert_eq!(models[0].provider_model_id, "first");
-        assert_eq!(models[0].dim, 4);
+        assert!(outcome.providers.is_empty());
+        assert_eq!(outcome.errors.len(), 1);
     }
 
     #[test]
@@ -1967,6 +2001,34 @@ max_tokens = 8191
         // Retired models are absent, not listed.
         assert!(crate::gemini::gemini_contract("text-embedding-004").is_none());
         assert!(crate::gemini::gemini_contract("embedding-001").is_none());
+    }
+
+    /// The placeholder exists so the *other* structural rules can run before
+    /// the probe. It is only sound if it satisfies the per-model rules for
+    /// every provider — otherwise pre-probe validation would refuse a file
+    /// that is actually fine.
+    #[test]
+    fn every_placeholder_dimension_satisfies_its_own_rule() {
+        let cases = [
+            ("openai", "text-embedding-3-small"),
+            ("openai", "some-future-model"),
+            ("openrouter", "openai/text-embedding-3-large"),
+            ("mistral", "mistral-embed"),
+            ("cohere", "embed-v4.0"),
+            ("cohere", "embed-english-v3.0"),
+            ("cohere", "embed-multilingual-light-v3.0"),
+            ("cohere", "embed-v4.5-hypothetical"),
+            ("google", "gemini-embedding-001"),
+            ("aws", "amazon.titan-embed-text-v2:0"),
+        ];
+        for (provider, id) in cases {
+            let dim = placeholder_dim(provider, id);
+            assert!(
+                validate_model_for_provider(provider, id, Some(dim)).is_ok(),
+                "{provider}/{id}: placeholder {dim} is refused by the rule it exists to pass"
+            );
+            assert!(dim > 0 && dim <= MAX_DIM, "{provider}/{id}: {dim}");
+        }
     }
 
     /// Cohere v4 produces exactly four widths and each v3 model exactly one.

@@ -485,6 +485,35 @@ impl ProviderFileDoc {
         }
     }
 
+    /// Replace one model's declared dimension, by public name.
+    ///
+    /// `provider add` writes every entry before the probe so that the whole
+    /// file can be validated, then comes back and sets the dimensions the
+    /// probe measured.
+    pub fn set_model_dim(&mut self, public_name: &str, dim: u32) -> Result<()> {
+        let path = self.path.clone();
+        let entry = self
+            .table()
+            .get_mut("models")
+            .and_then(toml::Value::as_array_mut)
+            .and_then(|models| {
+                models
+                    .iter_mut()
+                    .find(|m| m.get("name").and_then(toml::Value::as_str) == Some(public_name))
+            })
+            .and_then(toml::Value::as_table_mut);
+        match entry {
+            Some(table) => {
+                table.insert("dim".into(), toml::Value::Integer(dim as i64));
+                Ok(())
+            }
+            None => Err(CliError::internal(format!(
+                "{}: no [[models]] entry named {public_name:?} to set a dimension on",
+                path.display()
+            ))),
+        }
+    }
+
     /// Remove one model by public name or provider id; the remaining count
     /// tells the caller whether the file itself should go.
     pub fn remove_model(&mut self, id_or_name: &str) -> (bool, usize) {

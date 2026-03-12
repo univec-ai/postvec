@@ -1553,3 +1553,73 @@ fn set_mode(path: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }
+
+/// The two halves of pre-probe validation that have to hold at once: every
+/// new model must be *in* the document being checked (or the structural rules
+/// skip it), and a model whose dimension is not yet known must still reach
+/// the probe that measures it.
+///
+/// A previous pass validated the document with the unknown-dimension models
+/// left out, which satisfied the first half by breaking the second: a
+/// brand-new file with one uncatalogued model failed with "no [[models]]
+/// entries" and could never discover its dimension at all.
+#[test]
+fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let mock = runtime.block_on(providers::testing::always(
+        200,
+        r#"{"data":[{"embedding":[0.1,0.2,0.3],"index":0}]}"#,
+    ));
+
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+    let add = |extra: &[&str]| {
+        let mut args = vec!["provider", "add", "openai"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[
+            "--api-key-env",
+            "POSTVEC_DIM_DISCOVERY_KEY",
+            "--base-url",
+            mock.url.as_str(),
+            "--path",
+            root_arg,
+            "--acknowledge-in-use",
+            "--yes",
+        ]);
+        Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_DIM_DISCOVERY_KEY", "not-a-real-key")
+            .output()
+            .expect("run postvec")
+    };
+
+    // A model the built-in catalog does not know, into a file that does not
+    // exist yet: the probe is the only thing that can supply its dimension.
+    let output = add(&["--model", "some-uncatalogued-model"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert_eq!(mock.request_count(), 1, "the probe must have run");
+    let body = std::fs::read_to_string(root.path().join("providers.d/openai.toml"))
+        .expect("connector file");
+    assert!(body.contains("dim = 3"), "the measured dimension: {body}");
+    assert!(body.contains("openai-some-uncatalogued-model"), "{body}");
+
+    // Two ids that derive one public name. Both would be probed and only one
+    // written, while both were journaled as added — so the check has to
+    // happen before either call.
+    let before = mock.request_count();
+    let output = add(&["--model", "foo/bar", "--model", "foo--bar"]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("more than once"), "{text}");
+    assert_eq!(
+        mock.request_count(),
+        before,
+        "a name collision must be caught before anything is probed"
+    );
+}

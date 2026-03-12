@@ -163,6 +163,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         let known = catalog::lookup(&canonical, id);
         new_models.push(NewModel {
             id: id.clone(),
+            placeholder_dim: providers::config::placeholder_dim(&canonical, id),
             public_name,
             dim: args.dim.or(known.map(|k| k.dim)),
             max_tokens: known.map(|k| k.max_tokens),
@@ -409,7 +410,15 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         }
         apply_key_spec(table, &canonical, &key);
     }
-    for model in new_models.iter().filter(|m| m.dim.is_some()) {
+    // **Every** new model, including the ones whose dimension the probe has
+    // yet to measure — those carry a placeholder that the provider's own
+    // per-model rule accepts. Leaving them out (a previous pass) removed them
+    // from every *other* structural check as well: a brand-new file with one
+    // uncatalogued model failed with "no [[models]] entries" and could never
+    // reach dimension discovery, while in an existing file the omitted
+    // entries skipped the per-file count, the id-length rule and the
+    // duplicate-name rule and were probed before any of them applied.
+    for model in &new_models {
         doc.push_model(model_entry(model))?;
     }
     doc.validate_prospective()?;
@@ -463,17 +472,13 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     }
 
     // ---- Apply: finish the document, write, reload ----
-    // Everything but the just-measured dimensions is already in `doc` and
-    // already validated; `write` runs the same rules once more over the
-    // finished file.
+    // Every entry is already present and already validated; only the
+    // dimensions the probe measured are still placeholders. `write` runs the
+    // same rules once more over the finished file, with the real values.
     let mut journal = ApplyJournal::default();
-    for model in new_models.iter().filter(|m| m.dim.is_some()) {
-        if !doc
-            .models()
-            .iter()
-            .any(|(name, _)| *name == model.public_name)
-        {
-            doc.push_model(model_entry(model))?;
+    for model in &new_models {
+        if let Some(dim) = model.dim {
+            doc.set_model_dim(&model.public_name, dim)?;
         }
     }
     doc.write(target.owner())?;
@@ -514,6 +519,8 @@ struct NewModel {
     id: String,
     public_name: String,
     dim: Option<u32>,
+    /// Stands in for `dim` during pre-probe validation only.
+    placeholder_dim: u32,
     max_tokens: Option<u32>,
     max_batch: Option<usize>,
 }
@@ -531,9 +538,11 @@ fn model_entry(model: &NewModel) -> toml::Value {
         "provider_model_id".into(),
         toml::Value::String(model.id.clone()),
     );
+    // A placeholder until the probe measures one. It is replaced before the
+    // file is written, and the write validates the real value.
     entry.insert(
         "dim".into(),
-        toml::Value::Integer(model.dim.expect("dim resolved before this entry is built") as i64),
+        toml::Value::Integer(model.dim.unwrap_or(model.placeholder_dim) as i64),
     );
     if let Some(max_batch) = model.max_batch {
         entry.insert("max_batch".into(), toml::Value::Integer(max_batch as i64));
