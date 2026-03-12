@@ -122,6 +122,12 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         .as_ref()
         .map(|doc| doc.models())
         .unwrap_or_default();
+    // `existing` is consumed when the prospective document is built; the
+    // probe still needs the file's own key source and declared dimensions.
+    let existing_for_probe = existing.as_ref().map(|doc| ProviderFileDoc {
+        path: doc.path.clone(),
+        value: doc.value.clone(),
+    });
 
     // The descriptors this run adds: skip ids the file already declares.
     let mut new_models: Vec<NewModel> = Vec::new();
@@ -375,8 +381,41 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // costs money and sends the key over the network happens only once the
     // operator has said yes to the plan. Nothing has been written yet, so a
     // probe failure still leaves the host exactly as it was.
+    // ---- The prospective document, checked before anything is spent ----
+    // Composed here rather than after the probe so the **whole file** — not
+    // just the model ids the probe touches — is measured against the serving
+    // host's rules before a paid call. An unknown field, two key sources, a
+    // `dim` outside a model's range: all of those make the host refuse the
+    // file, and all of them used to be discovered only at the write, one
+    // billed request later.
+    //
+    // Models whose dimension the probe has yet to measure are appended
+    // afterwards; everything else about the file is final by this point.
+    let mut doc = match existing {
+        Some(doc) => doc,
+        None => ProviderFileDoc {
+            path: file_path.clone(),
+            value: toml::Value::Table(Default::default()),
+        },
+    };
+    {
+        let table = doc.value.as_table_mut().expect("provider file is a table");
+        table.insert("provider".into(), toml::Value::String(canonical.clone()));
+        if let Some(region) = &args.region {
+            table.insert("region".into(), toml::Value::String(region.clone()));
+        }
+        if let Some(base_url) = &args.base_url {
+            table.insert("base_url".into(), toml::Value::String(base_url.clone()));
+        }
+        apply_key_spec(table, &canonical, &key);
+    }
+    for model in new_models.iter().filter(|m| m.dim.is_some()) {
+        doc.push_model(model_entry(model))?;
+    }
+    doc.validate_prospective()?;
+
     if probe {
-        let secret = probe_secret(&key, existing.as_ref())?;
+        let secret = probe_secret(&key, existing_for_probe.as_ref())?;
         // The configuration the *host* will serve with, not the one the
         // command line mentioned. Probing `args.base_url` meant that adding a
         // model to a file with a custom endpoint verified the public default
@@ -401,7 +440,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         for (id, public_name, declared) in probe_targets(
             &new_models,
             &already_declared,
-            existing.as_ref(),
+            existing_for_probe.as_ref(),
             credential_changes || endpoint_changes,
         ) {
             let measured = super::probe_one(&config, &id, declared, cli.timeout).await?;
@@ -423,49 +462,20 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         }
     }
 
-    // ---- Apply: build the document, write, reload ----
+    // ---- Apply: finish the document, write, reload ----
+    // Everything but the just-measured dimensions is already in `doc` and
+    // already validated; `write` runs the same rules once more over the
+    // finished file.
     let mut journal = ApplyJournal::default();
-    let mut doc = match existing {
-        Some(doc) => doc,
-        None => ProviderFileDoc {
-            path: file_path.clone(),
-            value: toml::Value::Table(Default::default()),
-        },
-    };
-    {
-        let table = doc.value.as_table_mut().expect("provider file is a table");
-        table.insert("provider".into(), toml::Value::String(canonical.clone()));
-        if let Some(region) = &args.region {
-            table.insert("region".into(), toml::Value::String(region.clone()));
+    for model in new_models.iter().filter(|m| m.dim.is_some()) {
+        if !doc
+            .models()
+            .iter()
+            .any(|(name, _)| *name == model.public_name)
+        {
+            doc.push_model(model_entry(model))?;
         }
-        if let Some(base_url) = &args.base_url {
-            table.insert("base_url".into(), toml::Value::String(base_url.clone()));
-        }
-        apply_key_spec(table, &canonical, &key);
     }
-    for model in &new_models {
-        let mut entry = toml::map::Map::new();
-        entry.insert(
-            "name".into(),
-            toml::Value::String(model.public_name.clone()),
-        );
-        entry.insert(
-            "provider_model_id".into(),
-            toml::Value::String(model.id.clone()),
-        );
-        entry.insert(
-            "dim".into(),
-            toml::Value::Integer(model.dim.expect("dim resolved above") as i64),
-        );
-        if let Some(max_batch) = model.max_batch {
-            entry.insert("max_batch".into(), toml::Value::Integer(max_batch as i64));
-        }
-        if let Some(max_tokens) = model.max_tokens {
-            entry.insert("max_tokens".into(), toml::Value::Integer(max_tokens as i64));
-        }
-        doc.push_model(toml::Value::Table(entry))?;
-    }
-
     doc.write(target.owner())?;
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
@@ -506,6 +516,32 @@ struct NewModel {
     dim: Option<u32>,
     max_tokens: Option<u32>,
     max_batch: Option<usize>,
+}
+
+/// One `[[models]]` entry. Built in one place because it is appended in two:
+/// before the probe for models whose dimension is already known, and after it
+/// for the ones the probe measured.
+fn model_entry(model: &NewModel) -> toml::Value {
+    let mut entry = toml::map::Map::new();
+    entry.insert(
+        "name".into(),
+        toml::Value::String(model.public_name.clone()),
+    );
+    entry.insert(
+        "provider_model_id".into(),
+        toml::Value::String(model.id.clone()),
+    );
+    entry.insert(
+        "dim".into(),
+        toml::Value::Integer(model.dim.expect("dim resolved before this entry is built") as i64),
+    );
+    if let Some(max_batch) = model.max_batch {
+        entry.insert("max_batch".into(), toml::Value::Integer(max_batch as i64));
+    }
+    if let Some(max_tokens) = model.max_tokens {
+        entry.insert("max_tokens".into(), toml::Value::Integer(max_tokens as i64));
+    }
+    toml::Value::Table(entry)
 }
 
 /// Which models get a live verification call: `(provider id, public name,

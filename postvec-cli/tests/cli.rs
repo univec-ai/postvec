@@ -1436,63 +1436,120 @@ fn creating_a_providers_directory_checks_the_chain_it_hangs_from() {
     );
 }
 
-/// The probe is a **paid** call, so it must not be spent on a model the
-/// serving host would refuse. `provider add` validated the composed document
-/// only at the *write*, which happens after the probe — so a Gemini id
-/// postvec cannot serve, or a Cohere width the model does not produce, got
-/// billed first and refused second.
+/// The probe is a **paid** call, so it must not be spent on a file or a model
+/// the serving host would refuse.
 ///
-/// The key resolves (so the run really would reach the network) and the
-/// refusal still arrives before any request: if the gate regressed, the
-/// failure would be a `verification embed` error from a live call, which the
-/// second assertion catches.
+/// Hermetic by construction: every case points `--base-url` at an in-process
+/// mock and asserts it received **zero** requests. An earlier version used
+/// the real endpoints and would have contacted Google and OpenAI if the gate
+/// regressed — a test that can make the call it forbids is not a test of the
+/// gate. The runtime is **multi-threaded and held for the whole test** so the
+/// mock's accept loop actually runs; a current-thread runtime that has
+/// returned from `block_on` never accepts, which would make the zero-request
+/// assertion true for the wrong reason.
 #[test]
-fn a_model_the_host_would_refuse_is_never_probed() {
+fn nothing_the_host_would_refuse_is_ever_probed() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    // The OpenAI response shape, for the positive control at the end. The
+    // refusal cases never reach the mock, so its body is irrelevant to them.
+    let mock = runtime.block_on(providers::testing::always(
+        200,
+        r#"{"data":[{"embedding":[0.1,0.2],"index":0}]}"#,
+    ));
+
     let root = provider_root();
     let root_arg = root.path().to_str().unwrap();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
 
-    for (provider, model, dim) in [
-        // Not in the Gemini contract table.
-        ("gemini", "gemini-embedding-2", "1536"),
-        // A width `embed-english-v3.0` never produces.
-        ("cohere", "embed-english-v3.0", "512"),
-    ] {
-        let output = Command::new(binary())
-            .args([
-                "provider",
-                "add",
-                provider,
-                "--model",
-                model,
-                "--dim",
-                dim,
-                "--api-key-env",
-                "POSTVEC_PROBE_GATE_KEY",
-                "--path",
-                root_arg,
-                // Deliberately NOT --no-verify: the probe is what must be
-                // skipped, and it can only be skipped by the gate.
-                "--acknowledge-in-use",
-                "--yes",
-            ])
+    let cli = |args: &[&str]| {
+        Command::new(binary())
+            .args(args)
             .env_remove("POSTVEC_DATABASE_URL")
             .env("NO_COLOR", "1")
-            // Resolvable, so the command would otherwise go to the network.
+            // Resolvable, so every one of these runs would otherwise reach
+            // the mock.
             .env("POSTVEC_PROBE_GATE_KEY", "not-a-real-key")
             .output()
-            .expect("run postvec");
+            .expect("run postvec")
+    };
+    let add = |extra: &[&str]| {
+        let mut args = vec!["provider", "add"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[
+            "--api-key-env",
+            "POSTVEC_PROBE_GATE_KEY",
+            "--base-url",
+            mock.url.as_str(),
+            "--path",
+            root_arg,
+            // Deliberately NOT --no-verify: the probe is what must be
+            // skipped, and only the gate can skip it.
+            "--acknowledge-in-use",
+            "--yes",
+        ]);
+        cli(&args)
+    };
 
-        assert_ne!(code(&output), 0, "{provider}/{model}: {}", stdout(&output));
-        let text = format!("{}{}", stdout(&output), stderr(&output));
-        assert!(
-            !text.contains("verification embed"),
-            "{provider}/{model} reached the network: {text}"
-        );
-        assert!(
-            text.contains("would refuse")
-                || text.contains("request contract")
-                || text.contains("always returns"),
-            "{provider}/{model}: {text}"
-        );
-    }
+    // A per-model contract the connector cannot honour: a Cohere v3 width
+    // that model never produces, and a Gemini id postvec has no contract for.
+    let output = add(&["cohere", "--model", "embed-english-v3.0", "--dim", "512"]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let output = add(&["gemini", "--model", "gemini-embedding-2", "--dim", "1536"]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+
+    // A structurally invalid *file*: an unknown field the serving loader
+    // refuses, which no per-model rule can see.
+    let file = providers_d.join("openai.toml");
+    std::fs::write(
+        &file,
+        format!(
+            "provider = \"openai\"\napi_kee = \"sk-typo\"\n\
+             api_key_env = \"POSTVEC_PROBE_GATE_KEY\"\nbase_url = \"{}\"\n\n\
+             [[models]]\nname = \"openai-text-embedding-3-small\"\n\
+             provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
+            mock.url
+        ),
+    )
+    .expect("write");
+    set_mode(&file, 0o600);
+
+    let output = add(&["openai", "--model", "text-embedding-3-large"]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("api_kee"), "{text}");
+
+    // And `provider test` on the same broken file, which had no document
+    // validation at all.
+    let output = cli(&["provider", "test", "openai", "--path", root_arg]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+
+    // The assertion the whole test exists for.
+    assert_eq!(
+        mock.request_count(),
+        0,
+        "a refused file or model must never reach the provider"
+    );
+
+    // Positive control, on the *same* mock: a legitimate run does reach it.
+    // Without this, "zero requests" would also hold for a mock that cannot
+    // count — which is exactly how the first version of this test passed.
+    std::fs::remove_file(&file).expect("clear the broken file");
+    let output = add(&["openai", "--model", "text-embedding-3-small", "--dim", "2"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert_eq!(
+        mock.request_count(),
+        1,
+        "the mock must be able to observe a probe, or zero proves nothing"
+    );
+}
+
+fn set_mode(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }

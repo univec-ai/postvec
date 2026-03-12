@@ -65,6 +65,10 @@ walkdir = "2"
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = "3"
+# The in-process mock provider, so the CLI's probe tests are hermetic: a test
+# that asserts "no provider call was made" must not be able to make one.
+postvec-providers = { path = "../providers", features = ["config", "test-util"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time"] }
 
 [lints.clippy]
 # The CLI is a long linear orchestration; these two fire constantly on

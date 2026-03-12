@@ -44,6 +44,30 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
             file_path.display()
         )));
     };
+    // The serving host's own rules, before a paid call. Probing a file the
+    // host refuses answers a question nobody asked: the model cannot serve
+    // whatever the provider says, and a `dim = -1` or a typo'd field would
+    // otherwise be discovered only after spending the call.
+    match providers::config::validate_file(&file_path) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(CliError::precondition(format!(
+                "{} is `enabled = false`, so the host serves nothing from it",
+                file_path.display()
+            ))
+            .with_fix("set enabled = true to serve it, then rerun"))
+        }
+        Err(problem) => {
+            return Err(CliError::precondition(format!(
+                "the inference host would refuse {}: {problem}",
+                file_path.display()
+            ))
+            .with_fix(
+                "fix the file first — there is nothing to verify while the host will not \
+                 load it",
+            ))
+        }
+    }
     let provider_type = doc
         .provider_type()
         .ok_or_else(|| {

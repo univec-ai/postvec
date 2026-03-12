@@ -507,6 +507,30 @@ impl ProviderFileDoc {
         (models.len() != before, models.len())
     }
 
+    /// Run the serving host's own rules over this document as it currently
+    /// stands.
+    ///
+    /// Called *before* the verification probe as well as at the write. The
+    /// write-time check alone was too late: a paid call had already been made
+    /// against a file the host would refuse for a reason the probe cannot
+    /// see — an unknown field, two sources for one secret, a `dim` outside a
+    /// model's range.
+    pub fn validate_prospective(&self) -> Result<()> {
+        let body = self.body()?;
+        let label = self.path.display().to_string();
+        providers::config::validate_str(&body, &label)
+            .map(|_| ())
+            .map_err(|problem| {
+                CliError::precondition(format!(
+                    "the resulting {label} is one the inference host would refuse: {problem}"
+                ))
+                .with_fix(
+                    "fix the flag (or the hand-edited field) this reports; nothing has been \
+                     written or sent",
+                )
+            })
+    }
+
     /// The file as it would be written.
     fn body(&self) -> Result<String> {
         Ok(format!(
