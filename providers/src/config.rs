@@ -60,7 +60,11 @@ const MAX_TOTAL_MODELS: usize = 256;
 /// footprint.
 const MAX_TOTAL_CONCURRENT: usize = 256;
 /// A connector file is a few dozen lines. A secret is a token.
-const MAX_FILE_BYTES: u64 = 256 * 1024;
+///
+/// Public because the CLI reads provider files too, and a second copy of this
+/// number is a second rulebook: the two disagreeing is exactly how `provider
+/// add` came to write a file `provider test` then refused.
+pub const MAX_FILE_BYTES: u64 = 256 * 1024;
 const MAX_SECRET_BYTES: u64 = 16 * 1024;
 
 /// The connector types [`crate::new_embedding_backend`] implements, in the
@@ -884,6 +888,25 @@ pub fn validate_file(path: &Path) -> Result<bool, String> {
 /// still stop it.
 pub fn validate_str(body: &str, label: &str) -> Result<bool, String> {
     let _ = label;
+    // The size ceiling belongs here, not only in the reader. `validate_file`
+    // gets it from `read_private`, so a *file* over the limit is refused —
+    // but a rendered document was not measured at all, and `provider add`
+    // could therefore write a connector the serving host (and `provider
+    // test`, and `ls`, and doctor) would immediately refuse. Worse than
+    // useless: it replaces a working configuration with one that fails at the
+    // next restart.
+    //
+    // Size is the only rule the two paths differed on. Everything else
+    // `read_private` checks — the `O_NOFOLLOW` open, regular-file type, link
+    // count, mode — is a property of a file on disk, which a prospective
+    // document does not have yet.
+    if body.len() as u64 > MAX_FILE_BYTES {
+        return Err(format!(
+            "the file would be {} bytes, over the {MAX_FILE_BYTES}-byte ceiling for a \
+             connector file",
+            body.len()
+        ));
+    }
     let file: ProviderFile = toml::from_str(body).map_err(|e| format!("cannot parse: {e}"))?;
     if !file.enabled {
         return Ok(false);
@@ -1452,6 +1475,32 @@ max_tokens = 8191
             "{}",
             outcome.errors[0]
         );
+    }
+
+    /// `validate_file` gets the byte ceiling from the reader that opens the
+    /// file. `validate_str` measures a rendered document, so it has to carry
+    /// the same ceiling itself — otherwise `provider add` composes and writes
+    /// a connector the host then refuses.
+    #[test]
+    fn the_byte_ceiling_applies_to_a_rendered_document_too() {
+        let head = "provider = \"openai\"\napi_key = \"k\"\nbase_url = \"https://x/PADDING\"\n\n\
+                    [[models]]\nname = \"m1\"\nprovider_model_id = \"m\"\ndim = 4\n";
+        let under = head.replace(
+            "PADDING",
+            &"a".repeat(MAX_FILE_BYTES as usize - head.len() - 32),
+        );
+        assert!((under.len() as u64) < MAX_FILE_BYTES);
+        assert_eq!(validate_str(&under, "under"), Ok(true));
+
+        let over = head.replace("PADDING", &"a".repeat(MAX_FILE_BYTES as usize));
+        assert!((over.len() as u64) > MAX_FILE_BYTES);
+        let refused = validate_str(&over, "over").unwrap_err();
+        assert!(refused.contains("byte ceiling"), "{refused}");
+
+        // And the two entry points agree on the same file.
+        let dir = private_tempdir();
+        let path = write_mode(dir.path(), "openai.toml", &over, 0o600);
+        assert!(validate_file(&path).is_err());
     }
 
     /// `validate_file` is what the CLI reports from, so it must agree with

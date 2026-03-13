@@ -1623,3 +1623,84 @@ fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
         "a name collision must be caught before anything is probed"
     );
 }
+
+/// `validate_file` got the byte ceiling from the reader that opened the file;
+/// `validate_str` measured a *rendered* document and never checked its size
+/// at all. So `provider add` could compose and write a connector the serving
+/// host — and `provider test`, and `ls`, and doctor — would immediately
+/// refuse: a working configuration replaced by one that fails at the next
+/// restart.
+///
+/// Size was the only rule the two paths differed on; everything else the
+/// reader checks is a property of a file on disk, which a prospective
+/// document does not have yet.
+#[test]
+fn a_composed_file_over_the_byte_ceiling_is_refused_before_anything_is_spent() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let mock = runtime.block_on(providers::testing::always(
+        200,
+        r#"{"data":[{"embedding":[0.1,0.2],"index":0}]}"#,
+    ));
+
+    let root = provider_root();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+    let file = providers_d.join("openai.toml");
+
+    // Just *under* the ceiling, so the file itself loads: the overflow has to
+    // come from what this run adds.
+    let ceiling = providers::config::MAX_FILE_BYTES as usize;
+    let head = format!(
+        "provider = \"openai\"\napi_key_env = \"POSTVEC_CEILING_KEY\"\nbase_url = \"{}/\
+         PADDING\"\n\n[[models]]\nname = \"openai-text-embedding-3-small\"\n\
+         provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n",
+        mock.url
+    );
+    let padding = "a".repeat(ceiling - head.len() - 60);
+    let body = head.replace("PADDING", &padding);
+    assert!(body.len() < ceiling, "the starting file must be legal");
+    std::fs::write(&file, &body).expect("write");
+    set_mode(&file, 0o600);
+
+    let before = std::fs::read(&file).expect("read");
+    let output = Command::new(binary())
+        .args([
+            "provider",
+            "add",
+            "openai",
+            "--model",
+            "text-embedding-3-large",
+            "--path",
+            root.path().to_str().unwrap(),
+            "--acknowledge-in-use",
+            "--yes",
+        ])
+        .env_remove("POSTVEC_DATABASE_URL")
+        .env("NO_COLOR", "1")
+        .env("POSTVEC_CEILING_KEY", "not-a-real-key")
+        .output()
+        .expect("run postvec");
+
+    assert_ne!(code(&output), 0);
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(
+        text.contains("byte ceiling"),
+        "{}",
+        &text[..text.len().min(400)]
+    );
+    assert_eq!(
+        mock.request_count(),
+        0,
+        "a file the host would refuse must not be probed"
+    );
+    assert_eq!(
+        std::fs::read(&file).expect("read"),
+        before,
+        "the working configuration must be left exactly as it was"
+    );
+}

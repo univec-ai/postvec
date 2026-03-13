@@ -291,10 +291,6 @@ fn target_from_settings(
 // file. Comments do not survive a rewrite — the header says the file is
 // CLI-managed.
 
-/// The loader's per-file ceiling, restated here so the CLI refuses at the
-/// same point rather than reading a file the host would not.
-const MAX_PROVIDER_FILE_BYTES: u64 = 256 * 1024;
-
 /// A providers.d file as an editable TOML document.
 pub struct ProviderFileDoc {
     pub path: PathBuf,
@@ -333,13 +329,14 @@ impl ProviderFileDoc {
             }
         };
         let mut raw = String::new();
-        file.take(MAX_PROVIDER_FILE_BYTES)
+        file.take(providers::config::MAX_FILE_BYTES)
             .read_to_string(&mut raw)
             .map_err(|e| CliError::precondition(format!("cannot read {}: {e}", path.display())))?;
-        if raw.len() as u64 >= MAX_PROVIDER_FILE_BYTES {
+        if raw.len() as u64 >= providers::config::MAX_FILE_BYTES {
             return Err(CliError::precondition(format!(
-                "{} is larger than {MAX_PROVIDER_FILE_BYTES} bytes; the serving host refuses it",
-                path.display()
+                "{} is larger than {} bytes; the serving host refuses it",
+                path.display(),
+                providers::config::MAX_FILE_BYTES
             )));
         }
         let value: toml::Value = raw
