@@ -1099,6 +1099,113 @@ fn validate_structure(file: &ProviderFile) -> Result<(), String> {
     validate_connector(file)
 }
 
+/// The directory-wide rules, applied to the directory **as it would be** after
+/// `replaced` is written with `body`.
+///
+/// `validate_str` answers "will the host load this file?", and that was the
+/// only question `provider add` asked. But the loader also refuses a
+/// *directory* — over the file, model or aggregate-concurrency ceilings, or
+/// holding a name two files claim — and when it does, the whole gateway comes
+/// up empty at the next restart. A single valid file that pushes the set over
+/// a ceiling is therefore a file the CLI must not write.
+///
+/// Only the structural pass runs per sibling (no secret is resolved), and a
+/// sibling that fails it is skipped the way the loader would skip it, so this
+/// predicts the host rather than being stricter than it.
+pub fn validate_prospective_dir(dir: &Path, replaced: &Path, body: &str) -> Result<(), String> {
+    let mut files: Vec<(PathBuf, ProviderFile)> = Vec::new();
+    let mut count = 0usize;
+    if dir.is_dir() {
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map_err(|e| format!("cannot scan {}: {e}", dir.display()))?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| {
+                path.extension().is_some_and(|ext| ext == "toml")
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| !n.starts_with('.'))
+            })
+            .filter(|path| path != replaced)
+            .collect();
+        entries.sort();
+        for path in entries {
+            count += 1;
+            let Ok(raw) = read_private(&path, MAX_FILE_BYTES) else {
+                continue;
+            };
+            let Ok(file) = toml::from_str::<ProviderFile>(&raw) else {
+                continue;
+            };
+            if file.enabled && validate_structure(&file).is_ok() {
+                files.push((path, file));
+            }
+        }
+    }
+    count += 1;
+    if count > MAX_PROVIDER_FILES {
+        return Err(format!(
+            "{} would hold {count} provider files, over the {MAX_PROVIDER_FILES}-file \
+             ceiling; the host would refuse the whole directory",
+            dir.display()
+        ));
+    }
+    let replacement: ProviderFile =
+        toml::from_str(body).map_err(|e| format!("cannot parse: {e}"))?;
+    if replacement.enabled {
+        files.push((replaced.to_path_buf(), replacement));
+    }
+
+    let total_models: usize = files.iter().map(|(_, f)| f.models.len()).sum();
+    if total_models > MAX_TOTAL_MODELS {
+        return Err(format!(
+            "{} would declare {total_models} provider models, over the {MAX_TOTAL_MODELS} \
+             ceiling; the host would refuse the whole directory",
+            dir.display()
+        ));
+    }
+    let total_concurrent: usize = files.iter().map(|(_, f)| f.max_concurrent).sum();
+    if total_concurrent > MAX_TOTAL_CONCURRENT {
+        return Err(format!(
+            "{} would declare {total_concurrent} total outbound concurrency, over the \
+             {MAX_TOTAL_CONCURRENT} ceiling; the host would refuse the whole directory",
+            dir.display()
+        ));
+    }
+    let contested = contested_names(files.iter().map(|(p, f)| (p.as_path(), &f.models)));
+    if let Some((name, claimants)) = contested.iter().next() {
+        return Err(format!(
+            "model {name:?} would be declared by more than one file ({}); a public name must \
+             have exactly one owner, and the host would serve it from none of them",
+            claimants
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// Public names claimed by more than one file, with every file that claims
+/// each. Shared by the loader and by `provider add`'s directory preflight so
+/// the two cannot disagree about what a collision is.
+fn contested_names<'a>(
+    files: impl Iterator<Item = (&'a Path, &'a Vec<ModelDescriptor>)>,
+) -> std::collections::BTreeMap<String, Vec<PathBuf>> {
+    let mut claims: std::collections::BTreeMap<String, Vec<PathBuf>> = Default::default();
+    for (path, models) in files {
+        for model in models {
+            claims
+                .entry(model.name.clone())
+                .or_default()
+                .push(path.to_path_buf());
+        }
+    }
+    claims.retain(|_, files| files.len() > 1);
+    claims
+}
+
 /// Scan a providers.d directory. A missing directory is the zero-config
 /// case: an empty outcome, no error. An existing-but-unreadable directory is
 /// a structural error (`Err`), distinct from per-file failures.
@@ -1148,60 +1255,67 @@ pub fn load_dir(dir: &Path) -> Result<LoadOutcome, String> {
         ));
     }
 
-    let mut seen_models: std::collections::BTreeSet<String> = Default::default();
-    let mut total_models = 0usize;
-    let mut total_concurrent = 0usize;
+    // Every file is parsed before any file is accepted, because the
+    // duplicate-name rule is a property of the *set*. The earlier shape
+    // refused only the later claimant and let the first one serve — which
+    // meant removing the winning file quietly activated the other one's
+    // endpoint for the same bound columns at the next reload, with no
+    // acknowledgement anywhere. A name claimed by two files now takes
+    // **both** of them out: one owner, or neither serves.
+    let mut loaded: Vec<(PathBuf, ResolvedProvider)> = Vec::new();
     for path in paths {
         match load_file(&path) {
-            Ok(Some(provider)) => {
-                // A duplicate public name across files is refused, not
-                // resolved. "First wins" was deterministic but it made the
-                // *file order* decide which third party receives a column's
-                // text — so deleting or renaming a file silently moved the
-                // recipient, with no acknowledgement gate anywhere. One name
-                // has one owner, or neither serves.
-                if let Some(duplicate) = provider
-                    .models
-                    .iter()
-                    .find(|m| seen_models.contains(&m.name))
-                {
-                    outcome.errors.push(LoadError {
-                        path,
-                        message: format!(
-                            "model {:?} is already served by an earlier provider file; a \
-                             public name must have exactly one owner, because which file \
-                             wins decides where a bound column's source text is sent",
-                            duplicate.name
-                        ),
-                    });
-                    continue;
-                }
-                // Directory-wide ceilings. Per-file limits bound one file;
-                // these bound the process.
-                if total_models + provider.models.len() > MAX_TOTAL_MODELS {
-                    return Err(format!(
-                        "{} declares more than {MAX_TOTAL_MODELS} provider models in total",
-                        dir.display()
-                    ));
-                }
-                if total_concurrent + provider.max_concurrent > MAX_TOTAL_CONCURRENT {
-                    return Err(format!(
-                        "{} declares more than {MAX_TOTAL_CONCURRENT} total outbound \
-                         concurrency (the sum of every file's max_concurrent, which both \
-                         hosts add to their gRPC ingress width)",
-                        dir.display()
-                    ));
-                }
-                total_models += provider.models.len();
-                total_concurrent += provider.max_concurrent;
-                for model in &provider.models {
-                    seen_models.insert(model.name.clone());
-                }
-                outcome.providers.push(provider);
-            }
+            Ok(Some(provider)) => loaded.push((path, provider)),
             Ok(None) => log::info!("providers.d: {} is disabled; skipping", path.display()),
             Err(message) => outcome.errors.push(LoadError { path, message }),
         }
+    }
+    let contested = contested_names(loaded.iter().map(|(path, p)| (path.as_path(), &p.models)));
+
+    let mut total_models = 0usize;
+    let mut total_concurrent = 0usize;
+    for (path, provider) in loaded {
+        if let Some(name) = provider
+            .models
+            .iter()
+            .map(|m| &m.name)
+            .find(|name| contested.contains_key(*name))
+        {
+            let others: Vec<String> = contested[name]
+                .iter()
+                .filter(|other| *other != &path)
+                .map(|other| other.display().to_string())
+                .collect();
+            outcome.errors.push(LoadError {
+                path,
+                message: format!(
+                    "model {name:?} is also declared by {}; a public name must have exactly \
+                     one owner, because which file wins decides where a bound column's \
+                     source text is sent. Neither file serves until one of them drops it",
+                    others.join(", ")
+                ),
+            });
+            continue;
+        }
+        // Directory-wide ceilings. Per-file limits bound one file; these
+        // bound the process.
+        if total_models + provider.models.len() > MAX_TOTAL_MODELS {
+            return Err(format!(
+                "{} declares more than {MAX_TOTAL_MODELS} provider models in total",
+                dir.display()
+            ));
+        }
+        if total_concurrent + provider.max_concurrent > MAX_TOTAL_CONCURRENT {
+            return Err(format!(
+                "{} declares more than {MAX_TOTAL_CONCURRENT} total outbound concurrency \
+                 (the sum of every file's max_concurrent, which both hosts add to their \
+                 gRPC ingress width)",
+                dir.display()
+            ));
+        }
+        total_models += provider.models.len();
+        total_concurrent += provider.max_concurrent;
+        outcome.providers.push(provider);
     }
     Ok(outcome)
 }
@@ -1375,16 +1489,14 @@ max_tokens = 8191
         assert_eq!(outcome.errors.len(), 1);
     }
 
-    /// One public name, one owner. "First wins" was deterministic, but it let
-    /// *file order* decide which third party receives a bound column's source
-    /// text — so renaming or deleting a file silently moved the recipient,
-    /// with no acknowledgement gate anywhere on that path. The second claim is
-    /// now a per-file error, which keeps the isolation rule (a.toml still
-    /// serves) while removing the ambiguity.
+    /// One public name, one owner — and when two files claim it, **neither**
+    /// serves. An earlier version refused only the later claimant and let the
+    /// first one keep serving, which meant removing the winning file quietly
+    /// activated the other endpoint for the same bound columns at the next
+    /// reload, with no acknowledgement anywhere on that path.
     #[test]
-    fn a_duplicate_public_name_across_files_is_refused_not_resolved() {
+    fn a_name_claimed_by_two_files_takes_both_out() {
         let dir = private_tempdir();
-        // Lexicographic order: a.toml before b.toml.
         let a = "provider = \"openai\"\napi_key = \"a\"\n\n[[models]]\nname = \"shared-name\"\n\
                  provider_model_id = \"first\"\ndim = 4\n";
         let b = "provider = \"mistral\"\napi_key = \"b\"\n\n[[models]]\nname = \"shared-name\"\n\
@@ -1393,14 +1505,76 @@ max_tokens = 8191
         write_mode(dir.path(), "b.toml", b, 0o600);
 
         let outcome = load_dir(dir.path()).unwrap();
-        assert_eq!(outcome.providers.len(), 1, "the first owner still serves");
-        assert_eq!(outcome.providers[0].models[0].provider_model_id, "first");
-        assert_eq!(outcome.errors.len(), 1, "the second claim is reported");
-        assert!(
-            outcome.errors[0].message.contains("exactly one owner"),
-            "{}",
-            outcome.errors[0]
-        );
+        assert!(outcome.providers.is_empty(), "neither claimant serves");
+        assert_eq!(outcome.errors.len(), 2, "{:?}", outcome.errors);
+        for error in &outcome.errors {
+            assert!(error.message.contains("exactly one owner"), "{error}");
+        }
+
+        // The failure this rule exists to prevent: removing one file must not
+        // quietly bring the other online. Here it does come online — and
+        // that is now a *visible* operator action (deleting a file), not a
+        // side effect of lexicographic order while both were present.
+        std::fs::remove_file(dir.path().join("a.toml")).unwrap();
+        let outcome = load_dir(dir.path()).unwrap();
+        assert_eq!(outcome.providers.len(), 1);
+        assert!(outcome.errors.is_empty());
+    }
+
+    /// `provider add` checks the directory as it *would be*, not only the one
+    /// file: a valid file that pushes the set over a ceiling, or that claims a
+    /// name a sibling owns, makes the loader refuse the whole directory — and
+    /// the gateway comes up empty at the next restart.
+    #[test]
+    fn the_prospective_directory_is_held_to_the_loaders_aggregate_rules() {
+        let dir = private_tempdir();
+        let one = |name: &str, concurrent: usize| {
+            format!(
+                "provider = \"openai\"\napi_key = \"k\"\nmax_concurrent = {concurrent}\n\n\
+                 [[models]]\nname = \"{name}\"\nprovider_model_id = \"{name}\"\ndim = 4\n"
+            )
+        };
+        // Siblings that together sit just under the concurrency ceiling.
+        for i in 0..4 {
+            write_mode(
+                dir.path(),
+                &format!("p{i}.toml"),
+                &one(&format!("m{i}"), 60),
+                0o600,
+            );
+        }
+        let fresh = dir.path().join("new.toml");
+
+        // A legal file that tips the sum over.
+        let refused = validate_prospective_dir(dir.path(), &fresh, &one("m-new", 20)).unwrap_err();
+        assert!(refused.contains("total outbound concurrency"), "{refused}");
+        // The same file, small enough, is fine.
+        assert!(validate_prospective_dir(dir.path(), &fresh, &one("m-new", 16)).is_ok());
+
+        // A name a sibling already owns.
+        let refused = validate_prospective_dir(dir.path(), &fresh, &one("m0", 1)).unwrap_err();
+        assert!(refused.contains("more than one file"), "{refused}");
+
+        // Replacing an existing file is measured as a replacement, not as an
+        // addition: rewriting p0 with the same name is not a collision with
+        // itself.
+        let p0 = dir.path().join("p0.toml");
+        assert!(validate_prospective_dir(dir.path(), &p0, &one("m0", 60)).is_ok());
+
+        // The file count.
+        let dir = private_tempdir();
+        for i in 0..MAX_PROVIDER_FILES {
+            write_mode(
+                dir.path(),
+                &format!("p{i:02}.toml"),
+                &one(&format!("m{i}"), 1),
+                0o600,
+            );
+        }
+        let refused =
+            validate_prospective_dir(dir.path(), &dir.path().join("one-more.toml"), &one("x", 1))
+                .unwrap_err();
+        assert!(refused.contains("provider files"), "{refused}");
     }
 
     /// One name, one entry — within a file as well as across them. First-wins

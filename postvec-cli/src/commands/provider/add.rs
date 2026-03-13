@@ -325,6 +325,57 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
              that check",
         );
     }
+    // ---- The prospective document, checked before anything is spent ----
+    // Composed here rather than after the probe so the **whole file** — not
+    // just the model ids the probe touches — is measured against the serving
+    // host's rules before a paid call. An unknown field, two key sources, a
+    // `dim` outside a model's range: all of those make the host refuse the
+    // file, and all of them used to be discovered only at the write, one
+    // billed request later.
+    //
+    // Models whose dimension the probe has yet to measure are appended
+    // afterwards; everything else about the file is final by this point.
+    let mut doc = match existing {
+        Some(doc) => doc,
+        None => ProviderFileDoc {
+            path: file_path.clone(),
+            value: toml::Value::Table(Default::default()),
+        },
+    };
+    {
+        let table = doc.value.as_table_mut().expect("provider file is a table");
+        table.insert("provider".into(), toml::Value::String(canonical.clone()));
+        if let Some(region) = &args.region {
+            table.insert("region".into(), toml::Value::String(region.clone()));
+        }
+        if let Some(base_url) = &args.base_url {
+            table.insert("base_url".into(), toml::Value::String(base_url.clone()));
+        }
+        apply_key_spec(table, &canonical, &key);
+    }
+    // **Every** new model, including the ones whose dimension the probe has
+    // yet to measure — those carry a placeholder that the provider's own
+    // per-model rule accepts. Leaving them out (a previous pass) removed them
+    // from every *other* structural check as well: a brand-new file with one
+    // uncatalogued model failed with "no [[models]] entries" and could never
+    // reach dimension discovery, while in an existing file the omitted
+    // entries skipped the per-file count, the id-length rule and the
+    // duplicate-name rule and were probed before any of them applied.
+    for model in &new_models {
+        doc.push_model(model_entry(model))?;
+    }
+    // `--dry-run` has to answer the same question the real run would, so
+    // this runs before it returns: a dry run that said "fine" about a file
+    // the host refuses was a prediction of nothing.
+    let file_enabled = doc.validate_prospective()?;
+    if !file_enabled {
+        output.note(&format!(
+            "{} is `enabled = false`: the file is written correctly and the host serves \
+             nothing from it until that changes",
+            file_path.display()
+        ));
+    }
+
     output.show_plan(&plan);
 
     if args.dry_run {
@@ -382,47 +433,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // costs money and sends the key over the network happens only once the
     // operator has said yes to the plan. Nothing has been written yet, so a
     // probe failure still leaves the host exactly as it was.
-    // ---- The prospective document, checked before anything is spent ----
-    // Composed here rather than after the probe so the **whole file** — not
-    // just the model ids the probe touches — is measured against the serving
-    // host's rules before a paid call. An unknown field, two key sources, a
-    // `dim` outside a model's range: all of those make the host refuse the
-    // file, and all of them used to be discovered only at the write, one
-    // billed request later.
-    //
-    // Models whose dimension the probe has yet to measure are appended
-    // afterwards; everything else about the file is final by this point.
-    let mut doc = match existing {
-        Some(doc) => doc,
-        None => ProviderFileDoc {
-            path: file_path.clone(),
-            value: toml::Value::Table(Default::default()),
-        },
-    };
-    {
-        let table = doc.value.as_table_mut().expect("provider file is a table");
-        table.insert("provider".into(), toml::Value::String(canonical.clone()));
-        if let Some(region) = &args.region {
-            table.insert("region".into(), toml::Value::String(region.clone()));
-        }
-        if let Some(base_url) = &args.base_url {
-            table.insert("base_url".into(), toml::Value::String(base_url.clone()));
-        }
-        apply_key_spec(table, &canonical, &key);
-    }
-    // **Every** new model, including the ones whose dimension the probe has
-    // yet to measure — those carry a placeholder that the provider's own
-    // per-model rule accepts. Leaving them out (a previous pass) removed them
-    // from every *other* structural check as well: a brand-new file with one
-    // uncatalogued model failed with "no [[models]] entries" and could never
-    // reach dimension discovery, while in an existing file the omitted
-    // entries skipped the per-file count, the id-length rule and the
-    // duplicate-name rule and were probed before any of them applied.
-    for model in &new_models {
-        doc.push_model(model_entry(model))?;
-    }
-    doc.validate_prospective()?;
-
     if probe {
         let secret = probe_secret(&key, existing_for_probe.as_ref())?;
         // The configuration the *host* will serve with, not the one the
@@ -485,13 +495,18 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
         journal.record(format!(
-            "{}: dim {}{}",
+            "{}: dim {}{}{}",
             model.public_name,
             model.dim.unwrap_or(0),
             if args.no_verify {
                 " (unverified)"
             } else {
                 " (verified)"
+            },
+            if file_enabled {
+                ""
+            } else {
+                " — NOT served: the file is enabled = false"
             }
         ));
         journal.succeeded(model.public_name.clone());

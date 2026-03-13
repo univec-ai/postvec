@@ -332,7 +332,9 @@ impl ProviderFileDoc {
         file.take(providers::config::MAX_FILE_BYTES)
             .read_to_string(&mut raw)
             .map_err(|e| CliError::precondition(format!("cannot read {}: {e}", path.display())))?;
-        if raw.len() as u64 >= providers::config::MAX_FILE_BYTES {
+        // `>` — the same boundary the loader's `read_private` applies. A
+        // `>=` here refused a file of exactly the ceiling that the host loads.
+        if raw.len() as u64 > providers::config::MAX_FILE_BYTES {
             return Err(CliError::precondition(format!(
                 "{} is larger than {} bytes; the serving host refuses it",
                 path.display(),
@@ -541,20 +543,39 @@ impl ProviderFileDoc {
     /// against a file the host would refuse for a reason the probe cannot
     /// see — an unknown field, two sources for one secret, a `dim` outside a
     /// model's range.
-    pub fn validate_prospective(&self) -> Result<()> {
+    ///
+    /// Returns whether the file is enabled, so a caller can say so: a model
+    /// added to a parked file is written correctly and serves nothing, and
+    /// "succeeded" without that qualification is a lie.
+    pub fn validate_prospective(&self) -> Result<bool> {
         let body = self.body()?;
         let label = self.path.display().to_string();
-        providers::config::validate_str(&body, &label)
-            .map(|_| ())
-            .map_err(|problem| {
+        let refuse = |problem: String| {
+            CliError::precondition(format!(
+                "the resulting {label} is one the inference host would refuse: {problem}"
+            ))
+            .with_fix(
+                "fix the flag (or the hand-edited field) this reports; nothing has been written \
+                 or sent",
+            )
+        };
+        let enabled = providers::config::validate_str(&body, &label).map_err(refuse)?;
+        // The file can be fine and the *directory* still refused — over the
+        // file, model or concurrency ceilings, or a name another file already
+        // owns — and then the whole gateway comes up empty at the next
+        // restart. Checked against the directory as it would be after this
+        // write.
+        if let Some(dir) = self.path.parent() {
+            providers::config::validate_prospective_dir(dir, &self.path, &body).map_err(|p| {
                 CliError::precondition(format!(
-                    "the resulting {label} is one the inference host would refuse: {problem}"
+                    "writing {label} would leave {} in a state the inference host refuses as a \
+                     whole: {p}",
+                    dir.display()
                 ))
-                .with_fix(
-                    "fix the flag (or the hand-edited field) this reports; nothing has been \
-                     written or sent",
-                )
-            })
+                .with_fix("nothing has been written or sent; the running host is unaffected")
+            })?;
+        }
+        Ok(enabled)
     }
 
     /// The file as it would be written.

@@ -1704,3 +1704,104 @@ fn a_composed_file_over_the_byte_ceiling_is_refused_before_anything_is_spent() {
         "the working configuration must be left exactly as it was"
     );
 }
+
+/// `provider add` validated one document, never the directory it was joining.
+/// A perfectly valid file that pushes the set over a loader ceiling makes the
+/// host refuse the **whole directory** — every provider gone at the next
+/// restart, caused by a command that reported success.
+///
+/// `--dry-run` is held to the same standard: a dry run that says "fine" about
+/// a write the real run would refuse has predicted nothing.
+#[test]
+fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let mock = runtime.block_on(providers::testing::always(
+        200,
+        r#"{"data":[{"embedding":[0.1,0.2],"index":0}]}"#,
+    ));
+
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+
+    // Siblings whose max_concurrent sums to exactly the 256 ceiling — legal
+    // on their own, and one more file of any size tips the directory over.
+    for i in 0..4 {
+        let file = providers_d.join(format!("sibling{i}.toml"));
+        std::fs::write(
+            &file,
+            format!(
+                "provider = \"mistral\"\napi_key_env = \"POSTVEC_DIR_KEY\"\nmax_concurrent = 64\n\n\
+                 [[models]]\nname = \"mistral-m{i}\"\nprovider_model_id = \"m{i}\"\ndim = 4\n"
+            ),
+        )
+        .expect("write");
+        set_mode(&file, 0o600);
+    }
+    // Connector files only: the advisory `.lock` the command takes is not
+    // one, and is expected to appear.
+    let tomls = |dir: &std::path::Path| -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "toml")
+            })
+            .count()
+    };
+    let tomls_before = tomls(&providers_d);
+
+    let add = |extra: &[&str]| {
+        let mut args = vec![
+            "provider",
+            "add",
+            "openai",
+            "--model",
+            "text-embedding-3-small",
+            "--api-key-env",
+            "POSTVEC_DIR_KEY",
+            "--base-url",
+            mock.url.as_str(),
+            "--path",
+            root_arg,
+            "--acknowledge-in-use",
+            "--yes",
+        ];
+        args.extend_from_slice(extra);
+        Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_DIR_KEY", "not-a-real-key")
+            .output()
+            .expect("run postvec")
+    };
+
+    // The new file defaults to max_concurrent = 4, which is four too many.
+    // Dry run first: it must refuse, for the same reason the real run would.
+    let output = add(&["--dry-run"]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("as a whole"), "{text}");
+
+    // The real run: refused before any probe, nothing written.
+    let output = add(&[]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("total outbound concurrency"), "{text}");
+    assert_eq!(mock.request_count(), 0, "refused before the probe");
+    assert_eq!(
+        tomls(&providers_d),
+        tomls_before,
+        "nothing may be added to a directory this would break"
+    );
+}
