@@ -329,11 +329,15 @@ impl ProviderFileDoc {
             }
         };
         let mut raw = String::new();
-        file.take(providers::config::MAX_FILE_BYTES)
+        // `take(limit + 1)`, exactly as the loader's `read_private` does. A
+        // `take(limit)` followed by `len() > limit` is an unreachable check:
+        // the read stops at the limit, so an oversized file arrived here as a
+        // silently truncated prefix — which then parsed, and which a
+        // subsequent `add` would have *rewritten*, discarding the tail of the
+        // operator's file without a word.
+        file.take(providers::config::MAX_FILE_BYTES + 1)
             .read_to_string(&mut raw)
             .map_err(|e| CliError::precondition(format!("cannot read {}: {e}", path.display())))?;
-        // `>` — the same boundary the loader's `read_private` applies. A
-        // `>=` here refused a file of exactly the ceiling that the host loads.
         if raw.len() as u64 > providers::config::MAX_FILE_BYTES {
             return Err(CliError::precondition(format!(
                 "{} is larger than {} bytes; the serving host refuses it",
@@ -579,7 +583,7 @@ impl ProviderFileDoc {
     }
 
     /// The file as it would be written.
-    fn body(&self) -> Result<String> {
+    pub fn body(&self) -> Result<String> {
         Ok(format!(
             "# Managed by `postvec provider`. Comments do not survive a rewrite.\n{}",
             toml::to_string_pretty(&self.value)
@@ -919,9 +923,18 @@ pub fn read_secret_file(path: &Path) -> Result<String> {
         )));
     }
     let mut raw = String::new();
-    file.take(MAX_SECRET_BYTES)
+    // The `fstat` size check above already refuses an oversized file; the
+    // `+ 1` keeps this reader the same shape as the loader's, so a file that
+    // grows between the two calls is still refused rather than truncated.
+    file.take(MAX_SECRET_BYTES + 1)
         .read_to_string(&mut raw)
         .map_err(|e| CliError::precondition(format!("cannot read {}: {e}", path.display())))?;
+    if raw.len() as u64 > MAX_SECRET_BYTES {
+        return Err(CliError::precondition(format!(
+            "{} exceeds {MAX_SECRET_BYTES} bytes; the host refuses such a secret",
+            path.display()
+        )));
+    }
     let key = raw.trim().to_string();
     if key.is_empty() {
         return Err(CliError::precondition(format!(

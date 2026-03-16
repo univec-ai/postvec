@@ -62,15 +62,109 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         ),
     };
 
+    // What the host would serve after this change, against what it serves
+    // now. Removing a file does not only take a route *away*: if the file
+    // was one claimant of a contested name, the host refused every claimant
+    // as a unit — and removing this one hands that name, plus every other
+    // model in the surviving file, to a provider that was not serving a
+    // moment ago. Those columns' source text starts going somewhere new,
+    // which is the event `provider add`'s privacy gate exists for. The
+    // in-use acknowledgement ("these columns lose their route") is the wrong
+    // question for them; they get the recipient one instead.
+    let served_now = providers::config::served_names_if(
+        target.dir(),
+        &file_path,
+        Some(&std::fs::read_to_string(&file_path).unwrap_or_default()),
+    )
+    .map_err(CliError::precondition)?;
+    let prospective_body = if remove_file {
+        None
+    } else {
+        let mut after = ProviderFileDoc {
+            path: doc.path.clone(),
+            value: doc.value.clone(),
+        };
+        after.remove_model(args.model.as_deref().expect("partial removal has --model"));
+        Some(after.body()?)
+    };
+    let served_after =
+        providers::config::served_names_if(target.dir(), &file_path, prospective_body.as_deref())
+            .map_err(CliError::precondition)?;
+    // name -> the provider file stem that takes it over.
+    let activated: Vec<(String, String)> = served_after
+        .iter()
+        .filter(|(name, _)| !served_now.contains_key(*name))
+        .map(|(name, stem)| (name.clone(), stem.clone()))
+        .collect();
+    // A name both going away here *and* activated elsewhere is a recipient
+    // change, not a lost route.
+    let truly_going_away: Vec<String> = going_away
+        .iter()
+        .filter(|name| !activated.iter().any(|(a, _)| a == *name))
+        .cloned()
+        .collect();
+
     let scanned = matches!(target, ProviderTarget::Embedded { .. });
     let (columns, unknown_databases) = if scanned {
-        columns_bound_to(&mut target, &going_away, cli.timeout).await
+        columns_bound_to(&mut target, &truly_going_away, cli.timeout).await
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let activated_names: Vec<String> = activated.iter().map(|(n, _)| n.clone()).collect();
+    let (activated_columns, activated_unknown) = if scanned && !activated_names.is_empty() {
+        columns_bound_to(&mut target, &activated_names, cli.timeout).await
     } else {
         (Vec::new(), Vec::new())
     };
 
     let mut plan = Plan::new("provider rm", target.label());
-    crate::commands::model::push_in_use_steps(&mut plan, &going_away, &columns, &unknown_databases);
+    crate::commands::model::push_in_use_steps(
+        &mut plan,
+        &truly_going_away,
+        &columns,
+        &unknown_databases,
+    );
+    for (name, stem) in &activated {
+        let mine: Vec<crate::plan::InUseColumn> = activated_columns
+            .iter()
+            .filter(|column| &column.model == name)
+            .cloned()
+            .collect();
+        // `--path` cannot inspect a cluster: UNKNOWN, never empty, for the
+        // same reason `provider add` treats it that way.
+        let unknown = if !scanned {
+            vec!["every database served by this node (not inspectable from --path)".to_string()]
+        } else {
+            activated_unknown.clone()
+        };
+        if mine.is_empty() && unknown.is_empty() {
+            continue;
+        }
+        plan.push(PlanStep::AcknowledgeProviderPrivacy {
+            provider: stem.clone(),
+            model: name.clone(),
+            columns: mine,
+            unknown_databases: unknown,
+        });
+    }
+    if !activated.is_empty() {
+        output.note(&format!(
+            "removing this resolves a contested name: {} start(s) being served by {} the \
+             moment the host reloads",
+            activated
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            activated
+                .iter()
+                .map(|(_, s)| format!("{s:?}"))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if remove_file {
         plan.push(PlanStep::RemoveConfig {
             path: file_path.clone(),
@@ -111,14 +205,29 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
              check, so no column was inspected"
         });
     }
-    plan::confirm_in_use(
-        &plan,
-        args.acknowledge_in_use,
-        args.yes,
-        args.dry_run,
-        Prompt::from_environment(),
-        plan::interactive_in_use_acknowledgement,
-    )?;
+    if activated.is_empty() {
+        plan::confirm_in_use(
+            &plan,
+            args.acknowledge_in_use,
+            args.yes,
+            args.dry_run,
+            Prompt::from_environment(),
+            plan::interactive_in_use_acknowledgement,
+        )?;
+    } else {
+        plan::confirm_in_use_with(
+            &plan,
+            args.acknowledge_in_use,
+            args.yes,
+            args.dry_run,
+            Prompt::from_environment(),
+            plan::interactive_provider_privacy_acknowledgement,
+            "removing this hands {models} to another provider file, so existing columns bound \
+             to those names start sending their source text to a different recipient on the \
+             next worker cycle; pass --acknowledge-in-use together with --yes to proceed \
+             knowingly. --yes deliberately does not stand in for it",
+        )?;
+    }
     plan::confirm(&plan, args.yes, None, Prompt::from_environment())?;
 
     let mut journal = ApplyJournal::default();

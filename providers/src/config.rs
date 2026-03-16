@@ -1113,36 +1113,7 @@ fn validate_structure(file: &ProviderFile) -> Result<(), String> {
 /// sibling that fails it is skipped the way the loader would skip it, so this
 /// predicts the host rather than being stricter than it.
 pub fn validate_prospective_dir(dir: &Path, replaced: &Path, body: &str) -> Result<(), String> {
-    let mut files: Vec<(PathBuf, ProviderFile)> = Vec::new();
-    let mut count = 0usize;
-    if dir.is_dir() {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
-            .map_err(|e| format!("cannot scan {}: {e}", dir.display()))?
-            .filter_map(|entry| entry.ok().map(|e| e.path()))
-            .filter(|path| {
-                path.extension().is_some_and(|ext| ext == "toml")
-                    && path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| !n.starts_with('.'))
-            })
-            .filter(|path| path != replaced)
-            .collect();
-        entries.sort();
-        for path in entries {
-            count += 1;
-            let Ok(raw) = read_private(&path, MAX_FILE_BYTES) else {
-                continue;
-            };
-            let Ok(file) = toml::from_str::<ProviderFile>(&raw) else {
-                continue;
-            };
-            if file.enabled && validate_structure(&file).is_ok() {
-                files.push((path, file));
-            }
-        }
-    }
-    count += 1;
+    let (files, count) = prospective_set(dir, replaced, Some(body))?;
     if count > MAX_PROVIDER_FILES {
         return Err(format!(
             "{} would hold {count} provider files, over the {MAX_PROVIDER_FILES}-file \
@@ -1150,12 +1121,6 @@ pub fn validate_prospective_dir(dir: &Path, replaced: &Path, body: &str) -> Resu
             dir.display()
         ));
     }
-    let replacement: ProviderFile =
-        toml::from_str(body).map_err(|e| format!("cannot parse: {e}"))?;
-    if replacement.enabled {
-        files.push((replaced.to_path_buf(), replacement));
-    }
-
     let total_models: usize = files.iter().map(|(_, f)| f.models.len()).sum();
     if total_models > MAX_TOTAL_MODELS {
         return Err(format!(
@@ -1185,6 +1150,96 @@ pub fn validate_prospective_dir(dir: &Path, replaced: &Path, body: &str) -> Resu
         ));
     }
     Ok(())
+}
+
+/// The public names the host would serve from `dir` **if** `replaced` held
+/// `body` (or did not exist, for `None`), each with the file stem that owns
+/// it. Structural rules and the contested-name rule apply, exactly as the
+/// loader applies them; no secret is resolved.
+///
+/// This is what lets `provider rm` see that removing a file does not only
+/// take a route *away*: if the file was one claimant of a contested name,
+/// removing it hands that name — and every other model in the surviving file,
+/// which was refused as a unit — to a provider that was not serving a moment
+/// ago. That is a recipient change, and it needs the same acknowledgement
+/// `provider add` demands for one.
+pub fn served_names_if(
+    dir: &Path,
+    replaced: &Path,
+    body: Option<&str>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let (files, _) = prospective_set(dir, replaced, body)?;
+    let contested = contested_names(files.iter().map(|(p, f)| (p.as_path(), &f.models)));
+    let mut served = std::collections::BTreeMap::new();
+    for (path, file) in &files {
+        if file.models.iter().any(|m| contested.contains_key(&m.name)) {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for model in &file.models {
+            served.insert(model.name.clone(), stem.clone());
+        }
+    }
+    Ok(served)
+}
+
+/// Every enabled, structurally valid file the directory would hold with
+/// `replaced` substituted (or removed), plus the total file count including
+/// the ones the structural pass skipped — the loader counts those too.
+///
+/// A `read_dir` entry error is an **error**, not an absence, for the same
+/// reason it is in `load_dir`: swallowing it turns "half the directory is
+/// unreadable" into "no siblings", and a preflight that cannot see a sibling
+/// will approve a write that collides with it.
+fn prospective_set(
+    dir: &Path,
+    replaced: &Path,
+    body: Option<&str>,
+) -> Result<(Vec<(PathBuf, ProviderFile)>, usize), String> {
+    let mut files: Vec<(PathBuf, ProviderFile)> = Vec::new();
+    let mut count = 0usize;
+    if dir.is_dir() {
+        let mut entries: Vec<PathBuf> = Vec::new();
+        for entry in
+            std::fs::read_dir(dir).map_err(|e| format!("cannot scan {}: {e}", dir.display()))?
+        {
+            let path = entry
+                .map_err(|e| format!("cannot read an entry of {}: {e}", dir.display()))?
+                .path();
+            let named = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !n.starts_with('.'));
+            if path.extension().is_some_and(|ext| ext == "toml") && named && path != replaced {
+                entries.push(path);
+            }
+        }
+        entries.sort();
+        for path in entries {
+            count += 1;
+            let Ok(raw) = read_private(&path, MAX_FILE_BYTES) else {
+                continue;
+            };
+            let Ok(file) = toml::from_str::<ProviderFile>(&raw) else {
+                continue;
+            };
+            if file.enabled && validate_structure(&file).is_ok() {
+                files.push((path, file));
+            }
+        }
+    }
+    if let Some(body) = body {
+        count += 1;
+        let replacement: ProviderFile =
+            toml::from_str(body).map_err(|e| format!("cannot parse: {e}"))?;
+        if replacement.enabled {
+            files.push((replaced.to_path_buf(), replacement));
+        }
+    }
+    Ok((files, count))
 }
 
 /// Public names claimed by more than one file, with every file that claims

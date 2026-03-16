@@ -1805,3 +1805,139 @@ fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
         "nothing may be added to a directory this would break"
     );
 }
+
+/// An oversized connector file must be *refused*, never read as a truncated
+/// prefix. The reader used `take(limit)` and then checked `len() > limit` —
+/// unreachable, since the read stops at the limit. So an oversized file
+/// parsed as its first 256 KiB, and a subsequent `add` would have rewritten
+/// it with the tail silently discarded.
+#[test]
+fn an_oversized_connector_file_is_refused_not_truncated() {
+    let root = provider_root();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+    let file = providers_d.join("openai.toml");
+
+    // A legal prefix, then a tail that takes it over the ceiling. If the
+    // reader truncated, the prefix alone would parse and the command would
+    // proceed to rewrite the file without the tail.
+    let prefix = "provider = \"openai\"\napi_key_env = \"POSTVEC_TRUNC_KEY\"\n\n[[models]]\n\
+                  name = \"openai-text-embedding-3-small\"\n\
+                  provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n";
+    let tail = format!(
+        "\n# {}\n",
+        "x".repeat(providers::config::MAX_FILE_BYTES as usize)
+    );
+    let body = format!("{prefix}{tail}");
+    std::fs::write(&file, &body).expect("write");
+    set_mode(&file, 0o600);
+    let before = std::fs::read(&file).expect("read");
+
+    for verb in [
+        vec![
+            "provider",
+            "add",
+            "openai",
+            "--model",
+            "text-embedding-3-large",
+            "--path",
+            root.path().to_str().unwrap(),
+            "--no-verify",
+            "--acknowledge-in-use",
+            "--yes",
+        ],
+        vec![
+            "provider",
+            "test",
+            "openai",
+            "--path",
+            root.path().to_str().unwrap(),
+        ],
+        vec!["provider", "ls", "--path", root.path().to_str().unwrap()],
+    ] {
+        let output = Command::new(binary())
+            .args(&verb)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_TRUNC_KEY", "not-a-real-key")
+            .output()
+            .expect("run postvec");
+        let text = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            text.contains("larger than") || text.contains("ceiling"),
+            "{}: {}",
+            verb[1],
+            &text[..text.len().min(300)]
+        );
+    }
+    assert_eq!(
+        std::fs::read(&file).expect("read"),
+        before,
+        "the file must be byte-identical: no verb may rewrite a truncated prefix"
+    );
+}
+
+/// Removing one claimant of a contested name does not take a route away — it
+/// hands the name, and every other model in the surviving file, to a provider
+/// that was not serving a moment ago. That is a recipient change and gets the
+/// recipient acknowledgement; `--yes` alone must not do it.
+#[test]
+fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+
+    // Two files claim `shared-name`; the second also carries an unrelated
+    // model that is refused along with it while the contest stands.
+    let write = |stem: &str, body: &str| {
+        let path = providers_d.join(format!("{stem}.toml"));
+        std::fs::write(&path, body).expect("write");
+        set_mode(&path, 0o600);
+    };
+    write(
+        "alpha",
+        "provider = \"openai\"\napi_key_env = \"K\"\n\n[[models]]\nname = \"shared-name\"\n\
+         provider_model_id = \"a\"\ndim = 4\n",
+    );
+    write(
+        "beta",
+        "provider = \"mistral\"\napi_key_env = \"K\"\n\n[[models]]\nname = \"shared-name\"\n\
+         provider_model_id = \"b\"\ndim = 4\n\n[[models]]\nname = \"beta-only\"\n\
+         provider_model_id = \"c\"\ndim = 4\n",
+    );
+
+    let rm = |extra: &[&str]| {
+        let mut args = vec!["provider", "rm", "alpha", "--path", root_arg, "--yes"];
+        args.extend_from_slice(extra);
+        Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run postvec")
+    };
+
+    // --yes alone: refused, and the plan names what would start serving —
+    // including the model that was never contested.
+    let output = rm(&[]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("shared-name"), "{text}");
+    assert!(
+        text.contains("beta-only"),
+        "the surviving file's other model too: {text}"
+    );
+    assert!(text.contains("--acknowledge-in-use"), "{text}");
+    assert!(
+        providers_d.join("alpha.toml").exists(),
+        "nothing removed without the acknowledgement"
+    );
+
+    // With it, the removal proceeds.
+    let output = rm(&["--acknowledge-in-use"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(!providers_d.join("alpha.toml").exists());
+}

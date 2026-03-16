@@ -261,8 +261,13 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     } else {
         (Vec::new(), Vec::new())
     };
+    // A file parked with `enabled = false` serves nothing, so nothing starts
+    // being sent anywhere: no privacy step, or the plan would warn about a
+    // recipient that does not exist. The journal says the file is parked.
+    let file_parked = existing.as_ref().is_some_and(|doc| !doc.enabled());
+
     let mut plan = Plan::new("provider add", target.label());
-    for name in &public_names {
+    for name in public_names.iter().filter(|_| !file_parked) {
         let mine: Vec<crate::plan::InUseColumn> = columns
             .iter()
             .filter(|column| &column.model == name)
