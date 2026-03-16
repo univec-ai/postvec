@@ -1941,3 +1941,61 @@ fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     assert!(!providers_d.join("alpha.toml").exists());
 }
+
+/// Removing a file can *repair* a directory the host refuses as a whole — and
+/// then every remaining provider comes online at once. That is the largest
+/// recipient change this command can cause, and it must take the recipient
+/// acknowledgement rather than sail through on `--yes`.
+#[test]
+fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledgement() {
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+
+    // Five files at the per-file maximum: 320 total, over the 256 ceiling.
+    for i in 0..5 {
+        let path = providers_d.join(format!("p{i}.toml"));
+        std::fs::write(
+            &path,
+            format!(
+                "provider = \"openai\"\napi_key_env = \"K\"\nmax_concurrent = 64\n\n\
+                 [[models]]\nname = \"openai-m{i}\"\nprovider_model_id = \"m{i}\"\ndim = 4\n"
+            ),
+        )
+        .expect("write");
+        set_mode(&path, 0o600);
+    }
+
+    let rm = |extra: &[&str]| {
+        let mut args = vec!["provider", "rm", "p4", "--path", root_arg, "--yes"];
+        args.extend_from_slice(extra);
+        Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run postvec")
+    };
+
+    let output = rm(&[]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    for name in ["openai-m0", "openai-m1", "openai-m2", "openai-m3"] {
+        assert!(
+            text.contains(name),
+            "{name} comes online and must be named: {text}"
+        );
+    }
+    // And the removed file's own model is not described as losing a route:
+    // it was never served.
+    assert!(
+        !text.contains("lose their embedding route"),
+        "nothing was served before, so nothing is lost: {text}"
+    );
+    assert!(providers_d.join("p4.toml").exists());
+
+    let output = rm(&["--acknowledge-in-use"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+}

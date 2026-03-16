@@ -468,7 +468,7 @@ fn leftover_provider_files(settings: &SettingsSnapshot) -> Option<String> {
         return None;
     }
     let dir = settings.providers_path();
-    let files = crate::commands::provider::ls::provider_files(&dir);
+    let files = crate::commands::provider::ls::provider_files(&dir).unwrap_or_default();
     if files.is_empty() {
         return None;
     }

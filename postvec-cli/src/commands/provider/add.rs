@@ -516,6 +516,18 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         ));
         journal.succeeded(model.public_name.clone());
     }
+    if !file_enabled {
+        // The JSON `applied` list above says it per model; this is the
+        // machine-readable statement for the result as a whole, so a caller
+        // reading `incomplete` learns the same thing a human reading the
+        // journal does: written correctly, serving nothing. It downgrades the
+        // exit to partial on purpose — "done" is not what happened.
+        journal.incomplete(format!(
+            "{} is enabled = false: {} model(s) written but none served until it is enabled",
+            file_path.display(),
+            new_models.len()
+        ));
+    }
 
     reload_host(&target, cli.timeout, &mut journal).await;
     // The host now serves the model; the databases do not know it exists.

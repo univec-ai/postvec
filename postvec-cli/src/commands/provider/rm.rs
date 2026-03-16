@@ -71,12 +71,13 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     // which is the event `provider add`'s privacy gate exists for. The
     // in-use acknowledgement ("these columns lose their route") is the wrong
     // question for them; they get the recipient one instead.
-    let served_now = providers::config::served_names_if(
-        target.dir(),
-        &file_path,
-        Some(&std::fs::read_to_string(&file_path).unwrap_or_default()),
-    )
-    .map_err(CliError::precondition)?;
+    // "Now" is evaluated from the document already loaded through the
+    // bounded, `O_NOFOLLOW` reader — not from a second, unguarded read of the
+    // same path, which would be the one read in this command that a planted
+    // symlink or an oversized file could reach.
+    let served_now =
+        providers::config::served_names_if(target.dir(), &file_path, Some(&doc.body()?))
+            .map_err(CliError::precondition)?;
     let prospective_body = if remove_file {
         None
     } else {
@@ -96,13 +97,18 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         .filter(|(name, _)| !served_now.contains_key(*name))
         .map(|(name, stem)| (name.clone(), stem.clone()))
         .collect();
-    // A name both going away here *and* activated elsewhere is a recipient
-    // change, not a lost route.
-    let truly_going_away: Vec<String> = going_away
-        .iter()
-        .filter(|name| !activated.iter().any(|(a, _)| a == *name))
+    // What actually *loses* a route: names served now and not afterwards.
+    // This is not "the names in the file minus the activated ones" — a name
+    // the file declares but the host was not serving (the file was contested,
+    // or the directory was over a ceiling) loses nothing when it goes, and
+    // saying its columns "lose their route" would be asking for an
+    // acknowledgement of an event that is not happening.
+    let truly_going_away: Vec<String> = served_now
+        .keys()
+        .filter(|name| !served_after.contains_key(*name))
         .cloned()
         .collect();
+    // `going_away` still drives the journal: it is what this file declared.
 
     let scanned = matches!(target, ProviderTarget::Embedded { .. });
     let (columns, unknown_databases) = if scanned {

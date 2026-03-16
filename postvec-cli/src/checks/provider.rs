@@ -41,6 +41,9 @@ pub struct ProviderFacts {
     /// only thing that observes whether it still is.
     pub mode: Option<u32>,
     pub files: Vec<ProviderFileFacts>,
+    /// The directory exists and could not be scanned. Reported as a
+    /// `provider.directory` failure: the serving host cannot scan it either.
+    pub scan_error: Option<String>,
 }
 
 pub struct ProviderInput<'a> {
@@ -60,11 +63,23 @@ pub fn gather(dir: &Path) -> ProviderFacts {
             .ok()
             .map(|meta| meta.permissions().mode() & 0o777),
         files: Vec::new(),
+        scan_error: None,
     };
     if !facts.exists {
         return facts;
     }
-    for path in crate::commands::provider::ls::provider_files(dir) {
+    let files = match crate::commands::provider::ls::provider_files(dir) {
+        Ok(files) => files,
+        Err(problem) => {
+            // An unreadable directory is a finding, not an empty one. The
+            // serving host will not scan it either, so every provider in it
+            // is down — and "0 provider file(s)" would have said the
+            // opposite.
+            facts.scan_error = Some(problem);
+            return facts;
+        }
+    };
+    for path in files {
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -250,6 +265,15 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
     // sends source text, which is a larger problem than the world-readable
     // key file the loader already refuses. The loader refuses it too; doctor
     // says so first, and in the operator's own words.
+    if let Some(problem) = &facts.scan_error {
+        out.push(
+            CheckResult::fail("provider.directory", "providers", problem.clone()).with_fix(
+                "the serving host cannot scan this directory either, so every provider in it \
+                 is down; fix its permissions",
+            ),
+        );
+        return out;
+    }
     match facts.mode {
         Some(mode) if mode & 0o022 != 0 => out.push(
             CheckResult::fail(

@@ -1113,68 +1113,97 @@ fn validate_structure(file: &ProviderFile) -> Result<(), String> {
 /// sibling that fails it is skipped the way the loader would skip it, so this
 /// predicts the host rather than being stricter than it.
 pub fn validate_prospective_dir(dir: &Path, replaced: &Path, body: &str) -> Result<(), String> {
-    let (files, count) = prospective_set(dir, replaced, Some(body))?;
-    if count > MAX_PROVIDER_FILES {
-        return Err(format!(
-            "{} would hold {count} provider files, over the {MAX_PROVIDER_FILES}-file \
-             ceiling; the host would refuse the whole directory",
-            dir.display()
-        ));
-    }
-    let total_models: usize = files.iter().map(|(_, f)| f.models.len()).sum();
-    if total_models > MAX_TOTAL_MODELS {
-        return Err(format!(
-            "{} would declare {total_models} provider models, over the {MAX_TOTAL_MODELS} \
-             ceiling; the host would refuse the whole directory",
-            dir.display()
-        ));
-    }
-    let total_concurrent: usize = files.iter().map(|(_, f)| f.max_concurrent).sum();
-    if total_concurrent > MAX_TOTAL_CONCURRENT {
-        return Err(format!(
-            "{} would declare {total_concurrent} total outbound concurrency, over the \
-             {MAX_TOTAL_CONCURRENT} ceiling; the host would refuse the whole directory",
-            dir.display()
-        ));
-    }
-    let contested = contested_names(files.iter().map(|(p, f)| (p.as_path(), &f.models)));
-    if let Some((name, claimants)) = contested.iter().next() {
-        return Err(format!(
-            "model {name:?} would be declared by more than one file ({}); a public name must \
-             have exactly one owner, and the host would serve it from none of them",
-            claimants
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    Ok(())
+    evaluate_prospective(dir, replaced, Some(body), true)?.map(|_| ())
 }
 
 /// The public names the host would serve from `dir` **if** `replaced` held
 /// `body` (or did not exist, for `None`), each with the file stem that owns
-/// it. Structural rules and the contested-name rule apply, exactly as the
-/// loader applies them; no secret is resolved.
+/// it. Exactly what the loader would serve: structural rules, the
+/// contested-name rule, **and the directory ceilings** — a directory over a
+/// ceiling is one the loader refuses, and a refused directory serves nothing.
 ///
-/// This is what lets `provider rm` see that removing a file does not only
-/// take a route *away*: if the file was one claimant of a contested name,
-/// removing it hands that name — and every other model in the surviving file,
-/// which was refused as a unit — to a provider that was not serving a moment
-/// ago. That is a recipient change, and it needs the same acknowledgement
-/// `provider add` demands for one.
+/// That last clause is load-bearing for `provider rm`. An earlier version
+/// modelled the contest rule but not the ceilings, so an over-ceiling
+/// directory — which the host loads as *empty* — read as fully served, and
+/// removing the file that repaired it showed no difference: every remaining
+/// provider came online under plain `--yes`, with no recipient
+/// acknowledgement anywhere.
+///
+/// `Err` is an I/O failure. A directory the host would refuse is `Ok(empty)`,
+/// because that is what the host serves.
 pub fn served_names_if(
     dir: &Path,
     replaced: &Path,
     body: Option<&str>,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
-    let (files, _) = prospective_set(dir, replaced, body)?;
+    Ok(evaluate_prospective(dir, replaced, body, false)?.unwrap_or_default())
+}
+
+/// One evaluation behind both prospective questions, so they cannot disagree.
+///
+/// Outer `Err`: the directory cannot be scanned. Inner `Err`: the loader
+/// would refuse the directory as a whole, with the reason. Inner `Ok`: the
+/// names it would serve, each with its file stem.
+///
+/// `refuse_contests` is the one place the two questions differ. To the
+/// loader a contested name is a per-file skip, not a directory refusal, and
+/// `served_names_if` has to model that faithfully — including for a partial
+/// `rm` whose remaining file is still contested with a sibling. A *write*
+/// that would create a contest is a different matter: there is no reading of
+/// it that the operator wants, so `validate_prospective_dir` refuses it.
+#[allow(clippy::type_complexity)]
+fn evaluate_prospective(
+    dir: &Path,
+    replaced: &Path,
+    body: Option<&str>,
+    refuse_contests: bool,
+) -> Result<Result<std::collections::BTreeMap<String, String>, String>, String> {
+    let (files, count) = prospective_set(dir, replaced, body)?;
+    if count > MAX_PROVIDER_FILES {
+        return Ok(Err(format!(
+            "{} would hold {count} provider files, over the {MAX_PROVIDER_FILES}-file \
+             ceiling; the host would refuse the whole directory",
+            dir.display()
+        )));
+    }
     let contested = contested_names(files.iter().map(|(p, f)| (p.as_path(), &f.models)));
-    let mut served = std::collections::BTreeMap::new();
-    for (path, file) in &files {
-        if file.models.iter().any(|m| contested.contains_key(&m.name)) {
-            continue;
+    // The loader counts toward the ceilings only what it accepts, and it
+    // skips a contested file before counting it — so the same here.
+    let accepted: Vec<&(PathBuf, ProviderFile)> = files
+        .iter()
+        .filter(|(_, f)| !f.models.iter().any(|m| contested.contains_key(&m.name)))
+        .collect();
+    let total_models: usize = accepted.iter().map(|(_, f)| f.models.len()).sum();
+    if total_models > MAX_TOTAL_MODELS {
+        return Ok(Err(format!(
+            "{} would declare {total_models} provider models, over the {MAX_TOTAL_MODELS} \
+             ceiling; the host would refuse the whole directory",
+            dir.display()
+        )));
+    }
+    let total_concurrent: usize = accepted.iter().map(|(_, f)| f.max_concurrent).sum();
+    if total_concurrent > MAX_TOTAL_CONCURRENT {
+        return Ok(Err(format!(
+            "{} would declare {total_concurrent} total outbound concurrency, over the \
+             {MAX_TOTAL_CONCURRENT} ceiling; the host would refuse the whole directory",
+            dir.display()
+        )));
+    }
+    if refuse_contests {
+        if let Some((name, claimants)) = contested.iter().next() {
+            return Ok(Err(format!(
+                "model {name:?} would be declared by more than one file ({}); a public name \
+                 must have exactly one owner, and the host would serve it from none of them",
+                claimants
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
         }
+    }
+    let mut served = std::collections::BTreeMap::new();
+    for (path, file) in accepted {
         let stem = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -1183,7 +1212,7 @@ pub fn served_names_if(
             served.insert(model.name.clone(), stem.clone());
         }
     }
-    Ok(served)
+    Ok(Ok(served))
 }
 
 /// Every enabled, structurally valid file the directory would hold with
@@ -1574,6 +1603,51 @@ max_tokens = 8191
         let outcome = load_dir(dir.path()).unwrap();
         assert_eq!(outcome.providers.len(), 1);
         assert!(outcome.errors.is_empty());
+    }
+
+    /// `served_names_if` has to model the ceilings, not only the contest
+    /// rule. An over-ceiling directory is one the loader refuses, and a
+    /// refused directory serves **nothing** — so removing the file that
+    /// repairs it activates every remaining provider. Without the ceilings
+    /// in the model, "before" read as fully served and the diff was empty.
+    #[test]
+    fn served_names_if_models_the_ceilings_so_a_repairing_removal_shows_what_it_activates() {
+        let dir = private_tempdir();
+        let one = |name: &str, concurrent: usize| {
+            format!(
+                "provider = \"openai\"\napi_key = \"k\"\nmax_concurrent = {concurrent}\n\n\
+                 [[models]]\nname = \"{name}\"\nprovider_model_id = \"{name}\"\ndim = 4\n"
+            )
+        };
+        // Five files at 64 = 320 total concurrency: over the 256 ceiling,
+        // so the host loads nothing.
+        for i in 0..5 {
+            write_mode(
+                dir.path(),
+                &format!("p{i}.toml"),
+                &one(&format!("m{i}"), 64),
+                0o600,
+            );
+        }
+        let outcome = load_dir(dir.path());
+        assert!(outcome.is_err(), "the loader refuses the whole directory");
+
+        let victim = dir.path().join("p4.toml");
+        let now = served_names_if(dir.path(), &victim, Some(&one("m4", 64))).unwrap();
+        assert!(now.is_empty(), "over the ceiling, nothing is served now");
+
+        let after = served_names_if(dir.path(), &victim, None).unwrap();
+        assert_eq!(
+            after.len(),
+            4,
+            "removing one file brings every other one online"
+        );
+        for name in ["m0", "m1", "m2", "m3"] {
+            assert_eq!(
+                after.get(name).map(String::as_str),
+                Some(&format!("p{}", &name[1..])[..])
+            );
+        }
     }
 
     /// `provider add` checks the directory as it *would be*, not only the one

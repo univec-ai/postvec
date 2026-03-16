@@ -61,7 +61,11 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
 
     let mut providers = Vec::new();
     let mut errors = Vec::new();
-    for path in provider_files(&dir) {
+    let files = provider_files(&dir).map_err(|e| {
+        crate::error::CliError::precondition(e)
+            .with_fix("the serving host cannot scan this directory either; fix its permissions")
+    })?;
+    for path in files {
         let stem = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -174,20 +178,34 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
 }
 
 /// `*.toml` files, lexicographic, dot-files skipped — the loader's rule.
-pub fn provider_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+///
+/// A directory that exists but cannot be scanned, or an entry that cannot be
+/// read, is an **error** and not an empty list. Returning nothing there made
+/// `ls` and doctor describe an unreadable providers.d as "no provider is
+/// configured" — indistinguishable from the zero-config state, for a
+/// directory the serving host also refuses to scan. A missing directory is
+/// still the ordinary empty case.
+pub fn provider_files(
+    dir: &std::path::Path,
+) -> std::result::Result<Vec<std::path::PathBuf>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("cannot scan {}: {e}", dir.display())),
     };
-    let mut files: Vec<std::path::PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| {
-            path.extension().is_some_and(|ext| ext == "toml")
-                && path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| !n.starts_with('.'))
-        })
-        .collect();
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("cannot read an entry of {}: {e}", dir.display()))?
+            .path();
+        let named = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| !n.starts_with('.'));
+        if path.extension().is_some_and(|ext| ext == "toml") && named {
+            files.push(path);
+        }
+    }
     files.sort();
-    files
+    Ok(files)
 }
