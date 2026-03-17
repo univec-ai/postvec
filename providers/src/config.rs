@@ -1135,8 +1135,19 @@ pub fn served_names_if(
     dir: &Path,
     replaced: &Path,
     body: Option<&str>,
-) -> Result<std::collections::BTreeMap<String, String>, String> {
+) -> Result<std::collections::BTreeMap<String, ServedBy>, String> {
     Ok(evaluate_prospective(dir, replaced, body, false)?.unwrap_or_default())
+}
+
+/// Who serves a public name: the connector — which is the **recipient** of
+/// the text, and what a privacy acknowledgement has to name — and the file
+/// stem an operator administers. A stem alone ("alpha") says nothing about
+/// where text goes; two OpenAI-compatible endpoints in two files are the
+/// same recipient, and a file called `alpha` can point at anyone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedBy {
+    pub provider: String,
+    pub file: String,
 }
 
 /// One evaluation behind both prospective questions, so they cannot disagree.
@@ -1157,7 +1168,7 @@ fn evaluate_prospective(
     replaced: &Path,
     body: Option<&str>,
     refuse_contests: bool,
-) -> Result<Result<std::collections::BTreeMap<String, String>, String>, String> {
+) -> Result<Result<std::collections::BTreeMap<String, ServedBy>, String>, String> {
     let (files, count) = prospective_set(dir, replaced, body)?;
     if count > MAX_PROVIDER_FILES {
         return Ok(Err(format!(
@@ -1204,12 +1215,15 @@ fn evaluate_prospective(
     }
     let mut served = std::collections::BTreeMap::new();
     for (path, file) in accepted {
-        let stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let by = ServedBy {
+            provider: crate::catalog::canonical_provider(&file.provider),
+            file: path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        };
         for model in &file.models {
-            served.insert(model.name.clone(), stem.clone());
+            served.insert(model.name.clone(), by.clone());
         }
     }
     Ok(Ok(served))
@@ -1643,10 +1657,9 @@ max_tokens = 8191
             "removing one file brings every other one online"
         );
         for name in ["m0", "m1", "m2", "m3"] {
-            assert_eq!(
-                after.get(name).map(String::as_str),
-                Some(&format!("p{}", &name[1..])[..])
-            );
+            let by = after.get(name).expect(name);
+            assert_eq!(by.file, format!("p{}", &name[1..]));
+            assert_eq!(by.provider, "openai", "the recipient, not only the file");
         }
     }
 

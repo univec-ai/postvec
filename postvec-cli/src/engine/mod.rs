@@ -51,6 +51,8 @@ struct HubModel {
     /// this model" from "this host relays this model to an API".
     #[serde(default)]
     provider: Option<String>,
+    #[serde(default)]
+    provider_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -121,6 +123,7 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
             enabled: model.configuration.as_ref().is_some_and(|c| c.enabled),
             model_type: model.model_type(),
             provider: model.provider,
+            provider_file: model.provider_file,
             name: model.name,
         })
         .collect();

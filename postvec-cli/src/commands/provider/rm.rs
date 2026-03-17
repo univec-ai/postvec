@@ -63,21 +63,24 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     };
 
     // What the host would serve after this change, against what it serves
-    // now. Removing a file does not only take a route *away*: if the file
-    // was one claimant of a contested name, the host refused every claimant
-    // as a unit — and removing this one hands that name, plus every other
-    // model in the surviving file, to a provider that was not serving a
-    // moment ago. Those columns' source text starts going somewhere new,
-    // which is the event `provider add`'s privacy gate exists for. The
-    // in-use acknowledgement ("these columns lose their route") is the wrong
-    // question for them; they get the recipient one instead.
-    // "Now" is evaluated from the document already loaded through the
-    // bounded, `O_NOFOLLOW` reader — not from a second, unguarded read of the
-    // same path, which would be the one read in this command that a planted
-    // symlink or an oversized file could reach.
-    let served_now =
+    // **now** — and "now" is the live snapshot where one can be asked, not
+    // the files. The two diverge: a reload that failed kept the previous
+    // snapshot, so a route can be serving from a file the directory as it
+    // stands would no longer load (over a ceiling, a contest introduced
+    // since). Modelling "now" from the files would call that route absent,
+    // and `rm --yes` would take a working route away with no acknowledgement.
+    // The files are the fallback when no host answers, and the plan says
+    // which source it used.
+    let structural_now =
         providers::config::served_names_if(target.dir(), &file_path, Some(&doc.body()?))
             .map_err(CliError::precondition)?;
+    let (served_now, now_source) = match live_served(&target, cli.timeout).await {
+        Some(live) => (live, "the running host"),
+        None => (
+            structural_now,
+            "the files on disk (no running host answered)",
+        ),
+    };
     let prospective_body = if remove_file {
         None
     } else {
@@ -88,27 +91,19 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         after.remove_model(args.model.as_deref().expect("partial removal has --model"));
         Some(after.body()?)
     };
+    // "After" is what the host will *try* to serve at the next reload — a
+    // structural prediction, because this process cannot resolve the host's
+    // secrets. A file whose secret fails there will not actually serve; the
+    // gate errs toward naming it, which is the safe direction.
     let served_after =
         providers::config::served_names_if(target.dir(), &file_path, prospective_body.as_deref())
             .map_err(CliError::precondition)?;
-    // name -> the provider file stem that takes it over.
-    let activated: Vec<(String, String)> = served_after
-        .iter()
-        .filter(|(name, _)| !served_now.contains_key(*name))
-        .map(|(name, stem)| (name.clone(), stem.clone()))
-        .collect();
-    // What actually *loses* a route: names served now and not afterwards.
-    // This is not "the names in the file minus the activated ones" — a name
-    // the file declares but the host was not serving (the file was contested,
-    // or the directory was over a ceiling) loses nothing when it goes, and
-    // saying its columns "lose their route" would be asking for an
-    // acknowledgement of an event that is not happening.
-    let truly_going_away: Vec<String> = served_now
-        .keys()
-        .filter(|name| !served_after.contains_key(*name))
-        .cloned()
-        .collect();
+    let RouteDiff {
+        activated,
+        lost: truly_going_away,
+    } = diff_routes(&served_now, &served_after);
     // `going_away` still drives the journal: it is what this file declared.
+    output.note(&format!("current provider routes read from {now_source}"));
 
     let scanned = matches!(target, ProviderTarget::Embedded { .. });
     let (columns, unknown_databases) = if scanned {
@@ -130,7 +125,7 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         &columns,
         &unknown_databases,
     );
-    for (name, stem) in &activated {
+    for (name, by) in &activated {
         let mine: Vec<crate::plan::InUseColumn> = activated_columns
             .iter()
             .filter(|column| &column.model == name)
@@ -146,8 +141,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         if mine.is_empty() && unknown.is_empty() {
             continue;
         }
+        // The recipient is the connector, not the file: a stem says nothing
+        // about where text goes. The file is named alongside so the operator
+        // knows which one to edit.
         plan.push(PlanStep::AcknowledgeProviderPrivacy {
-            provider: stem.clone(),
+            provider: format!("{} (file {})", by.provider, by.file),
             model: name.clone(),
             columns: mine,
             unknown_databases: unknown,
@@ -155,18 +153,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     }
     if !activated.is_empty() {
         output.note(&format!(
-            "removing this resolves a contested name: {} start(s) being served by {} the \
+            "removing this brings other provider files online: {} start(s) being served the \
              moment the host reloads",
             activated
                 .iter()
-                .map(|(n, _)| n.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-            activated
-                .iter()
-                .map(|(_, s)| format!("{s:?}"))
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
+                .map(|(n, by)| format!("{n} (by {} from {}.toml)", by.provider, by.file))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -211,29 +202,50 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
              check, so no column was inspected"
         });
     }
-    if activated.is_empty() {
-        plan::confirm_in_use(
-            &plan,
-            args.acknowledge_in_use,
-            args.yes,
-            args.dry_run,
-            Prompt::from_environment(),
-            plan::interactive_in_use_acknowledgement,
-        )?;
-    } else {
-        plan::confirm_in_use_with(
-            &plan,
-            args.acknowledge_in_use,
-            args.yes,
-            args.dry_run,
-            Prompt::from_environment(),
-            plan::interactive_provider_privacy_acknowledgement,
-            "removing this hands {models} to another provider file, so existing columns bound \
-             to those names start sending their source text to a different recipient on the \
-             next worker cycle; pass --acknowledge-in-use together with --yes to proceed \
-             knowingly. --yes deliberately does not stand in for it",
-        )?;
-    }
+    // One confirmation, worded for what this removal actually does. The
+    // generic form substitutes every in-use model into one sentence, which
+    // reads wrongly when some columns *lose* a route and others are *handed*
+    // to a different recipient — two different events, each of which has to
+    // be stated on its own terms.
+    let lost_list = truly_going_away.join(", ");
+    let activated_list = activated
+        .iter()
+        .map(|(n, by)| format!("{n} → {}", by.provider))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let consequence = match (truly_going_away.is_empty(), activated.is_empty()) {
+        (false, true) => format!(
+            "managed columns lose their embedding route to {lost_list}; pass \
+             --acknowledge-in-use together with --yes to proceed knowing those entries will \
+             fail. --yes deliberately does not stand in for it"
+        ),
+        (true, false) => format!(
+            "removing this hands {activated_list} to another provider file, so existing \
+             columns bound to those names start sending their source text to a different \
+             recipient on the next worker cycle; pass --acknowledge-in-use together with \
+             --yes to proceed knowingly. --yes deliberately does not stand in for it"
+        ),
+        _ => format!(
+            "removing this takes the embedding route away from {lost_list} AND hands \
+             {activated_list} to another provider file, whose bound columns start sending \
+             their source text to a different recipient on the next worker cycle; pass \
+             --acknowledge-in-use together with --yes to proceed knowingly. --yes \
+             deliberately does not stand in for it"
+        ),
+    };
+    plan::confirm_in_use_with(
+        &plan,
+        args.acknowledge_in_use,
+        args.yes,
+        args.dry_run,
+        Prompt::from_environment(),
+        if activated.is_empty() {
+            plan::interactive_in_use_acknowledgement
+        } else {
+            plan::interactive_provider_privacy_acknowledgement
+        },
+        &consequence,
+    )?;
     plan::confirm(&plan, args.yes, None, Prompt::from_environment())?;
 
     let mut journal = ApplyJournal::default();
@@ -271,6 +283,63 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     Ok(Exit::from_code(result.exit_code))
 }
 
+/// What a change to the served set does to the columns bound to it.
+struct RouteDiff {
+    /// Names served afterwards that are not served now: columns bound to
+    /// them start sending text to a recipient that was not serving a moment
+    /// ago. Each with who serves it.
+    activated: Vec<(String, providers::config::ServedBy)>,
+    /// Names served now and not afterwards: columns bound to them lose their
+    /// route. Computed from the served sets, never from a file's contents —
+    /// a name the host is not serving loses nothing when it goes.
+    lost: Vec<String>,
+}
+
+fn diff_routes(
+    now: &std::collections::BTreeMap<String, providers::config::ServedBy>,
+    after: &std::collections::BTreeMap<String, providers::config::ServedBy>,
+) -> RouteDiff {
+    RouteDiff {
+        activated: after
+            .iter()
+            .filter(|(name, _)| !now.contains_key(*name))
+            .map(|(name, by)| (name.clone(), by.clone()))
+            .collect(),
+        lost: now
+            .keys()
+            .filter(|name| !after.contains_key(*name))
+            .cloned()
+            .collect(),
+    }
+}
+
+/// The provider routes the running host serves **right now**, keyed by
+/// public name, or `None` when no host could be asked. Read from `/config`,
+/// which carries each provider entry's connector type and file stem.
+async fn live_served(
+    target: &ProviderTarget,
+    timeout: std::time::Duration,
+) -> Option<std::collections::BTreeMap<String, providers::config::ServedBy>> {
+    let listen = target.embedded_listen()?;
+    let inventory = crate::commands::model::admin::loaded_inventory(&listen, timeout).await?;
+    Some(
+        inventory
+            .models
+            .into_iter()
+            .filter(|m| m.enabled)
+            .filter_map(|m| {
+                Some((
+                    m.name,
+                    providers::config::ServedBy {
+                        provider: m.provider?,
+                        file: m.provider_file.unwrap_or_default(),
+                    },
+                ))
+            })
+            .collect(),
+    )
+}
+
 fn finish(
     target: &ProviderTarget,
     plan: Plan,
@@ -299,5 +368,67 @@ fn finish(
         checks: Vec::new(),
         next_step: None,
         exit_code: exit.code(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use providers::config::ServedBy;
+
+    fn by(provider: &str, file: &str) -> ServedBy {
+        ServedBy {
+            provider: provider.into(),
+            file: file.into(),
+        }
+    }
+
+    /// "Now" is the live snapshot, and the live snapshot can hold a route the
+    /// files no longer describe — a reload failed and the host kept serving
+    /// what it had. Removing that file takes a *working* route away, and the
+    /// diff has to say so even though a structural model of the directory
+    /// would call the route already absent. This is the property that was
+    /// missing: the structural "now" was empty for an over-ceiling
+    /// directory, so nothing was ever "lost".
+    #[test]
+    fn a_route_the_live_host_serves_is_lost_even_if_the_files_no_longer_describe_it() {
+        let mut live_now = std::collections::BTreeMap::new();
+        live_now.insert("openai-m0".to_string(), by("openai", "p0"));
+        // The files as they stand are over a ceiling: structurally, nothing
+        // is served, before or after.
+        let structural_after = std::collections::BTreeMap::new();
+
+        let diff = diff_routes(&live_now, &structural_after);
+        assert_eq!(diff.lost, vec!["openai-m0".to_string()]);
+        assert!(diff.activated.is_empty());
+    }
+
+    /// Activation is the mirror: a name the files would serve after the
+    /// change that the live host does not serve now.
+    #[test]
+    fn a_name_only_served_afterwards_is_activated_with_its_recipient() {
+        let live_now = std::collections::BTreeMap::new();
+        let mut after = std::collections::BTreeMap::new();
+        after.insert("shared-name".to_string(), by("mistral", "beta"));
+        after.insert("beta-only".to_string(), by("mistral", "beta"));
+
+        let diff = diff_routes(&live_now, &after);
+        assert!(diff.lost.is_empty());
+        assert_eq!(diff.activated.len(), 2);
+        assert!(diff
+            .activated
+            .iter()
+            .all(|(_, by)| by.provider == "mistral" && by.file == "beta"));
+    }
+
+    /// A name present on both sides is neither: the same recipient keeps
+    /// serving it, whatever file it comes from.
+    #[test]
+    fn an_unchanged_route_is_neither_lost_nor_activated() {
+        let mut now = std::collections::BTreeMap::new();
+        now.insert("openai-m0".to_string(), by("openai", "p0"));
+        let after = now.clone();
+        let diff = diff_routes(&now, &after);
+        assert!(diff.lost.is_empty() && diff.activated.is_empty());
     }
 }

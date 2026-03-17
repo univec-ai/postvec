@@ -468,7 +468,18 @@ fn leftover_provider_files(settings: &SettingsSnapshot) -> Option<String> {
         return None;
     }
     let dir = settings.providers_path();
-    let files = crate::commands::provider::ls::provider_files(&dir).unwrap_or_default();
+    let files = match crate::commands::provider::ls::provider_files(&dir) {
+        Ok(files) => files,
+        // An unreadable directory is not an empty one: say so, because the
+        // whole point of this note is that credentials may remain.
+        Err(problem) => {
+            return Some(format!(
+                "{problem}; external-provider connector files may remain in {} and are never \
+                 removed by uninstall",
+                dir.display()
+            ))
+        }
+    };
     if files.is_empty() {
         return None;
     }

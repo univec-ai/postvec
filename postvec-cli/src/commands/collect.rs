@@ -559,6 +559,7 @@ mod tests {
                     enabled: true,
                     model_type: Some("embed".into()),
                     provider: None,
+                    provider_file: None,
                 })
                 .collect(),
         }

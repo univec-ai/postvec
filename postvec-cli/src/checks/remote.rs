@@ -379,6 +379,7 @@ mod tests {
                         enabled: *enabled,
                         model_type: Some("embed".to_string()),
                         provider: None,
+                        provider_file: None,
                     })
                     .collect(),
             }),

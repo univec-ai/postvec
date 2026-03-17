@@ -1899,12 +1899,12 @@ fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
     };
     write(
         "alpha",
-        "provider = \"openai\"\napi_key_env = \"K\"\n\n[[models]]\nname = \"shared-name\"\n\
+        "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
          provider_model_id = \"a\"\ndim = 4\n",
     );
     write(
         "beta",
-        "provider = \"mistral\"\napi_key_env = \"K\"\n\n[[models]]\nname = \"shared-name\"\n\
+        "provider = \"mistral\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
          provider_model_id = \"b\"\ndim = 4\n\n[[models]]\nname = \"beta-only\"\n\
          provider_model_id = \"c\"\ndim = 4\n",
     );
@@ -1960,7 +1960,7 @@ fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledg
         std::fs::write(
             &path,
             format!(
-                "provider = \"openai\"\napi_key_env = \"K\"\nmax_concurrent = 64\n\n\
+                "provider = \"openai\"\napi_key = \"inline-test-key\"\nmax_concurrent = 64\n\n\
                  [[models]]\nname = \"openai-m{i}\"\nprovider_model_id = \"m{i}\"\ndim = 4\n"
             ),
         )

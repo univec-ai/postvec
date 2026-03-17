@@ -415,6 +415,13 @@ pub struct InventoryModel {
     /// locally" has to look at this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The providers.d file stem serving this name, for provider-backed
+    /// entries. This is what `provider rm` compares against: the **live**
+    /// snapshot, not the files — after a failed reload the two differ, and
+    /// a route can be serving from a file the current directory would not
+    /// load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_file: Option<String>,
 }
 
 /// A parsed ninference `/config` envelope.
@@ -843,12 +850,14 @@ mod tests {
                     enabled: true,
                     model_type: Some("embed".into()),
                     provider: None,
+                    provider_file: None,
                 },
                 InventoryModel {
                     name: "b".into(),
                     enabled: false,
                     model_type: Some("embed".into()),
                     provider: None,
+                    provider_file: None,
                 },
             ],
         };
@@ -917,6 +926,7 @@ mod tests {
                             enabled: true,
                             model_type: Some("embed".into()),
                             provider: None,
+                            provider_file: None,
                         }],
                     }),
                     error: None,
@@ -933,6 +943,7 @@ mod tests {
                             enabled: true,
                             model_type: Some("convert".into()),
                             provider: None,
+                            provider_file: None,
                         }],
                     }),
                     error: None,

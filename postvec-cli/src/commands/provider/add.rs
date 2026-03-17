@@ -516,18 +516,18 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         ));
         journal.succeeded(model.public_name.clone());
     }
-    if !file_enabled {
-        // The JSON `applied` list above says it per model; this is the
-        // machine-readable statement for the result as a whole, so a caller
-        // reading `incomplete` learns the same thing a human reading the
-        // journal does: written correctly, serving nothing. It downgrades the
-        // exit to partial on purpose — "done" is not what happened.
-        journal.incomplete(format!(
-            "{} is enabled = false: {} model(s) written but none served until it is enabled",
+    // A parked file is the operator's choice and the write completed, so the
+    // exit is success — `incomplete` (partial) would claim the command did
+    // not finish, which is false. The machine-readable statement goes in
+    // `next_step`, the field that exists for "this is done; here is what
+    // serves it": a caller checks one field rather than parsing prose.
+    let next_step = (!file_enabled).then(|| {
+        format!(
+            "set enabled = true in {} to serve the {} model(s) written to it",
             file_path.display(),
             new_models.len()
-        ));
-    }
+        )
+    });
 
     reload_host(&target, cli.timeout, &mut journal).await;
     // The host now serves the model; the databases do not know it exists.
@@ -537,7 +537,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // has no cluster and is skipped inside.
     super::refresh_databases(&mut target, &mut journal).await;
 
-    let result = finish(&target, plan, journal, Vec::new(), started, started_at);
+    let mut result = finish(&target, plan, journal, Vec::new(), started, started_at);
+    result.next_step = next_step;
     output.show_result(&result)?;
     Ok(Exit::from_code(result.exit_code))
 }
