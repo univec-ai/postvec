@@ -118,6 +118,19 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         (Vec::new(), Vec::new())
     };
 
+    // `--path` cannot inspect a cluster, so "no bound column was found" is
+    // not "no bound column exists". The lost-route acknowledgement is pushed
+    // anyway, with the databases marked UNKNOWN — exactly as `provider add`
+    // treats the mirror case. `--path` is the documented way to administer
+    // remote nodes; it must not be the one mode where `--yes` takes a route
+    // away unasked.
+    let unknown_databases = if scanned {
+        unknown_databases
+    } else if truly_going_away.is_empty() {
+        Vec::new()
+    } else {
+        vec!["every database served by this node (not inspectable from --path)".to_string()]
+    };
     let mut plan = Plan::new("provider rm", target.label());
     crate::commands::model::push_in_use_steps(
         &mut plan,
@@ -144,8 +157,16 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         // The recipient is the connector, not the file: a stem says nothing
         // about where text goes. The file is named alongside so the operator
         // knows which one to edit.
+        let provider = match served_now.get(name) {
+            Some(from) => format!(
+                "{} (file {}) — handed over from {} (file {}); if the new file does not load, \
+                 these columns lose their route instead",
+                by.provider, by.file, from.provider, from.file
+            ),
+            None => format!("{} (file {})", by.provider, by.file),
+        };
         plan.push(PlanStep::AcknowledgeProviderPrivacy {
-            provider: format!("{} (file {})", by.provider, by.file),
+            provider,
             model: name.clone(),
             columns: mine,
             unknown_databases: unknown,
@@ -239,10 +260,10 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         args.yes,
         args.dry_run,
         Prompt::from_environment(),
-        if activated.is_empty() {
-            plan::interactive_in_use_acknowledgement
-        } else {
-            plan::interactive_provider_privacy_acknowledgement
+        match (truly_going_away.is_empty(), activated.is_empty()) {
+            (false, true) => plan::interactive_in_use_acknowledgement,
+            (true, false) => plan::interactive_provider_privacy_acknowledgement,
+            _ => plan::interactive_route_change_acknowledgement,
         },
         &consequence,
     )?;
@@ -285,9 +306,12 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
 
 /// What a change to the served set does to the columns bound to it.
 struct RouteDiff {
-    /// Names served afterwards that are not served now: columns bound to
-    /// them start sending text to a recipient that was not serving a moment
-    /// ago. Each with who serves it.
+    /// Names whose recipient *changes*: not served now and served
+    /// afterwards, **or** served by a different connector, file or endpoint
+    /// afterwards. Columns bound to them start sending text somewhere that
+    /// was not receiving it a moment ago — which is the event the privacy
+    /// acknowledgement exists for, whether or not the name existed before.
+    /// Each with who serves it afterwards.
     activated: Vec<(String, providers::config::ServedBy)>,
     /// Names served now and not afterwards: columns bound to them lose their
     /// route. Computed from the served sets, never from a file's contents —
@@ -295,6 +319,14 @@ struct RouteDiff {
     lost: Vec<String>,
 }
 
+/// Name equality is not route equality. A previous version compared names
+/// only, so a same-name handoff from file A to file B — a different endpoint,
+/// possibly a different company — read as "unchanged" and went ungated. It
+/// also let an *unloadable* B hide the loss of A: the name was still "there"
+/// afterwards, structurally, while the host would serve it from nothing.
+/// Treating any change of server as an activation covers both: the operator
+/// is told the name is being handed to B, and if B does not load, that
+/// warning is the closest thing to the truth this process can state.
 fn diff_routes(
     now: &std::collections::BTreeMap<String, providers::config::ServedBy>,
     after: &std::collections::BTreeMap<String, providers::config::ServedBy>,
@@ -302,7 +334,7 @@ fn diff_routes(
     RouteDiff {
         activated: after
             .iter()
-            .filter(|(name, _)| !now.contains_key(*name))
+            .filter(|(name, by)| now.get(*name) != Some(by))
             .map(|(name, by)| (name.clone(), by.clone()))
             .collect(),
         lost: now
@@ -333,6 +365,7 @@ async fn live_served(
                     providers::config::ServedBy {
                         provider: m.provider?,
                         file: m.provider_file.unwrap_or_default(),
+                        endpoint: m.provider_endpoint.unwrap_or_default(),
                     },
                 ))
             })
@@ -380,6 +413,7 @@ mod tests {
         ServedBy {
             provider: provider.into(),
             file: file.into(),
+            endpoint: "same".into(),
         }
     }
 
@@ -421,8 +455,8 @@ mod tests {
             .all(|(_, by)| by.provider == "mistral" && by.file == "beta"));
     }
 
-    /// A name present on both sides is neither: the same recipient keeps
-    /// serving it, whatever file it comes from.
+    /// A name served by the *same* connector, file and endpoint on both
+    /// sides is neither lost nor activated.
     #[test]
     fn an_unchanged_route_is_neither_lost_nor_activated() {
         let mut now = std::collections::BTreeMap::new();
@@ -430,5 +464,41 @@ mod tests {
         let after = now.clone();
         let diff = diff_routes(&now, &after);
         assert!(diff.lost.is_empty() && diff.activated.is_empty());
+    }
+
+    /// Name equality is not route equality. The same public name served by a
+    /// different file, connector or endpoint afterwards is a handoff — the
+    /// columns' text goes somewhere new — and it has to be gated as an
+    /// activation, not read as "unchanged". This also covers an unloadable
+    /// successor hiding the loss of a working route: the operator is told
+    /// the name is being handed over, which is the closest this process can
+    /// come to the truth without the host's secrets.
+    #[test]
+    fn a_same_name_handoff_is_a_recipient_change() {
+        let mut now = std::collections::BTreeMap::new();
+        now.insert("shared".to_string(), by("openai", "alpha"));
+
+        // Different file, same connector: still a handoff (the endpoint may
+        // differ, and so may the account).
+        let mut after = std::collections::BTreeMap::new();
+        after.insert("shared".to_string(), by("openai", "beta"));
+        let diff = diff_routes(&now, &after);
+        assert!(diff.lost.is_empty(), "the name is still served");
+        assert_eq!(diff.activated.len(), 1, "…but by someone else");
+        assert_eq!(diff.activated[0].1.file, "beta");
+
+        // Same file, different endpoint digest: a moved base_url is a handoff
+        // too.
+        let mut moved = std::collections::BTreeMap::new();
+        moved.insert(
+            "shared".to_string(),
+            ServedBy {
+                provider: "openai".into(),
+                file: "alpha".into(),
+                endpoint: "elsewhere".into(),
+            },
+        );
+        let diff = diff_routes(&now, &moved);
+        assert_eq!(diff.activated.len(), 1);
     }
 }

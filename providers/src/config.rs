@@ -1139,6 +1139,29 @@ pub fn served_names_if(
     Ok(evaluate_prospective(dir, replaced, body, false)?.unwrap_or_default())
 }
 
+/// A stable, secret-free digest of the endpoint a provider file will actually
+/// reach: the AWS region and the `base_url` override, which together are the
+/// only things that decide *where* a request goes once the connector type and
+/// model id are fixed.
+///
+/// Hashed rather than published because `base_url` is operator-supplied and
+/// routinely names an internal host, while `/config` is read by every node in
+/// a fleet. A digest answers the only question a fleet needs to ask — "do all
+/// the nodes reach the same place?" — without publishing the answer.
+///
+/// Lives in `config` rather than the gateway because the CLI computes it too:
+/// `provider rm` compares the live snapshot's endpoint against the files'
+/// to tell a same-name handoff from an unchanged route, and the two have to
+/// hash identically.
+pub fn endpoint_digest(region: Option<&str>, base_url: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(region.unwrap_or("").as_bytes());
+    hasher.update(b"|");
+    hasher.update(base_url.unwrap_or("").as_bytes());
+    hex::encode(hasher.finalize())[..16].to_string()
+}
+
 /// Who serves a public name: the connector — which is the **recipient** of
 /// the text, and what a privacy acknowledgement has to name — and the file
 /// stem an operator administers. A stem alone ("alpha") says nothing about
@@ -1148,6 +1171,9 @@ pub fn served_names_if(
 pub struct ServedBy {
     pub provider: String,
     pub file: String,
+    /// [`endpoint_digest`] of the region and `base_url`. Two files of the
+    /// same connector type are the same recipient only if this matches too.
+    pub endpoint: String,
 }
 
 /// One evaluation behind both prospective questions, so they cannot disagree.
@@ -1221,6 +1247,7 @@ fn evaluate_prospective(
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default(),
+            endpoint: endpoint_digest(file.region.as_deref(), file.base_url.as_deref()),
         };
         for model in &file.models {
             served.insert(model.name.clone(), by.clone());

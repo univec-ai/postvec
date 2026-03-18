@@ -689,6 +689,19 @@ pub fn interactive_in_use_acknowledgement(models: &[String]) -> Result<String> {
     read_line()
 }
 
+/// The interactive acknowledgement for a change that does *both* — some
+/// columns lose their route, others are handed to a different recipient. The
+/// two single-purpose prompts each describe only half of it, and a prompt
+/// that names the wrong consequence is worse than a generic one.
+pub fn interactive_route_change_acknowledgement(models: &[String]) -> Result<String> {
+    eprint!(
+        "Type {} to confirm those columns' embedding routes may change — lost for some, \
+         sent to a different provider for others, as the plan lists: ",
+        models.join(" ")
+    );
+    read_line()
+}
+
 /// The interactive provider-privacy acknowledgement: the plan has printed
 /// which columns start sending text; the operator types the names back.
 pub fn interactive_provider_privacy_acknowledgement(models: &[String]) -> Result<String> {

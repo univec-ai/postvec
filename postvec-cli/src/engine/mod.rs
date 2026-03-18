@@ -53,6 +53,8 @@ struct HubModel {
     provider: Option<String>,
     #[serde(default)]
     provider_file: Option<String>,
+    #[serde(default)]
+    provider_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -124,6 +126,7 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
             model_type: model.model_type(),
             provider: model.provider,
             provider_file: model.provider_file,
+            provider_endpoint: model.provider_endpoint,
             name: model.name,
         })
         .collect();

@@ -380,6 +380,7 @@ mod tests {
                         model_type: Some("embed".to_string()),
                         provider: None,
                         provider_file: None,
+                        provider_endpoint: None,
                     })
                     .collect(),
             }),

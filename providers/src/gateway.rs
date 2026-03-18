@@ -109,24 +109,6 @@ struct Inner {
     models: BTreeMap<String, ModelEntry>,
 }
 
-/// A stable, secret-free digest of the endpoint a provider file will actually
-/// reach: the AWS region and the `base_url` override, which together are the
-/// only things that decide *where* a request goes once the connector type and
-/// model id are fixed.
-///
-/// Hashed rather than published because `base_url` is operator-supplied and
-/// routinely names an internal host, while `/config` is read by every node in
-/// a fleet. A digest answers the only question a fleet needs to ask — "do all
-/// the nodes reach the same place?" — without publishing the answer.
-fn endpoint_digest(region: Option<&str>, base_url: Option<&str>) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(region.unwrap_or("").as_bytes());
-    hasher.update(b"|");
-    hasher.update(base_url.unwrap_or("").as_bytes());
-    hex::encode(hasher.finalize())[..16].to_string()
-}
-
 /// The nested HubModel shape `discovery::parse_config` requires (§6.2). A
 /// flat object would be silently dropped by the parser — the round-trip
 /// tests below and in the host pin this.
@@ -222,7 +204,7 @@ impl Inner {
                 }
             };
             let permits = Arc::new(Semaphore::new(provider.max_concurrent));
-            let endpoint = endpoint_digest(
+            let endpoint = config::endpoint_digest(
                 provider.config.region.as_deref(),
                 provider.config.base_url.as_deref(),
             );

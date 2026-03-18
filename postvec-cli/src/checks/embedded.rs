@@ -540,6 +540,7 @@ mod tests {
                     model_type: Some("embed".into()),
                     provider: None,
                     provider_file: None,
+                    provider_endpoint: None,
                 })
                 .collect(),
         }

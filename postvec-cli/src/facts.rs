@@ -422,6 +422,11 @@ pub struct InventoryModel {
     /// load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_file: Option<String>,
+    /// The gateway's endpoint digest (region + `base_url`), so a same-name
+    /// route served by a different endpoint reads as a change, not as
+    /// "unchanged".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_endpoint: Option<String>,
 }
 
 /// A parsed ninference `/config` envelope.
@@ -851,6 +856,7 @@ mod tests {
                     model_type: Some("embed".into()),
                     provider: None,
                     provider_file: None,
+                    provider_endpoint: None,
                 },
                 InventoryModel {
                     name: "b".into(),
@@ -858,6 +864,7 @@ mod tests {
                     model_type: Some("embed".into()),
                     provider: None,
                     provider_file: None,
+                    provider_endpoint: None,
                 },
             ],
         };
@@ -927,6 +934,7 @@ mod tests {
                             model_type: Some("embed".into()),
                             provider: None,
                             provider_file: None,
+                            provider_endpoint: None,
                         }],
                     }),
                     error: None,
@@ -944,6 +952,7 @@ mod tests {
                             model_type: Some("convert".into()),
                             provider: None,
                             provider_file: None,
+                            provider_endpoint: None,
                         }],
                     }),
                     error: None,

@@ -693,8 +693,28 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
         "provider ls must never print a key: {text}"
     );
 
-    // rm takes the file away again.
-    let removed = run(&["provider", "rm", "openai", "--path", root_arg, "--yes"]);
+    // rm takes the file away again — but not on `--yes` alone. With `--path`
+    // there is no cluster to scan for bound columns, and "none found" is not
+    // "none exist": the lost-route acknowledgement is demanded with the
+    // databases marked UNKNOWN, exactly as `add` does for the mirror case.
+    // An earlier version of this test asserted the opposite, and in doing so
+    // pinned the one mode where `--yes` could take a route away unasked.
+    let refused = run(&["provider", "rm", "openai", "--path", root_arg, "--yes"]);
+    assert_ne!(code(&refused), 0, "{}", stdout(&refused));
+    let text = format!("{}{}", stdout(&refused), stderr(&refused));
+    assert!(text.contains("--acknowledge-in-use"), "{text}");
+    assert!(text.contains("UNKNOWN"), "{text}");
+    assert!(file.exists(), "nothing removed without the acknowledgement");
+
+    let removed = run(&[
+        "provider",
+        "rm",
+        "openai",
+        "--path",
+        root_arg,
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
     assert_eq!(code(&removed), 0, "{}", stderr(&removed));
     assert!(!file.exists(), "provider rm left the file behind");
 }
