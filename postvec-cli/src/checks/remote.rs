@@ -381,6 +381,8 @@ mod tests {
                         provider: None,
                         provider_file: None,
                         provider_endpoint: None,
+                        provider_model_id: None,
+                        target_dim: None,
                     })
                     .collect(),
             }),

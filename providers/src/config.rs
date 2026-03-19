@@ -1174,6 +1174,12 @@ pub struct ServedBy {
     /// [`endpoint_digest`] of the region and `base_url`. Two files of the
     /// same connector type are the same recipient only if this matches too.
     pub endpoint: String,
+    /// The id the provider's API is asked for. The same public name backed
+    /// by a different upstream model is a different route: the vectors are
+    /// in a different space, and nothing downstream can tell.
+    pub model_id: String,
+    /// The declared dimension, for the same reason.
+    pub dim: u32,
 }
 
 /// One evaluation behind both prospective questions, so they cannot disagree.
@@ -1241,16 +1247,23 @@ fn evaluate_prospective(
     }
     let mut served = std::collections::BTreeMap::new();
     for (path, file) in accepted {
-        let by = ServedBy {
-            provider: crate::catalog::canonical_provider(&file.provider),
-            file: path
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            endpoint: endpoint_digest(file.region.as_deref(), file.base_url.as_deref()),
-        };
+        let provider = crate::catalog::canonical_provider(&file.provider);
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let endpoint = endpoint_digest(file.region.as_deref(), file.base_url.as_deref());
         for model in &file.models {
-            served.insert(model.name.clone(), by.clone());
+            served.insert(
+                model.name.clone(),
+                ServedBy {
+                    provider: provider.clone(),
+                    file: stem.clone(),
+                    endpoint: endpoint.clone(),
+                    model_id: model.provider_model_id.clone(),
+                    dim: model.dim,
+                },
+            );
         }
     }
     Ok(Ok(served))

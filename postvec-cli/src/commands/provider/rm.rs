@@ -74,12 +74,60 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     let structural_now =
         providers::config::served_names_if(target.dir(), &file_path, Some(&doc.body()?))
             .map_err(CliError::precondition)?;
-    let (served_now, now_source) = match live_served(&target, cli.timeout).await {
-        Some(live) => (live, "the running host"),
-        None => (
-            structural_now,
-            "the files on disk (no running host answered)",
-        ),
+    // When no host answers, the files must NOT quietly stand in for the
+    // snapshot. They describe what the host *would* load, and when that
+    // directory is over a ceiling or contested they describe an empty set —
+    // while the unreachable host may well be serving the route this command
+    // is about to delete. With nothing to compare against, the only honest
+    // "now" is the conservative one: every route this file declares counts
+    // as possibly served, so its removal is gated as a loss.
+    let (served_now, now_source, host_unknown) = match live_served(&target, cli.timeout).await {
+        Some(live) => (live, "the running host", false),
+        None => {
+            // This file's own routes, with their *real* identity read from
+            // the document — not placeholders. A partial removal leaves some
+            // of these models in place, and they must compare equal to
+            // themselves afterwards or they would be reported as a handoff
+            // to their own file.
+            let mut conservative = structural_now;
+            let provider = doc
+                .provider_type()
+                .map(providers::catalog::canonical_provider)
+                .unwrap_or_default();
+            let field = |key: &str| doc.value.get(key).and_then(toml::Value::as_str);
+            let endpoint = providers::config::endpoint_digest(field("region"), field("base_url"));
+            let dim_of = |name: &str| -> u32 {
+                doc.value
+                    .get("models")
+                    .and_then(toml::Value::as_array)
+                    .and_then(|models| {
+                        models
+                            .iter()
+                            .find(|m| m.get("name").and_then(toml::Value::as_str) == Some(name))
+                    })
+                    .and_then(|m| m.get("dim"))
+                    .and_then(toml::Value::as_integer)
+                    .and_then(|d| u32::try_from(d).ok())
+                    .unwrap_or_default()
+            };
+            for (name, id) in &all_models {
+                conservative
+                    .entry(name.clone())
+                    .or_insert_with(|| providers::config::ServedBy {
+                        provider: provider.clone(),
+                        file: args.name.clone(),
+                        endpoint: endpoint.clone(),
+                        model_id: id.clone(),
+                        dim: dim_of(name),
+                    });
+            }
+            (
+                conservative,
+                "the files on disk — no running host answered, so every route this file \
+                 declares is treated as live",
+                true,
+            )
+        }
     };
     let prospective_body = if remove_file {
         None
@@ -124,12 +172,17 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     // treats the mirror case. `--path` is the documented way to administer
     // remote nodes; it must not be the one mode where `--yes` takes a route
     // away unasked.
-    let unknown_databases = if scanned {
-        unknown_databases
-    } else if truly_going_away.is_empty() {
+    let unknown_databases = if truly_going_away.is_empty() {
         Vec::new()
-    } else {
+    } else if !scanned {
         vec!["every database served by this node (not inspectable from --path)".to_string()]
+    } else if host_unknown {
+        let mut unknown = unknown_databases;
+        unknown
+            .push("whether the running host serves these routes (it did not answer)".to_string());
+        unknown
+    } else {
+        unknown_databases
     };
     let mut plan = Plan::new("provider rm", target.label());
     crate::commands::model::push_in_use_steps(
@@ -366,6 +419,8 @@ async fn live_served(
                         provider: m.provider?,
                         file: m.provider_file.unwrap_or_default(),
                         endpoint: m.provider_endpoint.unwrap_or_default(),
+                        model_id: m.provider_model_id.unwrap_or_default(),
+                        dim: m.target_dim.unwrap_or_default(),
                     },
                 ))
             })
@@ -414,6 +469,8 @@ mod tests {
             provider: provider.into(),
             file: file.into(),
             endpoint: "same".into(),
+            model_id: "m".into(),
+            dim: 4,
         }
     }
 
@@ -496,9 +553,30 @@ mod tests {
                 provider: "openai".into(),
                 file: "alpha".into(),
                 endpoint: "elsewhere".into(),
+                model_id: "m".into(),
+                dim: 4,
             },
         );
         let diff = diff_routes(&now, &moved);
         assert_eq!(diff.activated.len(), 1);
+
+        // Same everything except the upstream model, or the width: a
+        // different vector space under the same name, which nothing
+        // downstream can detect. A "repair" that swaps one in must be gated.
+        for (model_id, dim) in [("m-v2", 4u32), ("m", 8u32)] {
+            let mut swapped = std::collections::BTreeMap::new();
+            swapped.insert(
+                "shared".to_string(),
+                ServedBy {
+                    provider: "openai".into(),
+                    file: "alpha".into(),
+                    endpoint: "same".into(),
+                    model_id: model_id.into(),
+                    dim,
+                },
+            );
+            let diff = diff_routes(&now, &swapped);
+            assert_eq!(diff.activated.len(), 1, "{model_id}/{dim} must be a change");
+        }
     }
 }

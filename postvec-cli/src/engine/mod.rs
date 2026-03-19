@@ -55,6 +55,8 @@ struct HubModel {
     provider_file: Option<String>,
     #[serde(default)]
     provider_endpoint: Option<String>,
+    #[serde(default)]
+    provider_model_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -70,6 +72,7 @@ struct HubParams {
     model_type: Option<String>,
     source_model: Option<String>,
     target_model: Option<String>,
+    target_dim: Option<u32>,
 }
 
 impl HubModel {
@@ -127,6 +130,11 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
             provider: model.provider,
             provider_file: model.provider_file,
             provider_endpoint: model.provider_endpoint,
+            provider_model_id: model.provider_model_id,
+            target_dim: model
+                .configuration
+                .as_ref()
+                .and_then(|c| c.params.target_dim),
             name: model.name,
         })
         .collect();

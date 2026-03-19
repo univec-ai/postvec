@@ -427,6 +427,13 @@ pub struct InventoryModel {
     /// "unchanged".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_endpoint: Option<String>,
+    /// The id the provider's API is asked for, and the declared dimension.
+    /// Both are part of route identity: the same public name served by a
+    /// different model id, or at a different width, is a different route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_dim: Option<u32>,
 }
 
 /// A parsed ninference `/config` envelope.
@@ -857,6 +864,8 @@ mod tests {
                     provider: None,
                     provider_file: None,
                     provider_endpoint: None,
+                    provider_model_id: None,
+                    target_dim: None,
                 },
                 InventoryModel {
                     name: "b".into(),
@@ -865,6 +874,8 @@ mod tests {
                     provider: None,
                     provider_file: None,
                     provider_endpoint: None,
+                    provider_model_id: None,
+                    target_dim: None,
                 },
             ],
         };
@@ -935,6 +946,8 @@ mod tests {
                             provider: None,
                             provider_file: None,
                             provider_endpoint: None,
+                            provider_model_id: None,
+                            target_dim: None,
                         }],
                     }),
                     error: None,
@@ -953,6 +966,8 @@ mod tests {
                             provider: None,
                             provider_file: None,
                             provider_endpoint: None,
+                            provider_model_id: None,
+                            target_dim: None,
                         }],
                     }),
                     error: None,
