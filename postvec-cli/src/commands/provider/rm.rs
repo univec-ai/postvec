@@ -149,7 +149,28 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     let RouteDiff {
         activated,
         lost: truly_going_away,
+        drifted,
     } = diff_routes(&served_now, &served_after);
+    // A same-name change of upstream model or width is not something an
+    // acknowledgement can cover. The privacy acknowledgement says "text goes
+    // to a different recipient from now on"; this says "the vectors already
+    // stored under this name are in a different space from the ones written
+    // next", and nothing migrates them. Refused: the right route is a new
+    // public name and postvec.migrate().
+    if let Some((name, now, after)) = drifted.first() {
+        return Err(CliError::precondition(format!(
+            "removing this would hand {name} to {}.toml, which declares it as {} at {} \
+             dimensions where it is served as {} at {} today ({now_source}); vectors already \
+             stored under {name} would no longer match the ones written next, and no \
+             acknowledgement migrates them",
+            after.file, after.model_id, after.dim, now.model_id, now.dim
+        ))
+        .with_fix(format!(
+            "give that model its own public name in {}.toml and postvec.migrate() the \
+             columns to it, or remove it from {}.toml first",
+            after.file, after.file
+        )));
+    }
     // `going_away` still drives the journal: it is what this file declared.
     output.note(&format!("current provider routes read from {now_source}"));
 
@@ -172,6 +193,19 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     // treats the mirror case. `--path` is the documented way to administer
     // remote nodes; it must not be the one mode where `--yes` takes a route
     // away unasked.
+    // No host answered and the whole file goes: the unreachable host may be
+    // serving routes from an *earlier* version of this file that the document
+    // no longer declares — after an edit, or with its models section gone
+    // altogether. Nothing on disk can recover them, so the file itself is the
+    // route whose loss is acknowledged. With routes still declared they are
+    // already in the lost set and carry the same acknowledgement.
+    let mut truly_going_away = truly_going_away;
+    if host_unknown && remove_file && truly_going_away.is_empty() {
+        truly_going_away.push(format!(
+            "{}.toml (every route the unreachable host may still serve from it)",
+            args.name
+        ));
+    }
     let unknown_databases = if truly_going_away.is_empty() {
         Vec::new()
     } else if !scanned {
@@ -370,6 +404,25 @@ struct RouteDiff {
     /// route. Computed from the served sets, never from a file's contents —
     /// a name the host is not serving loses nothing when it goes.
     lost: Vec<String>,
+    /// Names served on both sides under a **different upstream model or
+    /// width** — `(name, now, after)`. Not an activation: the text may well
+    /// go to the same company, but the vectors already stored under the name
+    /// stop matching the ones written next, which no acknowledgement can
+    /// repair. `rm` refuses these.
+    drifted: Vec<(
+        String,
+        providers::config::ServedBy,
+        providers::config::ServedBy,
+    )>,
+}
+
+/// Same name, different vector space. Both identities have to be known for
+/// this to be stated — a snapshot that carries no model id or width (there is
+/// none such today; the gateway always emits both) falls back to the gated
+/// activation path, never to silence.
+fn is_drift(now: &providers::config::ServedBy, after: &providers::config::ServedBy) -> bool {
+    let known = |by: &providers::config::ServedBy| !by.model_id.is_empty() && by.dim != 0;
+    known(now) && known(after) && (now.model_id != after.model_id || now.dim != after.dim)
 }
 
 /// Name equality is not route equality. A previous version compared names
@@ -385,9 +438,19 @@ fn diff_routes(
     after: &std::collections::BTreeMap<String, providers::config::ServedBy>,
 ) -> RouteDiff {
     RouteDiff {
+        drifted: after
+            .iter()
+            .filter_map(|(name, by)| {
+                let before = now.get(name)?;
+                is_drift(before, by).then(|| (name.clone(), before.clone(), by.clone()))
+            })
+            .collect(),
         activated: after
             .iter()
-            .filter(|(name, by)| now.get(*name) != Some(by))
+            .filter(|(name, by)| match now.get(*name) {
+                Some(before) => before != *by && !is_drift(before, by),
+                None => true,
+            })
             .map(|(name, by)| (name.clone(), by.clone()))
             .collect(),
         lost: now
@@ -562,7 +625,8 @@ mod tests {
 
         // Same everything except the upstream model, or the width: a
         // different vector space under the same name, which nothing
-        // downstream can detect. A "repair" that swaps one in must be gated.
+        // downstream can detect and no acknowledgement can migrate. Not an
+        // activation — drift, which `rm` refuses outright.
         for (model_id, dim) in [("m-v2", 4u32), ("m", 8u32)] {
             let mut swapped = std::collections::BTreeMap::new();
             swapped.insert(
@@ -576,7 +640,43 @@ mod tests {
                 },
             );
             let diff = diff_routes(&now, &swapped);
-            assert_eq!(diff.activated.len(), 1, "{model_id}/{dim} must be a change");
+            assert!(
+                diff.activated.is_empty(),
+                "{model_id}/{dim} is not a handoff"
+            );
+            assert!(
+                diff.lost.is_empty(),
+                "{model_id}/{dim}: the name is still served"
+            );
+            assert_eq!(diff.drifted.len(), 1, "{model_id}/{dim} must be drift");
+            assert_eq!(diff.drifted[0].1.model_id, "m");
+            assert_eq!(diff.drifted[0].2.dim, dim);
         }
+        // And the handoffs above are handoffs, not drift: the space is the
+        // same, only the recipient changed.
+        assert!(diff_routes(&now, &after).drifted.is_empty());
+        assert!(diff_routes(&now, &moved).drifted.is_empty());
+    }
+
+    /// A same-name change of *both* recipient and space is drift first: the
+    /// refusal must win over the acknowledgeable handoff.
+    #[test]
+    fn drift_wins_over_a_handoff() {
+        let mut now = std::collections::BTreeMap::new();
+        now.insert("shared".to_string(), by("openai", "alpha"));
+        let mut after = std::collections::BTreeMap::new();
+        after.insert(
+            "shared".to_string(),
+            ServedBy {
+                provider: "mistral".into(),
+                file: "beta".into(),
+                endpoint: "other".into(),
+                model_id: "mistral-embed".into(),
+                dim: 1024,
+            },
+        );
+        let diff = diff_routes(&now, &after);
+        assert_eq!(diff.drifted.len(), 1);
+        assert!(diff.activated.is_empty());
     }
 }

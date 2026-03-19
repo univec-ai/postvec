@@ -1922,10 +1922,12 @@ fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
         "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
          provider_model_id = \"a\"\ndim = 4\n",
     );
+    // Same upstream model id and width: the same vector space from a
+    // different recipient — a handoff, which an acknowledgement covers.
     write(
         "beta",
         "provider = \"mistral\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
-         provider_model_id = \"b\"\ndim = 4\n\n[[models]]\nname = \"beta-only\"\n\
+         provider_model_id = \"a\"\ndim = 4\n\n[[models]]\nname = \"beta-only\"\n\
          provider_model_id = \"c\"\ndim = 4\n",
     );
 
@@ -1960,6 +1962,107 @@ fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
     let output = rm(&["--acknowledge-in-use"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     assert!(!providers_d.join("alpha.toml").exists());
+}
+
+/// The surviving claimant declares the same public name as a *different*
+/// upstream model, or at a different width. That is not a handoff an
+/// acknowledgement can cover: the vectors already stored under the name stop
+/// matching the ones written next, and nothing migrates them. Refused with
+/// every flag, and the fix points at a new public name plus migrate().
+#[test]
+fn a_repair_that_changes_the_vector_space_under_a_name_is_refused() {
+    for (model_id, dim) in [("b", 4u32), ("a", 8u32)] {
+        let root = provider_root();
+        let root_arg = root.path().to_str().unwrap();
+        let providers_d = root.path().join("providers.d");
+        std::fs::create_dir_all(&providers_d).expect("mkdir");
+        set_mode(&providers_d, 0o700);
+        let write = |stem: &str, body: &str| {
+            let path = providers_d.join(format!("{stem}.toml"));
+            std::fs::write(&path, body).expect("write");
+            set_mode(&path, 0o600);
+        };
+        write(
+            "alpha",
+            "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
+             provider_model_id = \"a\"\ndim = 4\n",
+        );
+        write(
+            "beta",
+            &format!(
+                "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
+                 provider_model_id = \"{model_id}\"\ndim = {dim}\n"
+            ),
+        );
+        let output = Command::new(binary())
+            .args([
+                "provider",
+                "rm",
+                "alpha",
+                "--path",
+                root_arg,
+                "--yes",
+                "--acknowledge-in-use",
+            ])
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run postvec");
+        assert_ne!(code(&output), 0, "{model_id}/{dim}: {}", stdout(&output));
+        let text = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            text.contains("shared-name") && text.contains("migrate()"),
+            "{model_id}/{dim}: {text}"
+        );
+        assert!(
+            providers_d.join("alpha.toml").exists(),
+            "{model_id}/{dim}: no flag removes a file whose removal changes a vector space"
+        );
+    }
+}
+
+/// No host answers and the file no longer declares any model — edited since
+/// the host loaded it, or its models section gone. The unreachable host may
+/// still be serving routes from the version it read, and nothing on disk can
+/// name them. The file itself is then the route whose loss is acknowledged:
+/// `--yes` alone must not remove it.
+#[test]
+fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgement() {
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+    let path = providers_d.join("bare.toml");
+    std::fs::write(
+        &path,
+        "provider = \"openai\"\napi_key = \"inline-test-key\"\n",
+    )
+    .expect("write");
+    set_mode(&path, 0o600);
+
+    let rm = |extra: &[&str]| {
+        let mut args = vec!["provider", "rm", "bare", "--path", root_arg, "--yes"];
+        args.extend_from_slice(extra);
+        Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run postvec")
+    };
+    let output = rm(&[]);
+    assert_ne!(code(&output), 0, "{}", stdout(&output));
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(
+        text.contains("bare.toml") && text.contains("--acknowledge-in-use"),
+        "{text}"
+    );
+    assert!(path.exists(), "nothing removed without the acknowledgement");
+
+    let output = rm(&["--acknowledge-in-use"]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(!path.exists());
 }
 
 /// Removing a file can *repair* a directory the host refuses as a whole — and
