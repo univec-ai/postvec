@@ -1922,11 +1922,12 @@ fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
         "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
          provider_model_id = \"a\"\ndim = 4\n",
     );
-    // Same upstream model id and width: the same vector space from a
-    // different recipient — a handoff, which an acknowledgement covers.
+    // Same connector, endpoint, upstream model id and width — only the file
+    // (and so possibly the account) differs: the same vector space from a
+    // different recipient, a handoff an acknowledgement covers.
     write(
         "beta",
-        "provider = \"mistral\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
+        "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
          provider_model_id = \"a\"\ndim = 4\n\n[[models]]\nname = \"beta-only\"\n\
          provider_model_id = \"c\"\ndim = 4\n",
     );
@@ -1964,14 +1965,25 @@ fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
     assert!(!providers_d.join("alpha.toml").exists());
 }
 
-/// The surviving claimant declares the same public name as a *different*
-/// upstream model, or at a different width. That is not a handoff an
-/// acknowledgement can cover: the vectors already stored under the name stop
-/// matching the ones written next, and nothing migrates them. Refused with
-/// every flag, and the fix points at a new public name plus migrate().
+/// The surviving claimant declares the same public name with a different
+/// semantic identity — upstream model, width, connector or endpoint. That is
+/// not a handoff an acknowledgement can cover: the vectors already stored
+/// under the name can no longer be assumed to match the ones written next,
+/// and nothing migrates them. Refused with every flag, and the fix points at
+/// a new public name plus migrate().
 #[test]
 fn a_repair_that_changes_the_vector_space_under_a_name_is_refused() {
-    for (model_id, dim) in [("b", 4u32), ("a", 8u32)] {
+    for (provider, base_url, model_id, dim) in [
+        ("openai", "", "b", 4u32),
+        ("openai", "", "a", 8u32),
+        ("mistral", "", "a", 4u32),
+        (
+            "openai",
+            "base_url = \"https://proxy.example.net/v1\"\n",
+            "a",
+            4u32,
+        ),
+    ] {
         let root = provider_root();
         let root_arg = root.path().to_str().unwrap();
         let providers_d = root.path().join("providers.d");
@@ -1990,8 +2002,8 @@ fn a_repair_that_changes_the_vector_space_under_a_name_is_refused() {
         write(
             "beta",
             &format!(
-                "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
-                 provider_model_id = \"{model_id}\"\ndim = {dim}\n"
+                "provider = \"{provider}\"\napi_key = \"inline-test-key\"\n{base_url}\n[[models]]\n\
+                 name = \"shared-name\"\nprovider_model_id = \"{model_id}\"\ndim = {dim}\n"
             ),
         );
         let output = Command::new(binary())
@@ -2008,15 +2020,20 @@ fn a_repair_that_changes_the_vector_space_under_a_name_is_refused() {
             .env("NO_COLOR", "1")
             .output()
             .expect("run postvec");
-        assert_ne!(code(&output), 0, "{model_id}/{dim}: {}", stdout(&output));
+        assert_ne!(
+            code(&output),
+            0,
+            "{provider}/{model_id}/{dim}: {}",
+            stdout(&output)
+        );
         let text = format!("{}{}", stdout(&output), stderr(&output));
         assert!(
             text.contains("shared-name") && text.contains("migrate()"),
-            "{model_id}/{dim}: {text}"
+            "{provider}/{model_id}/{dim}: {text}"
         );
         assert!(
             providers_d.join("alpha.toml").exists(),
-            "{model_id}/{dim}: no flag removes a file whose removal changes a vector space"
+            "{provider}/{model_id}/{dim}: no flag removes a file whose removal changes a vector space"
         );
     }
 }
@@ -2058,7 +2075,42 @@ fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgem
         text.contains("bare.toml") && text.contains("--acknowledge-in-use"),
         "{text}"
     );
+    assert!(
+        text.contains("every route the unreachable host may still serve"),
+        "{text}"
+    );
     assert!(path.exists(), "nothing removed without the acknowledgement");
+
+    // Interactively the operator types the route names back, so the
+    // synthetic one must be a single token: the file name, nothing more.
+    let output = Command::new(binary())
+        .args([
+            "provider",
+            "rm",
+            "bare",
+            "--path",
+            root_arg,
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .env_remove("POSTVEC_DATABASE_URL")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run postvec");
+    let envelope: serde_json::Value =
+        serde_json::from_str(stdout(&output).trim()).expect("one JSON object");
+    let acknowledged: Vec<&str> = envelope["plan"]["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .filter_map(|step| step["model"].as_str())
+        .collect();
+    assert_eq!(
+        acknowledged,
+        vec!["bare.toml"],
+        "the acknowledged route is exactly the file name: {envelope}"
+    );
 
     let output = rm(&["--acknowledge-in-use"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
