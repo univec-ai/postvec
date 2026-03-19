@@ -129,6 +129,18 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
             )
         }
     };
+    // `served_now` is an *upper* bound on what is served today: right for
+    // losses (anything possibly live is possibly lost) and for drift, wrong
+    // for activations — a sibling the files describe as served may not be,
+    // on a host that loaded before it existed or refused its secret, and the
+    // reload this command asks for would then bring it online ungated. The
+    // lower bound is what the host *said* it serves; with no host that is
+    // nothing, and everything served afterwards is treated as starting.
+    let definitely_live_now = if host_unknown {
+        std::collections::BTreeMap::new()
+    } else {
+        served_now.clone()
+    };
     let prospective_body = if remove_file {
         None
     } else {
@@ -150,7 +162,32 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         activated,
         lost: truly_going_away,
         drifted,
-    } = diff_routes(&served_now, &served_after);
+    } = diff_routes(&served_now, &definitely_live_now, &served_after);
+    // With no host, a same-name handoff out of this file cannot be approved
+    // from disk identity alone: the running host may serve the name from an
+    // older snapshot whose identity is not what this file says now. Refused
+    // on the same terms as drift — compatibility is not established, and an
+    // acknowledgement does not establish it.
+    if host_unknown {
+        if let Some((name, by)) = served_after
+            .iter()
+            .find(|(name, by)| going_away.contains(name) && by.file != args.name)
+        {
+            return Err(CliError::precondition(format!(
+                "removing this would hand {name} to {}.toml, and no running host answered: \
+                 whether the vectors the host writes under {name} today are in the same \
+                 space as {} {} at {} dimensions (endpoint {}) cannot be established from the \
+                 files, and no acknowledgement establishes it",
+                by.file, by.provider, by.model_id, by.dim, by.endpoint
+            ))
+            .with_fix(format!(
+                "run this where the serving host answers (its loopback admin listener), or \
+                 give that model its own public name in {}.toml and postvec.migrate() the \
+                 columns to it",
+                by.file
+            )));
+        }
+    }
     // A same-name change of upstream model or width is not something an
     // acknowledgement can cover. The privacy acknowledgement says "text goes
     // to a different recipient from now on"; this says "the vectors already
@@ -259,6 +296,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         // about where text goes. The file is named alongside so the operator
         // knows which one to edit.
         let provider = match served_now.get(name) {
+            Some(from) if from == by => format!(
+                "{} (file {}) — already configured; whether the host serves it today is \
+                 unknown (it did not answer), so it is treated as starting",
+                by.provider, by.file
+            ),
             Some(from) => format!(
                 "{} (file {}) — handed over from {} (file {}); if the new file does not load, \
                  these columns lose their route instead",
@@ -455,27 +497,38 @@ fn is_drift(now: &providers::config::ServedBy, after: &providers::config::Served
 /// Treating any change of server as an activation covers both: the operator
 /// is told the name is being handed to B, and if B does not load, that
 /// warning is the closest thing to the truth this process can state.
+///
+/// Two bounds on "now": `possibly_now` (everything that may be served — the
+/// live snapshot, or the conservative view when no host answered) decides
+/// losses and drift; `definitely_now` (only what a host confirmed — empty
+/// without one) decides activations. With a host the two are the same map.
 fn diff_routes(
-    now: &std::collections::BTreeMap<String, providers::config::ServedBy>,
+    possibly_now: &std::collections::BTreeMap<String, providers::config::ServedBy>,
+    definitely_now: &std::collections::BTreeMap<String, providers::config::ServedBy>,
     after: &std::collections::BTreeMap<String, providers::config::ServedBy>,
 ) -> RouteDiff {
     RouteDiff {
         drifted: after
             .iter()
             .filter_map(|(name, by)| {
-                let before = now.get(name)?;
+                let before = possibly_now.get(name)?;
                 is_drift(before, by).then(|| (name.clone(), before.clone(), by.clone()))
             })
             .collect(),
         activated: after
             .iter()
-            .filter(|(name, by)| match now.get(*name) {
-                Some(before) => before != *by && !is_drift(before, by),
+            .filter(|(name, by)| match definitely_now.get(*name) {
+                Some(before) => before != *by,
                 None => true,
+            })
+            .filter(|(name, by)| {
+                possibly_now
+                    .get(*name)
+                    .is_none_or(|before| !is_drift(before, by))
             })
             .map(|(name, by)| (name.clone(), by.clone()))
             .collect(),
-        lost: now
+        lost: possibly_now
             .keys()
             .filter(|name| !after.contains_key(*name))
             .cloned()
@@ -574,7 +627,7 @@ mod tests {
         // is served, before or after.
         let structural_after = std::collections::BTreeMap::new();
 
-        let diff = diff_routes(&live_now, &structural_after);
+        let diff = diff_routes(&live_now, &live_now, &structural_after);
         assert_eq!(diff.lost, vec!["openai-m0".to_string()]);
         assert!(diff.activated.is_empty());
     }
@@ -588,7 +641,7 @@ mod tests {
         after.insert("shared-name".to_string(), by("mistral", "beta"));
         after.insert("beta-only".to_string(), by("mistral", "beta"));
 
-        let diff = diff_routes(&live_now, &after);
+        let diff = diff_routes(&live_now, &live_now, &after);
         assert!(diff.lost.is_empty());
         assert_eq!(diff.activated.len(), 2);
         assert!(diff
@@ -604,7 +657,7 @@ mod tests {
         let mut now = std::collections::BTreeMap::new();
         now.insert("openai-m0".to_string(), by("openai", "p0"));
         let after = now.clone();
-        let diff = diff_routes(&now, &after);
+        let diff = diff_routes(&now, &now, &after);
         assert!(diff.lost.is_empty() && diff.activated.is_empty());
     }
 
@@ -625,7 +678,7 @@ mod tests {
         // different account.
         let mut after = std::collections::BTreeMap::new();
         after.insert("shared".to_string(), by("openai", "beta"));
-        let diff = diff_routes(&now, &after);
+        let diff = diff_routes(&now, &now, &after);
         assert!(diff.lost.is_empty(), "the name is still served");
         assert_eq!(diff.activated.len(), 1, "…but by someone else");
         assert_eq!(diff.activated[0].1.file, "beta");
@@ -644,7 +697,7 @@ mod tests {
                 dim: 4,
             },
         );
-        let diff = diff_routes(&now, &moved);
+        let diff = diff_routes(&now, &now, &moved);
         assert!(diff.activated.is_empty());
         assert_eq!(diff.drifted.len(), 1, "an endpoint change is drift");
 
@@ -652,7 +705,7 @@ mod tests {
         // establishes nothing across companies — drift.
         let mut other = std::collections::BTreeMap::new();
         other.insert("shared".to_string(), by("mistral", "alpha"));
-        let diff = diff_routes(&now, &other);
+        let diff = diff_routes(&now, &now, &other);
         assert!(diff.activated.is_empty());
         assert_eq!(diff.drifted.len(), 1, "a connector change is drift");
 
@@ -672,7 +725,7 @@ mod tests {
                     dim,
                 },
             );
-            let diff = diff_routes(&now, &swapped);
+            let diff = diff_routes(&now, &now, &swapped);
             assert!(
                 diff.activated.is_empty(),
                 "{model_id}/{dim} is not a handoff"
@@ -685,6 +738,27 @@ mod tests {
             assert_eq!(diff.drifted[0].1.model_id, "m");
             assert_eq!(diff.drifted[0].2.dim, dim);
         }
+    }
+
+    /// No host answered: the upper bound says a sibling is served, the lower
+    /// bound says nothing is. The sibling is not lost (upper bound) and *is*
+    /// an activation (lower bound) — the reload may bring it online.
+    #[test]
+    fn without_a_host_an_unchanged_sibling_is_an_activation_not_a_loss() {
+        let mut possibly = std::collections::BTreeMap::new();
+        possibly.insert("mine".to_string(), by("openai", "alpha"));
+        possibly.insert("sibling".to_string(), by("mistral", "beta"));
+        let definitely = std::collections::BTreeMap::new();
+        let mut after = std::collections::BTreeMap::new();
+        after.insert("sibling".to_string(), by("mistral", "beta"));
+        let diff = diff_routes(&possibly, &definitely, &after);
+        assert_eq!(diff.lost, vec!["mine".to_string()]);
+        assert_eq!(diff.activated.len(), 1);
+        assert_eq!(diff.activated[0].0, "sibling");
+        assert!(diff.drifted.is_empty());
+        // With a host that confirms the sibling, it is neither.
+        let diff = diff_routes(&possibly, &possibly, &after);
+        assert!(diff.activated.is_empty());
     }
 
     /// A same-name change of *both* recipient and space is drift first: the
@@ -704,7 +778,7 @@ mod tests {
                 dim: 1024,
             },
         );
-        let diff = diff_routes(&now, &after);
+        let diff = diff_routes(&now, &now, &after);
         assert_eq!(diff.drifted.len(), 1);
         assert!(diff.activated.is_empty());
     }

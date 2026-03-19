@@ -1898,12 +1898,14 @@ fn an_oversized_connector_file_is_refused_not_truncated() {
     );
 }
 
-/// Removing one claimant of a contested name does not take a route away — it
-/// hands the name, and every other model in the surviving file, to a provider
-/// that was not serving a moment ago. That is a recipient change and gets the
-/// recipient acknowledgement; `--yes` alone must not do it.
+/// Removing one claimant of a contested name hands the name to the surviving
+/// file. With no host to say what is served under that name today, disk
+/// identity alone cannot establish that the survivor writes into the same
+/// space — the host may hold an older snapshot — so this is refused outright,
+/// not acknowledged; the survivor's *other* model is the ordinary activation
+/// and would have taken the recipient acknowledgement.
 #[test]
-fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
+fn removing_a_contested_claimant_without_a_host_is_refused() {
     let root = provider_root();
     let root_arg = root.path().to_str().unwrap();
     let providers_d = root.path().join("providers.d");
@@ -1943,26 +1945,71 @@ fn removing_a_contested_claimant_needs_the_recipient_acknowledgement() {
             .expect("run postvec")
     };
 
-    // --yes alone: refused, and the plan names what would start serving —
-    // including the model that was never contested.
+    for flags in [&[][..], &["--acknowledge-in-use"][..]] {
+        let output = rm(flags);
+        assert_ne!(code(&output), 0, "{flags:?}: {}", stdout(&output));
+        let text = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            text.contains("shared-name") && text.contains("no running host answered"),
+            "{flags:?}: {text}"
+        );
+        assert!(
+            providers_d.join("alpha.toml").exists(),
+            "{flags:?}: no flag approves a handoff the host cannot vouch for"
+        );
+    }
+}
+
+/// No host: the files say a sibling is served, but the host may have loaded
+/// before it existed or refused its secret, and the reload this command asks
+/// for would bring it online. A sibling untouched by the removal is therefore
+/// treated as *starting* — the recipient acknowledgement, with databases
+/// UNKNOWN — and `--yes` alone must not proceed.
+#[test]
+fn without_a_host_an_untouched_sibling_takes_the_recipient_acknowledgement() {
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+    let write = |stem: &str, body: &str| {
+        let path = providers_d.join(format!("{stem}.toml"));
+        std::fs::write(&path, body).expect("write");
+        set_mode(&path, 0o600);
+    };
+    write(
+        "gamma",
+        "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"openai-x\"\n\
+         provider_model_id = \"x\"\ndim = 4\n",
+    );
+    write(
+        "beta",
+        "provider = \"mistral\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"beta-only\"\n\
+         provider_model_id = \"c\"\ndim = 4\n",
+    );
+    let rm = |extra: &[&str]| {
+        let mut args = vec!["provider", "rm", "gamma", "--path", root_arg, "--yes"];
+        args.extend_from_slice(extra);
+        Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run postvec")
+    };
     let output = rm(&[]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
     let text = format!("{}{}", stdout(&output), stderr(&output));
-    assert!(text.contains("shared-name"), "{text}");
     assert!(
-        text.contains("beta-only"),
-        "the surviving file's other model too: {text}"
+        text.contains("beta-only") && text.contains("treated as starting"),
+        "{text}"
     );
-    assert!(text.contains("--acknowledge-in-use"), "{text}");
-    assert!(
-        providers_d.join("alpha.toml").exists(),
-        "nothing removed without the acknowledgement"
-    );
+    assert!(providers_d.join("gamma.toml").exists());
 
-    // With it, the removal proceeds.
     let output = rm(&["--acknowledge-in-use"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
-    assert!(!providers_d.join("alpha.toml").exists());
+    assert!(!providers_d.join("gamma.toml").exists());
+    assert!(providers_d.join("beta.toml").exists());
 }
 
 /// The surviving claimant declares the same public name with a different
