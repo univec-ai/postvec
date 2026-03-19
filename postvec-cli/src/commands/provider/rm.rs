@@ -249,6 +249,28 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     // explanation goes in the UNKNOWN line.
     let mut truly_going_away = truly_going_away;
     let file_is_the_route = host_unknown && remove_file && truly_going_away.is_empty();
+    if file_is_the_route && !served_after.is_empty() {
+        // Nothing on disk names what the host serves from this file, and
+        // something else serves afterwards. One of those unknown routes may
+        // share a public name with a survivor of a different vector identity
+        // — a semantic replacement the loss and privacy acknowledgements
+        // neither state nor prevent. Refused until a host can say what it
+        // serves; with no survivor there is nothing to be replaced by, and
+        // the file-route acknowledgement below is enough.
+        return Err(CliError::precondition(format!(
+            "{}.toml declares no model this command can recover, no running host answered, \
+             and {} other route(s) would be served afterwards: one of the routes the host \
+             still serves from this file may share a public name with one of them under a \
+             different vector identity, and nothing here can tell",
+            args.name,
+            served_after.len()
+        ))
+        .with_fix(
+            "run this where the serving host answers (its loopback admin listener). If that \
+             host is gone for good, remove the file with rm(1) and restart: the new host's \
+             snapshot is then the files, and this command can reason about it again",
+        ));
+    }
     if file_is_the_route {
         truly_going_away.push(format!("{}.toml", args.name));
     }

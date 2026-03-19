@@ -2164,6 +2164,51 @@ fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgem
     assert!(!path.exists());
 }
 
+/// The same bare file beside a sibling that serves afterwards: one of the
+/// routes the unreachable host still serves from the bare file may share a
+/// public name with the sibling's under a different vector identity, which
+/// neither acknowledgement states or prevents. Refused with every flag until
+/// a host answers.
+#[test]
+fn a_bare_file_beside_a_surviving_route_is_refused_without_a_host() {
+    let root = provider_root();
+    let root_arg = root.path().to_str().unwrap();
+    let providers_d = root.path().join("providers.d");
+    std::fs::create_dir_all(&providers_d).expect("mkdir");
+    set_mode(&providers_d, 0o700);
+    let write = |stem: &str, body: &str| {
+        let path = providers_d.join(format!("{stem}.toml"));
+        std::fs::write(&path, body).expect("write");
+        set_mode(&path, 0o600);
+    };
+    write(
+        "bare",
+        "provider = \"openai\"\napi_key = \"inline-test-key\"\n",
+    );
+    write(
+        "beta",
+        "provider = \"mistral\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared\"\n\
+         provider_model_id = \"mistral-embed\"\ndim = 1024\n",
+    );
+    for flags in [&[][..], &["--acknowledge-in-use"][..]] {
+        let mut args = vec!["provider", "rm", "bare", "--path", root_arg, "--yes"];
+        args.extend_from_slice(flags);
+        let output = Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("NO_COLOR", "1")
+            .output()
+            .expect("run postvec");
+        assert_ne!(code(&output), 0, "{flags:?}: {}", stdout(&output));
+        let text = format!("{}{}", stdout(&output), stderr(&output));
+        assert!(
+            text.contains("no running host answered") && text.contains("rm(1)"),
+            "{flags:?}: {text}"
+        );
+        assert!(providers_d.join("bare.toml").exists(), "{flags:?}");
+    }
+}
+
 /// Removing a file can *repair* a directory the host refuses as a whole — and
 /// then every remaining provider comes online at once. That is the largest
 /// recipient change this command can cause, and it must take the recipient
