@@ -48,9 +48,10 @@ check "postvec.control default_version" "default_version = '@CARGO_VERSION@'" \
 # The licence the packages ship, and the metadata that names it. Every crate
 # that is compiled into a shipped artifact must declare it: the extension and
 # CLI (headline), the forked engine and shared (linked into postvec.so in
-# embedded mode), and registry-schema (linked into the CLI).
+# embedded mode), providers (the gateway, linked into postvec.so and
+# postvec-server), and registry-schema (linked into the CLI).
 [[ -f "${REPO_ROOT}/postvec/LICENSE" ]] || { echo "  FAIL  postvec/LICENSE is missing"; fail=1; }
-for manifest in postvec postvec-cli engine shared registry/schema; do
+for manifest in postvec postvec-cli engine shared providers registry/schema; do
     licence="$(grep -E '^license = ' "${REPO_ROOT}/${manifest}/Cargo.toml" | head -1 | cut -d'"' -f2)"
     check "${manifest} license" "PostgreSQL" "${licence}"
 done

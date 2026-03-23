@@ -58,7 +58,7 @@ cp -a "${MODEL_PAYLOAD}/models" "${CONTEXT}/src/payload/"
 # member's manifest, so all members travel, but the extension crate
 # (workspace-excluded) and any build output do not.
 for path in Cargo.toml Cargo.lock proto engine shared \
-            postvec-cli registry postvec-server; do
+            postvec-cli registry providers postvec-server; do
     cp -a "${REPO_ROOT}/${path}" "${CONTEXT}/src/${path}"
 done
 

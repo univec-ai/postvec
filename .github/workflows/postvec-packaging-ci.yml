@@ -31,6 +31,9 @@ on:
       # images contain, and the extension's own CI does not rebuild either.
       - "engine/**"
       - "shared/**"
+      - "providers/**"
+      # The CLI these packages ship links registry-schema.
+      - "registry/**"
       - "proto/**"
       # The builder every job here sets up.
       - ".github/actions/postvec-buildx/**"
@@ -53,6 +56,9 @@ on:
       # images contain, and the extension's own CI does not rebuild either.
       - "engine/**"
       - "shared/**"
+      - "providers/**"
+      # The CLI these packages ship links registry-schema.
+      - "registry/**"
       - "proto/**"
       # The builder every job here sets up.
       - ".github/actions/postvec-buildx/**"
