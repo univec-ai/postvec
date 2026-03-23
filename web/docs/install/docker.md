@@ -111,6 +111,10 @@ owner. With Compose secrets, mount the secret with an explicit `mode: 0400`
 and `uid: "999"` and reference it as `api_key_file`. The image's `_FILE`
 convention covers PostgreSQL's own variables, not this one.
 
+Kubernetes projected secret volumes are symlinks into a `..data` directory
+and are mounted world-readable, so they cannot be referenced as
+`api_key_file`. Use `api_key_env` there.
+
 Format and walkthrough: [external providers](/docs/models/providers).
 
 ## Adding another database

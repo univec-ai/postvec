@@ -29,7 +29,17 @@ dedicated key with a $0 spending limit is the recommended credential. Account de
 
 Yes, per column, with `postvec provider add`. The connector file and the key
 live on the inference side; PostgreSQL holds neither.
-[External providers](/docs/models/providers).
+[External providers](/docs/models/providers) is the walkthrough.
+
+## How do I add OpenAI to an existing cluster?
+
+```bash
+sudo postvec provider add openai --model text-embedding-3-small
+```
+
+Then `enable()` the column with `model => 'openai-text-embedding-3-small'`.
+The call emits a NOTICE that source text will leave the host. Same SQL
+as a local model after that.
 
 ## Can an ada-002 corpus remain unchanged?
 

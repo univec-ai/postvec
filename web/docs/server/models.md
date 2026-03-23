@@ -107,27 +107,32 @@ loaded ones.
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
-     --path /var/lib/postvec-server
+     --path /var/lib/postvec-server \
+     --acknowledge-in-use --yes
 postvec provider ls --path /var/lib/postvec-server
 ```
 
-The key stays in that file, `0600`, in a `0700` directory owned by the account
-the node runs as. New files inherit the root's owner, so a `sudo` run still
-writes files the node can read. Nothing about them reaches PostgreSQL.
+The key stays in that file, `0600`, in a `0700` directory owned by the
+account the node runs as. New files inherit the root's owner, so a `sudo`
+run still writes files the node can read. Nothing about them reaches
+PostgreSQL. `--path` has no cluster to scan, so
+`--acknowledge-in-use` is always required.
 
-Changes apply at the next restart, or immediately through the loopback admin
-port, which is what the `provider` commands try for you when run on the node
-itself:
+Changes apply at the next restart, or immediately through the loopback
+admin port, which is what the `provider` commands try for you when run on
+the node itself:
 
 ```bash
 curl -s -X POST http://127.0.0.1:22223/admin/providers/reload
 ```
 
-If a loaded local model and a provider file claim the same public name, the
-**local model wins**, in `/config` and on the embed path alike.
+If two connector files claim the same public name, neither serves. If a
+loaded local model and a provider file claim the same name, the **local
+model wins**, in `/config` and on the embed path alike.
 
 Format, key sources and the rest: [external
-providers](/docs/models/providers).
+providers](/docs/models/providers), then [connector
+files](/docs/models/providers-file).
 
 ## Related documentation
 

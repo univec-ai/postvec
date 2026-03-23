@@ -1,64 +1,73 @@
 ---
 title: External providers
-description: Serve OpenAI, Gemini, Cohere, Mistral, AWS Bedrock or OpenRouter embeddings without an API key in PostgreSQL.
+description: Bind a column to OpenAI, Gemini, Cohere, Mistral, AWS Bedrock or OpenRouter. The API key stays out of PostgreSQL.
 ---
 
 # External providers
 
-postvec embeds with open-weight models by default. It can also call a hosted
-embedding API for the columns you bind to one. No API key enters PostgreSQL.
+`postvec provider add` points the inference host at a hosted embedding API.
+The key goes in a `0600` file under `providers.d`. PostgreSQL never stores it.
 
-This is not a third mode. `postvec.mode` still selects `embedded` or `grpc`. A
-connector file on the inference side declares which hosted models to serve.
-Those models then appear in `postvec.models` next to local ones, and
-`enable()`, the job queue, retries, `search()` and `migrate()` treat them the
-same way. A column on MiniLM and a column on Gemini coexist in one database.
+Provider models appear in `postvec.models`. After that, `enable()`, `search()`
+and `migrate()` are the same SQL used for a local model.
 
-With no connector file present, nothing changes. Not the model list, not the
-concurrency bound, not a log line.
+`postvec.mode` stays `embedded` or `grpc`. Connector files are extra inventory
+on whichever host already runs inference.
 
-| | Local model | Provider-backed model |
+| | Local model | Provider model |
 |---|---|---|
-| Where inference runs | The launcher, or a `postvec-server` node | The provider's API, called from the launcher or the node |
-| Where source text goes | Nowhere off the host | To the provider, for the columns you bind |
-| Configuration | `postvec model pull` / `activate` | `postvec provider add` |
-| Credential | None | A `providers.d` file. Never PostgreSQL |
-| Name in SQL | `baai-bge-m3` | `openai-text-embedding-3-small` |
+| Inference | The launcher, or a `postvec-server` node | The provider's API, called from that same host |
+| Source text | Stays on the host | Sent to the provider for bound columns |
+| Command | `postvec model pull` / `activate` | `postvec provider add` |
+| SQL name | `baai-bge-m3` | `openai-text-embedding-3-small` |
 
-## Where the key lives
+TOML, names and `doctor` checks: [connector files](/docs/models/providers-file).
 
-- Connector files sit in a `providers.d` directory on the **inference** side.
-  Embedded mode: the database host. Remote mode: each `postvec-server` node,
-  and the database host holds nothing.
-- Files are `0600` in a `0700` directory, owned by the account the inference
-  process runs as. A connector file, or a key file it references, whose mode
-  grants group or other bits is refused by name. Rotate a key that others
-  could read.
-- No credential reaches a GUC, a catalog table, a SQL argument, a log line or
-  an error message. The one new GUC, `postvec.providers_path`, holds a path.
-- A key is never a command-line argument. `postvec provider add` prompts
-  without echo, reads `--key-stdin` or records a file or environment variable
-  to read at serve time. `provider ls` prints the key *source*.
-- The extension never dials a provider. A backend running `search()` reaches
-  the inference host over the loopback gRPC it already uses.
+## Keys
 
-## Add a provider
+| Mode | Directory |
+|---|---|
+| Embedded | `/etc/postvec/providers.d` on the database host |
+| Remote | `$root/providers.d` on each `postvec-server` node |
+
+Files are `0600` in a `0700` directory, owned by the inference process
+account. A wider mode is refused. Rotate a key that others could read.
+
+`postvec.providers_path` holds a path. `provider add` prompts without echo,
+or takes `--api-key-file`, `--api-key-env` or `--key-stdin`. A key is
+refused as a bare argument. `provider ls` prints the source.
+
+A bound column sends its source text to the provider on every insert and
+update.
+
+## 1. Add a provider
+
+Writes `/etc/postvec/providers.d/openai.toml`, probes the key and reloads
+the host:
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small
 postvec provider ls
+sudo postvec doctor --database app
 ```
 
-The key is prompted for without echo. `--api-key-file`, `--api-key-env` and
-`--key-stdin` are the non-interactive forms.
+The probe is one live embed per model (one billed call). `--no-verify`
+skips it. If the host is down, the files are still written and are read
+at the next start.
 
-`provider add` writes `/etc/postvec/providers.d/openai.toml`, verifies the key
-with one live single-input embed per model, and asks the running host to
-reload. The probe settles the vector dimension: measured for a model the
-built-in catalogue does not know, checked against the catalogue for one it
-does. It costs one API call per model; `--no-verify` skips it.
+::::: tip Expected
+```text
+providers.d: /etc/postvec/providers.d
+openai  (openai, key: inline (redacted))
+  openai-text-embedding-3-small                dim 1536   served
+```
+`doctor` exits 0. The name is in `postvec.models`. No restart.
+:::::
 
-Then bind a column, as with any model:
+`NOT served` after a hand-edit: reload or restart. `REFUSES`: the file
+will not load. Fix the reason `ls` prints.
+
+## 2. Bind a column
 
 ```sql
 SELECT postvec.enable('docs', 'body',
@@ -66,164 +75,51 @@ SELECT postvec.enable('docs', 'body',
 -- NOTICE:  postvec: model "openai-text-embedding-3-small" is served by
 --          external provider "openai"; source text from column "body" will
 --          be sent to that provider for embedding
+
+INSERT INTO docs(body) VALUES ('quarterly revenue guidance increased');
+
+SELECT relation, model, dim, pending_jobs, dead_jobs
+  FROM postvec.status();
 ```
 
-No restart and no `CREATE EXTENSION`. If the host was not running, the files
-are still correct and it reads them at its next start.
+`enable()`, `adopt()` and `migrate()` emit that NOTICE for a provider
+model. `migrate(..., strategy => 'reembed')` onto a provider sends every
+existing row.
 
-## The connector file
-
-One TOML file per provider. The file is the complete serving truth: the host
-consults no catalogue at serve time, so a model serves what its descriptor
-says.
-
-```toml
-# /etc/postvec/providers.d/openai.toml
-provider = "openai"      # openai | openrouter | mistral | google | cohere | aws
-enabled  = true          # false parses and serves nothing
-
-api_key_file = "/etc/postvec/keys/openai.key"
-
-base_url       = "https://api.openai.com"  # optional: Azure-style fronts, proxies
-max_concurrent = 4       # outbound requests in flight for this provider
-timeout_ms     = 20000   # per HTTP attempt
-
-[[models]]
-name              = "openai-text-embedding-3-small"  # the name SQL uses
-provider_model_id = "text-embedding-3-small"         # what the API expects
-dim               = 1536   # authoritative; responses are checked against it
-max_batch         = 512    # items per request; the host sub-batches to it
-max_tokens        = 8191   # advertised as sequence_len
-```
-
-Exactly one key source per file. The three are mutually exclusive:
-
-| Field | Use it when | Note |
-|---|---|---|
-| `api_key_file = "/path"` | The default recommendation | The referenced file must itself be `0600`. A trailing newline is trimmed |
-| `api_key_env = "OPENAI_API_KEY"` | Containers, systemd units | Read in the **inference process's** environment. The postmaster's or the unit's, not your shell's |
-| `api_key = "sk-..."` | Last resort | The value sits in the 0600 file |
-
-AWS Bedrock replaces `api_key*` with `region` plus either a Bedrock bearer
-token (`bearer_token`, `bearer_token_file`, `bearer_token_env`) or a static
-SigV4 pair (`access_key_id` and `secret_access_key`, each with its own `_file`
-and `_env` variant). The signer takes static credentials only: no session
-tokens, no instance profile, no IMDS.
-
-Loading rules:
-
-- `*.toml` in the directory, read in lexicographic order. Dot-files skipped.
-- A file that fails to parse, or whose key cannot be resolved, is skipped with
-  a logged error. Every other provider and every local model keeps working.
-- Duplicate model names across files: the first file wins, with a warning.
-- A name that collides with a **loaded local model**: the local model wins, in
-  discovery and on the embed path. Local by default is not negotiable at
-  runtime.
-
-`postvec setup --embedded` creates `/etc/postvec/providers.d` (0700, cluster
-owner), and so does the first `provider add`. The packages do not ship it,
-because only the CLI knows which account owns the cluster. Move it with
-`postvec.providers_path` (POSTMASTER, restart) or
-`setup --embedded --providers-path DIR`.
-
-Nothing deletes that directory for you. `postvec uninstall` reports the
-connector files it found and leaves them.
-
-## Commands
-
-| Command | Result | Network |
-|---|---|---|
-| `provider add TYPE --model ID...` | Write or extend the file, verify, reload the host | One embed per new model, unless `--no-verify` |
-| `provider ls` | Providers, key sources, models, dims and whether the host serves them now | Loopback |
-| `provider test NAME [--model ID]` | The verification probe on demand | One embed per model probed |
-| `provider rm NAME [--model ID]` | Drop one model entry or the whole file, then reload | Loopback |
-
-Target resolution follows the `model` family:
-
-| Target | Behaviour |
-|---|---|
-| `--path DIR` | Filesystem management of `DIR/providers.d`, or of `DIR` itself when it already is one. This is how `postvec-server` nodes are administered |
-| Embedded cluster | Manage `postvec.providers_path`, scan the databases for affected columns, reload the running host |
-| Remote cluster | Refused by name. The files live on the nodes, and the message points at `--path` |
-
-`gemini` is accepted as an alias for `google`, and `amazon` for `aws`. The
-file always records the canonical name.
-
-`postvec doctor` gains a `provider.*` family, all read-only:
-
-| Check | Reports |
-|---|---|
-| `provider.directory` | The path and file count. "Does not exist" is a **pass**, because that is the zero-config state. A warning when the directory itself is group- or world-readable |
-| `provider.file` | A file that cannot be read or parsed, or whose mode the host will refuse |
-| `provider.key-source` | A referenced key file that is missing or too permissive, or a named variable that is absent |
-| `provider.descriptors` | A model with no positive `dim`, or a public name that breaks the naming rule |
-| `provider.served` | A configured model the running host does not currently serve |
-
-A complaint about an environment variable can be a false alarm. `doctor`
-observes its own environment, and the postmaster's is what matters. The check
-says so.
-
-## Model names
-
-The public name is `provider-model_id`, lowercased, with `/`, `:`, `.` and
-spaces mapped to `-`. These are the ones the CLI can prefill:
-
-| Provider | Model id | Name in SQL | Dim |
-|---|---|---|---:|
-| openai | `text-embedding-3-small` | `openai-text-embedding-3-small` | 1536 |
-| openai | `text-embedding-3-large` | `openai-text-embedding-3-large` | 3072 |
-| openai | `text-embedding-ada-002` | `openai-text-embedding-ada-002` | 1536 |
-| google | `gemini-embedding-001` | `gemini-embedding-001` | 3072 |
-| cohere | `embed-v4.0` | `cohere-embed-v4-0` | 1536 |
-| cohere | `embed-english-v3.0` | `cohere-embed-english-v3-0` | 1024 |
-| cohere | `embed-multilingual-v3.0` | `cohere-embed-multilingual-v3-0` | 1024 |
-| aws | `amazon.titan-embed-text-v2:0` | `aws-titan-embed-text-v2-0` | 1024 |
-| mistral | `mistral-embed` | `mistral-mistral-embed` | 1024 |
-
-Any other id works too. The probe measures the dimension, or `--dim` states
-it. OpenRouter ids are namespaced, so `--model openai/text-embedding-3-large`
-becomes `openrouter-openai-text-embedding-3-large`.
-
-Providers that separate query text from stored text get `search_query` for
-`search()` and `search_document` for worker writes, one-shot `embed()` and
-migration re-embeds. Nothing to configure. Vectors from local models are
-unchanged by this feature.
-
-## Adding a key can change an existing column
-
-:::: warning Read this before adding a provider you already bridge into
-[Route resolution](/docs/guides/bridge) prefers a direct embed over a
-converter. A column bound to a name that was previously **bridge-only** starts
-being embedded directly by the provider the moment the key exists. No SQL
-change, no NOTICE, and source text leaves the host on the next worker cycle.
-
-That is the designed upgrade. It is also a privacy event, so `provider add`
-scans every configured database for columns bound to the names it is about to
-make live, lists them, and requires an explicit acknowledgement. `--yes` does
-not answer it; `--acknowledge-in-use` or the typed interactive answer does.
-::::
-
-A database the command could not inspect is listed as `UNKNOWN` rather than
-assumed clean. Columns whose name a loaded local model also serves are
-excluded, because the local model wins and nothing changes for them.
-
-`provider rm` takes the mirror-image acknowledgement: removing a provider
-takes the route away from those same columns.
-
-## Local and provider models side by side
-
-Routing has always been per model, not per cluster, so both kinds of column
-coexist. A common split is a hosted model where retrieval quality is the
-product, and the bundled local model where it is a convenience:
+::::: tip Expected
+`pending_jobs` returns to 0. `docs.body_semantic` is `vector(1536)`.
+`dead_jobs` is 0.
+:::::
 
 ```sql
--- Support articles: quality matters, text may leave the host.
+SELECT postvec.create_vector_index('docs', 'body');
+
+SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
+```
+
+`search()` embeds the query in the connection backend.
+`postvec.query_timeout_ms` defaults to 2000 ms, which is tight for a
+hosted API:
+
+```sql
+SET postvec.query_timeout_ms = 10000;   -- USERSET
+```
+
+If the embed times out, `postvec.search_degrade_to_fts` (default on)
+returns lexical ranks only. To embed once in the application, call
+[`search_with_vector()`](/docs/guides/search).
+
+Writes use `postvec.embed_timeout_ms` (30 s). Slow providers show up as
+queue lag.
+
+## Two models in one database
+
+Each column names its own model:
+
+```sql
 SELECT postvec.enable('articles', 'body',
                       model => 'openai-text-embedding-3-small');
--- NOTICE:  postvec: model "openai-text-embedding-3-small" is served by
---          external provider "openai"; ...
 
--- Internal notes: stays on the host, no per-token cost.
 SELECT postvec.enable('notes', 'body',
                       model => 'sentence-transformers-all-minilm-l6-v2');
 ```
@@ -232,25 +128,41 @@ SELECT postvec.enable('notes', 'body',
 SELECT relation, model, dim, pending_jobs FROM postvec.status();
 ```
 
-:::: tip Expected
+::::: tip Expected
 ```text
  relation |               model               | dim  | pending_jobs
 ----------+-----------------------------------+------+--------------
  articles | openai-text-embedding-3-small     | 1536 |            0
  notes    | sentence-transformers-all-minilm.. |  384 |            0
 ```
-One worker, one queue, two routes. Each row goes to whichever model its entry
-names, and a provider outage leaves the local column filling normally.
-::::
+One worker. A provider outage leaves `notes` filling. `articles` search
+falls back to FTS while the outage lasts.
+:::::
 
-The reverse also holds: a provider outage does not stop `search()` on a local
-column, and `postvec.search_degrade_to_fts` keeps the provider-backed column
-answering lexically while it lasts.
+## Adding a key can change an existing column
 
-## Adopting a column a provider already embedded
+::::: warning Columns already bound to this name
+[Route resolution](/docs/guides/bridge) prefers a direct embed over a
+converter. A column that was bridging into this space starts sending
+source text to the provider on the next worker cycle. No SQL change, no
+NOTICE.
 
-If a table already holds vectors produced by a hosted model, adopt the column
-and add the key. Live writes resume with no re-embedding of the corpus:
+`provider add` lists those columns and waits for
+`--acknowledge-in-use` (or the typed answer). `--yes` does not cover it.
+:::::
+
+A database the command could not inspect is listed as `UNKNOWN`. Columns
+already served by a loaded local model are omitted: the local model
+keeps the name.
+
+`provider rm` asks the same way when columns would lose the route, or
+when removing one claimant of a contested name would hand the name to
+the other file.
+
+`--path` cannot scan a cluster. The flag is required and databases are
+listed as `UNKNOWN`.
+
+## Adopt existing provider vectors
 
 ```bash
 sudo postvec provider add openai --model text-embedding-ada-002
@@ -262,152 +174,102 @@ SELECT postvec.adopt('docs', 'body',
                      model => 'openai-text-embedding-ada-002');
 ```
 
-`adopt()`'s `model` is an operator assertion. The column's declared dimension
-is the only thing that can contradict it, and nothing can prove which model
-produced the stored bytes. A wrong assertion silently embeds queries into the
-wrong space. [Adopt existing vectors](/docs/guides/adopt) covers the checks.
+`adopt()` does not rewrite stored bytes. `model` is an assertion: a
+wrong name embeds later queries into the wrong space.
+[Adopt](/docs/guides/adopt) lists the checks.
 
-Without the key, the same column is still searchable through [bridge
-search](/docs/guides/bridge): postvec embeds the query locally and converts
-that one vector into the stored space.
+To keep searching without a key, [bridge](/docs/guides/bridge) the query
+into the stored space.
 
-## Moving a column off a provider
-
-To stop sending text to a provider, migrate the column to a local model and
-then remove the connector.
+## Move a column off a provider
 
 ```sql
 SELECT postvec.migrate('docs', 'body',
                        new_model => 'baai-bge-m3') AS migration_id \gset
 
 SELECT state, rows_done, rows_total FROM postvec.migration_status(:migration_id);
--- repeat until state = 'awaiting_finalize'
+-- until state = 'awaiting_finalize'
 
 SELECT postvec.migration_finalize(:migration_id);
 ```
 
-:::: tip Expected
-With a converter installed, the default `convert` strategy translates the
-stored vectors and **the source text is never sent anywhere again**. Without
-one, `strategy => 'reembed'` embeds the current text with the new model, which
-is a local read and a local embed. Either way the column ends on a model the
-host serves itself.
-::::
-
-Then take the key away:
+::::: tip Expected
+`convert` (default) translates stored vectors when a converter is
+installed. Source text is not sent again. Without a converter, use
+`strategy => 'reembed'`.
+:::::
 
 ```bash
 sudo postvec provider rm openai --acknowledge-in-use --yes
 sudo rm /etc/postvec/keys/openai.key
 ```
 
-`provider rm` lists any column still routed to the removed model and requires
-the acknowledgement before it writes. Removing the key file is a separate,
-manual step: nothing in postvec deletes a credential it did not create.
+`provider rm` lists remaining columns first. It does not delete a key
+file it did not create.
 
-[Migrate models](/docs/guides/migrate) covers the lifecycle, the index rebuild
-and the abort path.
+Lifecycle: [migrate](/docs/guides/migrate).
 
-## Remote mode and fleets
+## Remote nodes
 
-Each node reads `root/providers.d` (default
-`/var/lib/postvec-server/providers.d`, moved with `--providers-path` or
-`POSTVEC_SERVER_PROVIDERS_PATH`). Administer each node from the node:
+Each node reads `$root/providers.d` (default
+`/var/lib/postvec-server/providers.d`):
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
-     --path /var/lib/postvec-server
+     --path /var/lib/postvec-server \
+     --acknowledge-in-use --yes
 postvec-server status --fleet
 ```
 
-**Every node must carry the same connector files.** The rule already applies
-to models: postvec round-robins the endpoints it was given, so a provider
-configured on three nodes out of four fails intermittently and looks like a
-flaky network. Provider-backed entries are labelled in the drift report,
-because the fix is a file or a key on that node rather than a model directory.
+`--path` writes files only. `DIR` must exist. New files inherit its
+owner, so `sudo` does not leave root-owned files the node skips.
+`--acknowledge-in-use` is required.
 
-A node picks changes up on restart, or through its loopback admin port
-(`POST 127.0.0.1:22223/admin/providers/reload`), which is what the `provider`
-commands try for you.
+Every node needs the same connector files. Round-robin to a node that
+lacks one fails that request. The fleet drift report labels
+provider-backed names.
 
-## Latency and cost
+A node reloads on restart, or on `POST /admin/providers/reload` at its
+loopback admin port. The `provider` commands try that when they run on
+the node.
 
-`search()` embeds the query inline. Against a provider that is an internet
-round trip, and `postvec.query_timeout_ms` defaults to 2000 ms:
+A remote-mode cluster without `--path` is refused. The message names
+`--path <server-root>`.
 
-```sql
-SET postvec.query_timeout_ms = 10000;   -- USERSET: per session or per role
-```
-
-`postvec.search_degrade_to_fts` (default on) turns a timeout into lexical-only
-results rather than an error. Worth knowing before you conclude that vector
-search stopped working. Applications that already hold a query vector should
-call [`search_with_vector()`](/docs/guides/search) and pay the embedding cost
-once.
-
-Writes are asynchronous and bounded by `postvec.embed_timeout_ms` (30 s), so
-provider latency appears as queue lag, not as failed statements.
-
-Providers bill per token. Two blunt controls: `postvec.max_document_bytes`
-(1 MiB) dead-letters an oversized document rather than paying to embed it, and
-`max_concurrent` in the connector file caps outbound requests per provider,
-which caps the rate at which you can spend.
-
-Provider calls deliberately bypass `postvec.embedded_max_inflight`, the bound
-that caps ONNX memory on the database host, and are limited by
-`max_concurrent` instead. A slow provider call never serializes behind local
-inference. Raising `max_concurrent` after the host started needs a restart for
-the full budget; the models serve either way, and the CLI says so.
-
-## When a provider fails
-
-Provider outcomes map onto the retry taxonomy the queue already implements:
+## Failures
 
 | What happened | Class | Effect |
 |---|---|---|
-| Network error, timeout, HTTP 429 or 5xx | Transient | Queue backoff and retry |
-| HTTP 401 or 403, a bad or revoked key | Config | Retried with backoff, and failover-eligible: another node may hold a valid key |
-| Unknown model id at the provider | Config | Retried, failover-eligible |
-| Input too long | PoisonRow | Batch bisection. The offending row alone goes to `jobs_dead` |
-| Other HTTP 400, or a wrong count or dimension | Permanent | The batch is dead-lettered |
+| Network error, timeout, HTTP 408, 424, 429 or 5xx | Transient | Backoff and retry |
+| HTTP 401 or 403 | Config | Retry. Failover-eligible across nodes |
+| Unknown model id at the provider | Config | Retry, failover-eligible |
+| Empty input, or a NUL | PoisonRow | Caught before the request. That row goes to `jobs_dead` |
+| Other HTTP 4xx, or a wrong count, dimension or index | Permanent | The batch is dead-lettered |
 
-An expired key is an operations fault and postvec treats it as one: rows are
-retried rather than thrown away on the first 401. Config is not infinite,
-though. Like any retryable failure it dead-letters after `postvec.max_retries`
-(default 5), so fix the key and re-drive with
-[`retry_dead()`](/docs/guides/retry). A migration retries Config indefinitely
-instead of failing.
+Config retries until `postvec.max_retries` (default 5), then
+dead-letters. Fix the key and re-drive with
+[`retry_dead()`](/docs/guides/retry). A migration retries Config until
+it succeeds.
 
-A connector file that fails to load never blocks local models and never blanks
-the model list.
+A file that fails to load leaves local models and other providers
+alone.
 
-## Not supported
+## Cost
 
-| | Why |
-|---|---|
-| Provider API keys as GUCs, catalog rows or SQL arguments | The product position. Not a missing feature |
-| AWS session tokens, instance profiles, IMDS, the credential chain | The signer takes static credentials |
-| Vertex AI as a distinct connector, Azure OpenAI beyond `base_url` | Deferred. `base_url` already fronts OpenAI-shaped endpoints |
-| Gemini `taskType`, Cohere int8 and binary embeddings | Deferred |
-| `Retry-After`-aware backoff, per-provider token budgets | Deferred |
-| Reranking providers | A separate roadmap item |
+Providers bill per token. `postvec.max_document_bytes` (1 MiB)
+dead-letters an oversized document. `max_concurrent` in the file caps
+in-flight requests. It is not a spend cap. Set quotas on the provider.
 
-Provider outputs are not covered by the golden-vector suite. Hosted models are
-not reproducible, and pinning them would test the provider rather than
-postvec.
+Provider calls ignore `postvec.embedded_max_inflight`. A slow hosted
+call does not wait behind local ONNX. Raising `max_concurrent` after
+start needs a restart for the full budget. The models serve either way.
+The CLI says so.
 
-## Containers
+## See also
 
-Both images run with no provider configured. To add one, mount a
-`providers.d` or name an environment variable the postmaster already has.
-[Docker](/docs/install/docker#external-providers) has the mount table and the
-permissions a bind mount has to carry.
-
-## Related documentation
-
-- [Search a retired space](/docs/guides/bridge) - route resolution and the bridge
-- [Remote inference](/docs/server/) - providers on a `postvec-server` node
-- [Embedded vs remote](/docs/concepts/modes) - where inference runs
-- [Security](/docs/security) - credentials, grants and worker visibility
-- [GUCs](/docs/reference/gucs) - `providers_path` and the timeouts named here
-- [CLI](/docs/reference/cli) - the `provider` command family
+- [Connector files](/docs/models/providers-file)
+- [Search a retired space](/docs/guides/bridge)
+- [Remote inference](/docs/server/)
+- [Docker](/docs/install/docker#external-providers)
+- [Security](/docs/security)
+- [CLI](/docs/reference/cli)

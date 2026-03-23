@@ -17,6 +17,7 @@ Pick the row that matches the table **as it is now**.
 | Vectors in a retired or provider-only space | [Bridge search](/docs/guides/bridge) | Queries convert into that space. The corpus stays. |
 | Ready to change model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. |
 | Long source documents | [Recursive chunking](/docs/guides/chunking) | A managed 1:N destination stores passage vectors. Search returns documents. |
+| Want OpenAI, Gemini or another hosted API | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key never enters PostgreSQL |
 
 Functions live in the `postvec` schema. Qualify every call:
 `postvec.*`. The extension leaves `search_path` unchanged.
@@ -130,6 +131,7 @@ refresh job; the worker splits it and fans out one embed job per chunk.
 
 | Next | Where |
 |---|---|
+| Bind a column to a hosted API | [External providers](/docs/models/providers) |
 | Restrict by metadata | [Filters](/docs/guides/filters) |
 | Embed title + body together | [Templates](/docs/guides/templates) |
 | Confirm the worker | [Status](/docs/guides/status) / `postvec doctor` |

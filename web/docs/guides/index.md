@@ -6,7 +6,9 @@ description: SQL operations from column registration through search and migratio
 # Usage overview
 
 Registration, search, filters and migration are SQL. The CLI configures
-the cluster and, in embedded mode, the model inventory.
+the cluster and, in embedded mode, the model inventory. A
+[hosted embedding API](/docs/models/providers) is configured with
+`postvec provider add` first; the SQL after that is the same.
 
 If the table already exists, start at [Which SQL call](/docs/guides/starting).
 If you are filling a new table, the block below is the whole first pass.
@@ -59,6 +61,8 @@ Use, in roughly this order:
 
 1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt)
    one that already exists.
+   A [hosted API](/docs/models/providers) is `provider add` then the same
+   `enable()`.
 2. [Search](/docs/guides/search), then [filters](/docs/guides/filters) and
    an [index](/docs/guides/indexes).
 3. [Templates](/docs/guides/templates) if short texts need row context.

@@ -42,6 +42,11 @@ inventories.
 `--model NAME` (repeatable) is an embedded preload allow-list. Omit it
 to scan-load every enabled descriptor.
 
+`--providers-path DIR` moves the [external provider](/docs/models/providers)
+connector directory. Omit it to keep `/etc/postvec/providers.d`. `setup
+--embedded` creates that directory empty (`0700`, cluster owner) if it is
+absent. An empty or missing directory changes nothing.
+
 ## Remote gRPC
 
 Remote mode uses `postvec-server` nodes on the local network. Pick it

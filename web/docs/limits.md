@@ -26,6 +26,9 @@ description: Supported environments and explicit limitations.
 - AWS session tokens, instance profiles and the credential chain for
   [external providers](/docs/models/providers). The signer takes static
   credentials
+- A spend or token budget. `max_concurrent` bounds calls in flight, not money
+- A private or corporate CA for provider TLS. The connectors use rustls
+  with the bundled Mozilla root set
 - Reranking providers and `Retry-After`-aware provider backoff
 
 ## Deliberate product refusals

@@ -49,7 +49,11 @@ applies to them unchanged. There is no `pull` and no `activate` step: the
 connector file is the serving truth.
 
 The credential lives in that file, never in PostgreSQL.
-[External providers](/docs/models/providers).
+[External providers](/docs/models/providers) is the walkthrough;
+[connector files](/docs/models/providers-file) is the format.
+
+Two connector files that claim the same public name serve neither. A name
+a loaded local model already owns stays local.
 
 ## Catalogue channels
 
@@ -107,3 +111,4 @@ other.
 - [Login](/docs/models/login) - private catalogue
 - [Air-gapped](/docs/models/air-gapped)
 - [External providers](/docs/models/providers) - hosted embedding APIs
+- [Connector files](/docs/models/providers-file) - format, names, loading

@@ -91,6 +91,7 @@ export default defineConfig({
           items: [
             { text: "Usage overview", link: "/docs/guides/" },
             { text: "Enable a column", link: "/docs/guides/enable" },
+            { text: "Use a hosted model", link: "/docs/models/providers" },
             { text: "Search", link: "/docs/guides/search" },
             { text: "Filters", link: "/docs/guides/filters" },
             { text: "Indexes", link: "/docs/guides/indexes" },
@@ -120,6 +121,7 @@ export default defineConfig({
             { text: "Login and private catalogue", link: "/docs/models/login" },
             { text: "Air-gapped hosts", link: "/docs/models/air-gapped" },
             { text: "External providers", link: "/docs/models/providers" },
+            { text: "Connector files", link: "/docs/models/providers-file" },
           ],
         },
         {

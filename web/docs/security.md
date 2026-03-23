@@ -31,14 +31,25 @@ process runs as: the database host in embedded mode, each `postvec-server`
 node in remote mode. A connector file, or a key file it references, whose
 mode grants group or other bits is refused by name.
 
-No key reaches a GUC, a catalog table, a SQL argument, a log line or an error
-message. `postvec.providers_path` holds a path. A key is never a
+The directory itself must not be group- or world-writable, and every
+ancestor must be one only root or that same account can rewrite. Anyone
+who can write there can drop in a connector and choose where this host
+sends source text. The serving host refuses those cases outright.
+
+No key reaches a GUC, a catalog table, a SQL argument, a log line or an
+error message. `postvec.providers_path` holds a path. A key is never a
 command-line argument, and `provider ls` prints the key source rather than
 its value.
 
 The extension itself never calls a provider. The outbound HTTPS request is
-made by the inference host, only for models an operator configured, and only
-for columns bound to them.
+made by the inference host, only for models an operator configured, and
+only for columns bound to them.
+
+Loopback gRPC (embedded) and node gRPC (remote) are plaintext and
+unauthenticated. With providers configured, any local OS account that can
+reach the port, or any peer that can reach a node, can spend the provider
+budget without a SQL grant. Restrict the node's gRPC port. Use
+provider-side quotas and billing alerts as the spend control.
 
 ## Worker visibility
 

@@ -115,6 +115,10 @@ In psql, `\gexec` executes `suggested_index_sql`.
 | `reembed` | Embed current source text (renders the template) with the new model. |
 | `auto` | Convert when a route exists, otherwise re-embed. |
 
+`enable()`, `adopt()` and `migrate()` emit a NOTICE when the target is
+[provider-backed](/docs/models/providers). `strategy => 'reembed'` onto a
+provider sends every existing row.
+
 :::: code-group
 
 ```sql [convert]

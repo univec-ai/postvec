@@ -35,7 +35,10 @@ SELECT postvec.enable(
 );
 ```
 
-The function returns the registry identifier.
+The function returns the registry identifier. A
+[provider-backed](/docs/models/providers) model also emits a NOTICE
+naming the provider and the column, because source text will leave the
+host.
 
 ## 3. Wait for the worker
 

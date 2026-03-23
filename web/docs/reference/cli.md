@@ -45,8 +45,8 @@ database session. Read-only model commands do not need it:
 | Need | Commands |
 |---|---|
 | Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm`, `provider add` / `rm` |
-| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` and cluster-targeted `provider add` / `rm` |
-| Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show` |
+| Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` and cluster-targeted `provider add` / `rm` / `test` |
+| Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show`, `provider ls` |
 
 `sudo postvec ...` covers the first two at once: the parent keeps root
 for the filesystem and a child drops to the cluster owner for database
@@ -162,7 +162,8 @@ provider rm NAME [--model ID] [--path DIR] [--acknowledge-in-use]
 
 `TYPE` is `openai`, `openrouter`, `mistral`, `google`, `cohere` or `aws`.
 `gemini` and `amazon` are accepted aliases; the file records the canonical
-name.
+name. `--name STEM` writes `STEM.toml` instead of the type's name: two
+OpenAI-compatible endpoints, two files.
 
 A key is never a command-line value. Without `--api-key-file`,
 `--api-key-env` or `--key-stdin`, an interactive run prompts without echo and
@@ -172,17 +173,29 @@ postmaster or the `postvec-server` unit, not to your shell.
 
 `add` and `test` each make one live embed per model, which the provider
 bills. `--no-verify` skips it, and then `--dim` is required for a model the
-built-in catalogue does not know.
+built-in catalogue does not know. AWS SigV4 files cannot be probed from the
+CLI; use `--no-verify` and confirm with `provider ls` plus a first write.
+The plan is shown before the probe, so declining it costs no API call.
 
 `--path DIR` manages `DIR/providers.d` as files, with no cluster in scope.
-That is how a `postvec-server` node is administered, and it is the only form
-accepted on a remote-mode cluster; without it, such a cluster is refused with
-a message naming the server root.
+`DIR` must already exist, and new files inherit its owner. That is how a
+`postvec-server` node is administered, and it is the only form accepted on
+a remote-mode cluster; without it, such a cluster is refused with a message
+naming the server root. `--path` always requires `--acknowledge-in-use`,
+because there is no cluster to scan.
 
 `--acknowledge-in-use` is required (with `--yes`) when the change affects
 existing columns: on `add`, columns that will start sending source text to
-the provider; on `rm`, columns that lose their embedding route. `--yes` never
-stands in for it.
+the provider; on `rm`, columns that lose their embedding route, or that
+start sending text to a surviving claimant of a contested name. `--yes`
+never stands in for it.
+
+When no host answers a reload on a cluster target, the result is partial
+(exit 3): the files are correct and a restart applies them. On a `--path`
+target the same situation is a note.
+
+Format, loading rules and `doctor` checks:
+[connector files](/docs/models/providers-file).
 
 ## Exit codes
 
