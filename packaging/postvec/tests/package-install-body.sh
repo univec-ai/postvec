@@ -573,7 +573,9 @@ else
     # test must not need an API key or the internet. What it proves is the
     # packaging-shaped half — that the released CLI can create the credential
     # directory the packages deliberately do not ship, with the right mode and
-    # owner, and round-trip a connector file through the shipped binary.
+    # owner, and round-trip a connector file through the shipped binary — and,
+    # since this full cell has a live embedded host, that host and CLI agree
+    # honestly about a key source that cannot resolve.
     step "external providers (no network)"
 
     PROVIDERS_D=/etc/postvec/providers.d
@@ -593,10 +595,18 @@ else
         --model text-embedding-3-small \
         --api-key-env POSTVEC_PACKAGE_TEST_KEY \
         --no-verify --yes >/tmp/provider-add.log 2>&1 || provider_status=$?
-    # 0 = written and the host reloaded; 4 = written, host not reachable. Both
-    # mean the files are correct, which is what this test is about.
-    if [[ "${provider_status}" == 0 || "${provider_status}" == 4 ]]; then
-        ok "postvec provider add wrote a connector file (exit ${provider_status})"
+    # The embedded host is up (asserted just above) and reads the file at
+    # reload — and POSTVEC_PACKAGE_TEST_KEY is deliberately not exported in
+    # the postmaster's environment. The designed outcome is therefore partial
+    # (exit 3): the host fails closed on the unresolvable key source, serves
+    # nothing from the file, and the CLI reports that instead of claiming
+    # success. Exit 0 here would mean the shipped host accepted a key it
+    # cannot resolve.
+    if [[ "${provider_status}" == 3 ]] \
+        && grep -q 'INCOMPLETE: provider file problem reported by the host' /tmp/provider-add.log \
+        && grep -q 'POSTVEC_PACKAGE_TEST_KEY' /tmp/provider-add.log \
+        && grep -q '0 provider(s), 0 model(s) now served' /tmp/provider-add.log; then
+        ok "provider add wrote the file; the host honestly refused the unresolvable test key (exit 3)"
     else
         bad "postvec provider add exited ${provider_status}: $(tail -5 /tmp/provider-add.log)"
     fi
