@@ -10,8 +10,11 @@
 //! — the wire error-code vocabulary the extension already classifies — per
 //! the normative mapping table in docs/external-providers.md §6.4.
 
-use crate::config::{self, LoadOutcome, ModelDescriptor};
-use crate::{new_embedding_backend, EmbeddingBackend, EmbeddingError};
+use crate::config::{self, LoadOutcome, ModelDescriptor, ModelKind};
+use crate::{
+    new_conversion_backend, new_embedding_backend, ConversionBackend, EmbeddingBackend,
+    EmbeddingError,
+};
 use shared::ErrorCode;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -85,21 +88,45 @@ struct ModelEntry {
     /// The configured cap behind `permits` — `available_permits()` shrinks
     /// while embeds are in flight, so budget math must never read it.
     max_concurrent: usize,
-    document: Box<dyn EmbeddingBackend>,
-    /// Present only where purpose changes the request (Cohere); everything
-    /// else serves queries through the document backend.
-    query: Option<Box<dyn EmbeddingBackend>>,
+    /// What this entry can do, per the descriptor's `kind`.
+    backends: Backends,
+    /// The OUTPUT dimension: an embed model's width, a converter's
+    /// target-space width. Every returned vector is validated against it.
     dim: u32,
     max_batch: usize,
     /// The §6.2 nested HubModel descriptor served in `/config`.
     descriptor: serde_json::Value,
 }
 
+/// The kind-specific half of a [`ModelEntry`]. One namespace, one map — a
+/// converter entry passes through every rule an embed entry does (name
+/// collisions, ceilings, the local-name reserve, per-provider permits); only
+/// the call it can serve differs.
+enum Backends {
+    Embed {
+        document: Box<dyn EmbeddingBackend>,
+        /// Present only where purpose changes the request (Cohere, Gemini,
+        /// UniVec); everything else serves queries through the document
+        /// backend.
+        query: Option<Box<dyn EmbeddingBackend>>,
+    },
+    Convert {
+        backend: Box<dyn ConversionBackend>,
+        /// The declared INPUT width. Every input vector is checked against
+        /// it before a paid call is made (`ModelEntry::dim` is the output's).
+        source_dim: u32,
+    },
+}
+
 impl ModelEntry {
-    fn backend(&self, input_type: InputType) -> &dyn EmbeddingBackend {
-        match input_type {
-            InputType::Query => self.query.as_deref().unwrap_or(self.document.as_ref()),
-            InputType::Document => self.document.as_ref(),
+    /// The embedding backend for a purpose — `None` for a converter entry.
+    fn embed_backend(&self, input_type: InputType) -> Option<&dyn EmbeddingBackend> {
+        match &self.backends {
+            Backends::Embed { document, query } => Some(match input_type {
+                InputType::Query => query.as_deref().unwrap_or(document.as_ref()),
+                InputType::Document => document.as_ref(),
+            }),
+            Backends::Convert { .. } => None,
         }
     }
 }
@@ -118,14 +145,32 @@ fn descriptor_json(
     endpoint: &str,
     model: &ModelDescriptor,
 ) -> serde_json::Value {
-    let mut params = serde_json::json!({
-        "model_type": "embed",
-        "target_model": model.name,
-        "target_dim": model.dim,
-    });
-    if let Some(max_tokens) = model.max_tokens {
-        params["sequence_len"] = serde_json::json!(max_tokens);
-    }
+    let params = match model.kind {
+        ModelKind::Embed => {
+            let mut params = serde_json::json!({
+                "model_type": "embed",
+                "target_model": model.name,
+                "target_dim": model.dim,
+            });
+            if let Some(max_tokens) = model.max_tokens {
+                params["sequence_len"] = serde_json::json!(max_tokens);
+            }
+            params
+        }
+        // The exact shape a LOCAL converter's `/config` entry has —
+        // `source_model`/`target_model` in the resolver's (postvec public
+        // name) vocabulary — so `postvec.models` caches this row as an
+        // ordinary `model_type = 'convert'` and `resolve_convert()` selects
+        // it with no special case. The provider-side pair travels only in
+        // the top-level identity fields below.
+        ModelKind::Convert => serde_json::json!({
+            "model_type": "convert",
+            "source_model": model.source_model,
+            "target_model": model.target_model,
+            "source_dim": model.source_dim,
+            "target_dim": model.dim,
+        }),
+    };
     serde_json::json!({
         "name": model.name,
         "status": "provider",
@@ -136,9 +181,12 @@ fn descriptor_json(
         // compare, so without these two a fleet check can only compare
         // *names* — and two nodes serving `openai-text-embedding-3-small`
         // from different files, model ids or dimensions look identical while
-        // round-robin hands a caller vectors from either.
+        // round-robin hands a caller vectors from either. For a converter
+        // the id is the derived ROUTE id (`ModelDescriptor::route_model_id`),
+        // which folds in the provider-side pair, the source dimension and
+        // the postvec-side pair — same drift semantics, one derivation.
         "provider_file": provider_name,
-        "provider_model_id": model.provider_model_id,
+        "provider_model_id": model.route_model_id(),
         // Region and base_url, digested — the rest of "where does this go".
         "provider_endpoint": endpoint,
         "configuration": {
@@ -235,46 +283,79 @@ impl Inner {
 
             let mut entries = Vec::with_capacity(provider.models.len());
             for model in &provider.models {
-                let build = |input_type: &str| {
-                    new_embedding_backend(
-                        &provider.config,
-                        &model.provider_model_id,
-                        model.dim as i32,
-                        input_type,
-                        Some(client.clone()),
-                    )
-                };
-                let document = match build("search_document") {
-                    Ok(backend) => backend,
-                    Err(e) => {
-                        // A factory failure is configuration-shaped (bad
-                        // provider type, missing credential field): it
-                        // affects every model in the file identically, so
-                        // skip the provider as a unit.
-                        errors.push(format!("provider {:?}: {e}", provider.name));
-                        continue 'providers;
+                let backends = match model.kind {
+                    ModelKind::Embed => {
+                        let build = |input_type: &str| {
+                            new_embedding_backend(
+                                &provider.config,
+                                &model.provider_model_id,
+                                model.dim as i32,
+                                input_type,
+                                Some(client.clone()),
+                            )
+                        };
+                        let document = match build("search_document") {
+                            Ok(backend) => backend,
+                            Err(e) => {
+                                // A factory failure is configuration-shaped
+                                // (bad provider type, missing credential
+                                // field): it affects every model in the file
+                                // identically, so skip the provider as a
+                                // unit.
+                                errors.push(format!("provider {:?}: {e}", provider.name));
+                                continue 'providers;
+                            }
+                        };
+                        // Purpose changes the request body for Cohere
+                        // (`input_type`), Gemini (`taskType`) and UniVec
+                        // (`input_type` on the OpenAI-compatible endpoint);
+                        // one backend per purpose keeps it a constructor
+                        // concern (the copied client's shape) instead of a
+                        // per-call trait parameter.
+                        //
+                        // Every purpose-aware connector belongs in this list.
+                        // Adding `taskType` to the Gemini client without
+                        // adding it here meant every Gemini query was still
+                        // embedded as `RETRIEVAL_DOCUMENT` — the parameter
+                        // was built and never reached, which is worse than
+                        // not having it, because the descriptor claims the
+                        // distinction is honoured.
+                        let query =
+                            if matches!(provider_type.as_str(), "cohere" | "google" | "univec") {
+                                match build("search_query") {
+                                    Ok(backend) => Some(backend),
+                                    Err(e) => {
+                                        errors.push(format!("provider {:?}: {e}", provider.name));
+                                        continue 'providers;
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                        Backends::Embed { document, query }
                     }
-                };
-                // Purpose changes the request body for Cohere (`input_type`)
-                // and for Gemini (`taskType`); one backend per purpose keeps
-                // it a constructor concern (the copied client's shape)
-                // instead of a per-call trait parameter.
-                //
-                // Google belongs in this list. Adding `taskType` to the
-                // client without adding it here meant every Gemini query was
-                // still embedded as `RETRIEVAL_DOCUMENT` — the parameter was
-                // built and never reached, which is worse than not having it,
-                // because the descriptor claims the distinction is honoured.
-                let query = if matches!(provider_type.as_str(), "cohere" | "google") {
-                    match build("search_query") {
-                        Ok(backend) => Some(backend),
-                        Err(e) => {
-                            errors.push(format!("provider {:?}: {e}", provider.name));
-                            continue 'providers;
+                    ModelKind::Convert => {
+                        // Refused at load for any non-UniVec connector
+                        // (`validate_converter_for_provider`), so these
+                        // unwraps describe a file the loader accepted.
+                        let backend = match new_conversion_backend(
+                            &provider.config,
+                            model.provider_source_id.as_deref().unwrap_or(""),
+                            &model.provider_model_id,
+                            model.dim,
+                            Some(client.clone()),
+                        ) {
+                            Ok(backend) => backend,
+                            Err(e) => {
+                                errors.push(format!("provider {:?}: {e}", provider.name));
+                                continue 'providers;
+                            }
+                        };
+                        Backends::Convert {
+                            backend,
+                            source_dim: model.source_dim.unwrap_or(0),
                         }
                     }
-                } else {
-                    None
                 };
                 entries.push((
                     model.name.clone(),
@@ -282,8 +363,7 @@ impl Inner {
                         provider_name: provider.name.clone(),
                         permits: permits.clone(),
                         max_concurrent: provider.max_concurrent,
-                        document,
-                        query,
+                        backends,
                         dim: model.dim,
                         max_batch: model.max_batch,
                         descriptor: descriptor_json(
@@ -377,6 +457,18 @@ impl Gateway {
     /// `is_model_ready` — a provider name is never in the engine.
     pub fn owns(&self, model: &str) -> bool {
         self.snapshot().models.contains_key(model)
+    }
+
+    /// Does this gateway serve `model` as a CONVERTER? The hosts' dispatch
+    /// for `ConvertEmbeddings` consults this — a provider-backed *embed*
+    /// model cannot convert, and answering `MODEL_NOT_LOADED` for it (the
+    /// engine's answer for every name it does not hold) keeps the two
+    /// dispatch paths the same shape.
+    pub fn owns_converter(&self, model: &str) -> bool {
+        matches!(
+            self.snapshot().models.get(model).map(|e| &e.backends),
+            Some(Backends::Convert { .. })
+        )
     }
 
     /// True when nothing is configured — hosts use this to keep the
@@ -496,8 +588,17 @@ impl Gateway {
             })?;
 
             let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
-            let embeddings = entry
-                .backend(input_type)
+            let backend = entry.embed_backend(input_type).ok_or_else(|| {
+                // A converter's public name on an EmbedTexts call. Permanent:
+                // the resolver never routes an embed here (`model_type =
+                // 'convert'` rows are excluded from embed resolution), so
+                // this is a caller naming the wrong model, not an outage.
+                GatewayError::new(
+                    ErrorCode::InvalidInput,
+                    format!("{model:?} is a provider-backed converter, not an embedding model"),
+                )
+            })?;
+            let embeddings = backend
                 .embed(&refs, Some(deadline))
                 .await
                 .map_err(|e| map_embedding_error(&entry.provider_name, &e))?;
@@ -557,6 +658,128 @@ impl Gateway {
         Ok(vectors)
     }
 
+    /// Convert `embeddings` with a provider-backed converter. The convert
+    /// sibling of [`Gateway::embed`]: sub-batches by the descriptor's
+    /// `max_batch`, enforces the same per-provider `max_concurrent`
+    /// semaphore (a provider file's budget covers both call kinds), and
+    /// validates count and dimension on every response.
+    ///
+    /// Inputs are validated against the declared `source_dim` — and for
+    /// finiteness — BEFORE any paid call: a wrong-width or non-finite vector
+    /// is a caller error the provider would bill us to refuse.
+    pub async fn convert(
+        &self,
+        model: &str,
+        embeddings: &[Vec<f32>],
+        deadline: Instant,
+    ) -> Result<Vec<Vec<f32>>, GatewayError> {
+        // Snapshot once: a concurrent reload cannot change the world under us.
+        let snapshot = self.snapshot();
+        let entry = snapshot.models.get(model).ok_or_else(|| {
+            GatewayError::new(
+                ErrorCode::ModelNotFound,
+                format!("model {model:?} is not served by any configured provider"),
+            )
+        })?;
+        let Backends::Convert {
+            backend,
+            source_dim,
+        } = &entry.backends
+        else {
+            return Err(GatewayError::new(
+                ErrorCode::InvalidInput,
+                format!("{model:?} is a provider-backed embedding model, not a converter"),
+            ));
+        };
+
+        for (position, vector) in embeddings.iter().enumerate() {
+            if vector.len() as u32 != *source_dim {
+                return Err(GatewayError::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "input {position} has {} components; {model:?} converts from a \
+                         {source_dim}-dimensional space",
+                        vector.len()
+                    ),
+                ));
+            }
+            if vector.iter().any(|component| !component.is_finite()) {
+                return Err(GatewayError::new(
+                    ErrorCode::InvalidInput,
+                    format!("input {position} contains a non-finite component"),
+                ));
+            }
+        }
+
+        let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(embeddings.len());
+        for chunk in embeddings.chunks(entry.max_batch.max(1)) {
+            if Instant::now() >= deadline {
+                return Err(GatewayError::new(
+                    ErrorCode::Timeout,
+                    "deadline exhausted before the provider request",
+                ));
+            }
+            // The per-provider semaphore is the provider path's ONLY
+            // admission gate; waiting for it is bounded by the caller's
+            // deadline like everything else.
+            let _permit = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                entry.permits.clone().acquire_owned(),
+            )
+            .await
+            .map_err(|_| {
+                GatewayError::new(
+                    ErrorCode::Timeout,
+                    format!(
+                        "deadline exhausted waiting for provider {:?} capacity",
+                        entry.provider_name
+                    ),
+                )
+            })?
+            .map_err(|_| {
+                GatewayError::new(ErrorCode::InternalError, "provider semaphore closed")
+            })?;
+
+            let converted = backend
+                .convert(chunk, Some(deadline))
+                .await
+                .map_err(|e| map_embedding_error(&entry.provider_name, &e))?;
+
+            // Response-shape contract (§6.4): systematic count or dimension
+            // mismatch is InvalidInput (Permanent), never InternalError.
+            // Conversion responses carry no per-item index field, so order
+            // IS the alignment contract — count plus the per-vector width
+            // check below is everything the wire offers to assert.
+            if converted.len() != chunk.len() {
+                return Err(GatewayError::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "provider {:?} returned {} vectors for {} inputs",
+                        entry.provider_name,
+                        converted.len(),
+                        chunk.len()
+                    ),
+                ));
+            }
+            for vector in converted {
+                if vector.len() as u32 != entry.dim {
+                    return Err(GatewayError::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "provider {:?} returned a {}-dim vector for {model:?} \
+                             (declared dim {})",
+                            entry.provider_name,
+                            vector.len(),
+                            entry.dim
+                        ),
+                    ));
+                }
+                vectors.push(vector);
+            }
+        }
+        Ok(vectors)
+    }
+
     /// Test hook: the per-provider semaphore behind a served model.
     #[cfg(any(test, feature = "test-util"))]
     pub fn permits_for_test(&self, model: &str) -> Option<Arc<Semaphore>> {
@@ -593,8 +816,12 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
         } => ErrorCode::UpstreamServiceUnavailable,
         // Bad or revoked credential: an ops problem, classified Config
         // extension-side (bounded retry + failover, no dead-lettering).
+        // 402 is here because of UniVec, which answers PAYMENT_REQUIRED when
+        // the key's account is out of credit — the same shape of problem as
+        // a revoked key (fix the account, not the rows), and never a row's
+        // fault.
         EmbeddingError::Api {
-            status: 401 | 403, ..
+            status: 401..=403, ..
         } => ErrorCode::UpstreamAuthFailed,
         // Unknown model id at the provider: Config (retried, failover).
         EmbeddingError::Api { status: 404, .. } => ErrorCode::ModelNotFound,
@@ -1181,5 +1408,279 @@ mod tests {
             report.errors
         );
         assert!(!gateway.owns("openai-text-embedding-3-small"));
+    }
+
+    /// A UniVec file with an embed model and a converter — the fixture the
+    /// convert tests share. `dim` (output) is 2 and `source_dim` is 3, so a
+    /// swapped-axis bug cannot pass both width checks by coincidence.
+    fn univec_toml(base_url: &str) -> String {
+        format!(
+            "provider = \"univec\"\napi_key = \"uv-test\"\nbase_url = \"{base_url}\"\n\
+             max_concurrent = 1\n\n\
+             [[models]]\nname = \"univec-arctic\"\n\
+             provider_model_id = \"snowflake-arctic-embed-l-v2.0\"\ndim = 2\n\n\
+             [[models]]\nname = \"univec-convert-a-to-b\"\nkind = \"convert\"\n\
+             provider_model_id = \"target-space\"\nprovider_source_id = \"source-space\"\n\
+             source_model = \"model-a\"\ntarget_model = \"model-b\"\n\
+             source_dim = 3\ndim = 2\nmax_batch = 2\n"
+        )
+    }
+
+    /// The converter descriptor must be byte-compatible with a LOCAL
+    /// converter's `/config` entry — that is what makes `resolve_convert()`
+    /// select it with no special case — while its top-level identity carries
+    /// the derived route id.
+    #[tokio::test]
+    async fn a_univec_converter_advertises_the_local_convert_shape() {
+        let dir = private_tempdir();
+        write_provider(
+            dir.path(),
+            "univec.toml",
+            &univec_toml("http://127.0.0.1:1"),
+        );
+        let gateway = Gateway::load(dir.path(), &no_local());
+
+        let models = gateway.models();
+        assert_eq!(models.len(), 2, "{models:?}");
+        let convert = models
+            .iter()
+            .find(|m| m["name"] == "univec-convert-a-to-b")
+            .expect("converter descriptor");
+        assert_eq!(convert["status"], "provider");
+        assert_eq!(convert["provider"], "univec");
+        let params = &convert["configuration"]["params"];
+        assert_eq!(params["model_type"], "convert");
+        assert_eq!(params["source_model"], "model-a");
+        assert_eq!(params["target_model"], "model-b");
+        assert_eq!(params["source_dim"], 3);
+        assert_eq!(params["target_dim"], 2);
+        assert!(params.get("sequence_len").is_none());
+        // The route id folds in everything that decides what the route
+        // means; the raw provider ids never stand alone.
+        assert_eq!(
+            convert["provider_model_id"],
+            "source-space->target-space for model-a[3]->model-b"
+        );
+
+        assert!(gateway.owns("univec-convert-a-to-b"));
+        assert!(gateway.owns_converter("univec-convert-a-to-b"));
+        assert!(gateway.owns("univec-arctic"));
+        assert!(!gateway.owns_converter("univec-arctic"));
+    }
+
+    #[tokio::test]
+    async fn converts_with_sub_batching_and_validates_count() {
+        // max_batch 2 over 3 vectors → chunks of 2, 1 → two requests.
+        let response2 = r#"{"success":true,"data":{"embeddings":[[1.0,2.0],[3.0,4.0]],"usage":{"prompt_tokens":0,"total_tokens":0}}}"#;
+        let response1 = r#"{"success":true,"data":{"embeddings":[[9.0,10.0]]}}"#;
+        let m = mock::spawn(vec![
+            (200, response2.to_string()),
+            (200, response1.to_string()),
+        ])
+        .await;
+
+        let dir = private_tempdir();
+        write_provider(dir.path(), "univec.toml", &univec_toml(&m.url));
+        let gateway = Gateway::load(dir.path(), &no_local());
+
+        let inputs = vec![
+            vec![0.1, 0.2, 0.3],
+            vec![0.4, 0.5, 0.6],
+            vec![0.7, 0.8, 0.9],
+        ];
+        let out = gateway
+            .convert("univec-convert-a-to-b", &inputs, far_deadline())
+            .await
+            .expect("convert ok");
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], vec![1.0, 2.0]);
+        assert_eq!(out[2], vec![9.0, 10.0]);
+        assert_eq!(m.request_count(), 2, "sub-batched into two requests");
+        // The provider-side pair travels on the wire; the postvec-side names
+        // do not (they are the resolver's vocabulary, not UniVec's).
+        let body = m.last_request();
+        assert!(body.contains("\"source_model\":\"source-space\""), "{body}");
+        assert!(body.contains("\"target_model\":\"target-space\""), "{body}");
+    }
+
+    /// A wrong-width or non-finite input is a caller error the provider
+    /// would bill us to refuse — no request may be made for it.
+    #[tokio::test]
+    async fn bad_convert_inputs_are_refused_before_any_request() {
+        let m = mock::always(200, r#"{"success":true,"data":{"embeddings":[[1.0,2.0]]}}"#).await;
+        let dir = private_tempdir();
+        write_provider(dir.path(), "univec.toml", &univec_toml(&m.url));
+        let gateway = Gateway::load(dir.path(), &no_local());
+
+        // Two components where the source space has three.
+        let err = gateway
+            .convert("univec-convert-a-to-b", &[vec![0.1, 0.2]], far_deadline())
+            .await
+            .expect_err("wrong width");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        // Correct width, non-finite component.
+        let err = gateway
+            .convert(
+                "univec-convert-a-to-b",
+                &[vec![0.1, f32::NAN, 0.3]],
+                far_deadline(),
+            )
+            .await
+            .expect_err("non-finite");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        assert_eq!(m.request_count(), 0, "no paid call was spent");
+    }
+
+    /// Each call kind refuses the other kind's models, permanently — the
+    /// resolver never routes these, so reaching one is a caller naming the
+    /// wrong model, not an outage to retry.
+    #[tokio::test]
+    async fn each_call_kind_refuses_the_other_kinds_models() {
+        let dir = private_tempdir();
+        write_provider(
+            dir.path(),
+            "univec.toml",
+            &univec_toml("http://127.0.0.1:1"),
+        );
+        let gateway = Gateway::load(dir.path(), &no_local());
+
+        let err = gateway
+            .embed(
+                "univec-convert-a-to-b",
+                &["text".to_string()],
+                InputType::Document,
+                far_deadline(),
+            )
+            .await
+            .expect_err("a converter cannot embed");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        let err = gateway
+            .convert("univec-arctic", &[vec![0.0; 3]], far_deadline())
+            .await
+            .expect_err("an embed model cannot convert");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    /// UniVec is purpose-aware: a query goes out with `input_type`
+    /// "search_query", a document with "search_document" — the same
+    /// build-both-backends rule as Cohere and Gemini, pinned because adding
+    /// the parameter to the client without adding the connector to the
+    /// gateway's query list is exactly how Gemini's version of this broke.
+    #[tokio::test]
+    async fn univec_embeds_queries_and_documents_with_their_purpose() {
+        let m = mock::always(200, r#"{"data":[{"embedding":[1.0,2.0],"index":0}]}"#).await;
+        let dir = private_tempdir();
+        write_provider(dir.path(), "univec.toml", &univec_toml(&m.url));
+        let gateway = Gateway::load(dir.path(), &no_local());
+
+        gateway
+            .embed(
+                "univec-arctic",
+                &["a query".to_string()],
+                InputType::Query,
+                far_deadline(),
+            )
+            .await
+            .expect("query embed");
+        assert!(
+            m.last_request().contains("\"input_type\":\"search_query\""),
+            "{}",
+            m.last_request()
+        );
+
+        gateway
+            .embed(
+                "univec-arctic",
+                &["a document".to_string()],
+                InputType::Document,
+                far_deadline(),
+            )
+            .await
+            .expect("document embed");
+        assert!(
+            m.last_request()
+                .contains("\"input_type\":\"search_document\""),
+            "{}",
+            m.last_request()
+        );
+        // The descriptor's dim rides as `dimensions` (Matryoshka truncation).
+        assert!(
+            m.last_request().contains("\"dimensions\":2"),
+            "{}",
+            m.last_request()
+        );
+    }
+
+    /// UniVec answers 402 when the key's account is out of credit: an ops
+    /// problem exactly like a revoked key — Config extension-side, bounded
+    /// retry and failover, never a dead-lettered row.
+    #[tokio::test]
+    async fn a_402_is_classified_with_the_auth_failures() {
+        let m = mock::always(
+            402,
+            r#"{"success":false,"error":{"message":"API key quota exceeded"}}"#,
+        )
+        .await;
+        let dir = private_tempdir();
+        write_provider(dir.path(), "univec.toml", &univec_toml(&m.url));
+        let gateway = Gateway::load(dir.path(), &no_local());
+
+        let err = gateway
+            .convert("univec-convert-a-to-b", &[vec![0.0; 3]], far_deadline())
+            .await
+            .expect_err("out of credit");
+        assert_eq!(err.code, ErrorCode::UpstreamAuthFailed);
+    }
+
+    /// A 200 whose envelope says `success: false`, and a response with the
+    /// wrong count or width, are permanent for this response — InvalidInput,
+    /// never a transient that burns the retry budget.
+    #[tokio::test]
+    async fn convert_response_shape_violations_are_invalid_input() {
+        // success: false with a data payload anyway.
+        let m = mock::always(
+            200,
+            r#"{"success":false,"data":{"embeddings":[[1.0,2.0]]}}"#,
+        )
+        .await;
+        let dir = private_tempdir();
+        write_provider(dir.path(), "univec.toml", &univec_toml(&m.url));
+        let gateway = Gateway::load(dir.path(), &no_local());
+        let err = gateway
+            .convert("univec-convert-a-to-b", &[vec![0.0; 3]], far_deadline())
+            .await
+            .expect_err("success=false");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        // Two vectors for one input.
+        let m = mock::always(
+            200,
+            r#"{"success":true,"data":{"embeddings":[[1.0,2.0],[3.0,4.0]]}}"#,
+        )
+        .await;
+        write_provider(dir.path(), "univec.toml", &univec_toml(&m.url));
+        let gateway = Gateway::load(dir.path(), &no_local());
+        let err = gateway
+            .convert("univec-convert-a-to-b", &[vec![0.0; 3]], far_deadline())
+            .await
+            .expect_err("count mismatch");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+
+        // Right count, wrong width (three components where dim is 2).
+        let m = mock::always(
+            200,
+            r#"{"success":true,"data":{"embeddings":[[1.0,2.0,3.0]]}}"#,
+        )
+        .await;
+        write_provider(dir.path(), "univec.toml", &univec_toml(&m.url));
+        let gateway = Gateway::load(dir.path(), &no_local());
+        let err = gateway
+            .convert("univec-convert-a-to-b", &[vec![0.0; 3]], far_deadline())
+            .await
+            .expect_err("dim mismatch");
+        assert_eq!(err.code, ErrorCode::InvalidInput);
     }
 }

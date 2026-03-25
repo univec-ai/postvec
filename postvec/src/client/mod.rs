@@ -167,15 +167,6 @@ impl fmt::Display for ModelInfo {
     }
 }
 
-/// Bridge fields for a convert call routed through a `convert-bridge`
-/// executor; `None` for a direct convert model.
-#[derive(Debug, Clone, Default)]
-pub struct ConvertRoute {
-    pub source_model: Option<String>,
-    pub bridge_model: Option<String>,
-    pub target_model: Option<String>,
-}
-
 /// What the texts of an embed call are *for*. Quality-relevant to providers
 /// that distinguish the two (Cohere's `input_type`; Gemini's `taskType` is
 /// deferred), and inert for every other route.
@@ -235,11 +226,14 @@ pub trait InferenceClient: Send + Sync {
         route: &EmbedRoute,
     ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, PvError>> + Send;
 
+    /// Direct conversion under `model`'s own name. postvec plans no other
+    /// kind: the two-hop path through the `convert-bridge` executor was
+    /// removed ahead of that executor's deprecation, so the wire's bridge
+    /// fields are always sent empty.
     fn convert(
         &self,
         vecs: &[Vec<f32>],
         model: &str,
-        route: &ConvertRoute,
     ) -> impl std::future::Future<Output = Result<Vec<Vec<f32>>, PvError>> + Send;
 
     fn list_models(

@@ -4,10 +4,10 @@
 //! `ALTER COLUMN TYPE` (that would rewrite the table under
 //! `ACCESS EXCLUSIVE`).
 //!
-//! 1. `migrate()` pre-flights the convert path (direct -> two-hop bridge
-//!    -> `reembed` fallback per strategy), adds `<vec>_new vector(M)`,
-//!    inserts a `postvec.migrations` row and flips the registry to
-//!    `state='migrating'`.
+//! 1. `migrate()` pre-flights the convert path (a direct convert model —
+//!    local or provider-backed — or the `reembed` fallback per strategy),
+//!    adds `<vec>_new vector(M)`, inserts a `postvec.migrations` row and
+//!    flips the registry to `state='migrating'`.
 //! 2. The background worker's migration driver ([`crate::worker::migrate`])
 //!    batch-converts rows `WHERE <new> IS NULL`, watermark-ordered. Fresh
 //!    writes are routed to the new model/column by the job engine
@@ -20,7 +20,7 @@
 //! 4. `migration_abort()` drops the new column and reverts. The old
 //!    column is never touched before the swap.
 
-use crate::api::embed::{resolve_convert, ConvertResolution};
+use crate::api::embed::resolve_convert;
 use crate::api::registry::{
     assert_owner, build_vector_index, resolve_dim, resolve_relation, validate_choice,
 };
@@ -503,17 +503,16 @@ fn migrate(
         );
     }
 
-    // Pre-flight the convert path: direct convert model -> two-hop
-    // bridge -> reembed fallback, per strategy. This is what prevents
-    // a late BridgePathNotFound after millions of rows are in flight.
+    // Pre-flight the convert path: a direct convert model, or the reembed
+    // fallback, per strategy. (Two-hop chains through the `convert-bridge`
+    // executor were removed ahead of that executor's deprecation.) This is
+    // what prevents a late route failure after millions of rows are in
+    // flight.
     let resolved_via: serde_json::Value = match strategy.as_str() {
         "reembed" => serde_json::json!({ "kind": "reembed" }),
         _ => match resolve_convert(&entry.model, new_model) {
-            Ok(ConvertResolution::Direct(name)) => {
+            Ok(name) => {
                 serde_json::json!({ "kind": "direct", "model": name })
-            }
-            Ok(ConvertResolution::Bridge { executor, bridge }) => {
-                serde_json::json!({ "kind": "bridge", "executor": executor, "bridge": bridge })
             }
             Err(e) => {
                 if strategy == "auto" {
@@ -527,6 +526,21 @@ fn migrate(
             }
         },
     };
+    // The convert twin of the consent NOTICE above: a DIRECT conversion via
+    // a provider-backed converter sends the column's *stored vectors* —
+    // every existing row's — to that provider. Vectors are not source text,
+    // but they are derived from it and they leave the host, so the moment is
+    // announced the same way. (A bridge chain runs inside the local engine,
+    // and reembed's text egress is covered by `notice_external_provider`.)
+    if let Some(converter) = resolved_via["model"].as_str() {
+        if let Some(provider) = crate::api::registry::external_provider_of_converter(converter) {
+            pgrx::notice!(
+                "postvec: conversion route {converter:?} is served by external provider \
+                 {provider:?}; the stored vectors of column {column_name:?} will be sent to \
+                 that provider for conversion"
+            );
+        }
+    }
     let is_reembed = resolved_via["kind"] == "reembed";
 
     let new_column = format!("{}_new", entry.vector_column);

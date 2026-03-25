@@ -1480,9 +1480,7 @@ mod chunking_tests {
 pub mod mock {
     //! An in-process [`InferenceClient`] for tests: deterministic vectors,
     //! optional poison rows, and forced errors — no network.
-    use crate::client::{
-        ConvertRoute, EmbedRoute, InferenceClient, ModelInfo, PvError, RavennaCode,
-    };
+    use crate::client::{EmbedRoute, InferenceClient, ModelInfo, PvError, RavennaCode};
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -1604,12 +1602,7 @@ pub mod mock {
             Ok(out)
         }
 
-        async fn convert(
-            &self,
-            vecs: &[Vec<f32>],
-            _model: &str,
-            _route: &ConvertRoute,
-        ) -> Result<Vec<Vec<f32>>, PvError> {
+        async fn convert(&self, vecs: &[Vec<f32>], _model: &str) -> Result<Vec<Vec<f32>>, PvError> {
             if let Some(e) = &self.fail_convert {
                 return Err(clone_err(e));
             }

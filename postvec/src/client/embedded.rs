@@ -645,9 +645,7 @@ fn init_stderr_logger() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{
-        ConvertRoute, EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode,
-    };
+    use crate::client::{EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode};
 
     // ---- Integration: a real (model-less) engine behind the loopback
     // server, driven through postvec's own gRPC client — validates the whole
@@ -831,12 +829,9 @@ mod tests {
         }
         assert_eq!(err.class(), ErrorClass::Config);
 
-        let err = crate::runtime::block_on(client.convert(
-            &[vec![1.0f32, 2.0]],
-            "no-such-converter",
-            &ConvertRoute::default(),
-        ))
-        .unwrap_err();
+        let err =
+            crate::runtime::block_on(client.convert(&[vec![1.0f32, 2.0]], "no-such-converter"))
+                .unwrap_err();
         assert!(
             matches!(&err, PvError::Remote { code, .. } if *code == RavennaCode::ModelNotLoaded),
             "got {err:?}"

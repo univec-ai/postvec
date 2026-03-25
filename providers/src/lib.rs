@@ -26,6 +26,7 @@ pub mod mistral;
 pub mod openai;
 pub mod openrouter;
 pub mod titan;
+pub mod univec;
 
 // The built-in model catalog: CLI descriptor prefill and docs generation
 // only — the serving hosts never consult it.
@@ -47,12 +48,13 @@ pub mod testing;
 
 // Publicly export the client structs and the factory function for easy access.
 pub use cohere::CohereClient;
-pub use factory::{new_embedding_backend, ProviderConfig};
+pub use factory::{new_conversion_backend, new_embedding_backend, ProviderConfig};
 pub use gemini::GeminiClient;
 pub use mistral::MistralClient;
 pub use openai::OpenAIClient;
 pub use openrouter::OpenRouterClient;
 pub use titan::TitanClient;
+pub use univec::{UnivecClient, UnivecConvertClient};
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -440,6 +442,26 @@ pub trait EmbeddingBackend: Send + Sync {
         texts: &[&str],
         deadline: Option<std::time::Instant>,
     ) -> Result<Vec<Embedding>, EmbeddingError>;
+}
+
+/// A hosted vector-space conversion backend — the convert half of the one
+/// provider that offers one (UniVec). Mirrors [`EmbeddingBackend`]'s
+/// contract: the batch is transactional, and `deadline` bounds the whole
+/// operation including in-client retries.
+#[async_trait]
+pub trait ConversionBackend: Send + Sync {
+    /// Convert `embeddings` — every input in the converter's source space —
+    /// into its target space.
+    ///
+    /// Returns exactly one output vector per input, in input order. The
+    /// conversion APIs carry no per-item index field, so order *is* the
+    /// alignment contract; the gateway validates count and dimension against
+    /// the descriptor on every response.
+    async fn convert(
+        &self,
+        embeddings: &[Vec<f32>],
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError>;
 }
 
 #[cfg(test)]

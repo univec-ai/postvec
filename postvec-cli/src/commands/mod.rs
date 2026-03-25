@@ -58,7 +58,7 @@ pub async fn dispatch(cli: Cli) -> Exit {
             let name = subcommand.name();
             let result = match subcommand {
                 crate::cli::ProviderCommand::Add(args) => {
-                    provider::add::run(&cli, args.clone(), &output).await
+                    provider::add::run(&cli, (**args).clone(), &output).await
                 }
                 crate::cli::ProviderCommand::Ls(args) => {
                     provider::ls::run(&cli, args.clone(), &output).await

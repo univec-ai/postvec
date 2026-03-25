@@ -9,7 +9,7 @@
 use crate::client::discovery;
 use crate::client::discovery::DiscoveryReport;
 use crate::client::grpc::GrpcClient;
-use crate::client::{ConvertRoute, EmbedPurpose, EmbedRoute, InferenceClient, ModelInfo, PvError};
+use crate::client::{EmbedPurpose, EmbedRoute, InferenceClient, ModelInfo, PvError};
 use crate::{gucs, runtime};
 use pgrx::prelude::*;
 
@@ -226,14 +226,23 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
     // converter into the target whose source is embeddable. An entry-level
     // preference can replace this later without changing search()'s SQL
     // signature.
+    //
+    // Provider-backed rows are excluded from BOTH sides. The bridge goes on
+    // the wire as one EmbedTexts naming the embed-bridge executor, and that
+    // executor resolves its chain against the ENGINE's resolver — which
+    // indexes engine-loaded models only, never the provider gateway's.
+    // Counting a gateway-served converter (or a gateway-served source model)
+    // here would resolve a route the host must then refuse on every call.
     let via = spi_opt_string(
         "SELECT c.source_model
            FROM postvec.models c
           WHERE c.model_type = 'convert' AND c.target_model = $1
             AND c.source_model IS NOT NULL
+            AND c.raw->'extra'->>'provider' IS NULL
             AND EXISTS (SELECT 1 FROM postvec.models e
                          WHERE e.model_type = 'embed'
-                           AND COALESCE(e.target_model, e.name) = c.source_model)
+                           AND COALESCE(e.target_model, e.name) = c.source_model
+                           AND e.raw->'extra'->>'provider' IS NULL)
           ORDER BY c.name LIMIT 1",
         &[model.into()],
     )?;
@@ -245,6 +254,7 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
             "SELECT c.name || ' (source ' || COALESCE(c.source_model, 'NULL') || ')'
                FROM postvec.models c
               WHERE c.model_type = 'convert' AND c.target_model = $1
+                AND c.raw->'extra'->>'provider' IS NULL
               ORDER BY c.name LIMIT 1",
             &[model.into()],
         )?;
@@ -253,7 +263,28 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
                 "no embed model matches; converter {desc} targets it but its source model \
                  is not itself embeddable"
             ),
-            None => "no embed model matches and no converter targets it".to_string(),
+            None => {
+                // A provider-backed converter into this space is real but
+                // cannot back an embed bridge; say so rather than "nothing
+                // targets it" — the operator fix differs again
+                // (migrate()/convert() work today; an embed route needs a
+                // local converter or a direct provider model).
+                let provider_converter = spi_opt_string(
+                    "SELECT c.name FROM postvec.models c
+                      WHERE c.model_type = 'convert' AND c.target_model = $1
+                        AND c.raw->'extra'->>'provider' IS NOT NULL
+                      ORDER BY c.name LIMIT 1",
+                    &[model.into()],
+                )?;
+                match provider_converter {
+                    Some(name) => format!(
+                        "no embed model matches; provider-backed converter {name} targets it, \
+                         but hosted converters serve postvec.migrate()/convert() only — an \
+                         embed bridge runs inside the engine"
+                    ),
+                    None => "no embed model matches and no converter targets it".to_string(),
+                }
+            }
         };
         return Err(PvError::NoEmbedPath {
             model: model.to_string(),
@@ -280,48 +311,22 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
     })
 }
 
-/// How a convert request will be routed.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ConvertResolution {
-    /// A convert model keyed by (source, target) exists.
-    Direct(String),
-    /// Two-hop via `bridge`: route through a convert-bridge executor; the
-    /// engine-side resolver picks the actual chain per request.
-    Bridge { executor: String, bridge: String },
-}
-
-pub(crate) fn resolve_convert(source: &str, target: &str) -> Result<ConvertResolution, PvError> {
+/// Resolve a conversion to the DIRECT converter's name — local or
+/// provider-backed, either serves under its own name on the wire.
+///
+/// Deliberately nothing else: the two-hop path through the `convert-bridge`
+/// executor was removed ahead of that executor's deprecation. A cached
+/// `convert-bridge` row (a remote node may still advertise one) is inert
+/// here, and a chain that would need one is `NoConvertPath` — the fix is a
+/// direct converter (or `strategy => 'reembed'`), not a chain.
+pub(crate) fn resolve_convert(source: &str, target: &str) -> Result<String, PvError> {
     let direct = spi_opt_string(
         "SELECT name FROM postvec.models
           WHERE model_type = 'convert' AND source_model = $1 AND target_model = $2
           ORDER BY name LIMIT 1",
         &[source.into(), target.into()],
     )?;
-    if let Some(name) = direct {
-        return Ok(ConvertResolution::Direct(name));
-    }
-
-    // Two-hop: any B with convert(source→B) and convert(B→target).
-    let bridge = spi_opt_string(
-        "SELECT a.target_model
-           FROM postvec.models a
-           JOIN postvec.models b ON b.source_model = a.target_model
-          WHERE a.model_type = 'convert' AND b.model_type = 'convert'
-            AND a.source_model = $1 AND b.target_model = $2
-          ORDER BY a.target_model LIMIT 1",
-        &[source.into(), target.into()],
-    )?;
-    if let Some(bridge) = bridge {
-        let executor = spi_opt_string(
-            "SELECT name FROM postvec.models
-              WHERE model_type = 'convert-bridge' ORDER BY name LIMIT 1",
-            &[],
-        )?;
-        if let Some(executor) = executor {
-            return Ok(ConvertResolution::Bridge { executor, bridge });
-        }
-    }
-    Err(PvError::NoConvertPath {
+    direct.ok_or_else(|| PvError::NoConvertPath {
         from: source.to_string(),
         to: target.to_string(),
     })
@@ -521,24 +526,13 @@ fn convert(embedding: pgrx::Array<'_, f32>, source_model: &str, target_model: &s
     if !embedding.iter().all(|f| f.is_finite()) {
         error!("postvec: convert: input embedding contains a non-finite component (NaN/Inf)");
     }
-    let resolution =
+    let model =
         resolve_convert(source_model, target_model).unwrap_or_else(|e| error!("postvec: {e}"));
-    let (model, route) = match resolution {
-        ConvertResolution::Direct(name) => (name, ConvertRoute::default()),
-        ConvertResolution::Bridge { executor, bridge } => (
-            executor,
-            ConvertRoute {
-                source_model: Some(source_model.to_string()),
-                bridge_model: Some(bridge),
-                target_model: Some(target_model.to_string()),
-            },
-        ),
-    };
     let vecs = vec![embedding];
     let timeout = query_timeout_ms();
     let client = GrpcClient::from_gucs(timeout);
     let mut out = runtime::block_on_with_timeout(client.overall_timeout_ms(), async {
-        client.convert(&vecs, &model, &route).await
+        client.convert(&vecs, &model).await
     })
     .unwrap_or_else(|e| error!("postvec: convert: {e}"));
     if out.len() != 1 {
@@ -819,22 +813,116 @@ mod tests {
         );
     }
 
+    /// Only a DIRECT converter resolves. The fixture still holds the chained
+    /// pair (a→b, b→c) AND a convert-bridge executor row — exactly what the
+    /// removed two-hop path used to assemble — so the middle assertion pins
+    /// the removal: a chain that once resolved as a Bridge is NoConvertPath
+    /// now, even with every ingredient present in the cache.
     #[pg_test]
-    fn convert_resolution_direct_bridge_none() {
+    fn convert_resolution_is_direct_only() {
         load_fixture();
         assert_eq!(
             resolve_convert("model-a", "model-b").unwrap(),
-            ConvertResolution::Direct("convert-a-to-b".into())
-        );
-        assert_eq!(
-            resolve_convert("model-a", "model-c").unwrap(),
-            ConvertResolution::Bridge {
-                executor: "convert-bridge".into(),
-                bridge: "model-b".into()
-            }
+            "convert-a-to-b"
         );
         assert!(matches!(
+            resolve_convert("model-a", "model-c"),
+            Err(PvError::NoConvertPath { .. })
+        ));
+        assert!(matches!(
             resolve_convert("model-c", "model-a"),
+            Err(PvError::NoConvertPath { .. })
+        ));
+    }
+
+    /// Provider-backed rows in the cache, in the exact shape the gateway's
+    /// `descriptor_json` emits: `status: "provider"` plus the top-level
+    /// identity fields, which discovery flattens into `raw->'extra'` — the
+    /// marker the resolver exclusions key on.
+    const PROVIDER_FIXTURE: &str = r#"{
+      "success": true,
+      "data": { "models": [
+        { "name": "snowflake-arctic-embed-l-v2.0", "status": "local",
+          "configuration": { "enabled": true, "params": {
+            "model_type": "embed", "target_model": "snowflake-arctic-embed-l-v2.0",
+            "target_dim": 1024, "sequence_len": 8192 } } },
+        { "name": "embed-bridge", "status": "local",
+          "configuration": { "enabled": true, "params": {
+            "model_type": "embed-bridge" } } },
+        { "name": "convert-bridge", "status": "local",
+          "configuration": { "enabled": true, "params": {
+            "model_type": "convert-bridge" } } },
+        { "name": "convert-b2-to-c2", "status": "local",
+          "configuration": { "enabled": true, "params": {
+            "model_type": "convert", "source_model": "model-b2",
+            "target_model": "model-c2", "source_dim": 8, "target_dim": 8 } } },
+        { "name": "univec-convert-snow-to-ext2", "status": "provider",
+          "provider": "univec", "provider_file": "univec",
+          "provider_model_id": "src-space->tgt-space for snowflake-arctic-embed-l-v2.0[1024]->ext2-model",
+          "provider_endpoint": "0123456789abcdef",
+          "configuration": { "enabled": true, "params": {
+            "model_type": "convert", "source_model": "snowflake-arctic-embed-l-v2.0",
+            "target_model": "ext2-model", "source_dim": 1024, "target_dim": 1536 } } },
+        { "name": "univec-convert-a2-to-b2", "status": "provider",
+          "provider": "univec", "provider_file": "univec",
+          "provider_model_id": "a2->b2 for model-a2[8]->model-b2",
+          "provider_endpoint": "0123456789abcdef",
+          "configuration": { "enabled": true, "params": {
+            "model_type": "convert", "source_model": "model-a2",
+            "target_model": "model-b2", "source_dim": 8, "target_dim": 8 } } }
+      ] }
+    }"#;
+
+    fn load_provider_fixture() {
+        let models = discovery::parse_config(PROVIDER_FIXTURE).expect("fixture parses");
+        upsert_models(&models).expect("upsert works");
+    }
+
+    /// A provider-backed converter serves the DIRECT convert route — that is
+    /// the feature — but never an embed bridge: a bridge goes on the wire as
+    /// one EmbedTexts naming the embed-bridge executor, which resolves its
+    /// chain against the ENGINE's resolver, and that resolver cannot see
+    /// gateway entries. Before the exclusion this fixture resolved a Bridge
+    /// route the host then refused on every call.
+    #[pg_test]
+    fn provider_converters_resolve_direct_but_never_bridge() {
+        load_provider_fixture();
+        assert_eq!(
+            resolve_convert("snowflake-arctic-embed-l-v2.0", "ext2-model").unwrap(),
+            "univec-convert-snow-to-ext2"
+        );
+        // The marker feeds `migrate()`'s consent NOTICE for hosted
+        // conversion; a local converter must not trigger it.
+        assert_eq!(
+            crate::api::registry::external_provider_of_converter("univec-convert-snow-to-ext2")
+                .as_deref(),
+            Some("univec")
+        );
+        assert_eq!(
+            crate::api::registry::external_provider_of_converter("convert-b2-to-c2"),
+            None
+        );
+        // ext2-model must have NO embed route, and the refusal names the
+        // real situation rather than "nothing targets it".
+        match resolve_embed_route("ext2-model").unwrap_err() {
+            PvError::NoEmbedPath { detail, .. } => assert!(
+                detail.contains("hosted converters serve"),
+                "detail: {detail}"
+            ),
+            other => panic!("expected NoEmbedPath, got {other:?}"),
+        }
+    }
+
+    /// Chained hops never resolve — two-hop conversion went away with the
+    /// convert-bridge executor's removal from postvec. This fixture is the
+    /// once-worst case (a provider-backed first hop into a local second hop,
+    /// plus a convert-bridge executor row still advertised by the cache):
+    /// a2→c2 must be NoConvertPath, not a chain.
+    #[pg_test]
+    fn chained_converters_never_resolve() {
+        load_provider_fixture();
+        assert!(matches!(
+            resolve_convert("model-a2", "model-c2"),
             Err(PvError::NoConvertPath { .. })
         ));
     }

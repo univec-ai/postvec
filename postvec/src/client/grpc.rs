@@ -1,7 +1,7 @@
 //! gRPC transport to running ninference nodes, plus `GET /config` over
 //! HTTP for model discovery.
 
-use super::{ConvertRoute, EmbedRoute, InferenceClient, ModelInfo, PvError, RavennaCode};
+use super::{EmbedRoute, InferenceClient, ModelInfo, PvError, RavennaCode};
 use crate::proto::ninference_service_client::NinferenceServiceClient;
 use crate::proto::{ConvertEmbeddingsRequest, EmbedTextsRequest, FloatVector};
 use once_cell::sync::Lazy;
@@ -437,12 +437,7 @@ impl InferenceClient for GrpcClient {
         decode_embeddings(list)
     }
 
-    async fn convert(
-        &self,
-        vecs: &[Vec<f32>],
-        model: &str,
-        route: &ConvertRoute,
-    ) -> Result<Vec<Vec<f32>>, PvError> {
+    async fn convert(&self, vecs: &[Vec<f32>], model: &str) -> Result<Vec<Vec<f32>>, PvError> {
         if vecs.iter().flatten().any(|f| !f.is_finite()) {
             return Err(PvError::InvalidInput(
                 "convert input contains a non-finite component (NaN/Inf)".into(),
@@ -454,12 +449,15 @@ impl InferenceClient for GrpcClient {
             .collect();
         let resp = self
             .with_failover(|mut client, budget| {
+                // The wire keeps the bridge fields (the proto is a live
+                // contract with services this extension does not ship), but
+                // postvec plans direct conversions only, so they go empty.
                 let mut request = tonic::Request::new(ConvertEmbeddingsRequest {
                     embeddings: embeddings.clone(),
                     model: model.to_string(),
-                    source_model: route.source_model.clone().unwrap_or_default(),
-                    bridge_model: route.bridge_model.clone().unwrap_or_default(),
-                    target_model: route.target_model.clone().unwrap_or_default(),
+                    source_model: String::new(),
+                    bridge_model: String::new(),
+                    target_model: String::new(),
                 });
                 request.set_timeout(budget);
                 async move {
@@ -752,12 +750,8 @@ mod tests {
     #[test]
     fn convert_rejects_non_finite_input_before_endpoint_use() {
         let client = GrpcClient::new(Vec::new(), Vec::new(), 100, 100);
-        let err = crate::runtime::block_on(client.convert(
-            &[vec![f32::NAN]],
-            "convert-model",
-            &ConvertRoute::default(),
-        ))
-        .unwrap_err();
+        let err = crate::runtime::block_on(client.convert(&[vec![f32::NAN]], "convert-model"))
+            .unwrap_err();
         assert!(matches!(err, PvError::InvalidInput(_)));
     }
 

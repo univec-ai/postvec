@@ -110,15 +110,21 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
                     .and_then(|d| u32::try_from(d).ok())
                     .unwrap_or_default()
             };
-            for (name, id) in &all_models {
+            // ROUTE ids, not raw provider ids: a converter's identity folds
+            // in its pair, dims and postvec-side spaces via the same
+            // derivation `served_names_if` and the live descriptor use — or
+            // a partial removal would report the surviving converter as a
+            // handoff to its own file.
+            for (name, id) in doc.route_models() {
+                let dim = dim_of(&name);
                 conservative
-                    .entry(name.clone())
+                    .entry(name)
                     .or_insert_with(|| providers::config::ServedBy {
                         provider: provider.clone(),
                         file: args.name.clone(),
                         endpoint: endpoint.clone(),
-                        model_id: id.clone(),
-                        dim: dim_of(name),
+                        model_id: id,
+                        dim,
                     });
             }
             (

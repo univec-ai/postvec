@@ -2095,6 +2095,21 @@ pub(crate) fn external_provider_of(model: &str) -> Option<String> {
     .flatten()
 }
 
+/// The external provider serving converter `name`, if any — the convert
+/// sibling of [`external_provider_of`]. Matched on the converter's own name:
+/// `resolve_convert` returns names, and a name has exactly one owner in the
+/// cache.
+pub(crate) fn external_provider_of_converter(name: &str) -> Option<String> {
+    Spi::get_one_with_args::<String>(
+        "SELECT raw->'extra'->>'provider' FROM postvec.models
+          WHERE model_type = 'convert' AND name = $1
+          LIMIT 1",
+        &[name.into()],
+    )
+    .ok()
+    .flatten()
+}
+
 /// The informed-consent moment for a column becoming bound to a
 /// provider-backed model (external-providers §7.5): from now on, this
 /// column's source text leaves the database host for the named provider.

@@ -71,8 +71,15 @@ const MAX_SECRET_BYTES: u64 = 16 * 1024;
 /// canonical spelling. The CLI's `gemini`/`amazon` aliases fold into these
 /// (see [`crate::catalog::canonical_provider`]); a file should carry the
 /// canonical name and either is accepted.
-pub const SUPPORTED_PROVIDERS: &[&str] =
-    &["openai", "openrouter", "mistral", "google", "cohere", "aws"];
+pub const SUPPORTED_PROVIDERS: &[&str] = &[
+    "openai",
+    "openrouter",
+    "mistral",
+    "google",
+    "cohere",
+    "aws",
+    "univec",
+];
 
 fn default_true() -> bool {
     true
@@ -134,6 +141,17 @@ struct ProviderFile {
     models: Vec<ModelDescriptor>,
 }
 
+/// What a `[[models]]` entry serves. `embed` is the default and the only
+/// kind most connectors offer; `convert` is hosted vector-space conversion
+/// (UniVec's `/v1/convert`) and is refused at load for every other connector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelKind {
+    #[default]
+    Embed,
+    Convert,
+}
+
 /// One provider-backed model as declared in a provider file.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,14 +159,80 @@ pub struct ModelDescriptor {
     /// Public name served in `/config` (e.g. `openai-text-embedding-3-small`).
     pub name: String,
     /// The identifier the provider's API expects (e.g. `text-embedding-3-small`).
+    /// For `kind = "convert"` this is the provider-side id of the TARGET
+    /// space; the source's id is `provider_source_id`.
     pub provider_model_id: String,
-    /// Vector dimension; authoritative for the response-shape check.
+    /// Vector dimension; authoritative for the response-shape check. For a
+    /// converter this is the OUTPUT (target-space) dimension.
     pub dim: u32,
     /// Provider items-per-request cap; the gateway sub-batches to it.
     #[serde(default = "default_max_batch")]
     pub max_batch: usize,
-    /// Advertised as `sequence_len` in the discovery descriptor.
+    /// Advertised as `sequence_len` in the discovery descriptor. Embed only —
+    /// a converter takes vectors, not tokens.
     pub max_tokens: Option<u32>,
+    /// What this entry serves: `embed` (default) or `convert`.
+    #[serde(default)]
+    pub kind: ModelKind,
+    /// Convert only: the provider-side id of the SOURCE space.
+    pub provider_source_id: Option<String>,
+    /// Convert only: the postvec-side public name of the source space — the
+    /// resolver's vocabulary (what a bound column's `model` says), which is
+    /// not the provider's. `postvec.migrate()` offers this converter to
+    /// columns whose model matches it exactly.
+    pub source_model: Option<String>,
+    /// Convert only: the postvec-side public name of the target space.
+    pub target_model: Option<String>,
+    /// Convert only: dimension of the source space (`dim` is the target's).
+    pub source_dim: Option<u32>,
+}
+
+impl ModelDescriptor {
+    /// The route-identity id behind [`ServedBy::model_id`] and the `/config`
+    /// descriptor's `provider_model_id` field.
+    ///
+    /// For an embed entry it is the provider's own id. For a converter the
+    /// id folds in **everything that decides what the route means** — the
+    /// provider-side pair, the source dimension, and the postvec-side pair —
+    /// so that a same-name change of any of them compares as drift in
+    /// `provider rm` and as divergence in the fleet check, exactly like an
+    /// embed model's id or dim change would. One derivation, used by the
+    /// structural view, the live descriptor, and the CLI's document reader;
+    /// a second copy is how identities learn to disagree.
+    pub fn route_model_id(&self) -> String {
+        route_model_id(
+            self.kind,
+            &self.provider_model_id,
+            self.provider_source_id.as_deref(),
+            self.source_model.as_deref(),
+            self.source_dim,
+            self.target_model.as_deref(),
+        )
+    }
+}
+
+/// The derivation behind [`ModelDescriptor::route_model_id`], callable from
+/// readers that hold the fields rather than the struct (the CLI reads TOML
+/// documents it must not re-parse through this schema).
+pub fn route_model_id(
+    kind: ModelKind,
+    provider_model_id: &str,
+    provider_source_id: Option<&str>,
+    source_model: Option<&str>,
+    source_dim: Option<u32>,
+    target_model: Option<&str>,
+) -> String {
+    match kind {
+        ModelKind::Embed => provider_model_id.to_string(),
+        ModelKind::Convert => format!(
+            "{}->{} for {}[{}]->{}",
+            provider_source_id.unwrap_or(""),
+            provider_model_id,
+            source_model.unwrap_or(""),
+            source_dim.unwrap_or(0),
+            target_model.unwrap_or(""),
+        ),
+    }
 }
 
 /// A provider file with every secret resolved to a value.
@@ -653,6 +737,73 @@ const COHERE_FIXED_DIMS: &[(&str, u32)] = &[
     ("embed-multilingual-light-v3.0", 384),
 ];
 
+/// Everything the loader can say about one `kind = "convert"` entry on its
+/// own — split out, like [`validate_model_for_provider`], so `provider add`
+/// and `provider test` can apply the same rules before spending a paid call.
+///
+/// Hosted conversion is a UniVec capability. For every other connector a
+/// converter entry describes a call the connector cannot make, so it is
+/// refused at load rather than failing on every request.
+pub fn validate_converter_for_provider(
+    provider: &str,
+    model: &ModelDescriptor,
+) -> Result<(), String> {
+    if crate::catalog::canonical_provider(provider) != "univec" {
+        return Err(format!(
+            "kind = \"convert\" is served only by provider \"univec\"; {provider:?} has no \
+             conversion endpoint"
+        ));
+    }
+    let source_id = model.provider_source_id.as_deref().unwrap_or("");
+    if source_id.trim().is_empty() {
+        return Err(
+            "a converter needs provider_source_id: the provider-side id of the source space"
+                .to_string(),
+        );
+    }
+    if source_id.len() > MAX_MODEL_ID_BYTES {
+        return Err(format!(
+            "provider_source_id exceeds {MAX_MODEL_ID_BYTES} bytes"
+        ));
+    }
+    let Some(source_model) = model.source_model.as_deref() else {
+        return Err(
+            "a converter needs source_model: the postvec-side public name of the source space \
+             (what a bound column's model says — the resolver's vocabulary, not the provider's)"
+                .to_string(),
+        );
+    };
+    validate_model_name(source_model).map_err(|e| format!("source_model: {e}"))?;
+    let Some(target_model) = model.target_model.as_deref() else {
+        return Err(
+            "a converter needs target_model: the postvec-side public name of the target space"
+                .to_string(),
+        );
+    };
+    validate_model_name(target_model).map_err(|e| format!("target_model: {e}"))?;
+    if source_model == target_model {
+        return Err(format!(
+            "source_model and target_model are both {source_model:?}; a converter between a \
+             space and itself converts nothing"
+        ));
+    }
+    let Some(source_dim) = model.source_dim else {
+        return Err("a converter needs source_dim: the source space's dimension".to_string());
+    };
+    if source_dim == 0 || source_dim > MAX_DIM {
+        return Err(format!(
+            "source_dim {source_dim} is outside 1..={MAX_DIM} (pgvector's VECTOR_MAX_DIM)"
+        ));
+    }
+    if model.max_tokens.is_some() {
+        return Err(
+            "max_tokens applies only to embed entries; a converter takes vectors, not tokens"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// The AWS-only fields, refused for every other connector. Factored out so
 /// the two key-authenticated arms cannot drift apart.
 fn reject_aws_only_fields(
@@ -1049,6 +1200,29 @@ fn validate_structure(file: &ProviderFile) -> Result<(), String> {
                 model.name
             ));
         }
+        // The kind decides which of the remaining fields mean anything —
+        // the same tagged-union rule the connector fields follow. An embed
+        // entry carrying converter fields is a typo'd or half-edited file,
+        // not a looser embed.
+        match model.kind {
+            ModelKind::Embed => {
+                if model.provider_source_id.is_some()
+                    || model.source_model.is_some()
+                    || model.target_model.is_some()
+                    || model.source_dim.is_some()
+                {
+                    return Err(format!(
+                        "[[models]] {:?}: provider_source_id, source_model, target_model and \
+                         source_dim apply only to kind = \"convert\"",
+                        model.name
+                    ));
+                }
+            }
+            ModelKind::Convert => {
+                validate_converter_for_provider(&file.provider, model)
+                    .map_err(|e| format!("[[models]] {:?}: {e}", model.name))?;
+            }
+        }
     }
     // Same-file duplicates follow the same rule as cross-file ones, and for
     // the same reason: which entry wins decides which model a bound column's
@@ -1260,7 +1434,12 @@ fn evaluate_prospective(
                     provider: provider.clone(),
                     file: stem.clone(),
                     endpoint: endpoint.clone(),
-                    model_id: model.provider_model_id.clone(),
+                    // The ROUTE id, not the raw provider id: for a converter
+                    // it folds in the provider-side pair, the source dim and
+                    // the postvec-side pair, so a same-name change of any of
+                    // them is drift here exactly as it is in the live
+                    // descriptor (`descriptor_json` derives the same value).
+                    model_id: model.route_model_id(),
                     dim: model.dim,
                 },
             );
@@ -2522,5 +2701,121 @@ max_tokens = 8191
             assert_eq!(outcome.errors.len(), 1, "case {marker}");
             std::fs::remove_file(file).unwrap();
         }
+    }
+
+    /// A complete UniVec converter entry loads, with every field where the
+    /// gateway and the route identity expect it.
+    #[test]
+    fn a_univec_converter_entry_loads_with_both_vocabularies() {
+        let dir = private_tempdir();
+        write_mode(
+            dir.path(),
+            "univec.toml",
+            "provider = \"univec\"\napi_key = \"uv\"\n\n\
+             [[models]]\nname = \"univec-convert-a-to-b\"\nkind = \"convert\"\n\
+             provider_model_id = \"target-space\"\nprovider_source_id = \"source-space\"\n\
+             source_model = \"model-a\"\ntarget_model = \"model-b\"\n\
+             source_dim = 1536\ndim = 768\n",
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        let model = &outcome.providers[0].models[0];
+        assert_eq!(model.kind, ModelKind::Convert);
+        assert_eq!(model.provider_source_id.as_deref(), Some("source-space"));
+        assert_eq!(model.source_model.as_deref(), Some("model-a"));
+        assert_eq!(model.target_model.as_deref(), Some("model-b"));
+        assert_eq!(model.source_dim, Some(1536));
+        assert_eq!(model.dim, 768);
+        assert_eq!(
+            model.route_model_id(),
+            "source-space->target-space for model-a[1536]->model-b"
+        );
+    }
+
+    /// The converter tagged-union rules, one refusal apiece. Every case is a
+    /// whole-file load error — same blast radius as any other schema fault.
+    #[test]
+    fn converter_entries_are_held_to_their_own_rules() {
+        let dir = private_tempdir();
+        let convert_entry = "[[models]]\nname = \"c\"\nkind = \"convert\"\n\
+             provider_model_id = \"t\"\nprovider_source_id = \"s\"\n\
+             source_model = \"model-a\"\ntarget_model = \"model-b\"\n\
+             source_dim = 4\ndim = 4\n";
+        for (marker, body) in [
+            (
+                "convert under a connector with no conversion endpoint",
+                format!("provider = \"openai\"\napi_key = \"k\"\n\n{convert_entry}"),
+            ),
+            (
+                "missing provider_source_id",
+                "provider = \"univec\"\napi_key = \"k\"\n\n[[models]]\nname = \"c\"\n\
+                 kind = \"convert\"\nprovider_model_id = \"t\"\nsource_model = \"model-a\"\n\
+                 target_model = \"model-b\"\nsource_dim = 4\ndim = 4\n"
+                    .to_string(),
+            ),
+            (
+                "missing source_dim",
+                "provider = \"univec\"\napi_key = \"k\"\n\n[[models]]\nname = \"c\"\n\
+                 kind = \"convert\"\nprovider_model_id = \"t\"\nprovider_source_id = \"s\"\n\
+                 source_model = \"model-a\"\ntarget_model = \"model-b\"\ndim = 4\n"
+                    .to_string(),
+            ),
+            (
+                "a converter between a space and itself",
+                "provider = \"univec\"\napi_key = \"k\"\n\n[[models]]\nname = \"c\"\n\
+                 kind = \"convert\"\nprovider_model_id = \"t\"\nprovider_source_id = \"s\"\n\
+                 source_model = \"model-a\"\ntarget_model = \"model-a\"\nsource_dim = 4\ndim = 4\n"
+                    .to_string(),
+            ),
+            (
+                "max_tokens on a converter",
+                "provider = \"univec\"\napi_key = \"k\"\n\n[[models]]\nname = \"c\"\n\
+                 kind = \"convert\"\nprovider_model_id = \"t\"\nprovider_source_id = \"s\"\n\
+                 source_model = \"model-a\"\ntarget_model = \"model-b\"\nsource_dim = 4\ndim = 4\n\
+                 max_tokens = 8192\n"
+                    .to_string(),
+            ),
+            (
+                "converter fields on an embed entry",
+                "provider = \"univec\"\napi_key = \"k\"\n\n[[models]]\nname = \"e\"\n\
+                 provider_model_id = \"m\"\ndim = 4\nsource_dim = 4\n"
+                    .to_string(),
+            ),
+        ] {
+            let file = write_mode(dir.path(), "p.toml", &body, 0o600);
+            let outcome = load_dir(dir.path()).unwrap();
+            assert_eq!(outcome.errors.len(), 1, "case: {marker}");
+            assert!(outcome.providers.is_empty(), "case: {marker}");
+            std::fs::remove_file(file).unwrap();
+        }
+    }
+
+    /// Route identity for a converter folds in everything that decides what
+    /// the route means. A same-name change of the postvec-side source space
+    /// — which redirects OTHER columns' migrations through this converter —
+    /// must compare unequal, exactly like an embed model's id or dim change.
+    #[test]
+    fn a_converters_route_identity_covers_both_vocabularies() {
+        let dir = private_tempdir();
+        let body = |source_model: &str| {
+            format!(
+                "provider = \"univec\"\napi_key = \"uv\"\n\n\
+                 [[models]]\nname = \"univec-convert\"\nkind = \"convert\"\n\
+                 provider_model_id = \"t\"\nprovider_source_id = \"s\"\n\
+                 source_model = \"{source_model}\"\ntarget_model = \"model-b\"\n\
+                 source_dim = 4\ndim = 4\n"
+            )
+        };
+        let path = dir.path().join("univec.toml");
+        let before = served_names_if(dir.path(), &path, Some(&body("model-a"))).unwrap();
+        let after = served_names_if(dir.path(), &path, Some(&body("model-c"))).unwrap();
+        let before = before.get("univec-convert").unwrap();
+        let after = after.get("univec-convert").unwrap();
+        assert_ne!(
+            before.model_id, after.model_id,
+            "a source-space change must read as a different route"
+        );
+        assert_eq!(before.dim, 4, "dim stays the OUTPUT dimension");
     }
 }

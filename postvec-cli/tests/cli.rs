@@ -719,6 +719,182 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
     assert!(!file.exists(), "provider rm left the file behind");
 }
 
+/// The UniVec converter round trip on a `--path` root: `--convert-source`
+/// writes a `kind = "convert"` entry with both vocabularies, `ls` renders
+/// the route, and `rm` takes it away with the lost-route acknowledgement.
+/// Plain `--yes` suffices for the ADD: a converter's own name never binds a
+/// column and no source text flows through it, so there is no privacy step
+/// to acknowledge — its consent moment is postvec.migrate()'s NOTICE.
+#[test]
+fn provider_add_univec_converter_round_trip_on_a_path_root() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = provider_root();
+    let key = root.path().join("univec.key");
+    std::fs::write(&key, "uv-test-key-value\n").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let root_arg = root.path().to_str().unwrap();
+    let key_arg = key.to_str().unwrap();
+    let output = run(&[
+        "provider",
+        "add",
+        "univec",
+        "--convert-source",
+        "openai-ada-002",
+        "--convert-target",
+        "gemini-text-embedding-004",
+        "--source-model",
+        "openai-text-embedding-ada-002",
+        "--target-model",
+        "gemini-embedding-001",
+        "--source-dim",
+        "1536",
+        "--dim",
+        "768",
+        "--api-key-file",
+        key_arg,
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+
+    let file = root.path().join("providers.d").join("univec.toml");
+    let body = std::fs::read_to_string(&file).unwrap();
+    assert!(body.contains("provider = \"univec\""), "{body}");
+    assert!(body.contains("kind = \"convert\""), "{body}");
+    assert!(
+        body.contains("provider_source_id = \"openai-ada-002\""),
+        "{body}"
+    );
+    assert!(
+        body.contains("source_model = \"openai-text-embedding-ada-002\""),
+        "{body}"
+    );
+    assert!(
+        body.contains("target_model = \"gemini-embedding-001\""),
+        "{body}"
+    );
+    assert!(body.contains("source_dim = 1536"), "{body}");
+    assert!(body.contains("dim = 768"), "{body}");
+    // The derived public name follows the documented spelling.
+    assert!(
+        body.contains(
+            "name = \"univec-convert-openai-text-embedding-ada-002-to-gemini-embedding-001\""
+        ),
+        "{body}"
+    );
+
+    // ls renders the route in the resolver's vocabulary, not just a dim.
+    let listed = run(&["provider", "ls", "--path", root_arg]);
+    assert_eq!(code(&listed), 0, "{}", stderr(&listed));
+    let text = format!("{}{}", stdout(&listed), stderr(&listed));
+    assert!(
+        text.contains("converts openai-text-embedding-ada-002[1536] -> gemini-embedding-001[768]"),
+        "{text}"
+    );
+
+    // rm still demands the lost-route acknowledgement: an in-flight
+    // migration may be resolved through this converter, and `--path` cannot
+    // check.
+    let removed = run(&[
+        "provider",
+        "rm",
+        "univec",
+        "--path",
+        root_arg,
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_eq!(code(&removed), 0, "{}", stderr(&removed));
+    assert!(!file.exists(), "provider rm left the file behind");
+}
+
+/// A partial `rm` beside a surviving converter, with no host to ask: the
+/// converter must compare equal to ITSELF across the removal — the document
+/// reader and the loader derive one route id — or the plan would report a
+/// handoff/drift for an entry the command does not touch.
+#[test]
+fn a_surviving_converter_is_not_its_own_handoff() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = provider_root();
+    let key = root.path().join("univec.key");
+    std::fs::write(&key, "uv-test-key-value\n").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let root_arg = root.path().to_str().unwrap();
+    let key_arg = key.to_str().unwrap();
+
+    // One file holding an embed model and a converter.
+    let added = run(&[
+        "provider",
+        "add",
+        "univec",
+        "--model",
+        "snowflake-arctic-embed-l-v2.0",
+        "--dim",
+        "1024",
+        "--api-key-file",
+        key_arg,
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_eq!(code(&added), 0, "{}", stderr(&added));
+    let added = run(&[
+        "provider",
+        "add",
+        "univec",
+        "--convert-source",
+        "openai-ada-002",
+        "--convert-target",
+        "gemini-text-embedding-004",
+        "--source-model",
+        "openai-text-embedding-ada-002",
+        "--target-model",
+        "gemini-embedding-001",
+        "--source-dim",
+        "1536",
+        "--dim",
+        "768",
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--yes",
+    ]);
+    assert_eq!(code(&added), 0, "{}", stderr(&added));
+
+    // Remove only the embed model. The surviving converter must not be
+    // reported as drifted or handed off, and must survive the write.
+    let removed = run(&[
+        "provider",
+        "rm",
+        "univec",
+        "--model",
+        "univec-snowflake-arctic-embed-l-v2.0",
+        "--path",
+        root_arg,
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_eq!(code(&removed), 0, "{}", stderr(&removed));
+    let text = format!("{}{}", stdout(&removed), stderr(&removed));
+    assert!(!text.contains("drift"), "{text}");
+    assert!(!text.contains("handed"), "{text}");
+
+    let body =
+        std::fs::read_to_string(root.path().join("providers.d").join("univec.toml")).unwrap();
+    assert!(body.contains("kind = \"convert\""), "{body}");
+    assert!(
+        !body.contains("univec-snowflake-arctic-embed-l-v2.0"),
+        "{body}"
+    );
+}
+
 /// `--dry-run` sends nothing. The verification embed is a live, billed
 /// request that also puts the key on the network, so the dry run must skip
 /// it: this test passes on a host with no route to any provider, which it

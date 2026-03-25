@@ -25,7 +25,7 @@
 
 use crate::api::migrate::Migration;
 use crate::client::grpc::GrpcClient;
-use crate::client::{ConvertRoute, EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode};
+use crate::client::{EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode};
 use crate::registry::{parse_vector, quote_ident, RegistryEntry};
 use crate::runtime;
 use crate::worker::{try_transaction, Counters};
@@ -439,12 +439,10 @@ pub fn run_inference<C: InferenceClient>(
         let converted = if good.is_empty() {
             Vec::new()
         } else {
-            let (model, route) = convert_target(m);
+            let model = convert_target(m);
             let mut converted = Vec::with_capacity(good.len());
             for chunk in good.chunks(max_items.max(1)) {
-                converted.extend(convert_with_split(
-                    client, &model, &route, chunk, timeout_ms, 3,
-                )?);
+                converted.extend(convert_with_split(client, &model, chunk, timeout_ms, 3)?);
             }
             converted
         };
@@ -486,14 +484,12 @@ pub fn run_inference<C: InferenceClient>(
 fn convert_with_split<C: InferenceClient>(
     client: &C,
     model: &str,
-    route: &ConvertRoute,
     vecs: &[Vec<f32>],
     timeout_ms: u64,
     depth: u8,
 ) -> Result<Vec<Vec<f32>>, PvError> {
-    let res = runtime::block_on_with_timeout(timeout_ms, async {
-        client.convert(vecs, model, route).await
-    });
+    let res =
+        runtime::block_on_with_timeout(timeout_ms, async { client.convert(vecs, model).await });
     match res {
         Ok(out) if out.len() == vecs.len() => Ok(out),
         Ok(out) => Err(PvError::Decode(format!(
@@ -514,12 +510,10 @@ fn convert_with_split<C: InferenceClient>(
                 vecs.len()
             );
             let mid = vecs.len() / 2;
-            let mut out =
-                convert_with_split(client, model, route, &vecs[..mid], timeout_ms, depth - 1)?;
+            let mut out = convert_with_split(client, model, &vecs[..mid], timeout_ms, depth - 1)?;
             out.extend(convert_with_split(
                 client,
                 model,
-                route,
                 &vecs[mid..],
                 timeout_ms,
                 depth - 1,
@@ -531,30 +525,17 @@ fn convert_with_split<C: InferenceClient>(
 }
 
 /// The gRPC target for a convert-strategy batch, from the pre-flight result
-/// stored in `resolved_via`: a direct convert model, or a
-/// convert-bridge executor with the names passed through raw (the engine-side
-/// resolver picks the chain).
-fn convert_target(m: &Migration) -> (String, ConvertRoute) {
-    if m.resolved_via["kind"] == "bridge" {
-        let executor = m.resolved_via["executor"].as_str().unwrap_or_default();
-        let bridge = m.resolved_via["bridge"].as_str().unwrap_or_default();
-        (
-            executor.to_string(),
-            ConvertRoute {
-                source_model: Some(m.old_model.clone()),
-                bridge_model: Some(bridge.to_string()),
-                target_model: Some(m.new_model.clone()),
-            },
-        )
-    } else {
-        (
-            m.resolved_via["model"]
-                .as_str()
-                .unwrap_or(&m.old_model)
-                .to_string(),
-            ConvertRoute::default(),
-        )
-    }
+/// stored in `resolved_via`: the direct convert model's name. Two-hop
+/// convert-bridge routes no longer exist — the preflight only ever writes
+/// `{"kind": "direct"}` or `{"kind": "reembed"}` (which never reaches this
+/// function), and an older row's bridge kind falls through to the old-model
+/// fallback, whose failure is a truthful "no such route" rather than a
+/// silent chain.
+fn convert_target(m: &Migration) -> String {
+    m.resolved_via["model"]
+        .as_str()
+        .unwrap_or(&m.old_model)
+        .to_string()
 }
 
 /// Outcome of one migration write-back: rows written / skipped, and whether

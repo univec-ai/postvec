@@ -13,7 +13,12 @@ use std::collections::BTreeSet;
 struct LsModel {
     name: String,
     provider_model_id: String,
+    /// An embed model's width; a converter's TARGET width.
     dim: Option<i64>,
+    /// `kind = "convert"` entries: the route in the resolver's vocabulary,
+    /// `source_model[source_dim] -> target_model[dim]`. Absent for embeds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    converts: Option<String>,
     /// `None` when no running host could be asked.
     served: Option<bool>,
 }
@@ -76,6 +81,14 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
         match ProviderFileDoc::load(&path) {
             Ok(Some(doc)) => {
                 let enabled = doc.enabled();
+                // Schema-typed entries, for the converter route display; a
+                // hand-edited entry the schema refuses still lists via the
+                // lenient reader below, just without one.
+                let typed: std::collections::BTreeMap<String, providers::config::ModelDescriptor> =
+                    doc.descriptors()
+                        .into_iter()
+                        .map(|d| (d.name.clone(), d))
+                        .collect();
                 let models = doc
                     .models()
                     .into_iter()
@@ -91,6 +104,18 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                             })
                             .and_then(|m| m.get("dim"))
                             .and_then(toml::Value::as_integer);
+                        let converts = typed
+                            .get(&name)
+                            .filter(|d| d.kind == providers::config::ModelKind::Convert)
+                            .map(|d| {
+                                format!(
+                                    "{}[{}] -> {}[{}]",
+                                    d.source_model.as_deref().unwrap_or("?"),
+                                    d.source_dim.unwrap_or(0),
+                                    d.target_model.as_deref().unwrap_or("?"),
+                                    d.dim
+                                )
+                            });
                         LsModel {
                             // A parked or refused file is not expected to be
                             // served, so do not invite a reload that would
@@ -101,6 +126,7 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                             name,
                             provider_model_id: id,
                             dim,
+                            converts,
                         }
                     })
                     .collect();
@@ -154,13 +180,19 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
             output.progress(&format!("  ! the host REFUSES this file: {reason}"));
         }
         for model in &provider.models {
+            let shape = match &model.converts {
+                Some(route) => format!("converts {route}"),
+                None => format!(
+                    "dim {:<6}",
+                    model
+                        .dim
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "?".to_string())
+                ),
+            };
             output.progress(&format!(
-                "  {:<44} dim {:<6} {}",
+                "  {:<44} {shape} {}",
                 model.name,
-                model
-                    .dim
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "?".to_string()),
                 match (provider.refused.is_some(), provider.enabled, model.served) {
                     (true, _, _) => "not loadable (see above)",
                     (false, false, _) => "disabled in the file",

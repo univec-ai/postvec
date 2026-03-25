@@ -257,8 +257,9 @@ impl NinferenceService for EmbeddedService {
         // routed before that refusal fires — and on a name collision the
         // LOCAL model wins, the same §6.1 rule `/config` applies, so
         // discovery and this handler can never disagree about which model a
-        // name is. Convert requests never consult the gateway (providers
-        // embed; they do not convert).
+        // name is. Convert requests follow the same order through
+        // `owns_converter` (UniVec serves hosted conversion; the other
+        // providers embed only).
         //
         // §7.3 admission: the provider path deliberately bypasses all three
         // embedded_max_inflight gates — it took a widened tower slot (see
@@ -414,6 +415,13 @@ impl NinferenceService for EmbeddedService {
             ));
         }
         if !self.engine.is_model_ready(&req.model) {
+            // Same dispatch rule as EmbedTexts (see the comment there), with
+            // `owns_converter`: a provider-backed *embed* model cannot
+            // convert, and MODEL_NOT_LOADED for it is the same answer the
+            // engine gives every name it does not hold.
+            if !self.engine.is_model_loaded(&req.model) && self.gateway.owns_converter(&req.model) {
+                return self.convert_via_gateway(req, deadline_std).await;
+            }
             return Err(model_not_loaded_status(&req.model));
         }
 
@@ -600,6 +608,87 @@ impl EmbeddedService {
         // into `PermitBody`, which holds it until hyper finishes or drops the
         // encoding. This is the whole fix — a completed provider tree is not
         // "done" until the bytes leave.
+        response
+            .extensions_mut()
+            .insert(ResponsePermit(Arc::new(response_permit)));
+        Ok(response)
+    }
+
+    /// The provider path of `ConvertEmbeddings`: the convert twin of
+    /// [`Self::embed_via_gateway`], with the same §7.3 shape — bounded by
+    /// the per-provider semaphore and the caller's deadline, never by
+    /// `response_slots` or the engine's HostPolicy, and the byte-weighted
+    /// response permit taken BEFORE the call so no paid conversion is ever
+    /// thrown away for want of capacity.
+    async fn convert_via_gateway(
+        &self,
+        req: ConvertEmbeddingsRequest,
+        deadline: std::time::Instant,
+    ) -> Result<Response<ConvertEmbeddingsResponse>, Status> {
+        // The gateway serves direct conversion only; the bridge fields
+        // belong to engine executors. Refusing them beats ignoring them —
+        // a call that names a chain must not silently get a single hop.
+        if !(req.source_model.is_empty()
+            && req.bridge_model.is_empty()
+            && req.target_model.is_empty())
+        {
+            return Err(Status::invalid_argument(
+                "bridge fields (source_model/bridge_model/target_model) are not served by a \
+                 provider-backed converter; call it by its name alone",
+            ));
+        }
+        if req.embeddings.len() > crate::jobs::MAX_REQUEST_ITEMS {
+            return Err(Status::invalid_argument(format!(
+                "{} embeddings exceeds the {} items-per-request ceiling; split the request",
+                req.embeddings.len(),
+                crate::jobs::MAX_REQUEST_ITEMS
+            )));
+        }
+        // The gateway validates every returned vector against this dim, so
+        // the envelope math is exact, not best-effort.
+        let dim = self
+            .gateway
+            .dim(&req.model)
+            .map(|d| d as i32)
+            .unwrap_or(16_000);
+        let max_items = crate::jobs::max_items_for_dim(dim);
+        if req.embeddings.len() > max_items {
+            return Err(Status::invalid_argument(format!(
+                "{} embeddings at a {dim}-dim target exceeds the response envelope; send at \
+                 most {max_items} per request",
+                req.embeddings.len()
+            )));
+        }
+
+        let weight = provider_response_mib(req.embeddings.len(), dim);
+        let response_permit = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.provider_response_bytes
+                .clone()
+                .acquire_many_owned(weight),
+        )
+        .await
+        .map_err(|_| {
+            Status::deadline_exceeded(format!(
+                "deadline exhausted waiting for {weight} MiB of provider response capacity \
+                 (aggregate budget {PROVIDER_RESPONSE_BUDGET_MIB} MiB)"
+            ))
+        })?
+        .map_err(|_| Status::unavailable("provider response-capacity gate closed"))?;
+
+        // Width and finiteness of every input are the gateway's checks —
+        // made before any paid call, against the descriptor's source_dim.
+        let inputs: Vec<Vec<f32>> = req.embeddings.into_iter().map(|fv| fv.vector).collect();
+        let vectors = self
+            .gateway
+            .convert(&req.model, &inputs, deadline)
+            .await
+            .map_err(gateway_error_to_status)?;
+
+        let mut response = Response::new(ConvertEmbeddingsResponse {
+            embeddings: Some(vectors_to_list_value(vectors, deadline)?),
+            usage: None,
+        });
         response
             .extensions_mut()
             .insert(ResponsePermit(Arc::new(response_permit)));
@@ -1352,9 +1441,7 @@ mod deadline_tests {
 mod gateway_tests {
     use super::*;
     use crate::client::grpc::GrpcClient;
-    use crate::client::{
-        ConvertRoute, EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode,
-    };
+    use crate::client::{EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode};
     use providers::testing as provider_mock;
 
     /// A completed unary response is encoded *lazily*, after the handler
@@ -1479,16 +1566,103 @@ mod gateway_tests {
         .expect("provider model serves through the wire");
         assert_eq!(out, vec![vec![0.25, 0.5]]);
 
-        // Convert requests never touch the gateway: the same name refuses
-        // exactly like any model the engine does not hold.
-        let err = crate::runtime::block_on(client.convert(
-            &[vec![1.0f32, 2.0]],
-            "openai-text-embedding-3-small",
-            &ConvertRoute::default(),
-        ))
+        // A convert request consults the gateway only through
+        // `owns_converter`: a provider-backed EMBED model refuses exactly
+        // like any model the engine does not hold. (A `kind = "convert"`
+        // entry dispatches — see the univec test below.)
+        let err = crate::runtime::block_on(
+            client.convert(&[vec![1.0f32, 2.0]], "openai-text-embedding-3-small"),
+        )
         .unwrap_err();
         assert!(
             matches!(&err, PvError::Remote { code, .. } if *code == RavennaCode::ModelNotLoaded),
+            "got {err:?}"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A UniVec providers.d with one converter entry (`source_dim` 3 →
+    /// `dim` 2, distinct on purpose so a swapped-axis bug cannot pass both
+    /// width checks), loaded into a gateway.
+    fn univec_gateway_for(base_url: &str) -> Arc<Gateway> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "postvec-uvgwtest-{}-{}",
+            std::process::id(),
+            std::thread::current()
+                .name()
+                .unwrap_or("t")
+                .replace("::", "-")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("univec.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "provider = \"univec\"\napi_key = \"uv-test\"\nbase_url = \"{base_url}\"\n\n\
+                 [[models]]\nname = \"univec-convert-a-to-b\"\nkind = \"convert\"\n\
+                 provider_model_id = \"target-space\"\nprovider_source_id = \"source-space\"\n\
+                 source_model = \"model-a\"\ntarget_model = \"model-b\"\n\
+                 source_dim = 3\ndim = 2\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let gateway = Arc::new(Gateway::load(&dir, &Default::default()));
+        let _ = std::fs::remove_dir_all(&dir);
+        gateway
+    }
+
+    /// The convert twin of the wire-path proof: a `kind = "convert"` entry
+    /// serves `ConvertEmbeddings` through the production `GrpcClient` →
+    /// loopback server → gateway → mock provider, with the engine holding
+    /// zero models. The provider-side pair goes on the wire; the
+    /// postvec-side names stay home. And the embed path refuses the
+    /// converter's name permanently — each call kind owns its models.
+    #[test]
+    fn a_provider_converter_serves_convert_through_the_wire() {
+        let root = crate::client::embedded::tests::empty_engine_root();
+        let runtime = crate::client::embedded::tests::engine_runtime();
+        let engine = crate::client::embedded::tests::test_engine(&root);
+
+        // 0.25/0.5 are exact in f32→f64→f32, so the prost round trip is
+        // byte-stable.
+        let mock = runtime.block_on(provider_mock::always(
+            200,
+            r#"{"success":true,"data":{"embeddings":[[0.25,0.5]]}}"#,
+        ));
+        let gateway = univec_gateway_for(&mock.url);
+
+        let (server, addr) = spawn_for_test(
+            engine,
+            &runtime,
+            "127.0.0.1:0",
+            Duration::from_secs(5),
+            gateway,
+        )
+        .unwrap();
+        let client = GrpcClient::new(vec![addr.to_string()], Vec::new(), 5_000, 1_000);
+
+        let out = crate::runtime::block_on(
+            client.convert(&[vec![0.1f32, 0.2, 0.3]], "univec-convert-a-to-b"),
+        )
+        .expect("provider converter serves through the wire");
+        assert_eq!(out, vec![vec![0.25, 0.5]]);
+        let body = mock.last_request();
+        assert!(body.contains("\"source_model\":\"source-space\""), "{body}");
+        assert!(body.contains("\"target_model\":\"target-space\""), "{body}");
+
+        let err = crate::runtime::block_on(client.embed(
+            &["hello".to_string()],
+            "univec-convert-a-to-b",
+            &EmbedRoute::default(),
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(&err, PvError::Remote { code, .. } if *code == RavennaCode::InvalidInput),
             "got {err:?}"
         );
 

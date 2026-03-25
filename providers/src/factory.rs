@@ -10,8 +10,8 @@
 //! into a [`ProviderConfig`]; the factory never reads the process
 //! environment itself. For operators who choose `api_key_env`, the
 //! conventional variable names are `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
-//! `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `COHERE_API_KEY`, and for AWS
-//! `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`,
+//! `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `COHERE_API_KEY`, `UNIVEC_API_KEY`,
+//! and for AWS `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`,
 //! `AWS_SECRET_ACCESS_KEY` — but the config layer, not this module, reads
 //! them.
 //!
@@ -22,7 +22,8 @@ use crate::{
     openai::{OpenAIClient, DEFAULT_OPENAI_BASE_URL},
     openrouter::{OpenRouterClient, DEFAULT_OPENROUTER_BASE_URL},
     titan::{TitanAuth, TitanClient},
-    EmbeddingBackend, EmbeddingError,
+    univec::{UnivecClient, UnivecConvertClient, DEFAULT_UNIVEC_BASE_URL},
+    ConversionBackend, EmbeddingBackend, EmbeddingError,
 };
 
 /// Fully resolved connector configuration: every secret is already a value
@@ -34,8 +35,8 @@ use crate::{
 #[derive(Clone, Default)]
 pub struct ProviderConfig {
     /// Connector type: `openai | openrouter | mistral | google | cohere |
-    /// aws`. `gemini` is accepted as an alias for `google`, and `amazon`
-    /// for `aws`.
+    /// aws | univec`. `gemini` is accepted as an alias for `google`, and
+    /// `amazon` for `aws`.
     pub provider: String,
     /// API key for the key-authenticated providers.
     pub api_key: Option<String>,
@@ -163,6 +164,19 @@ pub fn new_embedding_backend(
             config.base_url_or(DEFAULT_GEMINI_BASE_URL),
             http_client,
         ))),
+        // UniVec's OpenAI-compatible endpoint takes both the purpose and the
+        // output size: `input_type` selects the model's query/document prompt
+        // template, and `dimensions` (Matryoshka truncation, re-normalised
+        // server-side) is what makes the descriptor's `dim` mean anything
+        // other than the model's native width.
+        "univec" => Ok(Box::new(UnivecClient::new(
+            provider_model_id.to_string(),
+            config.require_api_key()?,
+            dimensions_opt,
+            input_type,
+            config.base_url_or(DEFAULT_UNIVEC_BASE_URL),
+            http_client,
+        ))),
         "cohere" => Ok(Box::new(CohereClient::new(
             provider_model_id.to_string(),
             config.require_api_key()?,
@@ -215,6 +229,42 @@ pub fn new_embedding_backend(
         _ => Err(EmbeddingError::Configuration(format!(
             "Unsupported provider: {}",
             config.provider
+        ))),
+    }
+}
+
+/// Constructs the conversion client for a provider-backed converter entry
+/// (`kind = "convert"` in a providers.d file).
+///
+/// Only UniVec offers hosted vector conversion; a converter entry under any
+/// other connector type is refused at load
+/// (`config::validate_converter_for_provider`), so a serving host never
+/// reaches the error arm — it exists for the same reason the embedding
+/// factory's does: the factory must not trust its callers.
+///
+/// # Arguments
+/// * `provider_source_id` - The provider-side id of the SOURCE space.
+/// * `provider_model_id` - The provider-side id of the TARGET space.
+/// * `target_dim` - The descriptor's output dimension; sizes the response
+///   read budget (the gateway still validates every returned vector).
+pub fn new_conversion_backend(
+    config: &ProviderConfig,
+    provider_source_id: &str,
+    provider_model_id: &str,
+    target_dim: u32,
+    http_client: Option<reqwest::Client>,
+) -> Result<Box<dyn ConversionBackend>, EmbeddingError> {
+    match config.provider.to_lowercase().as_str() {
+        "univec" => Ok(Box::new(UnivecConvertClient::new(
+            provider_source_id.to_string(),
+            provider_model_id.to_string(),
+            target_dim as usize,
+            config.require_api_key()?,
+            config.base_url_or(DEFAULT_UNIVEC_BASE_URL),
+            http_client,
+        ))),
+        other => Err(EmbeddingError::Configuration(format!(
+            "provider {other:?} does not offer hosted vector conversion"
         ))),
     }
 }

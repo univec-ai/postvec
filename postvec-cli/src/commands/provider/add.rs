@@ -91,7 +91,12 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             model_ids.push(id);
         }
     }
-    if args.dim.is_some() && model_ids.len() != 1 {
+    // Converter mode (`--convert-source`): one hosted converter entry
+    // instead of embed models. Validated as a unit here so a partial flag
+    // set fails with one message naming the full set; clap already refuses
+    // `--model` beside it.
+    let converter = converter_new_model(&args, &canonical)?;
+    if args.dim.is_some() && converter.is_none() && model_ids.len() != 1 {
         return Err(CliError::usage(
             "--dim applies to exactly one --model; add models with different dimensions in \
              separate runs",
@@ -128,6 +133,19 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         path: doc.path.clone(),
         value: doc.value.clone(),
     });
+    // Entries the file already declares as CONVERTERS, by public name.
+    // They are excluded from embed re-probes (a converter cannot answer an
+    // embed call) and from the text-egress privacy names below.
+    let existing_converters: std::collections::BTreeSet<String> = existing_for_probe
+        .as_ref()
+        .map(|doc| {
+            doc.descriptors()
+                .into_iter()
+                .filter(|d| d.kind == providers::config::ModelKind::Convert)
+                .map(|d| d.name)
+                .collect()
+        })
+        .unwrap_or_default();
 
     // The descriptors this run adds: skip ids the file already declares.
     let mut new_models: Vec<NewModel> = Vec::new();
@@ -168,7 +186,47 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             dim: args.dim.or(known.map(|k| k.dim)),
             max_tokens: known.map(|k| k.max_tokens),
             max_batch: known.map(|k| k.max_batch),
+            convert: None,
         });
+    }
+    if let Some(converter) = converter {
+        // A rerun with the same route is a no-op note, exactly like an
+        // embed id the file already declares; the same name with a
+        // DIFFERENT route is a refusal — which entry wins would decide what
+        // a migration converts through.
+        let prospective_route = converter_route_id(&converter);
+        let existing_route = existing_for_probe.as_ref().and_then(|doc| {
+            doc.descriptors()
+                .into_iter()
+                .find(|d| d.name == converter.public_name)
+                .map(|d| d.route_model_id())
+        });
+        match existing_route {
+            Some(route) if route == prospective_route => output.note(&format!(
+                "{} is already declared in {}",
+                converter.public_name,
+                file_path.display()
+            )),
+            Some(_) => {
+                return Err(CliError::precondition(format!(
+                    "public name {:?} is already declared in {} with a different route; give \
+                     this converter its own --converter-name",
+                    converter.public_name,
+                    file_path.display()
+                )))
+            }
+            None if already_declared
+                .iter()
+                .any(|(name, _)| *name == converter.public_name) =>
+            {
+                return Err(CliError::precondition(format!(
+                    "public name {:?} is already declared in {}",
+                    converter.public_name,
+                    file_path.display()
+                )))
+            }
+            None => new_models.push(converter),
+        }
     }
 
     // ---- The key source ----
@@ -196,11 +254,19 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         // probe it skipped is what would have measured one. Only
         // --no-verify makes the gap permanent.
         if model.dim.is_none() && args.no_verify {
-            return Err(CliError::usage(format!(
-                "{} is not in the built-in catalog and --no-verify skips the probe; pass \
-                 --dim <N> (its vector dimension) for it",
-                model.id
-            )));
+            return Err(CliError::usage(if model.convert.is_some() {
+                format!(
+                    "--no-verify skips the probe that would measure the converter's target \
+                     dimension; pass --dim <N> for {}",
+                    model.public_name
+                )
+            } else {
+                format!(
+                    "{} is not in the built-in catalog and --no-verify skips the probe; pass \
+                     --dim <N> (its vector dimension) for it",
+                    model.id
+                )
+            }));
         }
     }
     if args.dry_run && !args.no_verify && !new_models.is_empty() {
@@ -245,11 +311,25 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     let credential_changes = matches!(key, KeySpec::File(_) | KeySpec::Env(_) | KeySpec::Inline(_));
 
     // ---- Privacy gate + plan ----
-    let new_names: Vec<String> = new_models.iter().map(|m| m.public_name.clone()).collect();
+    // Text-egress names only: a converter's own name never binds a column
+    // and no source text flows through it — vectors do, and only when an
+    // operator explicitly calls postvec.migrate()/convert(), which is where
+    // its consent moment lives (the migrate-time NOTICE naming the
+    // provider). Putting converter names through this gate would make the
+    // acknowledgement assert something false.
+    let new_names: Vec<String> = new_models
+        .iter()
+        .filter(|m| m.convert.is_none())
+        .map(|m| m.public_name.clone())
+        .collect();
     // Every name this file will serve, when the recipient moves; only the
     // new ones otherwise.
     let public_names: Vec<String> = if endpoint_changes {
-        let mut all: Vec<String> = already_declared.iter().map(|(n, _)| n.clone()).collect();
+        let mut all: Vec<String> = already_declared
+            .iter()
+            .filter(|(n, _)| !existing_converters.contains(n))
+            .map(|(n, _)| n.clone())
+            .collect();
         all.extend(new_names.iter().cloned());
         all
     } else {
@@ -461,9 +541,17 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         // them (which is what "probe the new models" meant for a run that
         // adds none) let a key rotation report success without a single
         // request. That is the failure this command exists to prevent.
+        // Embed probes only: a converter cannot answer an embed call, so
+        // converter entries — the new one and any the file already declares
+        // — go through the convert probe below instead.
+        let already_embed: Vec<(String, String)> = already_declared
+            .iter()
+            .filter(|(name, _)| !existing_converters.contains(name))
+            .cloned()
+            .collect();
         for (id, public_name, declared) in probe_targets(
             &new_models,
-            &already_declared,
+            &already_embed,
             existing_for_probe.as_ref(),
             credential_changes || endpoint_changes,
         ) {
@@ -484,6 +572,56 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
                 }
             }
         }
+
+        // The new converter entry, always. Its measured target dimension
+        // patches an omitted --dim, exactly like an embed probe's.
+        for model in new_models.iter_mut() {
+            let Some(descriptor) = probe_descriptor(model) else {
+                continue;
+            };
+            let measured = super::probe_convert_one(&config, &descriptor, cli.timeout).await?;
+            match model.dim {
+                Some(declared) if declared != measured => {
+                    return Err(CliError::precondition(format!(
+                        "{}: the probe returned {measured} target dimensions but {declared} \
+                         was declared; fix --dim (or drop it to use the measured value)",
+                        model.public_name
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    output.progress(&format!(
+                        "{}: measured target dimension {measured}",
+                        model.public_name
+                    ));
+                    model.dim = Some(measured);
+                }
+            }
+        }
+        // Every already-declared converter too, when the connector itself
+        // changed — the same rule as the embed re-probe list, for the same
+        // reason: a rotated key or moved endpoint changes what every entry
+        // in the file does.
+        if credential_changes || endpoint_changes {
+            if let Some(doc) = existing_for_probe.as_ref() {
+                for descriptor in doc
+                    .descriptors()
+                    .into_iter()
+                    .filter(|d| d.kind == providers::config::ModelKind::Convert)
+                {
+                    let measured =
+                        super::probe_convert_one(&config, &descriptor, cli.timeout).await?;
+                    if measured != descriptor.dim {
+                        return Err(CliError::precondition(format!(
+                            "{}: the probe returned {measured} target dimensions but the file \
+                             declares {}; the conversion route no longer produces what the \
+                             file says",
+                            descriptor.name, descriptor.dim
+                        )));
+                    }
+                }
+            }
+        }
     }
 
     // ---- Apply: finish the document, write, reload ----
@@ -499,10 +637,19 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     doc.write(target.owner())?;
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
+        let shape = match &model.convert {
+            Some(convert) => format!(
+                "converts {}[{}] -> {}[{}]",
+                convert.source_model,
+                convert.source_dim,
+                convert.target_model,
+                model.dim.unwrap_or(0)
+            ),
+            None => format!("dim {}", model.dim.unwrap_or(0)),
+        };
         journal.record(format!(
-            "{}: dim {}{}{}",
+            "{}: {shape}{}{}",
             model.public_name,
-            model.dim.unwrap_or(0),
             if args.no_verify {
                 " (unverified)"
             } else {
@@ -549,13 +696,127 @@ fn scanned_note_needed(public_names: &[String]) -> bool {
 
 /// One descriptor this run is adding.
 struct NewModel {
+    /// The provider-side id: an embed model's own, a converter's TARGET.
     id: String,
     public_name: String,
+    /// An embed model's width; a converter's TARGET width.
     dim: Option<u32>,
     /// Stands in for `dim` during pre-probe validation only.
     placeholder_dim: u32,
     max_tokens: Option<u32>,
     max_batch: Option<usize>,
+    /// `Some` makes this a `kind = "convert"` entry.
+    convert: Option<ConvertSpec>,
+}
+
+/// The converter half of a `--convert-source` run.
+struct ConvertSpec {
+    /// Provider-side id of the SOURCE space.
+    provider_source_id: String,
+    /// Postvec-side public name of the source space (the resolver's
+    /// vocabulary — what a bound column's `model` says).
+    source_model: String,
+    /// Postvec-side public name of the target space.
+    target_model: String,
+    source_dim: u32,
+}
+
+/// The `--convert-*` flags as one converter entry, or `None` when the run
+/// adds embed models. All five are validated as a unit; `--converter-name`
+/// defaults to the documented derived spelling.
+fn converter_new_model(args: &ProviderAddArgs, canonical: &str) -> Result<Option<NewModel>> {
+    let any = args.convert_source.is_some()
+        || args.convert_target.is_some()
+        || args.source_model.is_some()
+        || args.target_model.is_some()
+        || args.source_dim.is_some()
+        || args.converter_name.is_some();
+    if !any {
+        return Ok(None);
+    }
+    if canonical != "univec" {
+        return Err(CliError::usage(
+            "--convert-source adds a hosted converter, which only provider \"univec\" serves",
+        ));
+    }
+    let require = |value: &Option<String>, flag: &str| -> Result<String> {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                CliError::usage(format!(
+                    "a converter needs {flag}: pass --convert-source, --convert-target, \
+                     --source-model, --target-model and --source-dim together"
+                ))
+            })
+    };
+    let provider_source_id = require(&args.convert_source, "--convert-source")?;
+    let provider_target_id = require(&args.convert_target, "--convert-target")?;
+    let source_model = require(&args.source_model, "--source-model")?;
+    let target_model = require(&args.target_model, "--target-model")?;
+    let Some(source_dim) = args.source_dim else {
+        return Err(CliError::usage(
+            "a converter needs --source-dim (the source space's dimension); --dim is the \
+             target's and the probe can measure it",
+        ));
+    };
+    let public_name = args
+        .converter_name
+        .clone()
+        .unwrap_or_else(|| format!("univec-convert-{source_model}-to-{target_model}"));
+    catalog::validate_public_name(&public_name)
+        .map_err(|e| CliError::usage(format!("--converter-name: {e}")))?;
+    Ok(Some(NewModel {
+        placeholder_dim: providers::config::placeholder_dim("univec", &provider_target_id),
+        id: provider_target_id,
+        public_name,
+        dim: args.dim,
+        max_tokens: None,
+        max_batch: None,
+        convert: Some(ConvertSpec {
+            provider_source_id,
+            source_model,
+            target_model,
+            source_dim,
+        }),
+    }))
+}
+
+/// The route id this converter will have — the same derivation the loader,
+/// the serving descriptor and `provider rm` use, so "already declared with
+/// this exact route" is decided by identity, not by field-by-field guesses.
+fn converter_route_id(model: &NewModel) -> String {
+    let convert = model.convert.as_ref().expect("a converter NewModel");
+    providers::config::route_model_id(
+        providers::config::ModelKind::Convert,
+        &model.id,
+        Some(&convert.provider_source_id),
+        Some(&convert.source_model),
+        Some(convert.source_dim),
+        Some(&convert.target_model),
+    )
+}
+
+/// The loader-schema view of a new converter entry, for the shared convert
+/// probe. `None` for embed models. The dimension is the declared one when
+/// known, else the placeholder — the probe uses it only to size its response
+/// budget; declared-vs-measured is the caller's comparison.
+fn probe_descriptor(model: &NewModel) -> Option<providers::config::ModelDescriptor> {
+    let convert = model.convert.as_ref()?;
+    Some(providers::config::ModelDescriptor {
+        name: model.public_name.clone(),
+        provider_model_id: model.id.clone(),
+        dim: model.dim.unwrap_or(model.placeholder_dim),
+        max_batch: providers::config::DEFAULT_MAX_BATCH,
+        max_tokens: None,
+        kind: providers::config::ModelKind::Convert,
+        provider_source_id: Some(convert.provider_source_id.clone()),
+        source_model: Some(convert.source_model.clone()),
+        target_model: Some(convert.target_model.clone()),
+        source_dim: Some(convert.source_dim),
+    })
 }
 
 /// One `[[models]]` entry. Built in one place because it is appended in two:
@@ -583,6 +844,25 @@ fn model_entry(model: &NewModel) -> toml::Value {
     if let Some(max_tokens) = model.max_tokens {
         entry.insert("max_tokens".into(), toml::Value::Integer(max_tokens as i64));
     }
+    if let Some(convert) = &model.convert {
+        entry.insert("kind".into(), toml::Value::String("convert".into()));
+        entry.insert(
+            "provider_source_id".into(),
+            toml::Value::String(convert.provider_source_id.clone()),
+        );
+        entry.insert(
+            "source_model".into(),
+            toml::Value::String(convert.source_model.clone()),
+        );
+        entry.insert(
+            "target_model".into(),
+            toml::Value::String(convert.target_model.clone()),
+        );
+        entry.insert(
+            "source_dim".into(),
+            toml::Value::Integer(convert.source_dim as i64),
+        );
+    }
     toml::Value::Table(entry)
 }
 
@@ -603,6 +883,9 @@ fn probe_targets(
 ) -> Vec<(String, String, Option<u32>)> {
     let mut targets: Vec<(String, String, Option<u32>)> = new_models
         .iter()
+        // Converter entries have their own probe; an embed call cannot
+        // verify them and would be billed for the wrong thing.
+        .filter(|m| m.convert.is_none())
         .map(|m| (m.id.clone(), m.public_name.clone(), m.dim))
         .collect();
     if !connector_changed {

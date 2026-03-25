@@ -427,6 +427,46 @@ impl ProviderFileDoc {
             .unwrap_or_default()
     }
 
+    /// Typed `[[models]]` entries, via the loader's own schema. Entries the
+    /// schema refuses (hand-edited files) are skipped — callers that need a
+    /// lenient view keep using [`Self::models`].
+    pub fn descriptors(&self) -> Vec<providers::config::ModelDescriptor> {
+        self.value
+            .get("models")
+            .and_then(toml::Value::as_array)
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(|m| m.clone().try_into().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `(public name, ROUTE model id)` pairs, in file order — the identity
+    /// [`providers::config::ServedBy`] carries. An embed entry's route id IS
+    /// its `provider_model_id`; a converter's folds in its provider-side
+    /// pair, dims and postvec-side spaces via the same `route_model_id`
+    /// derivation the loader and the serving descriptor use — one
+    /// derivation, or `provider rm`'s no-host conservative view would report
+    /// a partial removal as a handoff to its own file. Entries the schema
+    /// refuses fall back to the raw pair, exactly what [`Self::models`]
+    /// reports.
+    pub fn route_models(&self) -> Vec<(String, String)> {
+        let typed: std::collections::BTreeMap<String, String> = self
+            .descriptors()
+            .into_iter()
+            .map(|d| (d.name.clone(), d.route_model_id()))
+            .collect();
+        self.models()
+            .into_iter()
+            .map(|(name, raw_id)| {
+                let id = typed.get(&name).cloned().unwrap_or(raw_id);
+                (name, id)
+            })
+            .collect()
+    }
+
     /// The key source, for `ls`/doctor display — never a value.
     pub fn key_source(&self) -> String {
         let field = |name: &str| self.value.get(name).and_then(toml::Value::as_str);
@@ -1051,6 +1091,68 @@ pub async fn probe_one(
     Ok(embedding.vector.len() as u32)
 }
 
+/// One live single-vector conversion. Costs a paid API call.
+///
+/// The convert sibling of [`probe_one`], shared by `provider add` and
+/// `provider test` for the same reason those share the embed probe. The
+/// response contract is the serving gateway's, applied here: exactly one
+/// vector, non-empty; its width is the measured target dimension the caller
+/// compares (or patches) against the declared one. The probe input is a unit
+/// basis vector — finite and non-zero, because a zero vector cannot survive
+/// the re-normalisation some conversion pipelines apply.
+pub async fn probe_convert_one(
+    config: &providers::ProviderConfig,
+    model: &providers::config::ModelDescriptor,
+    timeout: std::time::Duration,
+) -> Result<u32> {
+    // Before spending anything: the loader's own converter rule, so a paid
+    // call is never made for an entry the serving host would refuse.
+    providers::config::validate_converter_for_provider(&config.provider, model).map_err(|e| {
+        CliError::precondition(format!("{}: {e}", model.name))
+            .with_fix("the serving host would refuse this entry, so there is nothing to verify")
+    })?;
+    let backend = providers::new_conversion_backend(
+        config,
+        model.provider_source_id.as_deref().unwrap_or(""),
+        &model.provider_model_id,
+        model.dim,
+        None,
+    )
+    .map_err(|e| CliError::precondition(format!("{}: {e}", model.name)))?;
+    // `validate_converter_for_provider` guarantees source_dim >= 1.
+    let mut probe = vec![0.0_f32; model.source_dim.unwrap_or(1) as usize];
+    probe[0] = 1.0;
+    let deadline = std::time::Instant::now() + timeout;
+    let vectors = backend
+        .convert(&[probe], Some(deadline))
+        .await
+        .map_err(|e| {
+            CliError::precondition(format!(
+                "verification convert for {} failed: {e}",
+                model.name
+            ))
+            .with_fix(
+                "check the key, the provider-side model ids and --source-dim; pass --no-verify \
+                 to write the file anyway (the probe costs one paid API call)",
+            )
+        })?;
+    if vectors.len() != 1 {
+        return Err(CliError::precondition(format!(
+            "verification convert for {} returned {} vectors for one input; the serving host \
+             refuses a response that is not row-parallel to the request",
+            model.name,
+            vectors.len()
+        )));
+    }
+    if vectors[0].is_empty() {
+        return Err(CliError::precondition(format!(
+            "verification convert for {} returned an empty vector",
+            model.name
+        )));
+    }
+    Ok(vectors[0].len() as u32)
+}
+
 // ---- Reload client -------------------------------------------------------
 
 /// What `POST /admin/providers/reload` reported.
@@ -1561,5 +1663,94 @@ mod tests {
             std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    /// One rulebook for route identity: the ids `route_models()` reads from
+    /// the document must be byte-equal to the `ServedBy.model_id` the
+    /// loader's `served_names_if` computes for the same body. `provider rm`
+    /// compares one against the other whenever no host answers — a converter
+    /// whose two derivations disagreed would report a partial removal as a
+    /// handoff to its own file.
+    #[test]
+    fn route_models_matches_the_loaders_served_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.path().join("univec.toml");
+        let body = "provider = \"univec\"\napi_key = \"uv\"\n\n\
+             [[models]]\nname = \"univec-arctic\"\n\
+             provider_model_id = \"snowflake-arctic-embed-l-v2.0\"\ndim = 1024\n\n\
+             [[models]]\nname = \"univec-convert-a-to-b\"\nkind = \"convert\"\n\
+             provider_model_id = \"target-space\"\nprovider_source_id = \"source-space\"\n\
+             source_model = \"model-a\"\ntarget_model = \"model-b\"\n\
+             source_dim = 1536\ndim = 768\n";
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let doc = ProviderFileDoc::load(&path).unwrap().unwrap();
+        let served = providers::config::served_names_if(dir.path(), &path, Some(body)).unwrap();
+        let from_doc: std::collections::BTreeMap<String, String> =
+            doc.route_models().into_iter().collect();
+        assert_eq!(from_doc.len(), 2);
+        for (name, by) in &served {
+            assert_eq!(
+                from_doc.get(name),
+                Some(&by.model_id),
+                "route id for {name} diverged between the document reader and the loader"
+            );
+        }
+        // And the converter's id is the folded route, not the raw target id.
+        assert_eq!(
+            from_doc.get("univec-convert-a-to-b").unwrap(),
+            "source-space->target-space for model-a[1536]->model-b"
+        );
+    }
+
+    /// The convert probe applies the loader's rules before spending a call,
+    /// measures the target dimension from the response, and holds it to the
+    /// gateway's response contract.
+    #[tokio::test]
+    async fn probe_convert_one_measures_and_validates() {
+        let mock = providers::testing::always(
+            200,
+            r#"{"success":true,"data":{"embeddings":[[0.1,0.2,0.3]]}}"#,
+        )
+        .await;
+        let config = providers::ProviderConfig {
+            provider: "univec".to_string(),
+            api_key: Some("uv-test".to_string()),
+            base_url: Some(mock.url.clone()),
+            ..Default::default()
+        };
+        let descriptor: providers::config::ModelDescriptor = toml::toml! {
+            name = "univec-convert-a-to-b"
+            kind = "convert"
+            provider_model_id = "target-space"
+            provider_source_id = "source-space"
+            source_model = "model-a"
+            target_model = "model-b"
+            source_dim = 4
+            dim = 3
+        }
+        .try_into()
+        .unwrap();
+
+        let measured = probe_convert_one(&config, &descriptor, std::time::Duration::from_secs(5))
+            .await
+            .expect("probe ok");
+        assert_eq!(measured, 3);
+        // The probe input is a unit basis vector of source_dim components.
+        let body = mock.last_request();
+        assert!(body.contains("[[1.0,0.0,0.0,0.0]]"), "{body}");
+        assert!(body.contains("\"source_model\":\"source-space\""), "{body}");
+
+        // A connector with no conversion endpoint is refused BEFORE any call.
+        let count_before = mock.request_count();
+        let mut bad = config.clone();
+        bad.provider = "openai".to_string();
+        let err = probe_convert_one(&bad, &descriptor, std::time::Duration::from_secs(5))
+            .await
+            .expect_err("openai cannot convert");
+        assert!(err.to_string().contains("univec"), "{err}");
+        assert_eq!(mock.request_count(), count_before, "no paid call was spent");
     }
 }

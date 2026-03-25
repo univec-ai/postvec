@@ -131,21 +131,38 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
             .and_then(toml::Value::as_integer)
     };
 
+    // Schema-typed view for the probe dispatch: `validate_file` above
+    // passed, so every entry parses. A converter gets the convert probe —
+    // an embed call cannot verify it and would be billed for the wrong
+    // thing.
+    let typed: std::collections::BTreeMap<String, providers::config::ModelDescriptor> = doc
+        .descriptors()
+        .into_iter()
+        .map(|d| (d.name.clone(), d))
+        .collect();
+
     let mut results = Vec::new();
     let mut failed = false;
     for (name, id) in &selected {
         let declared = declared_dim(name);
-        // The same probe `provider add` runs: one aligned, non-empty vector
+        // The same probes `provider add` runs: one aligned, non-empty vector
         // and nothing less. `test`'s own copy accepted "the first vector,
         // whatever it is", so it reported success for responses the serving
         // gateway refuses.
-        let outcome = probe_one(
-            &config,
-            id,
-            declared.and_then(|d| u32::try_from(d).ok()),
-            cli.timeout,
-        )
-        .await;
+        let outcome = match typed.get(name) {
+            Some(descriptor) if descriptor.kind == providers::config::ModelKind::Convert => {
+                super::probe_convert_one(&config, descriptor, cli.timeout).await
+            }
+            _ => {
+                probe_one(
+                    &config,
+                    id,
+                    declared.and_then(|d| u32::try_from(d).ok()),
+                    cli.timeout,
+                )
+                .await
+            }
+        };
         match outcome {
             Ok(measured) => {
                 let ok = declared.is_none_or(|d| d == measured as i64);

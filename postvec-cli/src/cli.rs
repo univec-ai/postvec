@@ -149,7 +149,9 @@ impl ModelCommand {
 pub enum ProviderCommand {
     /// Configure a provider: write its providers.d file (0600), verify the
     /// key with one live embed per model, and reload the running host.
-    Add(ProviderAddArgs),
+    /// Boxed: the add flags dwarf the other subcommands' and clap clones
+    /// the whole enum per dispatch.
+    Add(Box<ProviderAddArgs>),
     /// List configured providers: key source (never the key), models, dims,
     /// and whether the running host currently serves them.
     Ls(ProviderLsArgs),
@@ -173,8 +175,8 @@ impl ProviderCommand {
 
 #[derive(Debug, Args, Clone)]
 pub struct ProviderAddArgs {
-    /// Connector type: openai | openrouter | mistral | google | cohere | aws
-    /// (gemini is accepted as an alias for google).
+    /// Connector type: openai | openrouter | mistral | google | cohere |
+    /// aws | univec (gemini is accepted as an alias for google).
     #[arg(value_name = "TYPE")]
     pub provider_type: String,
 
@@ -183,8 +185,46 @@ pub struct ProviderAddArgs {
     pub name: Option<String>,
 
     /// Provider model id (e.g. text-embedding-3-small). Repeatable.
-    #[arg(long = "model", value_name = "ID", required = true)]
+    #[arg(
+        long = "model",
+        value_name = "ID",
+        required_unless_present = "convert_source",
+        conflicts_with = "convert_source"
+    )]
     pub models: Vec<String>,
+
+    /// univec only: add a hosted CONVERTER entry instead of embed models —
+    /// this is the provider-side id of the SOURCE vector space. Requires
+    /// --convert-target, --source-model, --target-model and --source-dim.
+    /// postvec.migrate(strategy => 'convert') and postvec.convert() route
+    /// through the entry; it serves no embedding.
+    #[arg(long, value_name = "ID")]
+    pub convert_source: Option<String>,
+
+    /// Converter only: the provider-side id of the TARGET vector space.
+    #[arg(long, value_name = "ID")]
+    pub convert_target: Option<String>,
+
+    /// Converter only: the postvec-side public name of the SOURCE space —
+    /// what a bound column's `model` says (the resolver's vocabulary, not
+    /// the provider's).
+    #[arg(long, value_name = "NAME")]
+    pub source_model: Option<String>,
+
+    /// Converter only: the postvec-side public name of the TARGET space —
+    /// what postvec.migrate() is called with.
+    #[arg(long, value_name = "NAME")]
+    pub target_model: Option<String>,
+
+    /// Converter only: the SOURCE space's dimension (--dim is the target's;
+    /// the verification probe measures it when omitted).
+    #[arg(long, value_name = "N")]
+    pub source_dim: Option<u32>,
+
+    /// Converter only: the entry's public name. Default:
+    /// univec-convert-<source-model>-to-<target-model>.
+    #[arg(long, value_name = "NAME")]
+    pub converter_name: Option<String>,
 
     /// Reference this key file from the provider file (the file itself must
     /// be 0600; it is referenced, never copied).
