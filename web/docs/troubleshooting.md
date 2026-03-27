@@ -44,6 +44,8 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | A connector file is refused | Its mode, or a referenced key file's mode, grants group or other bits. `chmod 600`, then rotate the key |
 | `provider add` demands `--acknowledge-in-use` | Existing columns start sending source text to the provider, or `--path` has no cluster to scan. `--yes` never answers this |
 | Provider jobs retry with a 401 | Bad or revoked key. Fix it, then `retry_dead()` for rows that already gave up |
+| UniVec provider jobs retry with a 402 | No available credit, or the key's spending limit is exhausted. Fix the account limit, then `retry_dead()` for dead rows |
+| A hosted converter exists but bridge search has no route | Provider converters are direct `migrate()` / `convert()` routes. Load the embed model, local converter and bridge executor on one engine |
 | Uninstall exits 3 | SQL changed; config left alone. Follow the printed file/line |
 | Exit 4 | Restart the selected cluster, then `doctor --deep` |
 

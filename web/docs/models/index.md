@@ -35,22 +35,22 @@ A convert-only space such as `ada-002` can then accept new writes and
 query embeddings without the original provider or a corpus migration.
 See [search a retired space](/docs/guides/bridge).
 
-Conversion itself resolves a direct converter or a two-hop
-`convert-bridge`. Write, search, one-shot and migration paths share the
-same resolver.
+`convert()` and `strategy => 'convert'` migrations require a direct converter.
+That converter can be a local model or a UniVec hosted route.
 
 ## Hosted models
 
 A model in `postvec.models` does not have to be a file on disk. A connector
-file on the inference side can declare models served by OpenAI, Gemini,
-Cohere, Mistral, AWS Bedrock or OpenRouter. They appear in the same cache,
-with the same `model_type` and `target_dim`, and every resolution rule above
-applies to them unchanged. There is no `pull` and no `activate` step: the
+file on the inference side can declare embed models served by OpenAI, Gemini,
+Cohere, Mistral, AWS Bedrock, OpenRouter or UniVec. UniVec can also declare
+direct converters. They appear in the same cache with `model_type`, source
+and target names and dimensions. There is no `pull` or `activate` step: the
 connector file is the serving truth.
 
 The credential lives in that file, never in PostgreSQL.
 [External providers](/docs/models/providers) is the walkthrough;
-[connector files](/docs/models/providers-file) is the format.
+[connector files](/docs/models/providers-file) is the format. See
+[UniVec hosted models](/docs/models/univec) for direct conversion.
 
 Two connector files that claim the same public name serve neither. A name
 a loaded local model already owns stays local.
@@ -111,4 +111,5 @@ other.
 - [Login](/docs/models/login) - private catalogue
 - [Air-gapped](/docs/models/air-gapped)
 - [External providers](/docs/models/providers) - hosted embedding APIs
+- [UniVec hosted models](/docs/models/univec) - hosted embeddings and conversion
 - [Connector files](/docs/models/providers-file) - format, names, loading

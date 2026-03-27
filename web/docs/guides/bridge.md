@@ -1,13 +1,13 @@
 ---
 title: Search a retired space
-description: Adopt vectors in a retired or provider-only model space and search them through automatic embed-bridge routing.
+description: Adopt vectors in a retired or provider-only model space and search them through local embed-bridge routing.
 ---
 
 # Search a retired space
 
 If the column is already in a retired or provider-only space, postvec
 can create each new query vector locally and convert that vector into
-the stored space.
+the stored space with a local bridge chain.
 
 An `openai-text-embedding-ada-002` corpus can stay byte-for-byte
 unchanged. `search()` embeds the query with an available open model,
@@ -29,8 +29,8 @@ query text
 Resolution is deterministic:
 
 1. A direct embed model for the declared target takes precedence.
-2. Otherwise postvec chooses the lexicographically first converter into
-   that target whose source is directly embeddable, then uses an
+2. Otherwise postvec chooses the lexicographically first local converter
+   into that target whose source is directly embeddable, then uses an
    `embed-bridge` executor.
 3. If neither route exists, `search()` follows the configured
    FTS-degradation policy. Administrative and write paths fail or retry
@@ -46,6 +46,13 @@ space makes a direct route exist. The column then stops bridging and starts
 sending its source text to that provider, with no SQL change. `postvec
 provider add` lists the affected columns and requires an acknowledgement
 before it writes the file.
+::::
+
+:::: info Hosted converters do not supply a bridge
+A [UniVec hosted converter](/docs/models/univec) can serve a direct
+`migrate()` or `convert()` route. It cannot back writes or query embedding,
+and it cannot act as the converter in an `embed-bridge` route. Embed-bridge
+resolution runs inside the local engine.
 ::::
 
 ## 1. Verify the stored space
@@ -146,7 +153,7 @@ result is the sign that the semantic leg did not run.
 
 ## Model requirements
 
-An executable route needs all three parts:
+An executable route needs all three parts in one local engine:
 
 - one direct embed model for the bridge/source space
 - one converter from that source to the stored target space

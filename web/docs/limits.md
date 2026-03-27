@@ -30,6 +30,8 @@ description: Supported environments and explicit limitations.
 - A private or corporate CA for provider TLS. The connectors use rustls
   with the bundled Mozilla root set
 - Reranking providers and `Retry-After`-aware provider backoff
+- Provider-backed converters in `embed-bridge` routes. Hosted converters are
+  direct conversion routes
 
 ## Deliberate product refusals
 

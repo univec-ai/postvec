@@ -121,6 +121,7 @@ export default defineConfig({
             { text: "Login and private catalogue", link: "/docs/models/login" },
             { text: "Air-gapped hosts", link: "/docs/models/air-gapped" },
             { text: "External providers", link: "/docs/models/providers" },
+            { text: "UniVec hosted models", link: "/docs/models/univec" },
             { text: "Connector files", link: "/docs/models/providers-file" },
           ],
         },

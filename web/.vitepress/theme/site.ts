@@ -4,8 +4,8 @@ export const SITE = {
   description:
     "A PostgreSQL extension for in-database embeddings, hybrid search and converting stored vectors between models.",
   url: "https://postvec.dev",
-  github: "https://github.com/univec-ai/stack",
-  githubRepo: "univec-ai/stack",
+  github: "https://github.com/univec-ai/postvec",
+  githubRepo: "univec-ai/postvec",
   releaseTag: "postvec-v0.1.0-1",
   ghcr: "ghcr.io/univec-ai/postvec",
   univec: "https://univec.ai",
@@ -17,7 +17,7 @@ export const SITE = {
   bundledModelVersion: "2.1.0",
   releaseStage: "preview",
   registryStage: "preview",
-  signerWorkflow: "univec-ai/stack/.github/workflows/postvec-release.yml",
+  signerWorkflow: "univec-ai/postvec/.github/workflows/postvec-release.yml",
   conversionPairs: "nearly 100",
 } as const;
 

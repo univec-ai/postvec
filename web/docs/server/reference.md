@@ -134,7 +134,8 @@ nothing on its own initiative; models arrive on disk by whatever mechanism you
 choose. The one deliberate exception is an [external
 provider](/docs/models/providers) you configure yourself: with a connector
 file present, the node calls that provider's API for the models it declares,
-and only for those.
+and only for those. A UniVec converter sends stored vectors; an embed entry
+sends text.
 
 ## Troubleshooting
 

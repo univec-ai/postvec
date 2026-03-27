@@ -1,6 +1,6 @@
 ---
 title: External providers
-description: Bind a column to OpenAI, Gemini, Cohere, Mistral, AWS Bedrock or OpenRouter. The API key stays out of PostgreSQL.
+description: Bind a column to OpenAI, Gemini, Cohere, Mistral, AWS Bedrock, OpenRouter or UniVec. The API key stays out of PostgreSQL.
 ---
 
 # External providers
@@ -8,8 +8,9 @@ description: Bind a column to OpenAI, Gemini, Cohere, Mistral, AWS Bedrock or Op
 `postvec provider add` points the inference host at a hosted embedding API.
 The key goes in a `0600` file under `providers.d`. PostgreSQL never stores it.
 
-Provider models appear in `postvec.models`. After that, `enable()`, `search()`
-and `migrate()` are the same SQL used for a local model.
+Provider embed models appear in `postvec.models`. `enable()`, `search()` and
+re-embedding migrations then use the same SQL as local models. UniVec can
+also expose hosted direct converters for `migrate()`.
 
 `postvec.mode` stays `embedded` or `grpc`. Connector files are extra inventory
 on whichever host already runs inference.
@@ -22,6 +23,8 @@ on whichever host already runs inference.
 | SQL name | `baai-bge-m3` | `openai-text-embedding-3-small` |
 
 TOML, names and `doctor` checks: [connector files](/docs/models/providers-file).
+[UniVec hosted models](/docs/models/univec) covers its embedding and vector
+conversion entries.
 
 ## Keys
 
@@ -38,7 +41,8 @@ or takes `--api-key-file`, `--api-key-env` or `--key-stdin`. A key is
 refused as a bare argument. `provider ls` prints the source.
 
 A bound column sends its source text to the provider on every insert and
-update.
+update, and `search()` sends the query text. A migration through a hosted
+UniVec converter sends the stored vectors instead.
 
 ## 1. Add a provider
 
@@ -83,8 +87,9 @@ SELECT relation, model, dim, pending_jobs, dead_jobs
 ```
 
 `enable()`, `adopt()` and `migrate()` emit that NOTICE for a provider
-model. `migrate(..., strategy => 'reembed')` onto a provider sends every
-existing row.
+embed model. `migrate(..., strategy => 'reembed')` onto a provider sends
+every existing row. A direct hosted conversion emits a separate NOTICE that
+the stored vectors will leave the host.
 
 ::::: tip Expected
 `pending_jobs` returns to 0. `docs.body_semantic` is `vector(1536)`.
@@ -241,7 +246,7 @@ A remote-mode cluster without `--path` is refused. The message names
 | What happened | Class | Effect |
 |---|---|---|
 | Network error, timeout, HTTP 408, 424, 429 or 5xx | Transient | Backoff and retry |
-| HTTP 401 or 403 | Config | Retry. Failover-eligible across nodes |
+| HTTP 401, 402 or 403 | Config | Retry. Failover-eligible across nodes. For UniVec, 402 means the account has no available credit |
 | Unknown model id at the provider | Config | Retry, failover-eligible |
 | Empty input, or a NUL | PoisonRow | Caught before the request. That row goes to `jobs_dead` |
 | Other HTTP 4xx, or a wrong count, dimension or index | Permanent | The batch is dead-lettered |
@@ -256,8 +261,9 @@ alone.
 
 ## Cost
 
-Providers bill per token. `postvec.max_document_bytes` (1 MiB)
-dead-letters an oversized document. `max_concurrent` in the file caps
+Embedding providers usually bill per token. UniVec conversion bills per
+vector. `postvec.max_document_bytes` (1 MiB) dead-letters an oversized
+document before an embedding call. `max_concurrent` in the file caps
 in-flight requests. It is not a spend cap. Set quotas on the provider.
 
 Provider calls ignore `postvec.embedded_max_inflight`. A slow hosted
@@ -268,6 +274,7 @@ The CLI says so.
 ## See also
 
 - [Connector files](/docs/models/providers-file)
+- [UniVec hosted models](/docs/models/univec)
 - [Search a retired space](/docs/guides/bridge)
 - [Remote inference](/docs/server/)
 - [Docker](/docs/install/docker#external-providers)

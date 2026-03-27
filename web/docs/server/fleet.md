@@ -74,8 +74,9 @@ missing model directory:
       [provider-backed via "openai" - check providers.d and its key on that node]
 ```
 
-Provider-backed models are also excluded from the descriptor-drift checks,
-which assume an on-disk descriptor. They do not have one.
+Provider-backed embed models and converters are also excluded from the
+descriptor-drift checks, which assume an on-disk descriptor. They do not have
+one.
 
 ## Rolling restarts
 

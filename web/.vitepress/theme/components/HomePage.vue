@@ -65,8 +65,8 @@ const active = ref(tabs[0].id);
             for PostgreSQL
           </h1>
           <p class="subhead">
-            In-database inference using local models or remote via 3rd
-            party providers. Compatible with Pg 16, 17, 18.
+            Inference with local models, postvec-server nodes or hosted
+            embedding providers. Compatible with PostgreSQL 16, 17 and 18.
           </p>
           <p class="lede">
             postvec makes a text column semantic. It keeps a
@@ -139,9 +139,9 @@ const active = ref(tabs[0].id);
           <div>
             <dt>Knowledge bases that outlast a model</dt>
             <dd>
-              Stored vectors convert between embedding spaces through a
-              catalogue of {{ SITE.conversionPairs }} UniVec pairs.
-              Conversion reads the vectors.
+              Stored vectors convert between embedding spaces through local
+              converter models or UniVec's hosted conversion API. The
+              catalogue contains {{ SITE.conversionPairs }} UniVec pairs.
               <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>.
             </dd>
           </div>

@@ -20,16 +20,28 @@ risk of changing that dependency.
 
 ## Is a UniVec API key required?
 
-No key is required for the bundled MiniLM model or for search. A key and
-`postvec login` are required to pull **private-catalogue** models. The
-authenticated route is identity-only (verified account, unexpired key). A
-dedicated key with a $0 spending limit is the recommended credential. Account details: [univec.ai](https://univec.ai).
+No key is required for the bundled MiniLM model or local search. A key and
+`postvec login` are required to pull **private-catalogue** models. That route
+is identity-only, so a dedicated key with a $0 spending limit is suitable.
 
-## Can postvec embed with OpenAI, Gemini or Cohere?
+Hosted UniVec embeddings and conversions use a key configured with
+`postvec provider add univec`. Those calls are billable, so a $0 spending
+limit refuses them. The registry credential and the provider credential are
+stored separately. Account details: [univec.ai](https://univec.ai).
 
-Yes, per column, with `postvec provider add`. The connector file and the key
-live on the inference side; PostgreSQL holds neither.
+## Can postvec use hosted embedding APIs?
+
+Yes. The built-in connectors cover OpenAI, OpenRouter, Mistral, Gemini,
+Cohere, AWS Bedrock and UniVec. The connector file and the key live on the
+inference side; PostgreSQL holds neither.
 [External providers](/docs/models/providers) is the walkthrough.
+
+## Can UniVec convert stored vectors without a local converter?
+
+Yes. A `kind = "convert"` entry in `univec.toml` supplies a direct hosted
+route to `migrate()`. Stored vectors leave the inference host for conversion;
+source text is not re-embedded. Hosted converters do not participate in
+`embed-bridge` routes. See [UniVec hosted models](/docs/models/univec).
 
 ## How do I add OpenAI to an existing cluster?
 
@@ -57,7 +69,7 @@ No. Models already present on disk run in the launcher. `model pull` and
 `ls --available` contact the registry when invoked. Air-gapped hosts are
 [supported](/docs/models/air-gapped).
 
-## Where do OpenAI / Gemini keys go?
+## Where do provider keys go?
 
 Into `0600` connector files in a `providers.d` directory on the inference
 side: the database host in embedded mode, each `postvec-server` node in

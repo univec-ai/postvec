@@ -13,8 +13,8 @@ Publication channels:
 
 | Channel | What it holds |
 |---|---|
-| [GitHub Releases](https://github.com/univec-ai/stack/releases) tagged `postvec-v*` | `.deb` / `.rpm` packages, `SHA256SUMS`, Sigstore attestations, `postvec-prerequisites.sh` |
-| [GHCR](https://github.com/univec-ai/stack/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pg16` / `-pg17` / `-pg18`, with or without `-complete`) |
+| [GitHub Releases](https://github.com/univec-ai/postvec/releases) tagged `postvec-v*` | `.deb` / `.rpm` packages, `SHA256SUMS`, Sigstore attestations, `postvec-prerequisites.sh` |
+| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pg16` / `-pg17` / `-pg18`, with or without `-complete`) |
 
 The selector checks GitHub for a published postvec release and links
 assets only when they exist. Until then the names below are the contract
@@ -61,6 +61,6 @@ later step.
 
 ## Hosting
 
-The selector reads `univec-ai/stack` releases tagged `postvec-v*`. If
-packages later move to a dedicated repository or object store, the artifact
-identity and image-tag scheme stay the compatibility contract.
+The selector reads `univec-ai/postvec` releases tagged `postvec-v*`.
+The artifact identity and image-tag scheme are the compatibility contract if
+the packages later move to an object store.

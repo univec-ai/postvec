@@ -101,9 +101,9 @@ body, an impossible name, more than 32 models at once) are `4xx`.
 ## External providers
 
 A node can also serve hosted embedding APIs from connector files under
-`$root/providers.d`. There is no descriptor and no load step: the file is the
-serving truth, and the models it declares appear in `/config` next to the
-loaded ones.
+`$root/providers.d`. A UniVec file can also declare direct hosted converters.
+There is no engine descriptor or load step: the connector file is the serving
+truth, and its entries appear in `/config` next to the loaded models.
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
@@ -128,11 +128,13 @@ curl -s -X POST http://127.0.0.1:22223/admin/providers/reload
 
 If two connector files claim the same public name, neither serves. If a
 loaded local model and a provider file claim the same name, the **local
-model wins**, in `/config` and on the embed path alike.
+model wins**, in `/config` and on the embed or convert path alike.
 
 Format, key sources and the rest: [external
 providers](/docs/models/providers), then [connector
 files](/docs/models/providers-file).
+
+UniVec conversion setup: [UniVec hosted models](/docs/models/univec).
 
 ## Related documentation
 

@@ -29,7 +29,7 @@ The extension does not change `search_path`. Every call needs the
 | `search_with_vector(relation, column_name, query_vector real[], query_text DEFAULT '', ...same including filter...)` | same |
 | `retry_dead(relation regclass, column_name, dead_ids bigint[] DEFAULT NULL)` | `bigint` dead rows consumed |
 | `migrate(relation, column_name, new_model, strategy DEFAULT 'convert', reindex DEFAULT 'manual', observed_writes_quiesced DEFAULT false)` | `bigint` migration id |
-| `migration_status(migration_id DEFAULT NULL)` | progress, state, `suggested_index_sql` |
+| `migration_status(migration_id DEFAULT NULL)` | route in `resolved_via`, progress, state and `suggested_index_sql` |
 | `migration_finalize(id)` / `migration_abort(id)` | `void` |
 | `status()` | per-entry health (includes chunk + index columns) |
 | `stats()` | worker / queue counters |

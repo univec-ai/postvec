@@ -14,7 +14,7 @@ Walkthrough: [external providers](/docs/models/providers).
 
 ```toml
 # /etc/postvec/providers.d/openai.toml
-provider = "openai"      # openai | openrouter | mistral | google | cohere | aws
+provider = "openai"      # openai | openrouter | mistral | google | cohere | aws | univec
 enabled  = true          # false parses and serves nothing
 
 api_key_file = "/etc/postvec/keys/openai.key"
@@ -31,11 +31,11 @@ max_batch         = 512    # host sub-batches to this
 max_tokens        = 8191   # advertised as sequence_len
 ```
 
-`base_url` replaces the **origin only**. Each connector appends its own
-fixed path (`/v1/embeddings` for the OpenAI-shaped APIs, `/v2/embed` for
-Cohere, Gemini's batch path). It must be an absolute `http`/`https` URL
-with a host, and must not carry a query string, a fragment, userinfo or
-a trailing `/`.
+`base_url` replaces the **origin only**. Each connector appends its own path.
+OpenAI-shaped APIs and UniVec embeds use `/v1/embeddings`. UniVec conversion
+uses `/v1/convert`, Cohere uses `/v2/embed` and Gemini uses its batch path.
+The URL must be absolute `http` or `https` with a host. It must not carry a
+query string, fragment, userinfo or trailing `/`.
 
 Use it for a reverse proxy, a gateway or a self-hosted OpenAI-compatible
 endpoint. Azure OpenAI classic needs a deployment path and an
@@ -128,7 +128,42 @@ receives `outputDimensionality` and Cohere v4 `output_dimension`.
 
 Providers that separate query text from stored text send `search_query`
 for `search()` and `search_document` for worker writes, `embed()` and
-migration re-embeds.
+migration re-embeds. Cohere, Gemini and UniVec use this distinction.
+
+## UniVec converter entries
+
+UniVec is the only connector that accepts `kind = "convert"`. An embed entry
+uses the common schema above. A converter adds the source and target names in
+the provider's vocabulary and in postvec's vocabulary:
+
+```toml
+provider = "univec"
+api_key_file = "/etc/postvec/keys/univec.key"
+
+[[models]]
+name               = "univec-convert-snowflake-to-bge-m3"
+kind               = "convert"
+provider_source_id = "snowflake-arctic-embed-l-v2.0"
+provider_model_id  = "baai-bge-m3"
+source_model       = "snowflake-arctic-embed-l-v2.0"
+target_model       = "baai-bge-m3"
+source_dim         = 1024
+dim                = 1024
+max_batch          = 96
+```
+
+`provider_source_id` and `provider_model_id` go on the UniVec request.
+`source_model` and `target_model` are matched against a postvec column and
+the requested migration target. `source_dim` validates every input vector;
+`dim` validates every output vector.
+
+Converter entries refuse `max_tokens`. They also refuse a missing name or
+dimension, identical source and target names, or a connector type other than
+`univec`. One invalid entry prevents the whole file from loading.
+
+Hosted converters are direct routes for `migrate()` and `convert()`. They do
+not take part in `embed-bridge` execution.
+[UniVec hosted models](/docs/models/univec) has the migration sequence.
 
 ## Loading rules
 
@@ -148,7 +183,7 @@ migration re-embeds.
   refused. Two files claiming the same name: neither serves until one
   drops it.
 - A loaded local model keeps a colliding name, in `/config` and on the
-  embed path.
+  embed or convert path.
 - The directory is bounded as a whole: at most 32 connector files, 256
   provider models and 256 total `max_concurrent` across every file. A
   single file is at most 256 KiB and a referenced secret at most
@@ -169,8 +204,8 @@ The directory must not be group- or world-writable, must be owned by
 the account that reads it (or by root) and every ancestor must be one
 only root or that same account can rewrite. Anyone who can write there
 can drop in a connector file and choose where this host sends source
-text. The serving host refuses those cases outright, `provider add`
-refuses to write into one and `doctor` fails `provider.directory`.
+text or stored vectors. The serving host refuses those cases. `provider add`
+also refuses to write there, and `doctor` fails `provider.directory`.
 Read and execute bits only disclose which providers are configured;
 those stay a warning.
 
@@ -186,8 +221,8 @@ removal does the same.
 
 ## Model names
 
-The public name is `provider-model_id`, lowercased, with `/`, `:`, `.`
-and spaces mapped to `-`. These are the ones the CLI can prefill:
+The CLI uses a curated public name for a model in its built-in catalogue.
+These entries are available:
 
 | Provider | Model id | Name in SQL | Dim |
 |---|---|---|---:|
@@ -207,6 +242,10 @@ states it. OpenRouter ids are namespaced, so
 `--model openai/text-embedding-3-large` becomes
 `openrouter-openai-text-embedding-3-large`.
 
+UniVec ids are not in the CLI's built-in catalogue. `provider add univec`
+measures an embed model's dimension. For example, `--model baai-bge-m3`
+becomes `univec-baai-bge-m3`.
+
 For an id the catalogue does not know, the name is derived
 mechanically: lowercase, and every character outside `[a-z0-9._-]`
 becomes `-`. `provider_model_id` keeps the id exactly as the API
@@ -221,8 +260,9 @@ what you type in SQL.
 | Command | Result | Network |
 |---|---|---|
 | `provider add TYPE --model ID...` | Write or extend the file, verify, reload the host, refresh `postvec.models` | One embed per verified model, unless `--no-verify` |
+| `provider add univec --convert-source ID ...` | Write or extend the file with a converter, verify, reload and refresh | One vector conversion, unless `--no-verify` |
 | `provider ls` | Providers, key sources, models, dims and whether the host serves them now | Loopback |
-| `provider test NAME [--model ID]` | The verification probe on demand | One embed per model probed |
+| `provider test NAME [--model ID]` | Verify embed or converter entries on demand | One embed or vector conversion per selected entry |
 | `provider rm NAME [--model ID]` | Drop one model entry or the whole file, then reload | Loopback |
 
 Useful options on `add`:
@@ -234,21 +274,24 @@ Useful options on `add`:
 | `--base-url URL` | Gateways, Azure-shaped fronts or a mock server. Not accepted for `aws` |
 | `--region` | Required for `aws`, and only valid there |
 | `--dim N` | For a single model the built-in catalogue does not know, together with `--no-verify` |
+| `--convert-source ID --convert-target ID` | UniVec provider ids for a hosted converter |
+| `--source-model NAME --target-model NAME --source-dim N` | Postvec route names and the input dimension for a hosted converter |
+| `--converter-name NAME` | Override the derived `univec-convert-<source>-to-<target>` name |
 | `--no-verify` | Skip the live probe |
 | `--dry-run` | Print the plan and change nothing |
 
 The plan is confirmed before the probe. Declining it, or failing the
 in-use acknowledgement, makes no API call.
 
-`add` verifies the models it adds, plus (when the run changes the
-connector itself: a new key source, a moved `base_url` or `region`)
-every model the file already declares.
+`add` and `test` use an embedding probe for embed entries and a single-vector
+conversion probe for converter entries. A connector change, such as a new key
+source or `base_url`, rechecks every entry in that file.
 
 Target resolution:
 
 | Target | Behaviour |
 |---|---|
-| `--path DIR` | Filesystem management of `DIR/providers.d`, or of `DIR` itself when it already is one. `DIR` must already exist. New files inherit its owner. `--acknowledge-in-use` is always required |
+| `--path DIR` | Filesystem management of `DIR/providers.d`, or of `DIR` itself when it already is one. `DIR` must already exist. New files inherit its owner. An embed entry requires `--acknowledge-in-use`; a new converter does not |
 | Embedded cluster | Manage `postvec.providers_path`, scan the databases for affected columns, reload the running host |
 | Remote cluster | Refused by name. The message points at `--path` |
 
@@ -304,6 +347,7 @@ a `--path` target the same situation is a note, not a partial result.
 | Gemini models other than `gemini-embedding-001` | Refused at load. The contracts are not uniform |
 | `Retry-After`-aware backoff, per-provider token budgets | Deferred |
 | Reranking providers | A separate roadmap item |
+| Provider-backed converters in `embed-bridge` routes | Hosted converters are direct conversion routes. Embed-bridge resolves local engine models only |
 | A private or corporate CA for provider TLS | The connectors use rustls with the bundled Mozilla root set, not the system trust store |
 | Authenticated inference transport | Loopback gRPC (embedded) and node gRPC (remote) are plaintext and unauthenticated. Restrict the node's gRPC port. Use provider-side quotas as the spend control |
 
@@ -314,6 +358,7 @@ rather than postvec.
 ## Related documentation
 
 - [External providers](/docs/models/providers) - the walkthrough
+- [UniVec hosted models](/docs/models/univec) - hosted embeddings and direct conversion
 - [CLI](/docs/reference/cli) - flags and exit codes
 - [GUCs](/docs/reference/gucs) - `providers_path` and the timeouts
 - [Docker](/docs/install/docker#external-providers) - mounts and permissions

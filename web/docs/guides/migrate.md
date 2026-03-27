@@ -6,8 +6,8 @@ description: In-place model migration via convert (or re-embed), finalize and ab
 # Migrate models
 
 Stored vectors move to a new model in place. The default strategy is
-`convert`: UniVec translates the stored vectors. Source text is not
-sent through the old embedding provider.
+`convert`: a local converter model or a direct UniVec hosted converter
+translates the stored vectors. Source text is not re-embedded.
 
 When the corpus should stay put, [bridge search](/docs/guides/bridge)
 converts queries into the existing space instead.
@@ -81,7 +81,8 @@ SELECT postvec.migrate(
   new_model => 'baai-bge-m3'
 ) AS migration_id \gset
 
-SELECT migration_id, state, rows_done, rows_total, progress_pct, error
+SELECT migration_id, resolved_via, state,
+       rows_done, rows_total, progress_pct, error
   FROM postvec.migration_status(:migration_id);
 ```
 
@@ -111,13 +112,14 @@ In psql, `\gexec` executes `suggested_index_sql`.
 
 | `strategy` | What it does |
 |---|---|
-| `convert` (default) | Translate existing vectors. Needs a converter (or bridge) to the target. |
+| `convert` (default) | Translate existing vectors. Needs a direct converter to the target. |
 | `reembed` | Embed current source text (renders the template) with the new model. |
 | `auto` | Convert when a route exists, otherwise re-embed. |
 
-`enable()`, `adopt()` and `migrate()` emit a NOTICE when the target is
-[provider-backed](/docs/models/providers). `strategy => 'reembed'` onto a
-provider sends every existing row.
+`enable()`, `adopt()` and `migrate()` emit a NOTICE when the target embed
+model is [provider-backed](/docs/models/providers). `strategy => 'reembed'`
+onto a provider sends every existing row as text. A direct hosted conversion
+emits a second NOTICE and sends stored vectors instead.
 
 :::: code-group
 
@@ -147,9 +149,26 @@ SELECT postvec.migrate(
 
 ::::
 
-`reindex`: `manual` (default) or `blocking`. Manual is recommended for tables serving application traffic.
+`reindex`: `manual` (default) or `blocking`. Use manual mode for tables that
+serve application traffic.
 
-On an embedded host, pull a converter with [`postvec model pull`](/docs/models/pull). On a remote host, install it on the `postvec-server` node.
+## Local and hosted converter routes
+
+On an embedded host, pull a local converter with
+[`postvec model pull`](/docs/models/pull). On a remote host, install it on
+each `postvec-server` node.
+
+A [`kind = "convert"` UniVec entry](/docs/models/univec) supplies a hosted
+direct route. The migration sends every stored vector to UniVec, but it does
+not send source text. `migration_status().resolved_via` names the converter:
+
+```json
+{"kind":"direct","model":"univec-convert-snowflake-to-bge-m3"}
+```
+
+A hosted converter is eligible only as a direct route. If more than one direct
+converter has the same source and target, postvec selects the first converter
+name in lexical order.
 
 ## Abort
 

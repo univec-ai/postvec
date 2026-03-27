@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-description: postvec setup, doctor, uninstall, model and login. Flags and exit codes.
+description: postvec setup, doctor, uninstall, model, provider and login commands. Flags and exit codes.
 outline: deep
 ---
 
@@ -142,8 +142,8 @@ model deactivate NAME... [--path DIR] [--force] [--acknowledge-in-use]
 `pull` installs **deactivated**; `activate` / `deactivate` are the only verbs
 that change serving state, and both persist across a PostgreSQL restart.
 `--acknowledge-in-use` is required (with `--yes`) when managed columns would
-lose their embedding route, directly or through a converter/bridge chain the
-model is part of; `--yes` and `--force` never stand in for it.
+lose their embedding route, directly or through a local `embed-bridge` route
+the model is part of; `--yes` and `--force` never stand in for it.
 
 ## `provider`
 
@@ -154,16 +154,19 @@ provider add TYPE --model ID... [--name STEM] [--path DIR]
             [--api-key-file FILE | --api-key-env VAR | --key-stdin]
             [--base-url URL] [--region REGION] [--dim N] [--no-verify]
             [--acknowledge-in-use] [--dry-run] [--yes]
+provider add univec --convert-source ID --convert-target ID
+            --source-model NAME --target-model NAME --source-dim N
+            [--converter-name NAME] [--dim N] [common add options]
 provider ls [--path DIR]
 provider test NAME [--model ID] [--path DIR]
 provider rm NAME [--model ID] [--path DIR] [--acknowledge-in-use]
             [--dry-run] [--yes]
 ```
 
-`TYPE` is `openai`, `openrouter`, `mistral`, `google`, `cohere` or `aws`.
-`gemini` and `amazon` are accepted aliases; the file records the canonical
-name. `--name STEM` writes `STEM.toml` instead of the type's name: two
-OpenAI-compatible endpoints, two files.
+`TYPE` is `openai`, `openrouter`, `mistral`, `google`, `cohere`, `aws` or
+`univec`. `gemini` and `amazon` are accepted aliases; the file records the
+canonical name. `--name STEM` writes `STEM.toml` instead of the type's name:
+two OpenAI-compatible endpoints, two files.
 
 A key is never a command-line value. Without `--api-key-file`,
 `--api-key-env` or `--key-stdin`, an interactive run prompts without echo and
@@ -171,18 +174,28 @@ a non-interactive one is a usage error. `--api-key-env` records the variable
 name; the **inference process** resolves it, so the variable belongs to the
 postmaster or the `postvec-server` unit, not to your shell.
 
-`add` and `test` each make one live embed per model, which the provider
-bills. `--no-verify` skips it, and then `--dim` is required for a model the
-built-in catalogue does not know. AWS SigV4 files cannot be probed from the
-CLI; use `--no-verify` and confirm with `provider ls` plus a first write.
-The plan is shown before the probe, so declining it costs no API call.
+`add` and `test` make one live request per selected entry. Embed entries send
+one text input. UniVec converter entries send one source vector and check the
+target dimension. `--no-verify` skips the `add` probe. It then requires
+`--dim` for an unknown embed model or converter target. AWS SigV4 files cannot
+be probed from the CLI; use `--no-verify` and confirm with `provider ls` plus
+a first write. The plan is shown before the probe, so declining it costs no
+API call.
+
+Converter mode is available only with `univec`. `--convert-source` and
+`--convert-target` are provider-side ids. `--source-model` and
+`--target-model` are the public names used by postvec route resolution.
+`--source-dim` is always required. See
+[UniVec hosted models](/docs/models/univec).
 
 `--path DIR` manages `DIR/providers.d` as files, with no cluster in scope.
 `DIR` must already exist, and new files inherit its owner. That is how a
 `postvec-server` node is administered, and it is the only form accepted on
 a remote-mode cluster; without it, such a cluster is refused with a message
-naming the server root. `--path` always requires `--acknowledge-in-use`,
-because there is no cluster to scan.
+naming the server root. An embed change through `--path` requires
+`--acknowledge-in-use` because there is no cluster to scan. Adding a converter
+does not send source text and does not require that acknowledgement. Removing
+one can break an active migration, so `provider rm` requires it.
 
 `--acknowledge-in-use` is required (with `--yes`) when the change affects
 existing columns: on `add`, columns that will start sending source text to

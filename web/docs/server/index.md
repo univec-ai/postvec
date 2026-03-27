@@ -81,5 +81,5 @@ release.
 ## Related documentation
 
 - [Embedded vs remote](/docs/concepts/modes) - the comparison, and switching
-- [External providers](/docs/models/providers) - hosted embedding APIs on a node
+- [External providers](/docs/models/providers) - hosted models on a node
 - [GUCs](/docs/reference/gucs) - the cluster-side settings remote mode uses

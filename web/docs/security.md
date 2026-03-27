@@ -17,9 +17,9 @@ as ONNX Runtime from the install.
 ## Credentials stay on the host
 
 Remote inference reaches the configured `postvec-server` nodes on the
-deployment network. UniVec API keys are used only by `postvec login` /
-`model pull` on the host. They are stored `0600` per effective user and
-never written into PostgreSQL GUCs.
+deployment network. The registry credential used by `postvec login` and
+`model pull` is stored `0600` per effective user. It is separate from any
+inference credential in `providers.d`, and neither enters a PostgreSQL GUC.
 
 Presigned registry URLs are omitted from terminal output, JSON and receipts.
 
@@ -34,16 +34,23 @@ mode grants group or other bits is refused by name.
 The directory itself must not be group- or world-writable, and every
 ancestor must be one only root or that same account can rewrite. Anyone
 who can write there can drop in a connector and choose where this host
-sends source text. The serving host refuses those cases outright.
+sends source text or stored vectors. The serving host refuses those cases
+outright.
 
 No key reaches a GUC, a catalog table, a SQL argument, a log line or an
 error message. `postvec.providers_path` holds a path. A key is never a
 command-line argument, and `provider ls` prints the key source rather than
 its value.
 
-The extension itself never calls a provider. The outbound HTTPS request is
-made by the inference host, only for models an operator configured, and
-only for columns bound to them.
+SQL connection backends do not dial providers. The inference host makes the
+outbound HTTPS request only for configured models. In embedded mode that host
+is the launcher, which is a PostgreSQL process. In remote mode it is a
+`postvec-server` node.
+
+A provider-backed embed model receives source text for worker writes and a
+query string for `search()`. A UniVec hosted converter receives stored
+vectors during `migrate()` or `convert()`. `migrate()` emits a NOTICE before
+hosted conversion starts.
 
 Loopback gRPC (embedded) and node gRPC (remote) are plaintext and
 unauthenticated. With providers configured, any local OS account that can

@@ -90,9 +90,9 @@ listeners stay loopback-only.
 Both images work with no provider configuration at all. Nothing here is needed
 for local models.
 
-To serve a hosted embedding API from a container, give it a `providers.d` and
-a key. The lighter path keeps the key out of the filesystem and names a
-variable the postmaster already has:
+To serve a hosted model from a container, give it a `providers.d` and a key.
+The lighter path keeps the key out of the filesystem and names a variable the
+postmaster already has:
 
 <PgSnippet id="docker-provider" />
 
@@ -116,6 +116,7 @@ and are mounted world-readable, so they cannot be referenced as
 `api_key_file`. Use `api_key_env` there.
 
 Format and walkthrough: [external providers](/docs/models/providers).
+UniVec conversion entries use the same mount and permissions.
 
 ## Adding another database
 
