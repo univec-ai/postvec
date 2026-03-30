@@ -18,6 +18,8 @@ on:
       # The engine it links and the wire contract it serves.
       - "engine/**"
       - "shared/**"
+      # The provider gateway it mounts.
+      - "providers/**"
       - "proto/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -27,6 +29,8 @@ on:
       - "postvec-server/**"
       - "engine/**"
       - "shared/**"
+      # The provider gateway it mounts.
+      - "providers/**"
       - "proto/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -81,6 +85,29 @@ jobs:
 
       - name: test
         run: cargo test -p postvec-server --all-targets
+
+      # The provider gateway both inference hosts mount. Before this job, a
+      # providers-only change triggered no CI at all, and its own suite ran
+      # in no workflow — a broken server-image build context reached a local
+      # release run exactly that way. Compiling as a dependency of the crates
+      # above is not running its tests.
+      - name: clippy (postvec-providers)
+        run: |
+          cargo clippy -p postvec-providers --features wire,test-util \
+            --all-targets -- -D warnings
+      - name: test (postvec-providers)
+        run: |
+          cargo test -p postvec-providers --features wire,test-util \
+            --all-targets
+
+      # The trimmed engine fork and its shared types carry their own
+      # integration suites, which nothing else runs. Tests only, no clippy:
+      # engine has a known cosmetic lint (see engine/FORK.md) whose fix
+      # belongs to the next fork sync, not a CI-appeasing local diff —
+      # the fork rule is that a diff against upstream shows absences, not
+      # differences.
+      - name: test (engine, shared)
+        run: cargo test -p engine -p shared --all-targets
 
       # The GPU feature changes which execution providers the engine compiles
       # in. It is never exercised on a CI runner, so at least prove it still

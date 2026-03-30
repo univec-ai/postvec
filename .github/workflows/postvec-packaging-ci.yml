@@ -357,6 +357,16 @@ jobs:
           packaging/postvec/tests/package-install-test.sh \
             --distro debian12 --pg 18 --arch amd64
 
+      # PV-13: the packaged external-provider gate — a deterministic provider
+      # mock inside the container, the shipped CLI's live probe, write-back,
+      # search, bounded retries, reload, and crash recovery. See
+      # tests/provider-e2e-test.sh; no internet service or credential.
+      - name: PV-13 provider gate (package cell)
+        timeout-minutes: 30
+        run: |
+          packaging/postvec/tests/provider-e2e-test.sh --target package \
+            --distro debian12 --pg 18 --arch amd64
+
       # A build that silently produced fewer packages than it should is a
       # build whose artifacts nobody will notice are missing.
       - name: The expected artifacts exist in the right roots
@@ -482,6 +492,13 @@ jobs:
           packaging/postvec/tests/package-install-test.sh \
             --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
 
+      - name: PV-13 provider gate (package cell)
+        if: matrix.pg == 18 && (matrix.distro == 'debian12' || matrix.distro == 'el9')
+        timeout-minutes: 30
+        run: |
+          packaging/postvec/tests/provider-e2e-test.sh --target package \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
   # Dual-major coexistence: the property the split CLI package exists for.
   # It needs two majors built, so it runs after the full matrix.
   coexistence:
@@ -565,6 +582,26 @@ jobs:
           repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
           # shellcheck disable=SC2086
           packaging/postvec/tests/image-smoke-test.sh \
+            --variant ${{ matrix.variant }} ${engine} \
+            "${repo}:${version}-${revision}-pg${{ matrix.pg }}${suffix}"
+
+      # PV-13's image cells: the same provider gate through the images —
+      # embedded (complete) and the remote pair with postvec-server.
+      - name: PV-13 provider gate (image cell)
+        timeout-minutes: 30
+        run: |
+          suffix=""
+          engine=""
+          if [ "${{ matrix.variant }}" = complete ]; then
+            suffix="-complete"
+          else
+            engine="--server-image postvec-server:amd64"
+          fi
+          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
+          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
+          repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
+          # shellcheck disable=SC2086
+          packaging/postvec/tests/provider-e2e-test.sh --target image \
             --variant ${{ matrix.variant }} ${engine} \
             "${repo}:${version}-${revision}-pg${{ matrix.pg }}${suffix}"
 

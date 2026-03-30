@@ -18,6 +18,8 @@ on:
       - "postvec-cli/**"
       # The archive/descriptor/identity rules the CLI applies live here.
       - "registry/schema/**"
+      # The providers.d schema/validation rules the CLI applies live here.
+      - "providers/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/postvec-cli-ci.yml"
@@ -26,6 +28,8 @@ on:
       - "postvec-cli/**"
       # The archive/descriptor/identity rules the CLI applies live here.
       - "registry/schema/**"
+      # The providers.d schema/validation rules the CLI applies live here.
+      - "providers/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/postvec-cli-ci.yml"

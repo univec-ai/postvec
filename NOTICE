@@ -31,3 +31,11 @@ work under its own terms:
 
 The `engine/` and `shared/` crates are a trimmed fork of UniVec's internal
 inference engine; see engine/FORK.md for provenance and the deletion record.
+
+Some identifiers predate this repository and are kept for wire and tooling
+compatibility rather than renamed: "ravenna" (the `x-ravenna-error-code`
+gRPC metadata header, a live wire contract), "aphex" (the model registry's
+publication tooling, visible in registry index metadata), and "nin"/
+"ninference" (the inference engine and its protocol, as in
+`proto/ninference.proto`). They are internal project names, not third-party
+trademarks.

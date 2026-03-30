@@ -23,8 +23,8 @@ description: |
   ONNX Runtime ${ORT_VERSION} (CPU) for postvec embedded mode.
   .
   Installs the runtime under /opt/postvec/ninference/libs/onnxruntime, where
-  postvec's in-process inference engine finds and loads it. Not required for
-  the default remote-inference mode.
+  postvec's in-process inference engine finds and loads it (embedded mode,
+  the default). Not required for remote mode (postvec.mode = 'grpc').
   .
   ONNX Runtime is redistributed under the MIT licence; see
   /usr/share/doc/postvec-onnxruntime/.

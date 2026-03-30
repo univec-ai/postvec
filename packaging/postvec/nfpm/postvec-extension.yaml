@@ -6,8 +6,8 @@
 # script that touches a cluster or a database (see README §"What the packages
 # may not do").
 #
-# One universal build: compiled with `--features pgNN,embedded`, so it serves
-# remote gRPC mode by default and embedded mode when configured. Publishing a
+# One universal build: compiled with `--features pgNN,embedded`. postvec.mode
+# defaults to 'embedded'; 'grpc' selects the thin remote client. Publishing a
 # separate thin package would put two different libraries at the same path.
 
 name: ${EXTENSION_PACKAGE}
@@ -30,8 +30,9 @@ description: |
   and migrates stored vectors between embedding models in place — without
   re-embedding the source text.
   .
-  Inference runs either on remote ninference nodes (the default) or inside the
-  database host's background worker (embedded mode; add postvec-extras).
+  Inference runs inside the database host's background worker by default
+  (embedded mode; add postvec-extras for the runtime and bundled model), or on
+  remote ninference nodes (postvec.mode = 'grpc').
   .
   Installing this package changes no configuration and no database. Run
   `postvec setup` to configure a cluster, and `postvec doctor` to diagnose one.

@@ -12,7 +12,7 @@ instead of re-embedding the source text.
 
 ```console
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postvec \
-  ghcr.io/univec-ai/postvec:latest-pg18-complete
+  ghcr.io/univec-ai/postvec:pg18-complete
 ```
 
 No API key, no external service — the complete image carries the inference

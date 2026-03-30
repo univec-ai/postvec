@@ -8,12 +8,14 @@ call, and — the headline feature — **migrates existing vectors between embed
 models in place** by converting them through UniVec's `/convert` instead of
 re-embedding source text.
 
-By default postvec does not run inference itself: it is a thin gRPC client to
-a running **ninference** node on a trusted private network (`EmbedTexts` /
-`ConvertEmbeddings`). An opt-in **embedded mode** (build feature `embedded` +
-`postvec.mode = 'embedded'`) instead hosts the UniVec engine inside the
+`postvec.mode` defaults to **embedded**: the UniVec engine runs inside the
 postvec launcher process — no external inference dependency, no raw-text
-egress off the DB host (see [Embedded mode](#embedded-mode-arch-b)).
+egress off the DB host (see [Embedded mode](#embedded-mode-arch-b)); every
+published package carries the `embedded` build feature this needs. Remote
+mode (`postvec.mode = 'grpc'`) is instead a thin gRPC client to running
+**ninference** nodes on a trusted private network (`EmbedTexts` /
+`ConvertEmbeddings`) — the availability-oriented deployment, since a native
+engine fault in embedded mode shares PostgreSQL's crash domain.
 The maintainer's code walkthrough (file map, call chains, invariants,
 adaptation recipes) is
 [`docs/postvec-description.md`](../docs/postvec-description.md)
@@ -26,8 +28,9 @@ internal design records.
 > convert, with finalize/abort), **`adopt()`** (take over an existing
 > populated pgvector column without re-embedding it — P4), composite-PK &
 > partitioned-table support, per-database workers, and trigger latch-kick. Embedded mode (Arch B) is
-> implemented behind the `embedded` build feature; the default build runs as
-> a thin gRPC client (Arch C). The embedded live-engine acceptance run (R5,
+> implemented behind the `embedded` build feature, which every published
+> package enables; a plain `cargo` build without it serves only the thin
+> gRPC client (Arch C). The embedded live-engine acceptance run (R5,
 > real model assets) is still owed.
 
 ## Requirements

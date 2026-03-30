@@ -628,7 +628,7 @@ jobs:
   # distribution's PostgreSQL, that setup/doctor/uninstall work, and that the
   # bundled model embeds. Both package families, both architectures.
   install-tests:
-    needs: [validate, common-packages, noarch-packages, extension-packages]
+    needs: [validate, common-packages, noarch-packages, extension-packages, model-bundle]
     strategy:
       fail-fast: false
       matrix:
@@ -657,6 +657,12 @@ jobs:
         with:
           name: extension-${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}
           path: packaging/postvec/dist/extension/
+      # The bundled model's derived facts (name, backend, dimension): the
+      # install test reads them via load_model_facts, which dies without this
+      # artifact — a gap the first rehearsal would otherwise discover in
+      # every one of these 24 cells at once.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: model-bundle, path: packaging/postvec/build/payload-common/ }
 
       # The dependency boundary a remote-mode user actually has. Installing the
       # engine assets every time would let a missing dependency in the
@@ -671,8 +677,19 @@ jobs:
           packaging/postvec/tests/package-install-test.sh \
             --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
 
+      # PV-13: the packaged external-provider gate, on the review-mandated
+      # cells (Debian 12 and EL9, one major). A deterministic provider mock
+      # inside the container; no internet service, no credential, no billable
+      # call. See tests/provider-e2e-test.sh.
+      - name: PV-13 provider gate (package cell)
+        if: matrix.pg == 18 && (matrix.distro == 'debian12' || matrix.distro == 'el9')
+        timeout-minutes: 30
+        run: |
+          packaging/postvec/tests/provider-e2e-test.sh --target package \
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
   coexistence:
-    needs: [validate, common-packages, noarch-packages, extension-packages]
+    needs: [validate, common-packages, noarch-packages, extension-packages, model-bundle]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -691,6 +708,8 @@ jobs:
           pattern: extension-debian12-pg1[68]-amd64
           path: packaging/postvec/dist/extension/
           merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: model-bundle, path: packaging/postvec/build/payload-common/ }
       # The property the split CLI package exists for.
       - run: |
           packaging/postvec/tests/package-install-test.sh --minimal \
@@ -800,6 +819,30 @@ jobs:
         run: |
           packaging/postvec/tests/model-golden-test.sh \
             "${REPOSITORY}:${RELEASE_ID}-pg${PG}-complete"
+
+      # PV-13's image cells: the same provider gate through the images —
+      # embedded (complete) and the remote pair with postvec-server.
+      - name: PV-13 provider gate (image cell)
+        if: matrix.pg == 18
+        timeout-minutes: 30
+        env:
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
+          RELEASE_ID: ${{ needs.validate.outputs.release_id }}
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+          PG: ${{ matrix.pg }}
+        run: |
+          suffix=""
+          engine=""
+          if [ "${VARIANT}" = complete ]; then
+            suffix="-complete"
+          else
+            engine="--server-image postvec-server:${ARCH}"
+          fi
+          # shellcheck disable=SC2086
+          packaging/postvec/tests/provider-e2e-test.sh --target image \
+            --variant "${VARIANT}" ${engine} --arch "${ARCH}" \
+            "${REPOSITORY}:${RELEASE_ID}-pg${PG}${suffix}"
 
       - name: Log in to GHCR
         if: needs.validate.outputs.publish == 'true'

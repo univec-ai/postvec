@@ -505,9 +505,10 @@ binary; each extension package depends on a compatible version of it
 
 ### Why there is only one extension build
 
-Public packages are compiled with `--features pgNN,embedded`. That library
-still defaults to remote gRPC mode and does not load ONNX Runtime unless
-`postvec.mode = 'embedded'`, so one artifact serves both deployment shapes.
+Public packages are compiled with `--features pgNN,embedded`. `postvec.mode`
+defaults to `'embedded'`, and the library loads ONNX Runtime only in that
+mode; `postvec.mode = 'grpc'` selects the thin remote client instead, so one
+artifact serves both deployment shapes.
 Publishing a separate "thin" package would put two different libraries at the
 same path, make upgrades ambiguous, and let someone select embedded mode
 against a library that cannot do it.

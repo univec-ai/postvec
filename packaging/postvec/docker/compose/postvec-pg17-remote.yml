@@ -1,6 +1,7 @@
-# postvec against remote inference nodes — the default deployment shape, and
-# the one to use when inference is shared between services, needs a GPU, or
-# must not share a crash domain with PostgreSQL.
+# postvec against remote inference nodes — the availability-oriented
+# deployment shape, and the one to use when inference is shared between
+# services, needs a GPU, or must not share a crash domain with PostgreSQL.
+# (postvec.mode defaults to 'embedded'; this image pins 'grpc'.)
 #
 # The nodes are `postvec-server`, which this repository ships. Build an image
 # from a checkout with `packaging/postvec/scripts/build-server-image.sh`, or

@@ -131,6 +131,15 @@ for DISTRO in "${DISTROS[@]}"; do
             step "${DISTRO}: clean-host install test: PG ${major} (full)"
             "${PKG_DIR}/tests/package-install-test.sh" \
                 --distro "${DISTRO}" --pg "${major}" --arch "${ARCH}"
+            # PV-13: the packaged provider gate, on the review-mandated cells
+            # only (Debian 12 and EL9, one major). The ordinary matrix above
+            # already answers version compatibility; this answers whether an
+            # external provider works through the shipped artifacts.
+            if [[ "${major}" == 18 && ( "${DISTRO}" == debian12 || "${DISTRO}" == el9 ) ]]; then
+                step "${DISTRO}: PV-13 provider gate: PG ${major} (package)"
+                "${PKG_DIR}/tests/provider-e2e-test.sh" --target package \
+                    --distro "${DISTRO}" --pg "${major}" --arch "${ARCH}"
+            fi
         done
         if (( ${#PG_MAJORS[@]} > 1 )) && [[ "${DIST_FAMILY}" == deb ]]; then
             step "${DISTRO}: PostgreSQL majors coexist"
@@ -180,11 +189,22 @@ if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
                     "${PKG_DIR}/scripts/build-server-image.sh" --arch "${ARCH}"
                     "${PKG_DIR}/tests/image-smoke-test.sh" --variant remote \
                         --server-image "postvec-server:${ARCH}" "${tag}"
+                    if [[ "${major}" == 18 ]]; then
+                        step "image: PV-13 provider gate (remote + postvec-server)"
+                        "${PKG_DIR}/tests/provider-e2e-test.sh" --target image \
+                            --variant remote --arch "${ARCH}" \
+                            --server-image "postvec-server:${ARCH}" "${tag}"
+                    fi
                 else
                     "${PKG_DIR}/tests/image-smoke-test.sh" \
                         --variant "${COMPLETE_IMAGE_VARIANT}" "${tag}"
                     step "image: PG ${major} golden embeddings"
                     "${PKG_DIR}/tests/model-golden-test.sh" "${tag}"
+                    if [[ "${major}" == 18 ]]; then
+                        step "image: PV-13 provider gate (complete)"
+                        "${PKG_DIR}/tests/provider-e2e-test.sh" --target image \
+                            --variant complete --arch "${ARCH}" "${tag}"
+                    fi
                 fi
             fi
         done

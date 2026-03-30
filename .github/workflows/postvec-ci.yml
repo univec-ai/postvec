@@ -22,6 +22,8 @@ on:
       # embedded mode compiles these workspace crates into postvec.so
       - "engine/**"
       - "shared/**"
+      # ...and the provider gateway (behind the wire feature).
+      - "providers/**"
       - ".github/workflows/postvec-ci.yml"
   pull_request:
     paths:
@@ -29,6 +31,8 @@ on:
       - "proto/**"
       - "engine/**"
       - "shared/**"
+      # ...and the provider gateway (behind the wire feature).
+      - "providers/**"
       - ".github/workflows/postvec-ci.yml"
   workflow_dispatch:
 

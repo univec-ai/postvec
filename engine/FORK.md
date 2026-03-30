@@ -93,3 +93,13 @@ The fork is trimmed by deletion only, with exactly one recorded addition:
   classify as configuration. A backport diff will show this variant (and its
   `as_str`/`from_str` arms and round-trip test row) as the fork's only `+`
   lines; upstream may adopt the same variant verbatim.
+
+## Known deferred lint
+
+`engine/src/lib.rs` carries one `clippy::nonminimal_bool` warning under
+`--all-features --all-targets`. It is deliberately NOT fixed here: the fork
+rule is that a diff against upstream shows absences, not differences, and a
+lint-appeasing edit would be a difference with no functional content. Fix it
+upstream and pick it up at the next fork sync. CI therefore runs the engine's
+tests but does not lint the engine with `-D warnings`
+(.github/workflows/postvec-server-ci.yml, the "test (engine, shared)" step).
