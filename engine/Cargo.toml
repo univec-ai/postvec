@@ -1,103 +1,49 @@
-# Cargo.toml for the `engine` library crate.
-# This crate encapsulates the core machine learning inference logic,
-# including model management, executors, the execution context, and tokenizers.
 [package]
 name = "engine"
 version = "0.1.0"
 edition = "2021"
-description = "The inference engine postvec embeds for in-database inference (trimmed fork; see FORK.md)."
+description = "Inference engine postvec embeds for in-database inference (trimmed fork)."
 license = "PostgreSQL"
 repository = "https://github.com/univec-ai/postvec"
 homepage = "https://github.com/univec-ai/postvec/tree/main/engine"
 
-# These are the dependencies needed by the library itself at runtime.
 [dependencies]
-# Local crate for tensor and vector operations.
 shared = { path = "../shared" }
-# Core asynchronous runtime, needed for timeout functionality.
 tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
-
-# For tensor operations.
-# ndarray is also a dependency of the `ort` crate.
 ndarray = { version = "0.16.1", features = ["serde"] }
-
-# Axum is used here specifically for the `HeaderMap` type in the execution context.
+# HeaderMap in the execution context.
 axum = { version = "0.7" }
-
-# Libraries for serialization and deserialization (JSON, etc.).
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-
-# For robust and easy error handling.
 anyhow = "1.0.99"
 thiserror = "1.0"
-
-# Logging facade.
 log = "0.4"
-
-# The Hugging Face tokenizer library, integrated as a direct dependency.
-# It is renamed to `hf_tokenizers` to avoid a name conflict with the engine's
-# internal `tokenizers` module.
+# Renamed so it does not collide with the crate's own `tokenizers` module.
 hf_tokenizers = { package = "tokenizers", version = "0.22.0" }
-
-# A utility for lazy, one-time initialization of static values.
 once_cell = "1.19"
-
-# The `ort` crate provides safe bindings to ONNX Runtime.
-# It is an optional dependency, enabled by the `onnx` feature flag.
-# The "load-dynamic" feature is added to switch from compile-time linking
-# to runtime dynamic loading of the ONNX Runtime library.
-# This removes the need for build scripts or environment variables like `ORT_LIB_LOCATION` at compile time.
+# Runtime-dynamic ONNX Runtime (no compile-time `ORT_LIB_LOCATION`).
 ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = ["std", "ndarray", "load-dynamic"] }
-
-# We add an explicit dependency on `ort-sys`.
-# This is because our onnx_runtime.rs
-# module uses types from the sys crate directly (e.g., for converting enums).
-# Making this dependency explicit ensures it's always available when the `onnx`
-# feature is active, resolving workspace compilation issues.
+# Direct sys types (enum conversions) in `onnx_runtime.rs`.
 ort-sys = { version = "2.0.0-rc.10", optional = true, default-features = false }
-
-# For parallel iteration over batches of text.
 rayon = "1.10"
-
-# For Unicode normalization, used to strip accents from text.
 unicode-normalization = "0.1.23"
-
-# Enables the use of `async fn` in traits.
 async-trait = "0.1.77"
-
-# --- New Dependencies for Model Pooling ---
-# Asynchronous object pool.
 deadpool = { version = "0.12.3", features = ["managed"] }
-# Used by the `get_pool_size` helper to determine a sensible default for CPU.
 num_cpus = "1"
-# --- End New Dependencies ---
-
 tracing = "0.1.41"
 dashmap = "6.1.0"
-
-# Base64 encoding for OpenAI-compatible `encoding_format: "base64"`.
 base64 = "0.22"
-
-# Jinja-style templating used to wrap text inputs by `input_type`
-# (e.g. EmbeddingGemma's search_query / search_document templates).
+# Per-`input_type` wrappers (search_query / search_document).
 minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
 
 [dev-dependencies]
-# Already in the workspace lockfile (postvec-cli, registry/publisher); the model
-# scan's directory rules are tested against real temporary trees.
 tempfile = "3"
 
 [features]
-# The `onnx` feature flag enables the ONNX Runtime model implementation
-# by activating the `ort` and `ort-sys` dependencies.
 onnx = ["dep:ort", "dep:ort-sys"]
-
-# Feature to enable the CUDA execution provider in ONNX Runtime.
-# To use, compile with `cargo build --features onnx,ort-cuda`.
+# `cargo build --features onnx,ort-cuda`
 ort-cuda = ["ort/cuda"]
-
-# Feature to enable the TensorRT execution provider in ONNX Runtime.
-# To use, compile with `cargo build --features onnx,ort-tensorrt`.
+# `cargo build --features onnx,ort-tensorrt`
 ort-tensorrt = ["ort/tensorrt"]
+
 

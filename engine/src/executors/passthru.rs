@@ -1,12 +1,4 @@
-// File: engine/src/executors/passthru.rs
-//!
-//! ## Pass-Thru Executor
-//!
-//! An executor designed to pass structured JSON data directly to a model
-//! without significant transformation.
-//!
-//! It maps JSON inputs to model tensors
-//! and formats the model's output tensors back into a JSON object.
+//! JSON in, tensors through the model, JSON out. No extra transform.
 use super::{Context, Executor, ExecutorOutput};
 use crate::error::EngineError;
 use ndarray::{ArrayD, IxDyn};
@@ -14,27 +6,17 @@ use rayon::prelude::*;
 use serde_json::{json, Value};
 use shared::vectors::{GenericTensor, TensorDataType, TensorValue};
 
-/// An executor that passes structured JSON data directly to a model.
 pub struct PassThruExecutor;
 
 impl PassThruExecutor {
-    /// The constructor for the PassThruExecutor.
     pub fn new() -> Self {
         Self
     }
 }
 
 impl Executor for PassThruExecutor {
-    /// Executes the pass-through logic.
-    ///
-    /// 1.  It iterates through the model's configured input layers.
-    /// 2.  For each layer, it reads the corresponding data from the input JSON payload.
-    /// 3.  It reshapes the data into a tensor matching the model's expected input shape.
-    /// 4.  It queries the model with the prepared input tensors.
-    /// 5.  It processes the output tensors in parallel, mapping them back to a JSON object
-    ///     based on the executor's output configuration.
-    /// 6.  If `layer_name` is missing in an output mapping, the mapping's index is
-    ///     used as the tensor index.
+    /// Map JSON inputs onto tensors, query, map outputs back. A missing
+    /// `layer_name` on an output mapping uses that mapping's index.
     fn execute(&self, ctx: &Context) -> Result<ExecutorOutput, EngineError> {
         let model_overview = ctx.model_overview()?;
         let executor_config = &ctx.model_configuration().executor;

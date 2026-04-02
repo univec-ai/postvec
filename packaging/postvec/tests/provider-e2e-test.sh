@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# PV-13: the packaged external-provider gate. One deterministic scenario
-# suite proving that a provider-backed model works through the SHIPPED
-# artifacts — trigger → queue → worker → host gateway → provider → write-back
-# → search — with no internet service, no paid request and no real
-# credential (the mock is tests/provider-mock.py, loopback inside the
-# container that serves inference).
+# Packaged external-provider gate. One scenario suite through the shipped
+# artifacts: trigger -> queue -> worker -> host gateway -> provider ->
+# write-back -> search. No internet, no paid request, no real credential
+# (the mock is tests/provider-mock.py, loopback inside the inference container).
 #
 #   tests/provider-e2e-test.sh --target package --distro debian12 --pg 18
 #   tests/provider-e2e-test.sh --target package --distro el9 --pg 18
@@ -12,7 +10,7 @@
 #   tests/provider-e2e-test.sh --target image --variant remote \
 #       --server-image postvec-server:amd64 <image>
 #
-# The scenarios (docs/release-preparation.md §1):
+# The scenarios:
 #   A  live verification: `provider add` probes the mock (no --no-verify)
 #   B  success + write-back + hybrid search
 #   C  bounded upstream retry (429, 500, success — exactly three requests)

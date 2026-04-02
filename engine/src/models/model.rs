@@ -1,63 +1,35 @@
-// File: engine/src/models/model.rs
-//! ## Model Trait
-//!
-//! This module defines the central `Model` trait, which establishes a universal
-//! contract for all machine learning model implementations within the Baikal
-//! ecosystem. It is the Rust equivalent of the `ModelInterface` in the Go code.
-//!
-//! By conforming to this trait, different model backends (like ONNX Runtime,
-//! TensorFlow, etc.) can be used interchangeably.
+//! Shared contract for every model backend.
 use super::configuration::{ModelBackend, ModelConfiguration, ModelOverview};
 use super::error::ModelError;
 use serde_json::Value;
 use shared::vectors::GenericTensor;
 
-/// A common interface for all machine learning models.
-///
-/// This trait provides a standardized API for querying models, accessing their
-/// configuration, and retrieving metadata, regardless of the underlying backend.
-/// The `Send + Sync` bounds are crucial for ensuring models can be used safely
-/// across threads.
+/// Inference, configuration and metadata for a loaded model. `Send + Sync`
+/// so instances can sit in the pool and be used from executor threads.
 pub trait Model: Send + Sync {
-    /// Checks if the model is valid and ready for inference.
-    ///
-    /// A model might be invalid if its files are missing, it failed to load,
-    /// or its configuration is incomplete.
+    /// Ready for inference. False if files are missing, load failed or
+    /// configuration is incomplete.
     fn valid(&self) -> bool;
 
-    /// Returns the name of the model.
     fn name(&self) -> &str;
 
-    /// Returns the backend used by the model.
     fn backend(&self) -> &ModelBackend;
 
-    /// Returns a reference to the model's configuration.
     fn configuration(&self) -> &ModelConfiguration;
 
-    /// Performs inference using the model.
-    ///
-    /// # Arguments
-    ///
-    /// * `inputs` - A slice of `GenericTensor`s, one for each input layer.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing a `Vec` of `GenericTensor`s (the model's outputs)
-    /// or a `ModelError` if inference fails.
+    /// Run inference. One tensor per input layer.
     fn query(&self, inputs: &[GenericTensor]) -> Result<Vec<GenericTensor>, ModelError>;
 
-    /// Deadline-aware inference. The default forwards to [`Model::query`]
-    /// and is therefore **cooperative/best-effort** — backends without a
-    /// native cancellation facility (Candle, generic) cannot interrupt work
-    /// mid-run. ONNX Runtime overrides this to terminate the native run when
-    /// the deadline passes, so a timed-out caller's capacity (model lease,
-    /// engine admission permit) is actually recovered instead of remaining
-    /// pinned under a hung or long computation.
+    /// Deadline-aware inference. The default just calls [`Model::query`], so
+    /// backends without native cancellation (generic) cannot stop mid-run.
+    /// ONNX Runtime overrides this and terminates the native run when the
+    /// deadline passes, so a timed-out caller actually recovers its model
+    /// lease and admission permit instead of sitting under a long compute.
     ///
-    /// The bound carries an explicit tokio runtime handle because model
-    /// queries legitimately run on threads with NO ambient tokio context —
-    /// the embedding executor's dedicated Rayon pool in particular — where a
-    /// `Handle::try_current()`-based watchdog could never be scheduled.
+    /// The bound carries a tokio runtime handle because queries run on
+    /// threads with no ambient tokio context (the embedding executor's Rayon
+    /// pool). A `Handle::try_current()` watchdog would never get scheduled
+    /// there.
     fn query_with_deadline(
         &self,
         inputs: &[GenericTensor],
@@ -67,36 +39,24 @@ pub trait Model: Send + Sync {
         self.query(inputs)
     }
 
-    /// Provides an overview of the model's architecture, including input and output layers.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing the `ModelOverview` or a `ModelError`.
     fn overview(&self) -> Result<ModelOverview, ModelError>;
 
-    /// Retrieves an integer parameter from the model's configuration, with a default fallback.
     fn param_int_or_default(&self, param: &str, default_value: i64) -> i64;
-    /// Retrieves a 32-bit float parameter from the model's configuration, with a default fallback.
     fn param_f32_or_default(&self, param: &str, default_value: f32) -> f32;
-    /// Retrieves a boolean parameter from the model's configuration, with a default fallback.
     fn param_bool_or_default(&self, param: &str, default_value: bool) -> bool;
-    /// Retrieves a string parameter from the model's configuration, with a default fallback.
     fn param_string_or_default(&self, param: &str, default_value: &str) -> String;
-    /// Retrieves a list of strings from the model's configuration, with a default fallback.
     fn param_string_list_or_default(&self, param: &str, default_value: &[&str]) -> Vec<String>;
-    /// Retrieves a generic list from the model's configuration, with a default fallback.
     fn param_list_or_default(&self, param: &str, default_value: &[Value]) -> Vec<Value>;
 }
 
-/// The cancellation contract a root prediction hands to every model
-/// invocation in its execution graph: the request's absolute deadline plus
-/// the runtime the termination watchdog runs on. Cloneable and `Sync`, so it
-/// crosses Rayon pool closures by reference.
+/// Deadline and watchdog runtime for every model call in a request,
+/// including nested bridge work. Cloneable so it can be passed into Rayon
+/// pool closures.
 #[derive(Debug, Clone)]
 pub struct QueryBound {
-    /// The ROOT request's absolute deadline.
+    /// Absolute deadline of the root request.
     pub deadline: std::time::Instant,
-    /// The runtime that schedules the deadline watchdog. Carried explicitly:
-    /// Rayon worker threads have no ambient tokio context.
+    /// Runtime that schedules the deadline watchdog. Carried explicitly:
+    /// Rayon workers have no ambient tokio context.
     pub runtime: tokio::runtime::Handle,
 }

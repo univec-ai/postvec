@@ -1,44 +1,23 @@
-// File: engine/src/executors/embed_bridge.rs
-//! ## Embed Bridge Executor
+//! Text through an embed model then a converter, one call.
 //!
-//! This executor acts as an orchestrator, chaining two models to provide a
-//! combined embed + convert operation in a single step:
-//! 1. A source embedding model (text -> embedding)
-//! 2. A target conversion model (embedding -> embedding)
-//!
-//! This is a "generic" executor, meaning it does not load its own model file
-//! but instead calls other models managed by the inference engine.
+//! Inputs: 0 texts, 1 bridge_model (source embed space), 2 target_model.
+//! Does not load its own weights; it calls other models on the engine.
 
-// --- Crate-internal Imports ---
 use crate::context::Context;
 use crate::error::EngineError;
 use crate::executors::{ExecutionMetadata, Executor, ExecutorOutput};
 use crate::models::ModelConfiguration;
 
-// --- External Imports ---
-
 use std::collections::HashSet;
 use tokio::runtime::Handle;
 
-/// The `EmbedBridgeExecutor`.
-///
-/// This executor chains a text embedding model with a conversion model,
-/// providing a way to get embeddings in a target format from raw text input.
-///
-/// Models are passed dynamically via input arguments:
-/// Input 0: texts (array of strings)
-/// Input 1: bridge_model (string) - the source embedding model
-/// Input 2: target_model (string) - the target conversion model
 pub struct EmbedBridgeExecutor {
-    /// `params.restrictions.target_models` — semantic target names this bridge
-    /// will refuse to produce embeddings for. Matched against the resolved
-    /// `target_model` (input 2). Backs the licence-driven block on
-    /// TO-commercial bridge embedding (see docs/licenses/licenses.md §5.3).
+    /// Semantic target names this bridge will not produce (`params.restrictions.target_models`,
+    /// matched against input 2). Used to refuse commercially restricted targets.
     restricted_targets: HashSet<String>,
 }
 
 impl EmbedBridgeExecutor {
-    /// Creates a new `EmbedBridgeExecutor`.
     pub fn new(config: &ModelConfiguration) -> Result<Self, EngineError> {
         let restricted_targets: HashSet<String> = config
             .params
@@ -66,15 +45,9 @@ impl EmbedBridgeExecutor {
 }
 
 impl Executor for EmbedBridgeExecutor {
-    /// Executes the embed + convert bridge pipeline.
-    ///
-    /// Models are resolved dynamically from the input.
     fn execute(&self, ctx: &Context) -> Result<ExecutorOutput, EngineError> {
-        // Since the underlying chained calls use the async `predict` API,
-        // we need to bridge the sync/async boundary. The `execute` method
-        // runs inside a `spawn_blocking` context (managed by `InferenceEngine::predict_raw`).
-        // We use `tokio::task::block_in_place` + `Handle::current().block_on`
-        // to safely run async code from this blocking context.
+        // `execute` runs inside `spawn_blocking`. Nested `predict` is async,
+        // so hop back onto the runtime with `block_in_place` + `block_on`.
         let handle = Handle::current();
 
         tokio::task::block_in_place(|| {

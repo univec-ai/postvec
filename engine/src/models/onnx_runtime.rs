@@ -1,10 +1,4 @@
-// File: engine/src/models/onnx_runtime.rs
-//! ## ONNX Runtime Model
-//!
-//! This module provides the `OnnxRuntimeModel`, a concrete implementation of the
-//! `Model` trait for running inference with ONNX models using the `ort` crate.
-//!
-//! It supports configurable execution providers for CPU and GPU inference.
+//! ONNX Runtime backend: session, execution providers and deadline-aware query.
 use super::base_model::BaseModel;
 use super::configuration::{
     ExecutionProvider, LayerOverview, ModelBackend, ModelConfiguration, ModelOverview,
@@ -12,37 +6,25 @@ use super::configuration::{
 use super::error::ModelError;
 use super::model::{Model, QueryBound};
 
-// Import components from the `ort` crate with their updated paths for version 2.0.
 use ort::{
     execution_providers::CPUExecutionProvider,
     session::{builder::GraphOptimizationLevel, Session},
     tensor::TensorElementType,
-    // `Value` is the dynamically-typed tensor value we will work with.
     value::{Value, ValueType},
 };
 
-// Conditionally import GPU execution providers only when the corresponding features are enabled.
-// This resolves the parsing error by separating the conditional imports.
 #[cfg(feature = "ort-cuda")]
 use ort::execution_providers::CUDAExecutionProvider;
 #[cfg(feature = "ort-tensorrt")]
 use ort::execution_providers::TensorRTExecutionProvider;
 
 use shared::vectors::{GenericTensor, TensorDataType, TensorValue};
-// We re-introduce the Mutex for interior mutability.
 use std::sync::Mutex;
 
-/// A model implementation that uses the ONNX Runtime for inference.
-///
-/// This struct holds the ONNX session and the model's configuration.
-/// It is designed to be thread-safe and can be shared across multiple requests.
+/// Loaded ONNX model. The session sits behind a mutex because `Session::run`
+/// needs `&mut self` while `Model::query` is called on `&self`.
 pub struct OnnxRuntimeModel {
-    /// Provides default implementations for common `Model` trait methods.
     pub base: BaseModel,
-    /// The ONNX Runtime session, which contains the loaded model and is used for inference.
-    /// `ort::Session::run` requires `&mut self`, so we wrap the `Session` in a `Mutex`
-    /// to allow for interior mutability, enabling inference calls from an immutable
-    /// `&OnnxRuntimeModel` context as required by the `Model` trait.
     session: Mutex<Session>,
     /// A pre-computed overview of the model's input and output layers.
     overview: ModelOverview,
@@ -63,13 +45,10 @@ impl OnnxRuntimeModel {
             )));
         }
 
-        // Convert our `GenericTensor`s into `ort::value::Value`s.
         let ort_values: Vec<Value> = inputs
             .iter()
             .map(|tensor| -> Result<Value, ModelError> {
                 match &tensor.value {
-                    // Create a statically-typed Value from the ndarray, handle potential errors
-                    // with `?`, and then call `.into()` to convert it into a dynamically-typed Value.
                     TensorValue::Float32(arr) => Ok(Value::from_array(arr.clone())?.into()),
                     TensorValue::Int64(arr) => Ok(Value::from_array(arr.clone())?.into()),
                     _ => Err(ModelError::QueryError(
@@ -79,11 +58,7 @@ impl OnnxRuntimeModel {
             })
             .collect::<Result<Vec<_>, ModelError>>()?;
 
-        // Create named inputs for the `ort` crate's `run` method.
-        // The `ort` v2 API
-        // prefers named inputs in a `Vec` of (name, value) tuples.
-        // We zip the
-        // input names from our pre-computed model overview with the converted tensors.
+        // Named (name, value) pairs, as the ort v2 `run` API expects.
         let named_inputs: Vec<(String, Value)> = self
             .overview
             .inputs
@@ -196,36 +171,22 @@ impl OnnxRuntimeModel {
         Ok(generic_outputs)
     }
 
-    /// Creates a new `OnnxRuntimeModel` from a given configuration.
-    ///
-    /// This function initializes the ONNX Runtime session, configures execution
-    /// providers (for CPU/GPU), and inspects the model to build an overview of its
-    /// inputs and outputs.
-    ///
-    /// # Arguments
-    /// * `configuration` - The configuration for this model instance.
-    ///
-    /// # Returns
-    /// A `Result` containing the new `OnnxRuntimeModel` or a `ModelError` if initialization fails.
+    /// Load the ONNX file, set execution providers and cache the layer overview.
     pub fn new(mut configuration: ModelConfiguration) -> Result<Self, ModelError> {
-        // Ensure the backend type is correctly set.
         configuration.backend = ModelBackend::OnnxRuntime;
-        // Ensure the model file path is specified in the configuration.
+
         let model_path = configuration.file_path.as_ref().ok_or_else(|| {
             ModelError::ConfigurationError(
                 "Model file_path is required for ONNX Runtime".to_string(),
             )
         })?;
 
-        // Begin building the session using the `ort` 2.0 builder pattern.
         let mut session_builder = Session::builder()?;
 
-        // Configure execution providers based on the model's configuration.
+        // Keep only providers this build actually compiled in.
         if !configuration.execution_providers.is_empty() {
-            // This vector will hold the providers that are both requested
-            // AND supported by the current build configuration.
             let mut available_providers = Vec::new();
-            // We'll store the names of the *added* providers for logging.
+
             let mut available_provider_names = Vec::new();
             log::info!(
                 "Configuring execution providers for model '{}': {:?}",
@@ -233,26 +194,20 @@ impl OnnxRuntimeModel {
                 configuration.execution_providers
             );
             for ep in &configuration.execution_providers {
-                // We match on the requested provider and conditionally
-                // add it to our list only if the corresponding cargo
-                // feature is enabled.
                 match ep {
                     ExecutionProvider::Cpu => {
-                        // CPU is always available.
                         log::debug!("  -> Adding CPU execution provider.");
                         available_providers.push(CPUExecutionProvider::default().build());
                         available_provider_names.push("CPU");
                     }
                     ExecutionProvider::Cuda => {
-                        // This arm is only compiled if the `ort-cuda` feature is enabled.
                         #[cfg(feature = "ort-cuda")]
                         {
                             log::debug!("  -> Adding CUDA execution provider.");
                             available_providers.push(CUDAExecutionProvider::default().build());
                             available_provider_names.push("CUDA");
                         }
-                        // This arm is compiled if the `ort-cuda` feature is NOT enabled.
-                        // Instead of erroring, we log a warning and skip this provider.
+                        // Feature off: skip rather than fail the whole load.
                         #[cfg(not(feature = "ort-cuda"))]
                         {
                             log::warn!(
@@ -261,15 +216,13 @@ impl OnnxRuntimeModel {
                         }
                     }
                     ExecutionProvider::TensorRt => {
-                        // This arm is only compiled if the `ort-tensorrt` feature is enabled.
                         #[cfg(feature = "ort-tensorrt")]
                         {
                             log::debug!("  -> Adding TensorRT execution provider.");
                             available_providers.push(TensorRTExecutionProvider::default().build());
                             available_provider_names.push("TensorRT");
                         }
-                        // This arm is compiled if the `ort-tensorrt` feature is NOT enabled.
-                        // We log a warning and skip this provider.
+                        // Feature off: skip rather than fail the whole load.
                         #[cfg(not(feature = "ort-tensorrt"))]
                         {
                             log::warn!(
@@ -281,11 +234,8 @@ impl OnnxRuntimeModel {
                     }
                 }
             }
-            // Only call `with_execution_providers` if we have at least one
-            // available provider.
-            // If the list is empty (e.g., config
-            // only specified "cuda" but feature was off), we do nothing
-            // and let `ort` use its default (which is typically CPU).
+            // Empty list (e.g. config asked for CUDA, feature off): leave
+            // ort at its default, typically CPU.
             if !available_providers.is_empty() {
                 log::info!(
                     "  -> Final execution provider list: {:?}",
@@ -300,17 +250,12 @@ impl OnnxRuntimeModel {
             }
         }
 
-        // Apply a high level of graph optimization for performance.
         session_builder =
             session_builder.with_optimization_level(GraphOptimizationLevel::Level3)?;
 
-        // Host threading policy (opt-in, process-global): a shared host — the
-        // postvec embedded launcher living inside a PostgreSQL cluster — sets
-        // this before loading models to bound each session's intra-op pool
-        // and disable onnxruntime's spin-wait (which otherwise burns CPU
-        // after every inference on however many threads × sessions exist).
-        // Standalone ninference never sets it, keeping onnxruntime's
-        // throughput-oriented defaults.
+        // Shared hosts (postvec embedded) set this before the first load to
+        // bound each session's intra-op pool and turn off onnxruntime's
+        // spin-wait. Standalone nodes leave onnxruntime's defaults.
         if let Some(policy) = crate::config::session_thread_policy() {
             log::info!(
                 "Applying host session-thread policy to '{}': intra_op_threads={}, \
@@ -326,34 +271,24 @@ impl OnnxRuntimeModel {
             }
         }
 
-        // Create the session by loading the model from the specified file.
         let session = session_builder.commit_from_file(model_path)?;
 
-        // Inspect the model's inputs and outputs to build an overview.
         let overview = Self::get_model_overview(&session)?;
 
         Ok(Self {
             base: BaseModel { configuration },
-            // Wrap the created session in the Mutex.
+
             session: Mutex::new(session),
             overview,
         })
     }
 
-    /// Inspects a loaded session to extract details about its input and output layers.
-    ///
-    /// # Arguments
-    /// * `session` - A reference to the `ort::Session`.
-    ///
-    /// # Returns
-    /// A `Result` containing the `ModelOverview` or a `ModelError`.
+    /// Layer names, shapes and dtypes from a loaded session.
     fn get_model_overview(session: &Session) -> Result<ModelOverview, ModelError> {
-        // Map over the session's inputs to create a `LayerOverview` for each.
         let inputs = session
             .inputs
             .iter()
             .map(|input| {
-                // The `ValueType::Tensor` struct has a `dimension_symbols` field which we ignore.
                 if let ValueType::Tensor { ty, shape, .. } = &input.input_type {
                     Ok(LayerOverview {
                         name: input.name.clone(),
@@ -369,7 +304,6 @@ impl OnnxRuntimeModel {
             })
             .collect::<Result<Vec<_>, ModelError>>()?;
 
-        // Do the same for the session's outputs.
         let outputs = session
             .outputs
             .iter()
@@ -394,43 +328,29 @@ impl OnnxRuntimeModel {
 }
 
 impl Model for OnnxRuntimeModel {
-    /// An ONNX model is considered valid if its session was successfully created.
     fn valid(&self) -> bool {
         true
     }
 
-    /// Returns the model's name by delegating to the base model.
     fn name(&self) -> &str {
         self.base.name()
     }
 
-    /// Returns the model's backend by delegating to the base model.
     fn backend(&self) -> &ModelBackend {
         self.base.backend()
     }
 
-    /// Returns a reference to the model's configuration.
     fn configuration(&self) -> &ModelConfiguration {
         self.base.configuration()
     }
 
-    /// Performs inference using the loaded ONNX model.
-    ///
-    /// # Arguments
-    /// * `inputs` - A slice of `GenericTensor`s, one for each input layer.
-    ///
-    /// # Returns
-    /// A `Result` containing a `Vec` of `GenericTensor`s (the outputs) or a `ModelError`.
     fn query(&self, inputs: &[GenericTensor]) -> Result<Vec<GenericTensor>, ModelError> {
         self.run_bounded(inputs, None)
     }
 
-    /// Deadline-aware inference: the run is executed with an `ort`
-    /// `RunOptions` whose `terminate()` a watchdog fires when the deadline
-    /// passes, so a hung or overlong native computation returns an error and
-    /// releases its model lease / admission permit instead of pinning them
-    /// indefinitely. Without a reachable tokio runtime the watchdog cannot be
-    /// scheduled and the call degrades to the unbounded run.
+    /// Terminate the native run at the deadline so the model lease and
+    /// admission permit come back. Without a tokio runtime the watchdog
+    /// cannot be scheduled and this falls back to unbounded `query`.
     fn query_with_deadline(
         &self,
         inputs: &[GenericTensor],
@@ -439,12 +359,10 @@ impl Model for OnnxRuntimeModel {
         self.run_bounded(inputs, bound)
     }
 
-    /// Returns the pre-computed model overview.
     fn overview(&self) -> Result<ModelOverview, ModelError> {
         Ok(self.overview.clone())
     }
 
-    // --- Parameter retrieval methods are all delegated to the base model ---
     fn param_int_or_default(&self, param: &str, default_value: i64) -> i64 {
         self.base.param_int_or_default(param, default_value)
     }
@@ -469,14 +387,9 @@ impl Model for OnnxRuntimeModel {
     }
 }
 
-/// Helper function to convert an `ort::tensor::TensorElementType` to the i32 representation
-/// used in `LayerOverview`.
+/// ONNX `TensorProto.DataType` code for `LayerOverview.data_type`. Metadata
+/// only; nothing in this crate branches on it, so the full set is mapped.
 fn ort_type_to_i32(dtype: TensorElementType) -> Result<i32, ModelError> {
-    // We can convert the `ort` enum to its `ort-sys` counterpart to get the integer value.
-    // The returned i32 is the standard ONNX `TensorProto.DataType` code. It is
-    // descriptive metadata only — `LayerOverview.data_type` is never branched on
-    // anywhere in the workspace — so it is safe (and correct) to map the full set
-    // rather than rejecting tensors whose element type we simply weren't listing.
     use ort_sys::ONNXTensorElementDataType as T;
     let sys_type: ort_sys::ONNXTensorElementDataType = dtype.into();
     match sys_type {

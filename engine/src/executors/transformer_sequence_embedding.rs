@@ -1,27 +1,8 @@
-// File: engine/src/executors/transformer_sequence_embedding.rs
+//! Text to sentence embeddings: tokenize, run the encoder, pool.
 //!
-//! ## Transformer for Sequence Embedding Executor
-//!
-//! This executor is designed for models that generate sentence embeddings, such as
-//! BERT or other encoder-only transformers.
-//!
-//! It handles the full pipeline from raw text input to a matrix of embeddings.
-//!
-//! Stages:
-//!
-//! 1.  **Transformation**: The `transform` method handles tokenization and model
-//!     inference, producing a raw `EmbeddingOutput` object containing all output tensors.
-//!     This stage is aware of model quantization and adjusts batching logic accordingly.
-//!     It uses a local Rayon thread pool for parallel batch processing.
-//!
-//! 2.  **Exporting**: The `execute` method orchestrates the process. It iterates
-//!     through the `executor.outputs` configuration. For each configured output,
-//!     it selects the specified tensor (by name, or by index if name is absent),
-//!     applies the specified pooling (defaulting to `NoPooling`),
-//!     and adds the resulting embeddings to the final output list.
-//!     This stage also uses the local Rayon pool for parallel post-processing.
-//!
-// --- Crate-internal Imports ---
+//! `transform` tokenizes and queries (quantization-aware batching) on a
+//! local Rayon pool. `execute` then pools each configured output.
+
 use crate::context::Context;
 use crate::error::EngineError;
 // Import the output handling components.
@@ -43,40 +24,20 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use serde_json::{json, Value};
 use shared::vectors::{self, FloatMatrix, FloatVector, VectorMathExt};
 
-// --- Constrained Rayon Thread Pool ---
-
-/// A dedicated, constrained Rayon thread pool for this executor.
-///
-/// We limit the number of threads (e.S., to 4) to avoid **thread oversubscription**.
-/// This executor is designed to be run inside a `tokio::task::spawn_blocking` call,
-/// which uses Tokio's *own* blocking thread pool.
-///
-/// If we used Rayon's *global* pool (`.par_iter()` directly), we would have:
-/// (Tokio blocking threads) + (Rayon global threads)
-///
-/// This creates too many threads competing for CPU, leading to high context-switching
-/// overhead and *worse* performance.
-///
-/// By using `EXECUTOR_POOL.install(|| ...)` around our parallel code, we ensure
-/// that `.par_iter()` and other parallel operations use this *local, constrained*
-/// pool, allowing for safe and efficient nested parallelism.
+/// Local Rayon pool so `.par_iter()` does not pile onto Tokio's blocking
+/// threads (this executor already runs inside `spawn_blocking`).
 static EXECUTOR_POOL: Lazy<ThreadPool> = Lazy::new(|| {
     ThreadPoolBuilder::new()
-        // This is a tunable parameter. 4 is a safe default to get
-        // parallelism without overwhelming the system.
         .num_threads(4)
-        // Tokenizer regex recursion runs on these threads (`encode_batch`
-        // inside `EXECUTOR_POOL.install`); the ~2 MiB std default is the
-        // same stack ceiling the embedded runtime raises to 8 MiB for its
-        // tokio threads, and it must be raised here too or the mitigation
-        // misses the threads that actually tokenize.
+        // Tokenizer regex recursion runs here (`encode_batch` inside
+        // `install`). Default stack is ~2 MiB; the embedded runtime raises
+        // tokio threads to 8 MiB, and these threads must match or they
+        // still overflow.
         .stack_size(8 * 1024 * 1024)
         .build()
         .expect("Failed to create local Rayon pool for TransformerForSequenceEmbedding executor")
 });
 
-// Define a default batch size for processing.
-// This can be tuned for performance.
 const DEFAULT_BATCH_SIZE: usize = 32;
 
 /// OpenAI-compatible `encoding_format` selector. Default is `Float`.
@@ -299,17 +260,11 @@ impl TransformerForSequenceEmbedding {
 
     /// Apply the optional `input_type` template to the input strings.
     ///
-    /// Permissive by design — see docs/openrouter/openrouter-integration.md §3.4:
-    /// - missing or empty `input_type` → render as-is (current/legacy path),
-    /// - `input_type` set but no templates configured on this model → render
-    ///   as-is and log a warning so the operator can spot the misconfiguration,
-    /// - `input_type` set but unknown to this model's template set → same:
-    ///   render as-is + warn.
+    /// Wrap texts with the matching template when one is configured.
     ///
-    /// Bulk-embedding workflows hitting a heterogeneous catalogue should not
-    /// have to special-case which models understand which `input_type` strings,
-    /// and OpenRouter/Cohere keep inventing new ones; liberal acceptance is
-    /// what keeps the surface stable.
+    /// Unknown or missing `input_type` is not an error: render as-is and, if
+    /// a value was given, warn. Bulk jobs over a mixed catalogue should not
+    /// have to special-case which models know which `input_type` strings.
     fn apply_template(
         &self,
         input_type: Option<&str>,
@@ -517,7 +472,7 @@ impl TransformerForSequenceEmbedding {
                     };
 
                     // --- 4. Package Raw Output ---
-                    // We now package *all* raw tensors and the attention mask together.
+                    // All raw tensors plus the attention mask.
                     Ok(SingleBatchOutput {
                         output_tensors,
                         attention_mask_array: attention_mask_matrix,

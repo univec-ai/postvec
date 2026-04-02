@@ -1541,14 +1541,10 @@ STUB
         bad "no model directory at ${model_out}"
     fi
 
-    # Determinism, the offline half. A real acceptance run does two forced
-    # clean pulls (§9 of packaging-registry-models.md) and needs the registry;
-    # what that proves about *packaging* is that the receipt's
-    # deliberately-non-deterministic fields cannot reach the payload. That is
-    # provable here, by rebuilding from a receipt whose timestamps and CLI
-    # version differ and requiring the payload bytes to be identical — which
-    # fails the moment `.postvec-install.json` is copied, or anything derived
-    # from `installed_at` lands in SOURCE.json or model-facts.env.
+    # Determinism, the offline half. Rebuild from a receipt whose timestamps
+    # and CLI version differ and require identical payload bytes. That fails
+    # the moment `.postvec-install.json` is copied, or anything derived from
+    # `installed_at` lands in SOURCE.json or model-facts.env.
     first="$(find "${payload}" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)"
 
     receipt="${d}/root/models/onnx-runtime/${BUNDLED_MODEL_NAME}/.postvec-install.json"

@@ -1,40 +1,30 @@
-// File: engine/src/config.rs
-
-//! ## Engine Configuration
-//!
-//! This module defines the structures for engine-specific configuration.
-//! This allows the engine to be configured independently of the server that runs it.
-//! It uses `serde` for deserialization from JSON.
+//! Engine-side configuration, independent of the host that runs it.
 
 use std::path::PathBuf;
 
 /// Resource policy for the process hosting the engine.
 ///
-/// `Default` preserves the historical throughput-oriented behavior — no
-/// global admission gate, ONNX Runtime session threading left at
-/// onnxruntime's defaults (one intra-op pool of ~physical-core threads per
-/// session, spin-wait enabled) — which is what standalone ninference nodes
-/// want. A host that embeds the engine *next to another workload* (the
-/// postvec PostgreSQL launcher) opts into conservative bounds so inference
-/// cannot oversubscribe the machine: requests for different models can enter
-/// blocking execution concurrently, and each session's intra-op pool
-/// multiplies with the core count, so an unbounded embedded engine competes
+/// Default is unbounded: no admission gate, ONNX Runtime threading left at
+/// onnxruntime's defaults (one intra-op pool of about physical-core threads
+/// per session, spin-wait on). That is what a dedicated inference node wants.
+/// A host that sits next to another workload (the postvec PostgreSQL
+/// launcher) opts into tighter bounds. Requests for different models can
+/// enter blocking execution at the same time, and each session's intra-op
+/// pool multiplies with the core count, so an unbounded engine would compete
 /// with the database for every core.
 #[derive(Debug, Clone, Default)]
 pub struct HostPolicy {
-    /// Global cap on concurrently *executing* predictions across all models
-    /// and routes. `None` = unlimited (historical behavior). The permit is
-    /// held for the true duration of the native execution — a caller whose
-    /// deadline expires does not release capacity while onnxruntime is still
-    /// running its computation.
+    /// Cap on concurrently executing predictions across all models. `None`
+    /// means unlimited. The permit is held for the native run itself: a
+    /// caller whose deadline expires does not free capacity while onnxruntime
+    /// is still computing.
     pub admission_limit: Option<usize>,
-    /// Serialize the *native instantiation* phase of dynamic model loads
-    /// behind the load-commit gate. `false` (default) lets concurrent loads
-    /// of different models instantiate natively in parallel — the standalone
-    /// throughput behavior; publication + executor build still serialize. A
-    /// shared host (the postvec embedded launcher) sets `true` so a
-    /// cancelled load cannot admit a second native instantiation while the
-    /// first is still running on a blocking thread.
+    /// Hold the load-commit gate across native instantiation as well as
+    /// publication. `false` (default) lets concurrent loads of different
+    /// models instantiate in parallel; publication and executor build still
+    /// serialize. A shared host (the postvec embedded launcher) sets `true`
+    /// so a cancelled load cannot start a second native instantiation while
+    /// the first is still running on a blocking thread.
     pub serialized_model_loads: bool,
 }
 
@@ -46,10 +36,9 @@ pub struct HostPolicy {
 pub struct SessionThreadPolicy {
     /// Intra-op thread count per session (onnxruntime default: ~physical cores).
     pub intra_op_threads: usize,
-    /// Disable the intra-op pool's spin-wait. Spinning trades idle CPU burn
-    /// for lower inference latency — the right trade on a dedicated
-    /// inference node, the wrong one on a shared database host, where the
-    /// post-inference spin tail reads as "CPU busy while doing nothing".
+    /// Disable the intra-op pool's spin-wait. Spinning burns idle CPU for
+    /// lower latency: right on a dedicated inference node, wrong on a
+    /// shared database host (the post-inference spin looks like busy CPU).
     pub disable_spinning: bool,
 }
 
@@ -66,15 +55,11 @@ pub fn session_thread_policy() -> Option<SessionThreadPolicy> {
     SESSION_THREAD_POLICY.get().copied()
 }
 
-/// Represents the engine's configuration.
-///
-/// This struct holds all the settings necessary for the `InferenceEngine` to
-/// locate models and their assets.
+/// Paths and host policy the `InferenceEngine` needs to locate models.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
-    /// The root path from which all other paths (like the models directory) are resolved.
+    /// Root for the models directory and other relative paths.
     pub root_path: PathBuf,
-    /// Resource bounds for the hosting process; `HostPolicy::default()` keeps
-    /// the historical unbounded behavior.
+    /// Resource bounds; `HostPolicy::default()` is unbounded.
     pub host_policy: HostPolicy,
 }

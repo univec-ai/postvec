@@ -1,48 +1,31 @@
-// File: engine/src/error.rs
-//!
-//! ## Engine Error Handling
-//!
-//! This module defines the primary error enum `EngineError` for the inference engine.
-//!
-//! Using `thiserror`, it consolidates errors from various sources (I/O, JSON, models, etc.)
-//! into a single, crate-specific type.
-use thiserror::Error;
-// Update the use path to point to the new, internal tokenizers module.
+//! Engine errors: models, I/O, JSON, tokenizers and prediction failures in one type.
 use crate::tokenizers::error::TokenizerError;
 use ndarray::ShapeError;
 use shared::vectors::VectorError;
+use thiserror::Error;
 
 /// The primary error type for the `engine` crate.
 #[derive(Error, Debug)]
 pub enum EngineError {
-    /// An error originating from the internal models module.
-    // We make this transparent so the ModelError message is shown directly,
-    // instead of being prefixed with "Model error:".
+    /// Inner model error, shown without a "Model error:" prefix.
     #[error(transparent)]
     Model(#[from] crate::models::ModelError),
 
-    /// An error related to invalid or missing configuration.
-    // We remove the "Configuration error:" prefix.
+    /// Invalid or missing configuration.
     #[error("{0}")]
     Configuration(String),
 
-    /// An error that occurs during I/O operations, such as file access.
-    // We make this transparent.
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
-    /// An error during JSON serialization or deserialization.
-    // We make this transparent.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 
-    /// A requested resource (like a model or executor) could not be found.
-    // We remove the "Not found:" prefix.
+    /// Model, executor or other named resource is missing.
     #[error("{0}")]
     NotFound(String),
 
-    /// An error occurred during the prediction/inference process.
-    // We remove the "Prediction failed:" prefix.
+    /// Inference failed.
     #[error("{0}")]
     Prediction(String),
 
@@ -62,8 +45,7 @@ pub enum EngineError {
     #[error("{0}")]
     TargetRestricted(String),
 
-    /// An error occurred while converting an input value to a target type.
-    // We remove the "Input type error:" prefix.
+    /// Input value could not be converted to the type the executor asked for.
     #[error("{0}")]
     InputTypeError(String),
 
@@ -79,18 +61,12 @@ pub enum EngineError {
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
 
-    /// An error originating from the integrated tokenizers module.
-    // We make this transparent to show the specific tokenizer error.
     #[error(transparent)]
     Tokenizer(#[from] TokenizerError),
 
-    /// An error originating from the vectors library.
-    // We make this transparent.
     #[error(transparent)]
     Vector(#[from] VectorError),
 
-    /// An error from ndarray shape operations.
-    // We make this transparent.
     #[error(transparent)]
     Shape(#[from] ShapeError),
 }
@@ -105,7 +81,7 @@ impl EngineError {
             EngineError::ConverterNotFound(_) => ErrorCode::ConverterNotFound,
             EngineError::InputTypeError(_) => ErrorCode::InvalidInput,
             EngineError::Timeout(_) => ErrorCode::Timeout,
-            EngineError::Io(_) => ErrorCode::InternalError, // Could break down further if needed
+            EngineError::Io(_) => ErrorCode::InternalError,
             EngineError::Json(_) => ErrorCode::InvalidInput,
             EngineError::Configuration(_) => ErrorCode::InternalError,
             EngineError::Prediction(msg) => {
@@ -118,15 +94,12 @@ impl EngineError {
                 }
             }
             EngineError::Model(e) => {
-                // Inspect inner model error if possible, for now map to internal
-                // In future, ModelError could also implement to_error_code
                 if e.to_string().to_lowercase().contains("not loaded") {
                     ErrorCode::ModelNotLoaded
                 } else {
                     ErrorCode::InternalError
                 }
             }
-            // For now map others to internal, can refine later
             _ => ErrorCode::InternalError,
         }
     }

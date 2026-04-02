@@ -1,57 +1,29 @@
-// File: engine/src/tokenizers/huggingface.rs
-//!
-//! ## Hugging Face Tokenizer Implementation
-//!
-//!
-//!
-//! This module provides the `Tokenizer` trait implementation for models supported by
-//! the Hugging Face `tokenizers` crate.
-//!
-//!
-//!
-//! It handles loading various tokenizer types
-//! (Pretrained, BPE, WordPiece, WordLevel, and Unigram for SentencePiece) and
-//!
-//!
-//! implements the `encode_plus` method to provide detailed, word-aligned
-//! tokenization output.
-// Use items from the parent module (`tokenizers::mod.rs`).
-use super::{TokenWithPosition, Tokenizer, TransformerEncodingsWithPosition};
-// Use items from sibling modules (`tokenizers::config` and `tokenizers::error`).
-// The `super::` prefix is used because `config` and `error` are declared in the parent `mod.rs`.
+//! Hugging Face tokenizers (pretrained, BPE, WordPiece, WordLevel, Unigram).
+
 use super::config::{
     Config as TokenizerConfig, HuggingFaceBpeParams, HuggingFacePretrainedParams,
     HuggingFaceUnigramParams, HuggingFaceWordlevelParams, HuggingFaceWordpieceParams,
     TokenizerType,
 };
 use super::error::TokenizerError;
+use super::{TokenWithPosition, Tokenizer, TransformerEncodingsWithPosition};
 use anyhow::Context;
-use std::collections::HashMap;
-// We now use `hf_tokenizers` to refer to the external crate, which was renamed
-// in Cargo.toml to resolve the name conflict with our internal `tokenizers` module.
-// This change fixes all the "unresolved import" and "type annotation needed" errors.
 use hf_tokenizers::models::bpe::BPE;
 use hf_tokenizers::models::unigram::Unigram;
 use hf_tokenizers::models::wordlevel::WordLevel;
 use hf_tokenizers::models::wordpiece::WordPiece;
 use hf_tokenizers::{PaddingParams, PaddingStrategy, Tokenizer as HfTokenizer, TruncationParams};
+use std::collections::HashMap;
 
-/// A struct that wraps the `hf_tokenizers::Tokenizer` and holds configuration.
 #[derive(Debug, Clone)]
 pub struct HuggingFaceTokenizer {
     instance: HfTokenizer,
     lowercase: bool,
 }
 
-/// Resolve a configured tokenizer file path against the model's base
-/// directory (audit-p3.md P3-R05).
-///
-/// Every file-backed tokenizer shape resolves the same way: a relative
-/// configured path is relative to the **model directory** — the layout the
-/// registry packages and the publisher/installer validate — never to the
-/// server process's working directory. An absolute configured path is
-/// honoured as-is (an operator's explicit choice), and with no base
-/// directory the configured value passes through unchanged.
+/// Resolve a tokenizer file path against the model directory, never the
+/// process working directory. Absolute paths are left as-is; with no base
+/// directory the configured value is unchanged.
 fn resolve_tokenizer_path(configured: &str, maybe_base_path: Option<&str>) -> String {
     match maybe_base_path {
         Some(base) if !configured.is_empty() => {
@@ -70,12 +42,7 @@ fn resolve_tokenizer_path(configured: &str, maybe_base_path: Option<&str>) -> St
 }
 
 impl HuggingFaceTokenizer {
-    /// The constructor for the HuggingFaceTokenizer.
-    ///
-    /// It now accepts the entire `TokenizerConfig` object.
-    /// This allows it to access
-    /// top-level settings like `max_length` while also using the nested `params`
-    /// field to deserialize type-specific configuration (like `pretrained_name`).
+    /// Build from the full tokenizer config (`max_length` plus type-specific `params`).
     pub fn new(
         config: &TokenizerConfig,
         maybe_base_path: Option<&str>,

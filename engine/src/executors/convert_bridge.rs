@@ -1,48 +1,26 @@
-//! ## Convert Bridge Executor
+//! Two converters in a row: source space -> intermediate -> target.
 //!
-//! This executor acts as an orchestrator, chaining two conversion models to provide a
-//! combined convert + convert operation in a single step:
-//! 1. A bridge conversion model (source embedding -> intermediate embedding)
-//! 2. A target conversion model (intermediate embedding -> target embedding)
-//!
-//! This is a "generic" executor, meaning it does not load its own model file
-//! but instead calls other models managed by the inference engine.
+//! Inputs: 0 embeddings, 1 source_model, 2 bridge_model, 3 target_model.
+//! Does not load its own weights; it calls other models on the engine.
 
-// --- Crate-internal Imports ---
 use crate::context::Context;
 use crate::error::EngineError;
 use crate::executors::{Executor, ExecutorOutput};
 use crate::models::ModelConfiguration;
 
-// --- External Imports ---
-
 use tokio::runtime::Handle;
 
-/// The `ConvertBridgeExecutor`.
-///
-/// This executor chains two conversion models, providing a way to convert
-/// embeddings from a source format to a target format via an intermediate format.
-///
-/// Models are passed dynamically via input arguments:
-/// Input 0: embeddings (array of arrays of floats)
-/// Input 1: source_model (string) - used for context/logging (and potentially validation)
-/// Input 2: bridge_model (string) - the bridge conversion model (source -> intermediate)
-/// Input 3: target_model (string) - the target conversion model (intermediate -> target)
 pub struct ConvertBridgeExecutor;
 
 impl ConvertBridgeExecutor {
-    /// Creates a new `ConvertBridgeExecutor`.
     pub fn new(_config: &ModelConfiguration) -> Result<Self, EngineError> {
         Ok(Self)
     }
 }
 
 impl Executor for ConvertBridgeExecutor {
-    /// Executes the convert + convert bridge pipeline.
-    ///
-    /// Models are resolved dynamically from the input.
     fn execute(&self, ctx: &Context) -> Result<ExecutorOutput, EngineError> {
-        // Handle async calls in a blocking context, avoiding deadlocks.
+        // Nested `predict` is async; this runs inside `spawn_blocking`.
         let handle = Handle::current();
 
         tokio::task::block_in_place(|| {

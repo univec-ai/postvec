@@ -114,10 +114,9 @@ check_upgrade_graph() {
             | grep -vx "${POSTVEC_VERSION}" | sort -Vu
     )
     if (( ${#released[@]} == 0 )); then
-        # Correct for a first release, and a thing to say out loud rather than
-        # skip quietly: the *next* release is the one where every upgrade path
-        # is exercised for the first time, and it must not be users who exercise
-        # it. See "Release acceptance criteria" in packaging/postvec/README.md.
+        # First release has no upgrade graph. The second one needs
+        # postvec--<old>--<new>.sql and a native upgrade test; that is not
+        # something to discover from users.
         printf '  skip  upgrade graph               no previous release tags (first release)\n'
         printf '        the second release needs postvec--<old>--<new>.sql *and* a native\n'
         printf '        upgrade test: install old, populate, upgrade, restart, ALTER EXTENSION.\n'

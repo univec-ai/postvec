@@ -57,9 +57,9 @@ load_versions
 need sha256sum python3 find
 
 PAYLOAD="${PKG_DIR}/build/payload-common"
-# Keyed by the pin, not by the model name: an old name or an old dependency
-# closure can then never contaminate a new selection, and an exact earlier pull
-# survives the live head advancing (see packaging-registry-models.md §4.2).
+# Keyed by the pin, not the model name: an old name or old dependency
+# closure cannot contaminate a new selection, and an earlier pull of the
+# same digest still hits the cache after the live head moves.
 CACHE_ROOT="${PKG_DIR}/build/model-cache/sha256-${BUNDLED_MODEL_ARCHIVE_SHA256}"
 
 # ------------------------------------------------------------------- the CLI

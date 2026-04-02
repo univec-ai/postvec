@@ -1,26 +1,14 @@
-// File: engine/src/tokenizers/config.rs
-//!
-//! ## Tokenizer Configuration
-//!
-//! This module defines the structures for configuring the different tokenizers.
-//!
-//! Using `serde`, these structs can be deserialized directly from a model's
-//! JSON configuration file (`ninference.hub.json`), providing a strongly-typed
-//! way to handle tokenizer parameters.
+//! Tokenizer config as it appears in `ninference.hub.json`.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Defines the top-level structure for any tokenizer configuration.
-/// This is the entry point for deserialization from a model's config file.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     /// Determines which tokenizer implementation to use.
     pub tokenizer_type: TokenizerType,
-    /// A flexible JSON Value containing the specific parameters for the chosen
-    /// tokenizer type. This allows for diverse configurations from a single file.
+    /// Type-specific parameters (vocab paths, pretrained name, ...).
     pub params: Value,
-    /// The maximum sequence length for the tokenizer. This is now a top-level
-    /// field to ensure it's correctly deserialized from the model config.
+    /// Maximum sequence length.
     #[serde(default = "default_max_length")]
     pub max_length: usize,
     /// Disables padding if set to true.
@@ -34,9 +22,7 @@ pub struct Config {
     pub truncation_disabled: bool,
 }
 
-/// An enum representing the different available tokenizer types.
-/// The `serde(rename_all = "kebab-case")` attribute ensures that strings like
-/// "huggingface-pretrained" in the JSON correctly map to the enum variants.
+/// Tokenizer implementation. JSON uses kebab-case (`huggingface-pretrained`).
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum TokenizerType {
     #[serde(rename = "huggingface-pretrained")]
@@ -47,12 +33,10 @@ pub enum TokenizerType {
     HuggingFaceWordPiece,
     #[serde(rename = "huggingface-wordlevel")]
     HuggingFaceWordLevel,
-    // This variant is for SentencePiece models, which are handled by the Unigram
-    // model in the Hugging Face `tokenizers` crate.
+    // SentencePiece, loaded as a Hugging Face Unigram model.
     #[serde(rename = "huggingface-unigram")]
     HuggingFaceUnigram,
-    // Native tokenizers from the original Go implementation are listed for completeness,
-    // but are not implemented in this pure Rust version.
+    // Present in the schema; this engine does not implement them.
     #[serde(rename = "native-bert-tokenizer")]
     NativeBertTokenizer,
     #[serde(rename = "native-marian-tokenizer")]
@@ -61,11 +45,7 @@ pub enum TokenizerType {
     NativeBertFixedVocabTokenizer,
 }
 
-// --- Hugging Face Specific Configurations ---
-// Note: The common `HuggingFaceParams` struct has been removed, and its fields
-// have been promoted to the main `Config` struct for correct deserialization.
-
-/// Parameters for loading a pretrained Hugging Face tokenizer from the Hub.
+/// Files / name for a pretrained Hugging Face tokenizer.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HuggingFacePretrainedParams {
     #[serde(default)]
@@ -74,7 +54,6 @@ pub struct HuggingFacePretrainedParams {
     pub pretrained_vocab_file: String,
 }
 
-/// Parameters for loading a Hugging Face BPE (Byte-Pair Encoding) tokenizer from files.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HuggingFaceBpeParams {
     #[serde(default)]
@@ -83,28 +62,24 @@ pub struct HuggingFaceBpeParams {
     pub merges_file_path: String,
 }
 
-/// Parameters for loading a Hugging Face WordPiece tokenizer from a vocabulary file.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HuggingFaceWordpieceParams {
     #[serde(default)]
     pub vocab_file_path: String,
 }
 
-/// Parameters for loading a Hugging Face WordLevel tokenizer from a vocabulary file.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HuggingFaceWordlevelParams {
     #[serde(default)]
     pub vocab_file_path: String,
 }
 
-/// Parameters for loading a Hugging Face Unigram (SentencePiece) tokenizer from a file.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HuggingFaceUnigramParams {
     #[serde(default)]
     pub vocab_file_path: String,
 }
 
-// --- Helper functions to provide default values for optional serde fields ---
 fn default_max_length() -> usize {
-    512 // A common default sequence length.
+    512
 }

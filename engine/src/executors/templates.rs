@@ -1,23 +1,8 @@
-// File: engine/src/executors/templates.rs
-//! ## Input templates
+//! Per-`input_type` Jinja wrappers for `transformer-sequence-embedding`.
 //!
-//! Small helper used by `transformer-sequence-embedding` to wrap an input
-//! string with a per-`input_type` template (e.g. `search_query`,
-//! `search_document`). Backed by `minijinja`.
-//!
-//! Configured under `executor.params.templates`:
-//!
-//! ```json
-//! "templates": {
-//!   "search_query":    "assets/search_query.md",
-//!   "search_document": "assets/search_document.md"
-//! }
-//! ```
-//!
-//! Paths are resolved relative to the model directory (the same convention
-//! used by the tokenizer's `pretrained_vocab_file`).
-//!
-//! The template's only variable is `{{ text }}` — the raw input string.
+//! Configured under `executor.params.templates` as `input_type` -> path,
+//! resolved relative to the model directory. The template's only variable
+//! is `{{ text }}`.
 
 use crate::error::EngineError;
 use minijinja::{context, Environment};
