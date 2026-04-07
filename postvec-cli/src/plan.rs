@@ -106,7 +106,7 @@ pub enum PlanStep {
     /// Not a mutation: the inverse of [`PlanStep::AcknowledgeInUse`] —
     /// existing columns bound to this public name START sending their source
     /// text to an external provider once it serves the name (the
-    /// bridge-upgrade privacy event, external-providers §3.4). Carried as a
+    /// bridge-upgrade privacy event). Carried as a
     /// step so [`Plan::in_use_models`] gates the confirmation on it.
     AcknowledgeProviderPrivacy {
         provider: String,

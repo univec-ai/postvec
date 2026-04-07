@@ -11,7 +11,7 @@
 //! - the **privacy acknowledgement**: any existing column bound to a name
 //!   this command makes live starts sending its source text to the provider
 //!   on the next worker cycle, with no SQL change and no further notice
-//!   (the bridge-upgrade event, external-providers §3.4). `--yes` never
+//!   (the bridge-upgrade event). `--yes` never
 //!   answers that; `--acknowledge-in-use` or the typed confirmation does.
 
 use super::{
@@ -410,13 +410,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
              that check",
         );
     }
-    // ---- The prospective document, checked before anything is spent ----
-    // Composed here rather than after the probe so the **whole file** — not
-    // just the model ids the probe touches — is measured against the serving
-    // host's rules before a paid call. An unknown field, two key sources, a
-    // `dim` outside a model's range: all of those make the host refuse the
-    // file, and all of them used to be discovered only at the write, one
-    // billed request later.
+    // Prospective document, checked before anything is spent. Compose it
+    // here so the whole file, not just the model ids the probe touches, is
+    // measured against the serving host's rules before a paid call. An
+    // unknown field, two key sources, a `dim` outside a model's range: all
+    // of those make the host refuse the file. Catch them before the probe.
     //
     // Models whose dimension the probe has yet to measure are appended
     // afterwards; everything else about the file is final by this point.

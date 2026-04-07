@@ -813,11 +813,10 @@ mod tests {
         );
     }
 
-    /// Only a DIRECT converter resolves. The fixture still holds the chained
-    /// pair (a→b, b→c) AND a convert-bridge executor row — exactly what the
-    /// removed two-hop path used to assemble — so the middle assertion pins
-    /// the removal: a chain that once resolved as a Bridge is NoConvertPath
-    /// now, even with every ingredient present in the cache.
+    /// Only a direct converter resolves. The fixture still holds the
+    /// chained pair (a->b, b->c) and a convert-bridge row; a chain that
+    /// would have been two-hop is `NoConvertPath` even with every
+    /// ingredient present.
     #[pg_test]
     fn convert_resolution_is_direct_only() {
         load_fixture();

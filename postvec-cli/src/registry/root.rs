@@ -1311,9 +1311,9 @@ mod tests {
         assert!(!root.models_dir().join(SWAP_DIR).exists());
     }
 
-    /// The blocking case from the audit: a crash after the replacement is on
-    /// disk but before anything proved it loadable. Directory presence says
-    /// "done"; the record says otherwise, and the record wins.
+    /// A crash after the replacement is on disk but before anything proved
+    /// it loadable. Directory presence says "done"; the record says
+    /// otherwise, and the record wins.
     #[test]
     fn an_unconfirmed_transaction_recovers_to_the_predecessor() {
         let (_guard, root) = root_with_models();

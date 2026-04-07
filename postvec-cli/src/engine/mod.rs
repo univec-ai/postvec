@@ -45,8 +45,8 @@ struct EnvelopeData {
 struct HubModel {
     name: String,
     configuration: Option<HubConfiguration>,
-    /// Top-level extra a provider gateway sets on its own descriptors
-    /// (external-providers §6.2): the connector type. Absent for every
+    /// Top-level extra a provider gateway sets on its own descriptors:
+    /// the connector type. Absent for every
     /// engine model, so its presence is what distinguishes "this host runs
     /// this model" from "this host relays this model to an API".
     #[serde(default)]

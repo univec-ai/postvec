@@ -753,9 +753,8 @@ fn resident_models<'a>(
         .collect()
 }
 
-/// Can the resident inventory still serve a column declared on `space`? This
-/// mirrors the extension's two-tier resolver (`api/embed.rs`,
-/// postvec-description §3.5):
+/// Can the resident inventory still serve a column declared on `space`?
+/// Mirrors the extension's two-tier resolver (`api/embed.rs`):
 ///
 /// 1. a direct embed model whose space **is** `space` — `COALESCE(target_model,
 ///    name)`, not the directory name; or

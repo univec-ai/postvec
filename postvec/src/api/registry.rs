@@ -2078,11 +2078,10 @@ fn check_not_null_policy(rel: &RelInfo, vec_col: &str, not_null: bool, sync: boo
     }
 }
 
-/// The external provider serving `model`, if any: discovery stores HubModel
-/// top-level extras under `raw->'extra'`, and provider-backed rows carry
-/// `provider` there (external-providers §6.2). Same tier-1 preference as
-/// `resolve_dim`: the public `target_model` match wins over the internal
-/// name.
+/// The external provider serving `model`, if any. Discovery stores
+/// HubModel extras under `raw->'extra'`; provider-backed rows carry
+/// `provider` there. Same preference as `resolve_dim`: the public
+/// `target_model` match wins over the internal name.
 pub(crate) fn external_provider_of(model: &str) -> Option<String> {
     Spi::get_one_with_args::<String>(
         "SELECT raw->'extra'->>'provider' FROM postvec.models
@@ -2110,9 +2109,8 @@ pub(crate) fn external_provider_of_converter(name: &str) -> Option<String> {
     .flatten()
 }
 
-/// The informed-consent moment for a column becoming bound to a
-/// provider-backed model (external-providers §7.5): from now on, this
-/// column's source text leaves the database host for the named provider.
+/// Notice when a column becomes bound to a provider-backed model: from
+/// now on its source text leaves the database host for that provider.
 ///
 /// Emitted by all three verbs that bind a column to a model — `enable`,
 /// `adopt` and `migrate`. Migration is the one that is easy to overlook and

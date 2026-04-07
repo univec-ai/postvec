@@ -187,8 +187,8 @@ struct EmbeddedService {
     /// returns. This semaphore's permit is moved into the HTTP response body,
     /// so slow/abandoned loopback readers cannot accumulate unbounded prost
     /// response trees after Tower's request-future limit has been released.
-    /// Engine path only — the provider path never takes a slot (§7.3, see
-    /// the dispatch comment in `embed_texts`).
+    /// Engine path only. The provider path never takes a slot (see the
+    /// dispatch comment in `embed_texts`).
     response_slots: Arc<Semaphore>,
     /// The response-lifetime bound for the provider path, denominated in
     /// **mebibytes of response tree**, not in responses.
@@ -216,8 +216,8 @@ struct EmbeddedService {
     /// provider's callers wait — bounded by every caller's own deadline, and
     /// the same shape the engine path's `response_slots` has always had.
     provider_response_bytes: Arc<Semaphore>,
-    /// External-provider gateway (docs/external-providers.md). Empty in the
-    /// zero-config case; `owns()` decides routing before any engine check.
+    /// External-provider gateway. Empty in the zero-config case; `owns()`
+    /// decides routing before any engine check.
     gateway: Arc<Gateway>,
 }
 
@@ -251,19 +251,16 @@ impl NinferenceService for EmbeddedService {
                 "deadline exhausted at request entry",
             ));
         }
-        // Dispatch order: a ready engine model wins its name, then the
-        // gateway, then the MODEL_NOT_LOADED refusal. Two rules meet here:
-        // a provider-backed name is never engine-resident, so it must be
-        // routed before that refusal fires — and on a name collision the
-        // LOCAL model wins, the same §6.1 rule `/config` applies, so
-        // discovery and this handler can never disagree about which model a
-        // name is. Convert requests follow the same order through
-        // `owns_converter` (UniVec serves hosted conversion; the other
-        // providers embed only).
+        // Dispatch: a ready engine model wins its name, then the gateway,
+        // then MODEL_NOT_LOADED. A provider-backed name is never
+        // engine-resident, so it must be routed before that refusal. On a
+        // name collision the local model wins, same as `/config`, so
+        // discovery and this handler never disagree. Convert requests
+        // follow the same order through `owns_converter` (UniVec serves
+        // hosted conversion; the other providers embed only).
         //
-        // §7.3 admission: the provider path deliberately bypasses all three
-        // embedded_max_inflight gates — it took a widened tower slot (see
-        // the layer construction in `spawn_inner`), it skips
+        // The provider path skips the three embedded_max_inflight gates: it
+        // took a widened tower slot (see `spawn_inner`), it skips
         // `response_slots`, and it never calls `predict_raw_at` (so
         // HostPolicy is not involved). Provider calls are network-bound and
         // must not queue behind CPU-bound ONNX; their limiter is the
@@ -355,17 +352,14 @@ impl NinferenceService for EmbeddedService {
                 Value::Number(req.dimensions.into()),
             );
         }
-        // §10 option (b): `input_type` is deliberately NOT forwarded to the
-        // engine. The extension's client now always sets it (the gateway
-        // needs it for Cohere), and the engine applies it only to models
-        // that declare templates — but a template-less model (the bundled
-        // MiniLM, and every model shipped today) logs a warning PER REQUEST
-        // when it sees one, which would flood the PostgreSQL log on every
-        // embed, and a templated model's vectors would silently change,
-        // which is exactly what the golden-vector suite exists to prevent.
-        // Forwarding it is a deliberate, separately tested change (it moves
-        // stored-vector semantics); stripping it here preserves today's
-        // engine numbers exactly, with no client-side model lookup.
+        // Do not forward `input_type` to the engine. The client always
+        // sets it (the gateway needs it for Cohere). The engine only
+        // applies it to models that declare templates, but a template-less
+        // model warns per request, which would flood the PostgreSQL log,
+        // and a templated model's vectors would silently change (the
+        // golden-vector suite exists to catch that). Stripping it here
+        // keeps engine numbers as they are, with no client-side model
+        // lookup. Forwarding it is a separate, tested change.
         let _ = req.input_type;
         // `user` is a pass-through identifier; not forwarded (same as the
         // production server).
@@ -538,11 +532,10 @@ impl NinferenceService for EmbeddedService {
 }
 
 impl EmbeddedService {
-    /// The provider path of `EmbedTexts` (§7.3): dispatch to the gateway,
-    /// bounded by the per-provider semaphore and the caller's deadline —
-    /// never by `response_slots` or the engine's HostPolicy (a provider
-    /// call is network-bound and must not serialize behind local ONNX).
-    /// The response envelope is still enforced with the same math as the
+    /// Provider path of `EmbedTexts`: the gateway, bounded by the
+    /// per-provider semaphore and the caller's deadline, never by
+    /// `response_slots` or HostPolicy (network-bound, must not serialize
+    /// behind local ONNX). The response envelope uses the same math as the
     /// engine path, sized from the descriptor's declared dimension.
     async fn embed_via_gateway(
         &self,
@@ -604,22 +597,21 @@ impl EmbeddedService {
             embeddings: Some(vectors_to_list_value(vectors, deadline)?),
             usage: None,
         });
-        // The permit rides the response body: `ResponsePermitLayer` moves it
-        // into `PermitBody`, which holds it until hyper finishes or drops the
-        // encoding. This is the whole fix — a completed provider tree is not
-        // "done" until the bytes leave.
+        // The permit rides the response body: `ResponsePermitLayer` moves
+        // it into `PermitBody`, which holds it until hyper finishes or
+        // drops the encoding. A completed tree is not done until the
+        // bytes leave.
         response
             .extensions_mut()
             .insert(ResponsePermit(Arc::new(response_permit)));
         Ok(response)
     }
 
-    /// The provider path of `ConvertEmbeddings`: the convert twin of
-    /// [`Self::embed_via_gateway`], with the same §7.3 shape — bounded by
-    /// the per-provider semaphore and the caller's deadline, never by
-    /// `response_slots` or the engine's HostPolicy, and the byte-weighted
-    /// response permit taken BEFORE the call so no paid conversion is ever
-    /// thrown away for want of capacity.
+    /// Provider path of `ConvertEmbeddings`: same shape as
+    /// [`Self::embed_via_gateway`]. Bounded by the per-provider semaphore
+    /// and the caller's deadline, never by `response_slots` or HostPolicy.
+    /// The byte-weighted response permit is taken before the call so a paid
+    /// conversion is never thrown away for want of capacity.
     async fn convert_via_gateway(
         &self,
         req: ConvertEmbeddingsRequest,
@@ -696,11 +688,10 @@ impl EmbeddedService {
     }
 }
 
-/// [`GatewayError`] → tonic Status + `x-ravenna-error-code` metadata, the
-/// same wire contract as [`engine_error_to_status`] — postvec's client (and
-/// any other) classifies provider failures exactly like a remote node's
-/// answers, per the §6.4 mapping table. Messages are secret-free by
-/// construction in the providers crate.
+/// [`GatewayError`] to tonic Status + `x-ravenna-error-code`, the same
+/// wire contract as [`engine_error_to_status`]. The client classifies
+/// provider failures like a remote node's answers. Messages are
+/// secret-free by construction in the providers crate.
 fn gateway_error_to_status(e: GatewayError) -> Status {
     let code = e.code;
     let message = e.message;
@@ -952,20 +943,16 @@ fn spawn_inner(
         .map_err(|e| format!("local_addr: {e}"))?;
 
     let response_slots = Arc::new(Semaphore::new(max_inflight.max(1)));
-    // §7.3 (recommended default): the tower ingress limit stays as the
-    // decode-amplification backstop, widened by the sum of the configured
-    // per-provider `max_concurrent` caps so provider calls (network-bound)
-    // never queue behind CPU-bound ONNX at a gate they don't need. The
-    // budget is read from the gateway loaded at startup; a runtime
-    // `/admin/providers/reload` that RAISES the budget shares the startup
-    // ingress width until the next restart (serving is correct, admission
-    // is merely tighter — the reload endpoint logs a warning naming the
-    // restart). Zero-config: budget 0, size unchanged, so the
-    // documented ≤ max_inflight × ~320 MiB ingress RSS bound holds exactly.
-    // Residual (deliberate): a burst of *engine* EmbedTexts can occupy the
-    // extra tower slots, decode, then wait on `response_slots` — extra
-    // decoded RSS exists only when providers are configured, and callers
-    // still carry `grpc-timeout`.
+    // Tower ingress stays the decode-amplification backstop, widened by
+    // the sum of per-provider `max_concurrent` so network-bound provider
+    // calls never queue behind CPU-bound ONNX. The budget is the gateway
+    // loaded at startup; a later `/admin/providers/reload` that raises it
+    // still shares this width until the next restart (serving is correct,
+    // admission is tighter; the reload endpoint warns). Zero-config:
+    // budget 0, size unchanged. Residual: a burst of engine EmbedTexts
+    // can occupy the extra tower slots, decode, then wait on
+    // `response_slots`. Extra decoded RSS exists only when providers are
+    // configured; callers still carry `grpc-timeout`.
     let ingress_limit = max_inflight.max(1) + gateway.inflight_budget();
     // The response-lifetime bound for the provider path, in MiB of response
     // tree. Fixed rather than derived from the provider count: it is an
@@ -1670,11 +1657,9 @@ mod gateway_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The §6.1 collision rule on the EMBED path, not just in `/config`: a
-    /// loaded local model wins its name, and the provider claiming it is
-    /// never dialed. The local fixture is a dummy-executor model, whose
-    /// distinctive engine-side error doubles as proof of which path served
-    /// the request.
+    /// A loaded local model wins its name on the embed path, not just in
+    /// `/config`; the provider claiming it is never dialed. The fixture is
+    /// a dummy-executor model, whose error proves which path served.
     #[test]
     fn a_loaded_local_model_wins_the_name_collision_on_the_embed_path() {
         let root = crate::client::embedded::tests::empty_engine_root();
@@ -1801,16 +1786,13 @@ mod gateway_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Phase 6, end to end: the purpose on `EmbedRoute` becomes
-    /// `EmbedTextsRequest.input_type` on the wire, and the gateway turns it
-    /// into the provider's own vocabulary. Cohere is the connector whose
-    /// request body carries it, so its mock request is the observable.
-    ///
-    /// This is the honest form of "search sets Query": `search()` embeds
-    /// through `embed_texts`, which constructs its own `GrpcClient` with no
-    /// injection seam, and `pg_test` has no host at all — so the contract is
-    /// proved here, through the real client, the real server and the real
-    /// gateway, rather than against a mock two layers below it.
+    /// The purpose on `EmbedRoute` becomes `EmbedTextsRequest.input_type`
+    /// on the wire, and the gateway turns it into the provider's own
+    /// vocabulary. Cohere is the connector whose request body carries it,
+    /// so its mock request is the observable. Proved through the real
+    /// client, server and gateway: `search()` embeds via `embed_texts`,
+    /// which builds its own `GrpcClient` with no injection seam, and
+    /// `pg_test` has no host.
     #[test]
     fn the_route_purpose_becomes_the_providers_input_type() {
         use std::os::unix::fs::PermissionsExt;
@@ -1933,9 +1915,9 @@ mod gateway_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// §7.3: the provider path takes NO `response_slots` permit (and never
-    /// reaches HostPolicy). With a zero-permit semaphore the engine path
-    /// could not answer at all — the provider path must.
+    /// The provider path takes no `response_slots` permit and never reaches
+    /// HostPolicy. With a zero-permit semaphore the engine path could not
+    /// answer at all; the provider path must.
     #[test]
     fn provider_path_takes_no_response_slot() {
         let root = crate::client::embedded::tests::empty_engine_root();

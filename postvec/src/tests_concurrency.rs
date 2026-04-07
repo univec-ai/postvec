@@ -636,8 +636,8 @@ mod tests {
         fx.cleanup();
     }
 
-    /// Identity reconciliation against an uncommitted DROP: the
-    /// window the single-session regression cannot reach.
+    /// Identity reconciliation against an uncommitted DROP: the window a
+    /// single-session test cannot reach.
     ///
     /// While the DROP is uncommitted the build blocks on the table lock and
     /// dies on `lock_timeout`, and the fresh failure transaction still reads

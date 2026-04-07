@@ -528,16 +528,14 @@ fn try_init() -> Result<(), String> {
         );
     }
 
-    // External providers (docs/external-providers.md §7): one gateway,
-    // shared by both loopback servers. `load` isolates per-provider/per-file
-    // failures internally (a broken provider file must never degrade local
-    // models), and a missing directory is the ordinary zero-config case —
-    // an empty gateway changes nothing observable, including the
-    // embedded_max_inflight ingress bound.
-    // The names the engine owns, so a provider file claiming one is refused
-    // at load rather than left dormant behind it (see the collision arm in
-    // `Inner::build`). If that list cannot be built, no provider serves: a
-    // narrowed reservation is exactly how a provider takes a local name.
+    // One gateway, shared by both loopback servers. `load` isolates
+    // per-file failures (a broken provider file must never degrade local
+    // models). A missing directory is the ordinary zero-config case: an
+    // empty gateway changes nothing, including the ingress bound.
+    // Names the engine already owns are reserved so a provider file
+    // claiming one is refused at load. If that list cannot be built, no
+    // provider serves: a partial reservation is how a provider would
+    // steal a local name.
     let gateway = Arc::new(match reserved_local_names(&cfg.root, &engine) {
         Ok(local_models) => providers::gateway::Gateway::load(&cfg.providers_path, &local_models),
         Err(e) => {
@@ -550,8 +548,8 @@ fn try_init() -> Result<(), String> {
             providers::gateway::Gateway::empty()
         }
     });
-    // The §7.3 ingress width the gRPC server is about to be sized with;
-    // the reload endpoint warns when a later reload outgrows it.
+    // Ingress width the gRPC server is about to be sized with. The reload
+    // endpoint warns when a later reload outgrows it.
     let startup_provider_budget = gateway.inflight_budget();
 
     let server = server::spawn(

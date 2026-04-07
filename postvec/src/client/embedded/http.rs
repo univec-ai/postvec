@@ -11,8 +11,7 @@
 //! `refresh_models()` work in embedded mode.
 //!
 //! The `/admin/*` routes are what `postvec model pull`/`rm`/`activate` use
-//! to hot-(un)load models without a PostgreSQL restart
-//! (postvec-cli/src/commands/model/admin.rs is the client). They answer the
+//! to hot-(un)load models without a PostgreSQL restart. They answer the
 //! same envelope shape: per-model outcomes ride a 200, request-level
 //! refusals are a 4xx with `{success: false, error}`.
 //!
@@ -48,7 +47,7 @@ const ADMIN_MAX_NAME_BYTES: usize = 128;
 /// `discovery::parse_config` expects (`configuration.enabled` gates
 /// inclusion parser-side, `configuration.params` carries
 /// model_type/source/target/dims). Provider entries come after the engine's
-/// own, already in the nested HubModel shape (external-providers §6.2); a
+/// own, already in the nested HubModel shape; a
 /// public name that collides with a local model is skipped with a warning —
 /// the local model wins, deterministically. Pure, so the wire shape is
 /// testable without an engine.
@@ -553,7 +552,7 @@ async fn admin_unload(
 /// the unload ordering both live on disk, not in the engine).
 /// Everything the listener needs about external providers: the shared
 /// gateway, where its files live (`/admin/providers/reload` rescans them),
-/// and the §7.3 inflight budget the gRPC ingress limit was sized with at
+/// and the inflight budget the gRPC ingress limit was sized with at
 /// spawn — a reload can grow the gateway past it; serving stays correct,
 /// but full provider throughput needs a restart, and the reload handler
 /// warns when that happens.
@@ -668,11 +667,10 @@ pub(super) fn spawn(
                             &format!("reload task failed: {e}"),
                         ),
                         Ok(Ok((report, budget))) => {
-                            // §7.3 residual: the gRPC ingress width is fixed
-                            // at spawn. Providers added by reload still
-                            // serve, but they share the startup width until
-                            // a restart — say so once, at the moment the
-                            // operator caused it, and put the same fact in
+                            // The gRPC ingress width is fixed at spawn.
+                            // Providers added by reload still serve, but
+                            // they share the startup width until a restart.
+                            // Say so once, here, and put the same fact in
                             // the body so `postvec provider add` can print
                             // it without scraping logs.
                             let restart_needed = budget > startup_provider_budget;
@@ -889,11 +887,10 @@ dim = 999
         assert_eq!(bridge.model_type, "embed-bridge");
     }
 
-    /// Provider entries merge into the envelope in the nested HubModel shape
-    /// (external-providers §6.2) and round-trip through the production
-    /// discovery parser — a flat object would be silently dropped there, so
-    /// this is the load-bearing wire test. The name collision with a local
-    /// model resolves local-wins.
+    /// Provider entries merge into the envelope in the nested HubModel
+    /// shape and round-trip through the production discovery parser. A
+    /// flat object would be silently dropped there. A name collision with
+    /// a local model resolves local-wins.
     #[test]
     fn provider_models_merge_into_the_envelope_and_local_wins() {
         let root = super::super::tests::empty_engine_root();

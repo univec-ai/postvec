@@ -1397,7 +1397,7 @@ pub async fn columns_bound_to(
     };
 
     // What the running host serves from its own engine right now: an enabled
-    // LOCAL embed model under a colliding name keeps that name local (§6.1),
+    // LOCAL embed model under a colliding name keeps that name local,
     // so its columns are not affected either way.
     //
     // `m.provider.is_none()` is load-bearing. `/config` carries provider

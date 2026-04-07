@@ -60,10 +60,9 @@ pub struct RegistryEntry {
 impl RegistryEntry {
     /// `"schema"."table"` fully-quoted for interpolation into dynamic SQL.
     ///
-    /// This is the **source** relation. Kept under its historical name as a
-    /// compatibility alias while callers migrate; code that creates,
-    /// searches, indexes, or migrates *vectors* must go through
-    /// [`RegistryEntry::qualified_vector_table`] deliberately.
+    /// The source relation. The name is a compatibility alias; code that
+    /// creates, searches, indexes or migrates *vectors* must go through
+    /// [`RegistryEntry::qualified_vector_table`].
     pub fn qualified_table(&self) -> String {
         format!(
             "{}.{}",

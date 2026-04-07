@@ -1440,7 +1440,7 @@ fn maybe_refresh_models(
 
 /// Upsert the singleton heartbeat row in the ambient transaction. One
 /// `INSERT ... ON CONFLICT` against the row's fixed key — updates never touch
-/// the key, so they stay HOT (no dead-tuple churn per poll tick like the old
+/// the key, so they stay HOT (no dead-tuple churn per poll tick from a
 /// DELETE+INSERT). `stamp_refresh` records a completed model-cache refresh in
 /// `models_refreshed_at` (the diff-aware cache upsert no longer proves
 /// freshness through `models.last_seen`).

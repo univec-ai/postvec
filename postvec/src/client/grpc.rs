@@ -407,23 +407,14 @@ impl InferenceClient for GrpcClient {
                     model: model.to_string(),
                     bridge_model: route.bridge_model.clone().unwrap_or_default(),
                     target_model: route.target_model.clone().unwrap_or_default(),
-                    // The field the proto has carried all along; provider
-                    // connectors consume it, and the hosts strip it before
-                    // the engine ever sees it (see the engine-path comment
-                    // in embedded/server.rs).
-                    //
-                    // Set for BOTH purposes, deliberately. Only `search_query`
-                    // changes anything a gateway does, so sending nothing for
-                    // documents would be equivalent and would leave the
-                    // worker's wire bytes exactly as they were before this
-                    // feature. It is written out in full instead because the
-                    // request should say what it means: a reader of a packet
-                    // capture, or of a future host, should not have to know
-                    // that "absent" is spelled "document". Both postvec hosts
-                    // strip the field on the engine path; a third-party
-                    // ninference node that honours it would apply templates,
-                    // which is the one deployment where the shorter form
-                    // would have been safer.
+                    // Provider connectors consume `input_type`; hosts strip
+                    // it before the engine (see the engine-path comment in
+                    // embedded/server.rs). Set for both purposes: only
+                    // `search_query` changes anything a gateway does, but
+                    // the request should say what it means rather than
+                    // treating "absent" as "document". Both postvec hosts
+                    // strip the field on the engine path. A third-party
+                    // ninference node that honours it would apply templates.
                     input_type: route.purpose.as_wire().to_string(),
                     ..Default::default()
                 });
@@ -1100,11 +1091,11 @@ mod tests {
             });
         }
 
-        /// Round-6 regression: the production client must SEND its attempt
-        /// budget as the `grpc-timeout` header — tonic only emits it when
-        /// the call wraps a `tonic::Request` with `set_timeout`, and without
-        /// it the loopback server's inbound-deadline clamp never engages, so
-        /// a 2 s search() would still grant the engine the 30 s default.
+        /// The client must send its attempt budget as `grpc-timeout`. tonic
+        /// only emits that when the call wraps a `tonic::Request` with
+        /// `set_timeout`. Without it the loopback server's inbound-deadline
+        /// clamp never engages, so a 2 s `search()` would grant the engine
+        /// the 30 s default.
         #[test]
         fn client_propagates_its_deadline_as_grpc_timeout() {
             let rt = test_runtime();
@@ -1141,11 +1132,10 @@ mod tests {
             });
         }
 
-        /// Round-4 regression: a SLOW-BUT-VALID first node must receive the
-        /// full inference deadline. The old budget division (remaining /
-        /// attempts_left, then a per-node reserve) gave the first of two
-        /// nodes only half of a 2 s budget — timing out a healthy model at
-        /// 1.2 s and repeating the inference elsewhere.
+        /// A slow-but-valid first node must receive the full inference
+        /// deadline, not a slice of remaining / attempts_left. Splitting a
+        /// 2 s budget across two nodes times out a healthy 1.2 s answer
+        /// and repeats the inference elsewhere.
         #[test]
         fn slow_but_valid_first_node_keeps_the_full_inference_deadline() {
             let rt = test_runtime();

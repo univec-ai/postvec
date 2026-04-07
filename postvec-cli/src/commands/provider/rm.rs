@@ -517,14 +517,13 @@ fn is_drift(now: &providers::config::ServedBy, after: &providers::config::Served
             || now.dim != after.dim)
 }
 
-/// Name equality is not route equality. A previous version compared names
-/// only, so a same-name handoff from file A to file B — a different endpoint,
-/// possibly a different company — read as "unchanged" and went ungated. It
-/// also let an *unloadable* B hide the loss of A: the name was still "there"
-/// afterwards, structurally, while the host would serve it from nothing.
-/// Treating any change of server as an activation covers both: the operator
-/// is told the name is being handed to B, and if B does not load, that
-/// warning is the closest thing to the truth this process can state.
+/// Name equality is not route equality. A same-name handoff from file A
+/// to file B (a different endpoint, possibly a different company) is a
+/// real change. Treating any change of server as an activation covers
+/// both: the operator is told the name is being handed to B, and if B
+/// does not load, that warning is the closest thing to the truth this
+/// process can state. A name-only compare would also let an unloadable
+/// B hide the loss of A.
 ///
 /// Two bounds on "now": `possibly_now` (everything that may be served — the
 /// live snapshot, or the conservative view when no host answered) decides

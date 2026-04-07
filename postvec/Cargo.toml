@@ -67,8 +67,7 @@ postgres = { version = "0.19", optional = true }
 engine = { path = "../engine", features = ["onnx"], optional = true }
 shared = { path = "../shared", optional = true }
 # External embedding providers: the providers.d gateway the embedded host
-# mounts (docs/external-providers.md). rustls only — postvec.so must not
-# link OpenSSL.
+# mounts. rustls only: postvec.so must not link OpenSSL.
 postvec-providers = { path = "../providers", features = ["wire"], optional = true }
 log = { version = "0.4", optional = true }
 # The engine host's loopback HTTP /config listener (embedded mode). Costs

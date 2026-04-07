@@ -29,11 +29,10 @@ pub mod receipt;
 pub mod root;
 pub mod urls;
 
-// The archive, descriptor and identity rules live in `registry-schema`,
-// which the publisher also links: one implementation of the format the
-// client reads and the publisher writes, so the two cannot disagree about
-// what a published model is. Re-exported at their historical paths, so
-// `registry::archive::…` still names them here.
+// Archive, descriptor and identity rules live in `registry-schema`, which
+// the publisher also links: one implementation of the format the client
+// reads and the publisher writes. Re-exported here so
+// `registry::archive::...` still names them.
 pub use registry_schema::{archive, descriptor, identity};
 
 use crate::error::{CliError, Result};
