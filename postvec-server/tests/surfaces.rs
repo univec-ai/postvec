@@ -228,11 +228,8 @@ async fn readiness_is_503_until_a_model_can_answer() {
 /// `EmbedTexts` perfectly well — a load balancer would never route to a node
 /// that works.
 ///
-/// Driven through the real `/ready` route over a real socket, deliberately.
-/// A previous version of this test rebuilt the readiness predicate inline
-/// from `gateway.models()` and asserted on that, which would have stayed
-/// green with the production fix reverted — the exact failure this suite
-/// exists to prevent.
+/// Driven through the real `/ready` route over a real socket, not a copy
+/// of the predicate.
 #[tokio::test]
 async fn a_provider_only_node_is_ready() {
     use std::os::unix::fs::PermissionsExt;

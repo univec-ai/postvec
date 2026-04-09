@@ -64,10 +64,9 @@ pub fn config_models(configs: &[ModelConfiguration]) -> Vec<Value> {
 }
 
 /// [`config_models`] plus the provider gateway's descriptors (already in
-/// the nested HubModel shape, external-providers §6.2), appended after the
-/// engine's own models. A public name that collides with a local model is
-/// skipped with a warning — the local model wins, deterministically, the
-/// same rule the gRPC dispatch applies.
+/// the nested HubModel shape), appended after the engine's own models. A
+/// public name that collides with a local model is skipped with a warning:
+/// the local model wins, same rule as the gRPC dispatch.
 pub fn merged_config_models(
     configs: &[ModelConfiguration],
     gateway: &providers::gateway::Gateway,
@@ -360,10 +359,8 @@ mod tests {
     // ---- A local mirror of postvec/src/client/discovery.rs ------------
     //
     // postvec is a pgrx extension and workspace-excluded, so it cannot be
-    // linked from here. These structs are a transcription of the ones its
-    // discovery client actually uses, which makes this the regression gate
-    // for the one part of `/config` that is a compatibility promise. If a
-    // change to the envelope breaks these, it breaks every installed
+    // linked from here. These structs match the discovery client's
+    // envelope: if a change here breaks them, it breaks every installed
     // extension.
 
     #[derive(Debug, Deserialize)]

@@ -378,13 +378,13 @@ async fn admin_unload(state: Arc<ServerState>, names: Vec<String>) -> (StatusCod
 
 // ---- /admin/providers/reload --------------------------------------------
 
-/// Rescan providers.d and swap the gateway snapshot in atomically
-/// (external-providers §8): `postvec provider add/rm --path <root>` calls
-/// this after writing files, and a restart also picks changes up naturally.
-/// A failed (structural) reload keeps the previous snapshot. The body
-/// carries `restart_needed` when the new provider concurrency budget
-/// exceeds what the gRPC ingress limit was sized with at boot — serving is
-/// correct either way; full provider throughput needs the restart.
+/// Rescan providers.d and swap the gateway snapshot in atomically.
+/// `postvec provider add/rm --path <root>` calls this after writing
+/// files; a restart also picks changes up. A failed (structural) reload
+/// keeps the previous snapshot. The body carries `restart_needed` when
+/// the new provider concurrency budget exceeds what the gRPC ingress
+/// limit was sized with at boot. Serving is correct either way; full
+/// provider throughput needs the restart.
 async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) {
     let gateway = state.gateway.clone();
     let path = state.settings.providers_path.clone();

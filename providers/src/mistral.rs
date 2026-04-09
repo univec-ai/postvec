@@ -1,26 +1,13 @@
-//!
-//! providers/src/mistral.rs
-//!
-//! Implementation of the `EmbeddingBackend` trait for Mistral AI's embedding models.
-//!
-//! Mistral exposes an OpenAI-compatible `/v1/embeddings` endpoint at
-//! `https://api.mistral.ai`. The wire format is the same as OpenAI's, with two
-//! notable differences:
-//!
-//! - Mistral's models emit a **fixed-size vector** (e.g. `mistral-embed` and
-//!   `mistral-embed-2312` are 1024-dim, `codestral-embed` is 1536-dim). The
-//!   `dimensions` request parameter is **not accepted** and will be rejected
-//!   with HTTP 422 (`extra_forbidden`). This client therefore never sends it.
-//! - Going direct to Mistral is materially faster than routing the same model
-//!   through OpenRouter, which is the motivation for having a dedicated client.
-//!
+//! Mistral embeddings: OpenAI-compatible `/v1/embeddings`. Models emit a
+//! fixed-size vector; `dimensions` is rejected (HTTP 422), so this client
+//! never sends it.
+
 use crate::{retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-/// The default base URL for the Mistral AI API.
 pub const DEFAULT_MISTRAL_BASE_URL: &str = "https://api.mistral.ai";
 
 // ---- Request and Response Structs ----

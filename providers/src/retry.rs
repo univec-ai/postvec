@@ -1,8 +1,4 @@
-//!
-//! providers/src/retry.rs
-//!
-//! Provides a private helper function for exponential backoff logic.
-//!
+//! Exponential backoff for transient provider HTTP errors.
 
 use crate::EmbeddingError;
 use rand::Rng;
@@ -25,33 +21,18 @@ const EXPONENTIAL_BASE: f64 = 2.0;
 /// exists only to absorb momentary blips.
 const MAX_RETRIES: u32 = 2;
 
-/// A helper function to execute an async operation with exponential backoff.
+/// Retry `operation` on transient errors (network, 429, 5xx, Bedrock 408/424).
+/// Permanent 4xx, parse and config errors are not retried.
 ///
-/// This function will retry an operation if it fails with a "transient" error,
-/// such as a network error, a 429 rate limit, or a 5xx server error.
-/// It will *not* retry on permanent errors like 4xx client errors (except 429),
-/// deserialization errors, or configuration errors.
-///
-/// Retries stop early when `deadline` cannot fit another attempt: waiting the
-/// backoff would land past the caller's absolute budget, so the last error is
-/// surfaced immediately instead of burning time the caller no longer has.
-///
-/// # Arguments
-/// * `deadline` - The caller's absolute deadline, if any.
-/// * `operation` - An asynchronous closure that returns a `Result<T, EmbeddingError>`.
-///   This closure must be `Fn()` (not `FnOnce()`) because it may be called
-///   multiple times on failure.
-///
-/// # Returns
-/// A `Result<T, EmbeddingError>` which is either the successful result of the
-/// operation or the last error encountered after all retries are exhausted.
+/// Stops when `deadline` cannot fit another attempt, so the last error is
+/// surfaced instead of burning time the caller no longer has.
 pub async fn retry_with_backoff<F, T, Fut>(
     deadline: Option<Instant>,
     operation: F,
 ) -> Result<T, EmbeddingError>
 where
-    F: Fn() -> Fut, // The operation is a closure that returns a Future
-    Fut: Future<Output = Result<T, EmbeddingError>>, // The Future resolves to our Result
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, EmbeddingError>>,
 {
     let mut num_retries = 0;
     let mut delay = Duration::from_millis(INITIAL_DELAY_MS);
@@ -93,7 +74,6 @@ where
                 return Ok(result);
             }
             Err(e) => {
-                // Check if this is an error we should retry on
                 let should_retry = match &e {
                     // 429 Too Many Requests (Rate Limit)
                     EmbeddingError::Api { status: 429, .. } => true,
@@ -104,7 +84,7 @@ where
                     // 408 and 424: Bedrock's `ModelTimeoutException` and
                     // `ModelErrorException` on `InvokeModel`. The model failed
                     // to answer; the input was not rejected. Kept in step with
-                    // the gateway's §6.4 mapping, which classifies both
+                    // the gateway's mapping, which classifies both
                     // `UpstreamServiceUnavailable`.
                     EmbeddingError::Api {
                         status: 408 | 424, ..

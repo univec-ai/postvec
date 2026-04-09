@@ -1,20 +1,13 @@
-//!
-//! providers/src/gemini.rs
-//!
-//! Implementation of the `EmbeddingBackend` trait for Google's Gemini models.
-//!
+//! Gemini embeddings (`POST .../models/{id}:batchEmbedContents`).
+
 use crate::{retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-// The default base URL for the Gemini API.
-// Can be overridden per provider file (`base_url`), handled by the factory.
+/// Overridable per provider file (`base_url`).
 pub const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
-
-// ---- Request and Response Structs ----
-// These structs model the nested JSON structure required by the Gemini API.
 
 #[derive(Serialize)]
 struct GeminiPart<'a> {
@@ -129,11 +122,9 @@ const GEMINI_KEY_HEADER: &str = "x-goog-api-key";
 
 /// The request contract for one Gemini embedding model.
 ///
-/// **One table, consulted by both sides.** The loader validates a descriptor
+/// One table, consulted by both sides. The loader validates a descriptor
 /// against it (`config::validate_connector`) and this client builds its
-/// request from it, so there is no second list to drift. A previous version
-/// kept the ids here and a near-copy in the config layer; they disagreed
-/// within one pass.
+/// request from it, so there is no second list to drift.
 ///
 /// Google's embedding generations do not share a contract — whether
 /// `taskType` is accepted, whether `outputDimensionality` is, and the range of

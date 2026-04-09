@@ -229,12 +229,11 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         engine_host::warm_up(&engine, &metrics).await;
     }
 
-    // External providers (docs/external-providers.md §8): one gateway per
-    // node, mounted beside the engine. `load` isolates per-provider/per-file
-    // failures internally — a broken provider file never degrades local
-    // models — and a missing directory is the ordinary zero-config case.
-    // If the local-model list cannot be built, no provider serves: a
-    // narrowed reservation is exactly how a provider takes a local name.
+    // One gateway per node, mounted beside the engine. `load` isolates
+    // per-file failures: a broken provider file never degrades local
+    // models. A missing directory is the ordinary zero-config case. If
+    // the local-model list cannot be built, no provider serves: a
+    // partial reservation is how a provider would steal a local name.
     let gateway = Arc::new(
         match crate::models::reserved_local_names(&settings.root, &engine) {
             Ok(local_models) => {

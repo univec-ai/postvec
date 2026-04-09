@@ -6,7 +6,7 @@
 //! this process, and no error message produced by this module ever carries
 //! a secret value (paths and env-var *names* only).
 //!
-//! Loading rules (docs/external-providers.md §6.1):
+//! Loading rules:
 //! - read `*.toml` in lexicographic order; skip dot-files;
 //! - `enabled = false` files parse but serve nothing;
 //! - a TOML file or referenced secret file with mode broader than 0600 is
@@ -29,7 +29,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 20_000;
 pub const DEFAULT_MAX_BATCH: usize = 96;
 
 /// Hard ceilings against a corrupt or hostile file. `max_concurrent` sizes a
-/// semaphore and widens the hosts' ingress gate (§7.3), so it must not be
+/// semaphore and widens the hosts' ingress gate, so it must not be
 /// operator-unbounded.
 const MAX_MAX_CONCURRENT: usize = 64;
 const MAX_MODELS_PER_FILE: usize = 64;
@@ -504,8 +504,8 @@ fn resolve_secret(
 ///
 /// Checked at load rather than left to the request, because of how a bad
 /// value would otherwise present. `reqwest` reports an unparseable URL from
-/// `send()`, as an ordinary `reqwest::Error` — which the §6.4 mapping
-/// classifies `UpstreamServiceUnavailable`, i.e. **Transient**. A permanent
+/// `send()`, as an ordinary `reqwest::Error` - which the error mapping
+/// classifies `UpstreamServiceUnavailable`, i.e. Transient. A permanent
 /// typo would therefore look like a provider outage and be retried until the
 /// queue dead-lettered the rows, with nothing anywhere naming the real
 /// cause. A trailing `/` gets the same treatment: it yields a `//v1/…` path
@@ -2172,10 +2172,10 @@ max_tokens = 8191
         }
     }
 
-    /// A `base_url` reqwest cannot parse fails at *request* time as a
-    /// transport error, which §6.4 classifies Transient — so a permanent
-    /// typo would be retried until the queue dead-lettered the rows, with
-    /// nothing naming the cause. It is a load error instead.
+    /// A `base_url` reqwest cannot parse fails at request time as a
+    /// transport error, which maps Transient - so a permanent typo would
+    /// be retried until the queue dead-lettered the rows, with nothing
+    /// naming the cause. It is a load error instead.
     #[test]
     fn an_unusable_base_url_is_refused_at_load_not_retried_forever() {
         for bad in [

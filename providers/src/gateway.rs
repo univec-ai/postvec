@@ -7,8 +7,7 @@
 //! `embed` calls hold the previous `Arc` and finish against it, and a failed
 //! reload keeps the previous snapshot (never half-applies). Every provider
 //! failure leaves here as a [`GatewayError`] carrying a `shared::ErrorCode`
-//! — the wire error-code vocabulary the extension already classifies — per
-//! the normative mapping table in docs/external-providers.md §6.4.
+//! (the wire vocabulary the extension already classifies).
 
 use crate::config::{self, LoadOutcome, ModelDescriptor, ModelKind};
 use crate::{
@@ -83,7 +82,7 @@ struct ModelEntry {
     provider_name: String,
     /// Per-provider outbound concurrency cap, shared by every model in the
     /// same provider file. This is the ONLY admission control on the
-    /// provider path (the hosts bypass their engine gates for it, §7.3).
+    /// provider path (the hosts bypass their engine gates for it).
     permits: Arc<Semaphore>,
     /// The configured cap behind `permits` — `available_permits()` shrinks
     /// while embeds are in flight, so budget math must never read it.
@@ -94,7 +93,7 @@ struct ModelEntry {
     /// target-space width. Every returned vector is validated against it.
     dim: u32,
     max_batch: usize,
-    /// The §6.2 nested HubModel descriptor served in `/config`.
+    /// Nested HubModel descriptor served in `/config`.
     descriptor: serde_json::Value,
 }
 
@@ -136,7 +135,7 @@ struct Inner {
     models: BTreeMap<String, ModelEntry>,
 }
 
-/// The nested HubModel shape `discovery::parse_config` requires (§6.2). A
+/// The nested HubModel shape `discovery::parse_config` requires. A
 /// flat object would be silently dropped by the parser — the round-trip
 /// tests below and in the host pin this.
 fn descriptor_json(
@@ -483,7 +482,7 @@ impl Gateway {
         self.snapshot().models.get(model).map(|entry| entry.dim)
     }
 
-    /// Sum of the per-provider `max_concurrent` caps — the §7.3
+    /// Sum of the per-provider `max_concurrent` caps: the
     /// `provider_inflight_budget` the hosts add to their ingress limit.
     /// Reads the configured caps, never live semaphore state, so the number
     /// is stable regardless of in-flight embeds.
@@ -498,7 +497,7 @@ impl Gateway {
         per_provider.values().sum()
     }
 
-    /// The §6.2 descriptors for the `/config` merge, in name order.
+    /// Nested HubModel descriptors for the `/config` merge, in name order.
     pub fn models(&self) -> Vec<serde_json::Value> {
         self.snapshot()
             .models
@@ -603,10 +602,10 @@ impl Gateway {
                 .await
                 .map_err(|e| map_embedding_error(&entry.provider_name, &e))?;
 
-            // Response-shape contract (§6.4): systematic count or dimension
-            // mismatch is InvalidInput (Permanent), never InternalError —
-            // InternalError classifies Transient and would burn the queue's
-            // whole retry budget before dead-lettering every row anyway.
+            // Response-shape contract: systematic count or dimension
+            // mismatch is InvalidInput (Permanent), never InternalError.
+            // InternalError is Transient and would burn the queue's retry
+            // budget before dead-lettering every row.
             if embeddings.len() != chunk.len() {
                 return Err(GatewayError::new(
                     ErrorCode::InvalidInput,
@@ -745,7 +744,7 @@ impl Gateway {
                 .await
                 .map_err(|e| map_embedding_error(&entry.provider_name, &e))?;
 
-            // Response-shape contract (§6.4): systematic count or dimension
+            // Response-shape contract: systematic count or dimension
             // mismatch is InvalidInput (Permanent), never InternalError.
             // Conversion responses carry no per-item index field, so order
             // IS the alignment contract — count plus the per-vector width
@@ -790,7 +789,7 @@ impl Gateway {
     }
 }
 
-/// The §6.4 mapping table, normative. `provider` is the operator-facing
+/// Error mapping table. `provider` is the operator-facing
 /// file-stem name — safe log vocabulary, never a secret.
 fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
     let code = match e {
@@ -904,7 +903,7 @@ mod tests {
         Instant::now() + Duration::from_secs(30)
     }
 
-    /// The §6.2 shape, asserted field by field — the crate-side twin of the
+    /// Nested HubModel shape, asserted field by field - the crate-side twin of the
     /// host's round-trip through `discovery::parse_config` (a flat object
     /// would be silently dropped there).
     #[tokio::test]
@@ -1055,7 +1054,7 @@ mod tests {
         assert!(err.message.contains("row-parallel"), "{err}");
     }
 
-    /// The normative §6.4 mapping table, exercised end to end against the
+    /// Error mapping table, exercised end to end against the
     /// mock server. Transient cases get a short deadline so the in-client
     /// retry cannot fit another attempt and the real error surfaces fast.
     #[tokio::test]
@@ -1273,7 +1272,7 @@ mod tests {
             .permits_for_test("openai-text-embedding-3-small")
             .unwrap();
         let held = permits.clone().acquire_owned().await.unwrap();
-        // The §7.3 budget is the CONFIGURED cap: it must not shrink while a
+        // The inflight budget is the configured cap: it must not shrink while a
         // permit is in use.
         assert_eq!(gateway.inflight_budget(), 1, "budget ignores live permits");
         let err = gateway

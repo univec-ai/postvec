@@ -1,11 +1,10 @@
 //! The built-in model catalog: well-known provider model ids with their
 //! dimensions and limits, plus the public-name convention.
 //!
-//! Used only by the `postvec provider` CLI to prefill descriptors (and by
-//! docs generation) — the serving hosts never consult it: the providers.d
-//! file on disk is the complete serving truth. Unknown ids fall back to the
-//! CLI's verification probe, so this list stays deliberately small; the file
-//! format makes an exhaustive registry unnecessary.
+//! Used only by the `postvec provider` CLI to prefill descriptors. Serving
+//! hosts never consult it: the providers.d file is the complete truth.
+//! Unknown ids fall back to the CLI's verification probe, so this list
+//! stays small.
 
 /// One well-known provider model.
 #[derive(Debug, Clone, Copy)]

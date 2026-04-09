@@ -1,22 +1,14 @@
-//!
-//! providers/src/cohere.rs
-//!
-//! Implementation of the `EmbeddingBackend` trait for Cohere's embedding models.
-//!
-//! This client requires an `input_type` to be specified, which is critical for
-//! achieving optimal performance with Cohere's models.
-//!
+//! Cohere embeddings. `input_type` (search_query / search_document) is
+//! required; omitting it changes the vectors.
+
 use crate::{retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-// Default base URL for the Cohere API.
-// Can be overridden per provider file (`base_url`), handled by the factory.
+/// Overridable per provider file (`base_url`).
 pub const DEFAULT_COHERE_BASE_URL: &str = "https://api.cohere.com";
-
-// ---- Request and Response Structs ----
 
 /// Represents the JSON request body for the Cohere v2 embed endpoint.
 #[derive(Serialize)]

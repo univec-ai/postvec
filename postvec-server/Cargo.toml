@@ -37,8 +37,8 @@ engine = { path = "../engine", features = ["onnx"] }
 # `ErrorCode` — the wire taxonomy postvec's retry/dead-letter policy reads.
 shared = { path = "../shared" }
 # External embedding providers: the providers.d gateway this node mounts
-# beside the engine (docs/external-providers.md §8). rustls inside the crate;
-# it coexists with this crate's OpenSSL-based TLS listener.
+# beside the engine. rustls inside the crate; it coexists with this crate's
+# OpenSSL-based TLS listener.
 postvec-providers = { path = "../providers", features = ["wire"] }
 
 tokio = { version = "1", features = [

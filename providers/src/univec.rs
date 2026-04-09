@@ -1,25 +1,11 @@
+//! UniVec hosted API: embeddings and vector-space conversion.
 //!
-//! providers/src/univec.rs
-//!
-//! UniVec's hosted API (api.univec.ai) — the one provider that serves both
-//! halves of postvec's model story: embedding *and* vector-space conversion.
-//!
-//! Embedding goes through UniVec's OpenAI-compatible endpoint
-//! (`POST {base}/v1/embeddings`), which accepts the stock OpenAI request plus
-//! two documented extensions this connector uses: `input_type` (selects the
-//! model's query/document prompt template; text is embedded unmodified where
-//! the model defines none, so sending it is always safe) and `dimensions`
-//! (Matryoshka truncation, re-normalised server-side, which is what makes the
-//! descriptor's `dim` mean something other than the model's native width).
-//!
-//! Conversion goes through the native `POST {base}/v1/convert`, whose request
-//! names the *provider-side* source and target model ids and carries the raw
-//! vectors. Unlike the OpenAI-compatible endpoint, the native endpoints wrap
-//! every success in UniVec's `{"success": …, "data": …}` envelope.
-//!
-//! Both calls authenticate with `Authorization: Bearer <api key>`. UniVec
-//! answers HTTP 402 when the key's account is out of credit; the gateway
-//! classifies that with 401/403 (an ops problem, never a row's fault).
+//! Embed: OpenAI-compatible `POST {base}/v1/embeddings`, plus `input_type`
+//! (query/document template; safe to send even when the model has none) and
+//! `dimensions` (Matryoshka truncation, re-normalised server-side).
+//! Convert: native `POST {base}/v1/convert` with provider-side model ids
+//! and a `{"success", "data"}` envelope. Auth is Bearer. HTTP 402 (out of
+//! credit) maps with 401/403: an ops problem, never a row's fault.
 
 use crate::{
     retry::retry_with_backoff, ConversionBackend, Embedding, EmbeddingBackend, EmbeddingError,

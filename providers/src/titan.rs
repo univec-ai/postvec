@@ -1,28 +1,14 @@
-//!
-//! providers/src/titan.rs
-//!
-//! Implementation of the `EmbeddingBackend` for AWS Titan models via Bedrock.
-//!
-//! This client is the most complex as it requires implementing the AWS Signature V4
-//! signing process from scratch to authenticate requests. It also handles the fact
-//! that the Bedrock `InvokeModel` API does not support batching, so it must
-//! iterate over the input texts and make a signed API call for each one.
-//!
-//! It supports two authentication methods:
-//! 1. Traditional AWS Signature V4 with access and secret keys.
-//! 2. Short-term bearer tokens.
-//!
-//! It also handles different request schemas for different Titan model versions.
-//!
+//! AWS Titan embeddings via Bedrock `InvokeModel`. No batching: one signed
+//! call per text. Auth is SigV4 (access key) or a short-term bearer token.
+//! Request schemas differ by Titan version.
+
 use crate::{aws_sigv4, retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-// ---- Request and Response Structs ----
-
-/// Represents the request body for Titan v1 models.
+/// Titan v1 request body.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TitanV1Request<'a> {

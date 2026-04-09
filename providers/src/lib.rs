@@ -1,24 +1,9 @@
-//!
-//! providers/src/lib.rs
-//!
-//! This crate provides a unified abstraction layer for generating text embeddings
-//! from various providers like OpenAI, Google Gemini, Cohere, and AWS Titan.
-//!
-//! It exposes a single public trait, `EmbeddingBackend`, which all provider-specific
-//! clients implement. It also provides a factory function, `new_embedding_backend`,
-//! to easily instantiate clients based on configuration. This design allows the
-//! consuming application to interact with any provider through a common interface.
-//!
+//! HTTP clients for hosted embedding APIs, plus the providers.d loader and
+//! the gateway both inference hosts mount.
 
-// Declare the private module for AWS Signature V4 logic.
-// It is not part of the public API.
 mod aws_sigv4;
-
-// Declare the internal module for retry logic.
-// This is not part of the public API.
 mod retry;
 
-// Declare and publicly export the provider client modules and the factory.
 pub mod cohere;
 pub mod factory;
 pub mod gemini;
@@ -28,25 +13,15 @@ pub mod openrouter;
 pub mod titan;
 pub mod univec;
 
-// The built-in model catalog: CLI descriptor prefill and docs generation
-// only — the serving hosts never consult it.
 pub mod catalog;
-
-// The providers.d config layer (feature `config`) and the gateway both
-// inference hosts mount (feature `wire` — that one also needs the fork's
-// `shared` error codes). The split lets the CLI validate a provider file
-// against the loader's own schema without linking the gateway.
 #[cfg(feature = "config")]
 pub mod config;
 #[cfg(feature = "wire")]
 pub mod gateway;
 
-/// The in-process mock HTTP server shared by this crate's integration tests
-/// and by the inference hosts' test suites (feature `test-util`).
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing;
 
-// Publicly export the client structs and the factory function for easy access.
 pub use cohere::CohereClient;
 pub use factory::{new_conversion_backend, new_embedding_backend, ProviderConfig};
 pub use gemini::GeminiClient;
@@ -241,9 +216,8 @@ pub(crate) async fn api_error(response: reqwest::Response) -> EmbeddingError {
     };
     let body = String::from_utf8_lossy(&body);
 
-    // Classify here, while the body is in hand. The gateway used to sniff the
-    // *message* for token-limit wording, which is the only reason the body had
-    // to survive this far.
+    // Classify here, while the body is in hand. Token-limit wording lives
+    // in the body; a later layer cannot recover it.
     if matches!(status, 400 | 413 | 422) && looks_like_context_length(&body) {
         return EmbeddingError::InputTooLong { status };
     }
@@ -258,18 +232,17 @@ pub(crate) async fn api_error(response: reqwest::Response) -> EmbeddingError {
 
 /// The error codes this crate is willing to repeat back.
 ///
-/// A **closed** vocabulary, not a grammar. The previous version forwarded any
-/// short `[A-Za-z0-9_.-]` value found in a provider's error field, which is
-/// still upstream-controlled: a provider — or anything behind an
-/// operator-supplied `base_url` — can put a spaceless fragment of the row's
-/// own source text in `error.code` and it would have travelled to the host's
-/// log, across tonic, and into `postvec.jobs_dead.last_error`.
+/// A closed vocabulary, not a grammar. Forwarding any short
+/// `[A-Za-z0-9_.-]` value from a provider's error field is still
+/// upstream-controlled: a provider (or anything behind an operator-supplied
+/// `base_url`) can put a spaceless fragment of the row's own source text in
+/// `error.code` and it would travel to the host's log, across tonic and into
+/// `postvec.jobs_dead.last_error`.
 ///
-/// Matching against a list *we* wrote makes the leak impossible rather than
-/// unlikely. The cost is bounded and visible: an unrecognised code is
-/// reported as absent, so a new provider code means slightly less detail in
-/// one message — never a disclosure. Add to this list when a provider
-/// documents a code worth distinguishing.
+/// Matching against a list this crate wrote makes that leak impossible.
+/// An unrecognised code is reported as absent, so a new provider code means
+/// slightly less detail in one message, never a disclosure. Add to this
+/// list when a provider documents a code worth distinguishing.
 const KNOWN_PROVIDER_ERROR_CODES: &[&str] = &[
     // OpenAI / OpenRouter / Azure-compatible
     "insufficient_quota",

@@ -1,8 +1,8 @@
 # External embedding provider connectors (OpenAI, Gemini, Cohere, AWS
-# Bedrock, Mistral, OpenRouter), served by both inference hosts — the
-# embedded engine host inside postvec.so and postvec-server. The clients are
-# a copy of a tested internal crate, edited per docs/external-providers.md
-# §5.3; do not regenerate them from scratch.
+# Bedrock, Mistral, OpenRouter, UniVec), served by both inference hosts:
+# the embedded engine host inside postvec.so and postvec-server. The
+# clients were copied from an internal crate and edited; do not regenerate
+# them from scratch.
 #
 # The default build is the pure HTTP clients. The `wire` feature adds the
 # providers.d config layer and the gateway both hosts mount (it needs the
@@ -28,7 +28,7 @@ name = "providers"
 # check on the opened descriptor rather than on a path that can be swapped);
 # no `shared`, no gateway, no secret resolution.
 config = ["dep:toml", "dep:libc"]
-# The providers.d config + descriptor + gateway layer (docs/external-providers.md §6).
+# providers.d config + descriptor + gateway.
 wire = ["config", "dep:shared", "tokio/sync"]
 # Expose the in-process mock HTTP server (src/testing.rs) to other crates'
 # tests (the embedded host's spawn_for_test suite, postvec-server).

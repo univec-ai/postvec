@@ -1,22 +1,13 @@
-//!
-//! providers/src/openrouter.rs
-//!
-//! Implementation of the `EmbeddingBackend` trait for OpenRouter's embedding models.
-//!
-//! OpenRouter provides an OpenAI-compatible embeddings API that allows transparent
-//! access to various embedding models from different providers.
-//!
+//! OpenRouter embeddings: OpenAI-compatible `/v1/embeddings` over many
+//! upstream models.
+
 use crate::{retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-/// The default base URL for the OpenRouter API.
 pub const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api";
-
-// ---- Request and Response Structs ----
-// OpenRouter uses an OpenAI-compatible API format.
 
 /// Represents the JSON request body sent to the OpenRouter embeddings endpoint.
 #[derive(Serialize)]

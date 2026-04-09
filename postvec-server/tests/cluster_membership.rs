@@ -96,8 +96,8 @@ async fn await_members(node: &ClusterManager, want: usize, what: &str) -> Vec<St
     );
 }
 
-/// The regression test. Two nodes, same port, each seeded with the other's
-/// bare address — the exact configuration a fleet has.
+/// Two nodes, same port, each seeded with the other's bare address: the
+/// exact configuration a fleet has.
 #[tokio::test]
 async fn two_nodes_on_identical_ports_find_each_other() {
     let port = next_port();

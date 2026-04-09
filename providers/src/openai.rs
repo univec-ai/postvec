@@ -1,76 +1,43 @@
-//!
-//! providers/src/openai.rs
-//!
-//! Implementation of the `EmbeddingBackend` trait for OpenAI's embedding models.
-//!
+//! OpenAI embeddings (`POST /v1/embeddings`).
+
 use crate::{retry::retry_with_backoff, Embedding, EmbeddingBackend, EmbeddingError};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-// The default base URL for the OpenAI API.
-// Can be overridden per provider file (`base_url`), handled by the factory.
+/// Overridable per provider file (`base_url`).
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 
-// ---- Request and Response Structs ----
-// These structs are used to serialize the request body and deserialize the
-// API response. They are derived from the official OpenAI API documentation.
-
-/// Represents the JSON request body sent to the OpenAI embeddings endpoint.
 #[derive(Serialize)]
 struct OpenAIRequest<'a> {
-    /// The ID of the model to use.
     model: &'a str,
-    /// The array of input texts to embed.
     input: &'a [&'a str],
-    /// Optional: The number of dimensions the resulting output vectors should have.
-    /// This is only supported for `text-embedding-3` models.
+    /// `text-embedding-3` models only.
     #[serde(skip_serializing_if = "Option::is_none")]
     dimensions: Option<usize>,
 }
 
-/// Represents a single embedding object within the OpenAI API response.
 #[derive(Deserialize)]
 struct OpenAIEmbeddingData {
-    /// The embedding vector.
     embedding: Vec<f32>,
-    /// The index of the input text that this embedding corresponds to.
     index: usize,
 }
 
-/// Represents the top-level structure of a successful OpenAI API response.
 #[derive(Deserialize)]
 struct OpenAIResponse {
-    /// A list of embedding results.
     data: Vec<OpenAIEmbeddingData>,
 }
 
-// ---- Client Implementation ----
-
-/// A client for generating embeddings using the OpenAI API.
 pub struct OpenAIClient {
-    /// The shared `reqwest::Client` for making HTTP requests.
     client: Client,
-    /// The base URL of the OpenAI API.
     base_url: String,
-    /// The API key for authentication.
     api_key: String,
-    /// The name of the model to use for embeddings (e.g., "text-embedding-3-small").
     model_name: String,
-    /// The optional dimension to request for the embedding vectors.
     dimensions: Option<usize>,
 }
 
 impl OpenAIClient {
-    /// Creates a new `OpenAIClient`.
-    ///
-    /// # Arguments
-    /// * `model_name` - The specific OpenAI model to use (e.g., "text-embedding-3-large").
-    /// * `api_key` - The OpenAI API key.
-    /// * `dimensions` - An optional parameter to specify the desired output vector size.
-    /// * `base_url` - The base URL for the API endpoint.
-    /// * `http_client` - An optional shared `reqwest::Client` to reuse connections.
     pub fn new(
         model_name: String,
         api_key: String,

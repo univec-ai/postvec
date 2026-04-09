@@ -561,13 +561,11 @@ async fn factory_builds_clients_and_accepts_the_gemini_alias() {
 // The gateway, built where postvec actually builds it
 // ---------------------------------------------------------------------------
 
-/// The embedded host constructs its gateway on the PostgreSQL **launcher
-/// thread**, outside `runtime.block_on` (`postvec/src/client/embedded.rs`) —
-/// so `Gateway::load` builds a `reqwest::Client` per provider with no tokio
-/// runtime on the thread. Every other test in this tree runs under
-/// `#[tokio::test]` and could not see a regression here; a panic would land
-/// in a database background worker during startup, which is not a failure
-/// mode this project accepts for a configuration file.
+/// The embedded host constructs its gateway on the PostgreSQL launcher
+/// thread, outside `runtime.block_on`, so `Gateway::load` builds a
+/// `reqwest::Client` per provider with no tokio runtime on the thread.
+/// Other tests here run under `#[tokio::test]` and would miss a panic that
+/// would land in a database background worker during startup.
 #[test]
 fn the_gateway_loads_with_no_tokio_runtime_on_the_thread() {
     use std::os::unix::fs::PermissionsExt;

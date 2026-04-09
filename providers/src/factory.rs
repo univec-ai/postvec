@@ -1,20 +1,8 @@
+//! Build an `EmbeddingBackend` from a resolved [`ProviderConfig`].
 //!
-//! providers/src/factory.rs
-//!
-//! Provides a centralized factory function for creating `EmbeddingBackend` clients.
-//!
-//! This module abstracts away the specific details of how each provider's
-//! client is instantiated. The caller resolves all configuration up front —
-//! credentials (from a providers.d file's `api_key` / `api_key_file` /
-//! `api_key_env` indirection), base URL overrides, and the AWS auth variant —
-//! into a [`ProviderConfig`]; the factory never reads the process
-//! environment itself. For operators who choose `api_key_env`, the
-//! conventional variable names are `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
-//! `MISTRAL_API_KEY`, `GEMINI_API_KEY`, `COHERE_API_KEY`, `UNIVEC_API_KEY`,
-//! and for AWS `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`,
-//! `AWS_SECRET_ACCESS_KEY` — but the config layer, not this module, reads
-//! them.
-//!
+//! Credentials, base URL and AWS auth are already resolved by the config
+//! layer; this factory never reads the process environment.
+
 use crate::{
     cohere::{CohereClient, DEFAULT_COHERE_BASE_URL},
     gemini::{GeminiClient, DEFAULT_GEMINI_BASE_URL},

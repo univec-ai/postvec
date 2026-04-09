@@ -1,19 +1,6 @@
+//! AWS Signature V4 for Bedrock, without the AWS SDK.
 //!
-//! providers/src/aws_sigv4.rs
-//!
-//! A self-contained, from-scratch implementation of the AWS Signature V4 signing process.
-//!
-//! This module provides the necessary functions to cryptographically sign a `reqwest`
-//! request, allowing the application to authenticate with AWS services like Bedrock
-//! without relying on the official AWS SDK. The process is complex and follows the
-//! official AWS documentation precisely.
-//!
-//! The main steps are:
-//! 1. Create a Canonical Request: A standardized string representation of the request.
-//! 2. Create a String to Sign: Combines metadata with a hash of the canonical request.
-//! 3. Calculate the Signature: Derives a signing key and uses it to sign the string from step 2.
-//! 4. Add the Signature to the Request: The final signature is added to the `Authorization` header.
-//!
+//! Canonical request -> string to sign -> signing key -> `Authorization`.
 
 use crate::EmbeddingError;
 use chrono::Utc;

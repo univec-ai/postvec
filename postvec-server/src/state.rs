@@ -55,12 +55,11 @@ pub struct ServerState {
     /// `None` in the degenerate case where gossip could not start. The node
     /// still serves; it just cannot describe its peers.
     pub cluster: Option<Arc<ClusterManager>>,
-    /// External-provider gateway (docs/external-providers.md §8). Empty in
-    /// the zero-config case; shared by `/config`, the gRPC dispatch and the
-    /// admin reload route.
+    /// External-provider gateway. Empty in the zero-config case; shared by
+    /// `/config`, the gRPC dispatch and the admin reload route.
     pub gateway: Arc<Gateway>,
-    /// The §7.3 provider inflight budget the gRPC ingress limit was sized
-    /// with at boot — the reload route warns when a reload outgrows it.
+    /// Provider inflight budget the gRPC ingress limit was sized with at
+    /// boot. The reload route warns when a reload outgrows it.
     pub startup_provider_budget: usize,
     pub started_at: SystemTime,
     /// Serializes model load/unload. Held across the whole
