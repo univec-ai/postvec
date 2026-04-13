@@ -172,6 +172,9 @@ wait_for() { # <description> <seconds> <command...>
         if "$@" >/dev/null 2>&1; then return 0; fi
         sleep 1
     done
+    # The condition may become true during the final sleep. Check once at the
+    # boundary instead of reporting a timeout from state sampled a second ago.
+    if "$@" >/dev/null 2>&1; then return 0; fi
     echo "timed out waiting for: ${desc}" >&2
     return 1
 }
@@ -502,9 +505,13 @@ scenario_E_trickle() {
     dbsql "ALTER SYSTEM SET postvec.embed_timeout_ms = 8000; SELECT pg_reload_conf();" >/dev/null
     mockctl '{"reset": true, "mode": "trickle"}'
     dbsql "INSERT INTO e2e(body) VALUES ('slow reader probe row')" >/dev/null
-    wait_for "the trickle row to dead-letter" 120 dead_is 2 \
+    # The caller-side deadline is 8 s, but a cancelled serving-side HTTP task
+    # may retain its connector permit until the provider client's own 20 s
+    # timeout. Allow three queue attempts plus generous scheduling headroom on
+    # a release host that is simultaneously running Docker package tests.
+    wait_for "the trickle row to dead-letter" 180 dead_is 2 \
         && ok "retries stopped at the configured limit and the row dead-lettered" \
-        || bad "no dead letter within 120s (dead=$(dead_count), requests=$(mock_state requests))"
+        || bad "no dead letter within 180s (dead=$(dead_count), queue=$(queue_count), requests=$(mock_state requests))"
     local reqs
     reqs="$(mock_state requests)"
     (( reqs >= 1 && reqs <= 6 )) \
