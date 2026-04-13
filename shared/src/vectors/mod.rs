@@ -1,21 +1,5 @@
-// File: shared/src/vectors/mod.rs
-//! # vecs
-//!
-//! A comprehensive Rust library for numerical computing, specializing in vector and matrix
-//! operations. This module provides a rich set of functionalities including, but not limited to:
-//!
-//! - **N-Dimensional Arrays:** Type aliases and robust operations for vectors, matrices, and tensors using `ndarray`.
-//!
-//! - **Mathematical Operations:** A rich `VectorMathExt` trait for statistical analysis, similarity metrics, normalization, and more.
-//!
-//! - **Generic Tensors:** A flexible `GenericTensor` structure for working with dynamically typed and shaped data, essential for machine learning model inputs/outputs.
-//!
-//! - **Word Embeddings:** A `WordVectorsModel` for loading and interacting with pre-trained word2vec models.
-//!
-//! The library is designed to be performant, type-safe, and idiomatic, leveraging Rust's powerful features to provide a reliable foundation for numerical applications.
-// Declare all the sub-modules that make up the `vectors` functionality.
-// Each module is defined in a corresponding file within this directory
-// (e.g., `error.rs`, `matrix_math.rs`).
+//! Vectors, matrices, tensors and a word2vec loader.
+
 pub mod error;
 pub mod matrix_math;
 pub mod ndarray_ops;
@@ -24,8 +8,7 @@ pub mod types;
 pub mod utils;
 pub mod vector_math;
 pub mod wordvectors;
-// Re-export key types, traits, and functions for convenient access from outside
-// this module (and from the `shared` crate root, which also re-exports them).
+
 pub use error::VectorError;
 pub use matrix_math::MatrixMathExt;
 pub use ndarray_ops::{

@@ -1,38 +1,24 @@
-// File: shared/src/vectors/matrix_math.rs
-//!
-//! ## Matrix Math
-//!
-//! This module provides mathematical and utility functions for `FloatMatrix`.
-// Import items from sibling modules using `super::`.
+//! Math helpers on `FloatMatrix`.
+
 use super::error::VectorError;
 use super::types::{FloatCube, FloatVector, FloatX};
 use super::vector_math::VectorMathExt;
 use ndarray::{s, stack, Array, Axis, Ix2};
-/// @brief A trait for mathematical operations on 2D matrices.
 pub trait MatrixMathExt {
-    /// @brief Extracts a column from the matrix as an owned vector, bounds-checked.
+    /// Extracts a column from the matrix as an owned vector, bounds-checked.
     ///
     /// Named `column_checked` (not `column`) because `ndarray` exposes an
     /// inherent `column(index) -> ArrayView1` that *panics* on an out-of-bounds
     /// index and would shadow a trait method called `column` under method-call
     /// syntax — making this checked, `Result`-returning variant unreachable.
-    /// @param col_idx The index of the column to extract.
-    /// @return A `Result` containing the `FloatVector` or a `VectorError` if the index is out of bounds.
     fn column_checked(&self, col_idx: usize) -> Result<FloatVector, VectorError>;
-    /// @brief Finds the index of the maximum value for each row.
-    /// @return A `Vec<(usize, FloatX)>` where each tuple contains the column index and the maximum value for a row.
+    /// Finds the index of the maximum value for each row.
     fn arg_max_rows(&self) -> Vec<(usize, FloatX)>;
-    /// @brief Finds the index of the maximum value for each row, returning only the indices.
-    /// @return A `Vec<usize>` where each element is the column index of the maximum value for the corresponding row.
+    /// Finds the index of the maximum value for each row, returning only the indices.
     fn arg_max_rows_indices(&self) -> Vec<usize>;
-    /// @brief Groups the matrix rows into batches, forming a cube.
-    /// @param sequence_length The number of rows in each batch (the depth of the resulting cube).
-    /// @return A `Result` with the new `FloatCube` or a `VectorError` if rows aren't divisible by `sequence_length`.
+    /// Groups the matrix rows into batches, forming a cube.
     fn grouped_by(&self, sequence_length: usize) -> Result<FloatCube, VectorError>;
-    /// @brief Creates sequences of rows using a sliding window.
-    /// @param sequence_length The length of each sequence.
-    /// @param advance_step The step size to advance the window.
-    /// @return A `FloatCube` where each matrix is a sequence.
+    /// Creates sequences of rows using a sliding window.
     fn as_sequences(
         &self,
         sequence_length: usize,

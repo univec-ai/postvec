@@ -1,8 +1,7 @@
 //! Deterministic tar writing and strict, bounded tar reading.
 //!
 //! The framing is the `tar` crate's (cargo's own tar implementation); every
-//! *policy* rule stays ours, applied explicitly over its entry iterator
-//! over its entry iterator:
+//! policy rule stays ours, applied explicitly over its entry iterator:
 //!
 //! - single top-level `<name>/` root, no traversal, no absolute paths;
 //! - regular files and directories only — links, devices, FIFOs, sparse
@@ -15,12 +14,11 @@
 //! - bounded entry count, path length, and cumulative payload, which must
 //!   equal the index's `installed_size` exactly.
 //!
-//! The trust chain, precisely: the archive digest is verified from byte zero
-//! *before* extraction, so this reader only ever parses bytes we published.
-//! (One old defence-in-depth check did not survive the library swap: trailing
-//! garbage after the two-zero-block terminator is no longer detected here —
-//! it cannot appear in a digest-verified archive, because the digest covers
-//! the whole entity.)
+//! The trust chain: the archive digest is verified from byte zero before
+//! extraction, so this reader only ever parses bytes we published. Trailing
+//! garbage after the two-zero-block terminator is not detected here: it
+//! cannot appear in a digest-verified archive, because the digest covers
+//! the whole entity.
 //!
 //! The writer is byte-deterministic: sorted paths, zero mtime, uid/gid zero,
 //! normalised modes, plain ustar, dirs first. Determinism is proven by the

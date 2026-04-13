@@ -7,11 +7,10 @@
 //! be a complete DAG) and tolerant where it promises tolerance (unknown
 //! fields are ignored).
 //!
-//! This crate is the **single implementation** (registry-simplify.md §4.6):
-//! the CLI validates what it downloads, the publisher validates what it is
-//! about to write, and the aphex gateway validates what it is about to serve
-//! — all through [`parse_and_validate`]. The three cannot drift because they
-//! are the same code.
+//! This crate is the single implementation: the CLI validates what it
+//! downloads and the publisher validates what it is about to write, all
+//! through [`parse_and_validate`]. They cannot drift because they are the
+//! same code.
 //!
 //! The same reasoning brings three more shared pieces here, each written
 //! once and read by both the client and the publisher:
@@ -59,13 +58,11 @@ pub const MAX_ARCHIVE_BYTES: u64 = 0o77777777777;
 /// extension (no guessed load-bearing defaults).
 pub const KNOWN_MODEL_TYPES: &[&str] = &["embed", "convert", "embed-bridge", "convert-bridge"];
 
-/// Entitlement ids this implementation understands
-/// (registry-public-first-party.md §2). One list for the publisher's
-/// refusal and the gateway's filter — the crate exists for exactly this
-/// reason. Strict validation refuses an id outside it; the gateway treats
-/// such an id as one the caller does not hold, so an aphex older than a
-/// catalogue restriction hides the entry rather than presigning it. Both
-/// directions fail closed.
+/// Entitlement ids this implementation understands. One list for the
+/// publisher's refusal and the gateway's filter. Strict validation
+/// refuses an id outside it; a serving gateway treats such an id as one
+/// the caller does not hold, so an older gateway hides the entry rather
+/// than presigning it. Both directions fail closed.
 pub const KNOWN_ENTITLEMENTS: &[&str] = &["postvec-catalog"];
 
 /// Bound on one entitlement id; nothing real approaches it.
@@ -153,7 +150,7 @@ pub struct Index {
     pub viewer: Option<Viewer>,
 }
 
-/// The bounded caller-metadata block on an authenticated response (§4.4).
+/// The bounded caller-metadata block on an authenticated response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Viewer {
     pub entitlements: Vec<ViewerEntitlement>,
@@ -212,8 +209,8 @@ pub struct IndexModel {
     /// behaviour without republication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license_acceptance: Option<String>,
-    /// Free-text provenance: where these bytes came from
-    /// (registry-simplify.md §4.5) — the first question in six months.
+    /// Free-text provenance: where these bytes came from. The first
+    /// question six months later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default)]
@@ -754,7 +751,7 @@ fn validate_with(index: &Index, policy: EntitlementIdPolicy) -> Result<(), Schem
         }
         // Required entitlements: bounded, well-shaped, unique and sorted —
         // and, outside the gateway-base mode, drawn from the enumerated
-        // known set. An unknown id is never ignored (§7 guarantee 1).
+        // known set. An unknown id is never ignored.
         if model.required_entitlements.len() > MAX_LIST_ITEMS {
             return fail(format!(
                 "{}: required_entitlements exceeds {MAX_LIST_ITEMS} items",

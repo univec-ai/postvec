@@ -1,66 +1,39 @@
-// File: shared/src/vectors/types.rs
-//!
-//! ## Core Data Types
-//!
-//! This module defines the fundamental types used throughout the library.
-//!
-//! It leverages the `ndarray` crate to define type aliases for vectors,
-//! matrices, and higher-dimensional tensors, providing a strong, type-safe
-//! foundation for numerical computing.
+//! ndarray type aliases used throughout the crate.
 
-// Import from sibling modules.
 use super::error::VectorError;
 use super::tensor::{GenericTensor, TensorDataType, TensorValue};
 use ndarray::{Array, Ix1, Ix2, Ix3, Ix4, Ix5};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-// When changing the underlying type of FloatX, the change is reflected
-// throughout the crate automatically by Rust's type system.
-/// Custom-precision float type, aliased to `f32`.
+/// Element type for the default float arrays. Changing this alias is
+/// load-bearing: serialize/deserialize assume it is `f32`.
 pub type FloatX = f32;
 
-// --- N-Dimensional Array Type Aliases ---
-/// A 1-dimensional vector of `FloatX` values.
 pub type FloatVector = Array<FloatX, Ix1>;
-/// A 2-dimensional matrix of `FloatX` values.
 pub type FloatMatrix = Array<FloatX, Ix2>;
-/// A 3-dimensional tensor (cube) of `FloatX` values.
 pub type FloatCube = Array<FloatX, Ix3>;
-/// A 4-dimensional tensor of `FloatX` values.
 pub type FloatQuad = Array<FloatX, Ix4>;
-/// A 5-dimensional tensor of `FloatX` values.
 pub type FloatPenta = Array<FloatX, Ix5>;
-/// A 1-dimensional vector of `f64` values.
 pub type Float64Vector = Array<f64, Ix1>;
-/// A 2-dimensional matrix of `f64` values.
 pub type Float64Matrix = Array<f64, Ix2>;
-/// A 1-dimensional vector of `f32` values.
 pub type Float32Vector = Array<f32, Ix1>;
-/// A 2-dimensional matrix of `f32` values.
 pub type Float32Matrix = Array<f32, Ix2>;
-/// A 3-dimensional tensor (cube) of `f32` values.
 pub type Float32Cube = Array<f32, Ix3>;
-/// A 4-dimensional tensor of `f32` values.
 pub type Float32Quad = Array<f32, Ix4>;
-/// A 5-dimensional tensor of `f32` values.
 pub type Float32Penta = Array<f32, Ix5>;
 
-// --- Constants ---
-/// Represents "Not Available", using the smallest non-zero f64 value.
 pub const NA: f64 = f64::MIN_POSITIVE;
-/// Represents positive infinity.
 pub const INF: f64 = f64::INFINITY;
-/// Represents negative infinity.
 pub const NEG_INF: f64 = f64::NEG_INFINITY;
 
-/// A key-value pair, typically used for storing words and their similarity scores.
+/// Word plus similarity score.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Pair {
     pub key: String,
     pub value: f64,
 }
-/// A list of `Pair` instances.
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PairList(pub Vec<Pair>);
 impl PairList {

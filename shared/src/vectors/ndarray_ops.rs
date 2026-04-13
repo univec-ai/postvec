@@ -1,16 +1,4 @@
-// File: shared/src/vectors/ndarray_ops.rs
-//!
-//! @file ndarray_ops.rs
-//! @brief ND-Array Operations
-//!
-//! This module provides functionality for creating, converting, reshaping,
-//! and manipulating N-dimensional arrays (`ndarray`). It defines a set of traits
-//! for converting nested `Vec` structures into typed `ndarray` tensors
-//! (`FloatVector`, `FloatMatrix`, etc.) and for extending `ndarray` arrays
-//! with additional capabilities like reshaping and dimension manipulation.
-//!
-//! This module is the Rust equivalent of the original Go implementation's `ndarray.go` file.
-//!
+//! Convert nested `Vec`s into ndarray tensors; reshape and expand dims.
 
 // The `AsFloat{Vector,Matrix,Cube,Quad,Penta}` traits are *consuming*
 // conversions (they take `self` by value, like `into_*`) but are deliberately
@@ -20,71 +8,28 @@
 // silence the self-convention lint for this module instead.
 #![allow(clippy::wrong_self_convention)]
 
-// Import from sibling modules.
 use super::error::VectorError;
 use super::types::{FloatCube, FloatMatrix, FloatPenta, FloatQuad, FloatVector, FloatX};
 use ndarray::{Array, Axis, Ix1, Ix2, Ix3, Ix4, Ix5};
 use serde_json::Value;
 
-// --- Conversion Traits ---
-
-/// @brief A trait for types that can be converted into a `FloatVector`.
-///
-/// This provides a common interface for creating a 1D `ndarray` array of `FloatX`
-/// from various data sources, such as a `Vec<T>` or a `serde_json::Value`.
 pub trait AsFloatVector {
-    /// @brief Performs the conversion into a `FloatVector`.
-    ///
-    /// @return A `Result` containing the new `FloatVector` on success,
-    ///         or a `VectorError` if the conversion fails.
     fn as_float_vector(self) -> Result<FloatVector, VectorError>;
 }
 
-/// @brief A trait for types that can be converted into a `FloatMatrix`.
-///
-/// This provides a common interface for creating a 2D `ndarray` array of `FloatX`
-/// from various data sources, like a `Vec<Vec<T>>`.
 pub trait AsFloatMatrix {
-    /// @brief Performs the conversion into a `FloatMatrix`.
-    ///
-    /// @return A `Result` containing the new `FloatMatrix` on success,
-    ///         or a `VectorError` if the conversion fails (e.g., due to inconsistent row lengths).
     fn as_float_matrix(self) -> Result<FloatMatrix, VectorError>;
 }
 
-/// @brief A trait for types that can be converted into a `FloatCube`.
-///
-/// This provides a common interface for creating a 3D `ndarray` array of `FloatX`
-/// from various data sources, like a `Vec<Vec<Vec<T>>>`.
 pub trait AsFloatCube {
-    /// @brief Performs the conversion into a `FloatCube`.
-    ///
-    /// @return A `Result` containing the new `FloatCube` on success,
-    ///         or a `VectorError` if the conversion fails (e.g., due to inconsistent dimensions).
     fn as_float_cube(self) -> Result<FloatCube, VectorError>;
 }
 
-/// @brief A trait for types that can be converted into a `FloatQuad` (4D tensor).
-///
-/// This provides a common interface for creating a 4D `ndarray` array of `FloatX`
-/// from various data sources, like a `Vec<Vec<Vec<Vec<T>>>>`.
 pub trait AsFloatQuad {
-    /// @brief Performs the conversion into a `FloatQuad`.
-    ///
-    /// @return A `Result` containing the new `FloatQuad` on success,
-    ///         or a `VectorError` if the conversion fails.
     fn as_float_quad(self) -> Result<FloatQuad, VectorError>;
 }
 
-/// @brief A trait for types that can be converted into a `FloatPenta` (5D tensor).
-///
-/// This provides a common interface for creating a 5D `ndarray` array of `FloatX`
-/// from various data sources, like a `Vec<Vec<Vec<Vec<Vec<T>>>>>`.
 pub trait AsFloatPenta {
-    /// @brief Performs the conversion into a `FloatPenta`.
-    ///
-    /// @return A `Result` containing the new `FloatPenta` on success,
-    ///         or a `VectorError` if the conversion fails.
     fn as_float_penta(self) -> Result<FloatPenta, VectorError>;
 }
 
@@ -94,8 +39,6 @@ impl<T> AsFloatVector for Vec<T>
 where
     T: Into<FloatX> + Copy,
 {
-    /// @brief Converts a `Vec<T>` into a `FloatVector`.
-    /// @details Each element in the vector is converted into a `FloatX`.
     fn as_float_vector(self) -> Result<FloatVector, VectorError> {
         Ok(Array::from_vec(
             self.into_iter().map(|v| v.into()).collect(),
@@ -104,11 +47,6 @@ where
 }
 
 impl AsFloatVector for &Value {
-    /// @brief Converts a reference to a `serde_json::Value` into a `FloatVector`.
-    /// @details The JSON value must be an array of numbers.
-    ///
-    /// @return A `Result` containing the `FloatVector` or a `VectorError::ConversionError`
-    ///         if the value is not a JSON array or its elements are not numbers.
     fn as_float_vector(self) -> Result<FloatVector, VectorError> {
         let arr = self
             .as_array()
@@ -131,11 +69,6 @@ impl<T> AsFloatMatrix for Vec<Vec<T>>
 where
     T: Into<FloatX> + Copy,
 {
-    /// @brief Converts a nested `Vec<Vec<T>>` into a `FloatMatrix`.
-    /// @details The inner vectors must all have the same length.
-    ///
-    /// @return A `Result` containing the `FloatMatrix` or a `VectorError::ConversionError`
-    ///         if the row lengths are inconsistent.
     fn as_float_matrix(self) -> Result<FloatMatrix, VectorError> {
         if self.is_empty() {
             return Ok(Array::zeros((0, 0)));
@@ -157,11 +90,6 @@ impl<T> AsFloatCube for Vec<Vec<Vec<T>>>
 where
     T: Into<FloatX> + Copy,
 {
-    /// @brief Converts a 3D `Vec<Vec<Vec<T>>>` into a `FloatCube`.
-    /// @details All dimensions must be consistent across the nested vectors.
-    ///
-    /// @return A `Result` containing the `FloatCube` or a `VectorError::ConversionError`
-    ///         if any dimensions are inconsistent.
     fn as_float_cube(self) -> Result<FloatCube, VectorError> {
         if self.is_empty() {
             return Ok(Array::zeros((0, 0, 0)));
@@ -200,10 +128,6 @@ impl<T> AsFloatQuad for Vec<Vec<Vec<Vec<T>>>>
 where
     T: Into<FloatX> + Copy,
 {
-    /// @brief Converts a 4D `Vec<Vec<Vec<Vec<T>>>>` into a `FloatQuad`.
-    /// @details All dimensions must be consistent.
-    ///
-    /// @return A `Result` containing the `FloatQuad` or a `VectorError::ConversionError`.
     fn as_float_quad(self) -> Result<FloatQuad, VectorError> {
         if self.is_empty() {
             return Ok(Array::zeros((0, 0, 0, 0)));
@@ -253,10 +177,6 @@ impl<T> AsFloatPenta for Vec<Vec<Vec<Vec<Vec<T>>>>>
 where
     T: Into<FloatX> + Copy,
 {
-    /// @brief Converts a 5D `Vec<Vec<Vec<Vec<Vec<T>>>>>` into a `FloatPenta`.
-    /// @details All dimensions must be consistent.
-    ///
-    /// @return A `Result` containing the `FloatPenta` or a `VectorError::ConversionError`.
     fn as_float_penta(self) -> Result<FloatPenta, VectorError> {
         if self.is_empty() {
             return Ok(Array::zeros((0, 0, 0, 0, 0)));
@@ -315,29 +235,15 @@ where
 
 // --- ND-Array Extension Trait ---
 
-/// @brief Provides extension methods for `ndarray::Array` types.
-///
-/// This trait adds functionality for common operations like adding a new axis
-/// to increase dimensionality, flattening an array to a 1D vector, and retrieving
-/// the shape of the array.
+/// Expand dims, flatten, and read shape on `ndarray::Array`.
 pub trait NdArrayExt {
-    /// @brief The type of the array with one higher dimension.
     type LargerDim;
 
-    /// @brief Expands the dimensionality of the array by one.
-    /// @details Inserts a new axis of size 1 at the beginning of the shape.
-    /// For example, a `(3, 4)` matrix becomes a `(1, 3, 4)` cube.
-    /// @return The new array with an additional dimension.
+    /// Insert a leading axis of size 1. `(3, 4)` becomes `(1, 3, 4)`.
     fn expand_dimension(self) -> Self::LargerDim;
 
-    /// @brief Flattens any N-dimensional array into a 1D `FloatVector`.
-    /// @details Consumes the array and returns a new 1D vector containing all its elements
-    ///          in logical (row-major) order.
-    /// @return A `FloatVector`.
     fn flatten_to_vector(self) -> FloatVector;
 
-    /// @brief Retrieves the shape of the array.
-    /// @return A slice of `usize` representing the length of each dimension.
     fn get_shape(&self) -> &[usize];
 }
 
@@ -411,12 +317,10 @@ impl NdArrayExt for Array<FloatX, Ix4> {
 }
 
 impl NdArrayExt for Array<FloatX, Ix5> {
-    /// @brief A placeholder type, as expanding a 5D tensor is unsupported here.
+    /// A placeholder type, as expanding a 5D tensor is unsupported here.
     type LargerDim = ();
 
-    /// @brief Not supported for 5D tensors in this context.
-    /// @details `ndarray` does not provide a standard type alias for 6D tensors.
-    /// @return This method will panic if called.
+    /// Not supported for 5D tensors in this context.
     fn expand_dimension(self) -> Self::LargerDim {
         unimplemented!("Expanding a 5D tensor is not supported in this context.");
     }
@@ -433,34 +337,12 @@ impl NdArrayExt for Array<FloatX, Ix5> {
 
 // --- Reshape Extension Trait ---
 
-/// @brief Provides reshaping capabilities for a `FloatVector`.
-///
-/// This trait allows a 1D vector to be transformed into a higher-dimensional
-/// array (2D, 3D, 4D, or 5D) provided the total number of elements matches.
+/// Reshape a 1D vector into 2D-5D when the element count matches.
 pub trait ReshapeExt {
-    /// @brief Reshapes a vector into a 2D matrix.
-    ///
-    /// @param rows The number of rows in the new matrix.
-    /// @param cols The number of columns in the new matrix.
-    /// @return A `Result` containing the `FloatMatrix` or a `VectorError::ReshapeError`
-    ///         if `rows * cols` does not equal the vector's length.
     fn reshape_2d(self, rows: usize, cols: usize) -> Result<FloatMatrix, VectorError>;
 
-    /// @brief Reshapes a vector into a 3D cube.
-    ///
-    /// @param d1 The size of the first dimension.
-    /// @param d2 The size of the second dimension.
-    /// @param d3 The size of the third dimension.
-    /// @return A `Result` containing the `FloatCube` or a `VectorError::ReshapeError`.
     fn reshape_3d(self, d1: usize, d2: usize, d3: usize) -> Result<FloatCube, VectorError>;
 
-    /// @brief Reshapes a vector into a 4D tensor.
-    ///
-    /// @param d1 The size of the first dimension.
-    /// @param d2 The size of the second dimension.
-    /// @param d3 The size of the third dimension.
-    /// @param d4 The size of the fourth dimension.
-    /// @return A `Result` containing the `FloatQuad` or a `VectorError::ReshapeError`.
     fn reshape_4d(
         self,
         d1: usize,
@@ -469,14 +351,6 @@ pub trait ReshapeExt {
         d4: usize,
     ) -> Result<FloatQuad, VectorError>;
 
-    /// @brief Reshapes a vector into a 5D tensor.
-    ///
-    /// @param d1 The size of the first dimension.
-    /// @param d2 The size of the second dimension.
-    /// @param d3 The size of the third dimension.
-    /// @param d4 The size of the fourth dimension.
-    /// @param d5 The size of the fifth dimension.
-    /// @return A `Result` containing the `FloatPenta` or a `VectorError::ReshapeError`.
     fn reshape_5d(
         self,
         d1: usize,
@@ -553,20 +427,8 @@ impl ReshapeExt for Array<FloatX, Ix1> {
     }
 }
 
-/// @brief Compares two shapes for compatibility.
-///
-/// @param a The first shape slice.
-/// @param b The second shape slice.
-/// @param dimension_check If true, checks that non-wildcard dimensions are equal.
-///                        If false, only checks that the number of dimensions is the same
-///                        (unless there are wildcards).
-///
-/// @details
-/// This function supports "wildcard" dimensions, represented by a `0`.
-/// If `dimension_check` is enabled, it compares the non-wildcard dimensions
-/// for equality.
-///
-/// @return `true` if the shapes are compatible, `false` otherwise.
+/// Shape compatibility. `0` is a wildcard. When `dimension_check` is true,
+/// non-wildcard sizes must match at the same position.
 pub fn shape_match(a: &[usize], b: &[usize], dimension_check: bool) -> bool {
     let has_zero_dim = a.contains(&0) || b.contains(&0);
     // If there are no wildcards, the number of dimensions must be equal.

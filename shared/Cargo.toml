@@ -2,8 +2,7 @@
 name = "shared"
 version = "0.1.0"
 edition = "2021"
-# A shared library containing common modules like vector and tensor operations.
-description = "A shared library for vector and tensor operations."
+description = "Shared vector, tensor and error types for the inference engine."
 license = "PostgreSQL"
 repository = "https://github.com/univec-ai/postvec"
 

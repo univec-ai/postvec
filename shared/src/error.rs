@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Standardized error codes for the Ravenna system.
-/// These codes are used to communicate precise error conditions across service boundaries (Ninference -> Aphex)
-/// and allow the frontend to display localized/friendly error messages.
+/// Wire error codes carried as `x-ravenna-error-code` gRPC metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorCode {
     // --- General Errors ---
@@ -25,20 +23,19 @@ pub enum ErrorCode {
     BridgePathNotFound,
     ConverterNotFound,
     /// The requested bridge target is blocked by this deployment's
-    /// restriction policy (embed-bridge `restrictions.target_models`,
-    /// docs/licenses/licenses.md §5.3). Permanent for the caller: retrying
-    /// the same target on this deployment can never succeed.
+    /// restriction policy (`embed-bridge` `restrictions.target_models`).
+    /// Permanent: retrying the same target on this deployment can never
+    /// succeed.
     TargetRestricted,
 
     // --- Upstream/Dependency Errors ---
-    UpstreamServiceUnavailable, // e.g., if we were calling OpenAI directly (not current arch, but good for future)
+    UpstreamServiceUnavailable,
     /// An external embedding provider refused the credential (HTTP 401/403:
-    /// bad, revoked, or missing key). Distinct from
-    /// `UpstreamServiceUnavailable` because it is an operator problem, not a
-    /// transient one — clients classify it as configuration (bounded retry,
+    /// bad, revoked or missing key). Distinct from
+    /// `UpstreamServiceUnavailable`: an operator problem, not a transient
+    /// one. Clients classify it as configuration (bounded retry,
     /// failover-eligible: another node may hold a valid key), never as a
     /// hot-loop transient and never as data poison.
-    /// postvec fork addition (see engine/FORK.md).
     UpstreamAuthFailed,
 }
 
@@ -49,7 +46,7 @@ impl fmt::Display for ErrorCode {
 }
 
 impl ErrorCode {
-    /// Returns a string representation compatible with gRPC metadata.
+    /// The gRPC metadata string.
     pub fn as_str(&self) -> &'static str {
         match self {
             ErrorCode::InternalError => "INTERNAL_ERROR",
@@ -69,7 +66,7 @@ impl ErrorCode {
         }
     }
 
-    /// Parses a string representation back into an ErrorCode.
+    /// Parse a gRPC metadata string.
     ///
     /// Intentionally not `std::str::FromStr`: that trait must return
     /// `Result<Self, Self::Err>`, whereas an unknown code here is simply

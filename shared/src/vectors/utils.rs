@@ -1,17 +1,11 @@
-// File: shared/src/vectors/utils.rs
-//! ## Utility Functions
-//!
-//! This module contains miscellaneous helper functions, primarily for
-//! performing fallible conversions between different numeric types.
+//! Fallible conversions into `FloatX`.
 
-// Import from sibling modules.
 use super::error::VectorError;
 use super::types::FloatX;
 use serde_json::Value;
 
 /// A trait for types that can be fallibly converted to a `FloatX`.
 pub trait TryIntoFloatX {
-    /// Attempts to convert the value to `FloatX`.
     fn try_into_float_x(&self) -> Result<FloatX, VectorError>;
 }
 

@@ -1,9 +1,8 @@
 //! One canonical reading of `ninference.hub.json` for registry purposes,
 //! shared by the client installer and the publisher.
 //!
-//! Three JSON walkers (publisher, installer, engine) had three slightly
-//! different ideas of what a descriptor says; the registry-relevant subset now
-//! lives here, once. The rules:
+//! The registry-relevant subset of a descriptor lives here, once, so the
+//! publisher and installer cannot disagree about it. The rules:
 //!
 //! - **No guessed load-bearing defaults.** A published descriptor must state
 //!   its `backend` and `params.model_type` explicitly; the publisher refuses

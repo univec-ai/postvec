@@ -1,10 +1,9 @@
-# The one registry schema implementation (registry-simplify.md §4.6).
+# The one registry schema implementation.
 #
-# Everything that reads or writes a registry index — postvec-cli, the
-# publisher, and the aphex gateway route — validates through this crate, so
-# the three cannot drift and no conformance suite is needed to prove they
-# agree. It also owns the descriptor, identity and archive rules the client
-# and the publisher must apply identically.
+# Everything that reads or writes a registry index (postvec-cli and the
+# publisher) validates through this crate, so the two cannot drift. It also
+# owns the descriptor, identity and archive rules both must apply
+# identically.
 #
 # The default build stays tiny — serde + serde_json and nothing else — so the
 # gateway's production build gains two dependencies rather than a tar
@@ -21,7 +20,8 @@ repository = "https://github.com/univec-ai/postvec"
 [features]
 # The deterministic tar writer and the strict, bounded reader. Enabled by
 # postvec-cli (which extracts) and the publisher (which writes and then
-# re-reads through the client's exact reader); deliberately not by aphex.
+# re-reads through the client's exact reader). Not by a gateway that only
+# validates an index.
 archive = ["dep:sha2", "dep:tar", "dep:hex"]
 
 [dependencies]

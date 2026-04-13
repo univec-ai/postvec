@@ -1,17 +1,11 @@
-// File: shared/src/vectors/tensor.rs
-///
-/// ## Generic Tensor Module
-///
-/// This module provides the `GenericTensor` struct, a versatile container for
-/// holding dynamically typed and shaped data, which is crucial for interacting
-/// with machine learning models.
-// Import from sibling modules.
+//! Dynamically typed tensors for model inputs and outputs.
+
 use super::error::VectorError;
 use super::types::{FloatCube, FloatMatrix, FloatPenta, FloatQuad, FloatVector};
 use ndarray::{Array, ArrayView, Dim, Ix2, IxDyn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-/// Defines the data type held within a `GenericTensor`.
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TensorDataType {
     String,
@@ -19,20 +13,14 @@ pub enum TensorDataType {
     Dictionary,
     Unknown,
 }
-/// A generic, dynamically-typed tensor structure.
-///
-/// `GenericTensor` can hold data of various types and shapes, making it a flexible
-/// container for model inputs and outputs.
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenericTensor {
     pub value: TensorValue,
     pub shape: Vec<usize>,
     pub dtype: TensorDataType,
 }
-/// An enum representing the underlying data of a `GenericTensor`.
-///
-/// This enum allows `GenericTensor` to hold different kinds of data, such as
-/// multi-dimensional arrays of various numeric types, strings, or dictionaries.
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TensorValue {
     Float32(Array<f32, IxDyn>),
@@ -40,39 +28,26 @@ pub enum TensorValue {
     String(String),
     Dictionary(HashMap<String, GenericTensor>),
 }
-/// Creates a new tensor containing a string value.
-/// @param value The string value for the tensor.
-/// @return A `GenericTensor` of type `String`.
+
 pub fn new_string_tensor(value: String) -> GenericTensor {
     GenericTensor {
-        shape: vec![], // Strings don't have a numeric shape.
+        shape: vec![],
         dtype: TensorDataType::String,
         value: TensorValue::String(value),
     }
 }
-/// Creates a new tensor containing a dictionary of other tensors.
-/// @param value The map of string keys to `GenericTensor` values.
-/// @return A `GenericTensor` of type `Dictionary`.
+
 pub fn new_dictionary_tensor(value: HashMap<String, GenericTensor>) -> GenericTensor {
     GenericTensor {
-        shape: vec![], // Dictionaries don't have a numeric shape.
+        shape: vec![],
         dtype: TensorDataType::Dictionary,
         value: TensorValue::Dictionary(value),
     }
 }
-/// A trait for types that can be converted into a `GenericTensor`.
-///
-/// This allows for the creation of a `GenericTensor` from various data structures,
-/// like nested vectors, while inferring the shape and data type.
 pub trait IntoGenericTensor {
-    /// @brief Performs the conversion into a `GenericTensor`.
-    /// @return A `Result` containing the new `GenericTensor` or a `VectorError`.
     fn into_generic_tensor(self) -> Result<GenericTensor, VectorError>;
 }
-/// Creates a new tensor from a nested `Vec<Vec<i64>>`.
-///
-/// This helper is specifically for creating 2D tensors of `i64` from nested vectors,
-/// which is a common pattern for handling token IDs and attention masks.
+/// Token ids / attention masks as a 2D i64 tensor.
 pub fn new_2d_tensor_from_i64_vecs(value: Vec<Vec<i64>>) -> Result<GenericTensor, VectorError> {
     let rows = value.len();
     if rows == 0 {
@@ -91,9 +66,7 @@ pub fn new_2d_tensor_from_i64_vecs(value: Vec<Vec<i64>>) -> Result<GenericTensor
         dtype: TensorDataType::Numeric,
     })
 }
-/// Creates a new tensor from a nested `Vec<Vec<f32>>`.
-///
-/// This provides a symmetric helper for creating 2D tensors from floating-point data.
+
 pub fn new_2d_tensor_from_float_vecs(value: Vec<Vec<f32>>) -> Result<GenericTensor, VectorError> {
     let rows = value.len();
     if rows == 0 {
@@ -112,10 +85,7 @@ pub fn new_2d_tensor_from_float_vecs(value: Vec<Vec<f32>>) -> Result<GenericTens
         dtype: TensorDataType::Numeric,
     })
 }
-/// Creates a new tensor from a nested `Vec<Vec<Vec<f32>>>`.
-///
-/// This helper is for creating 3D tensors of `f32` from nested vectors,
-/// which is common for handling model outputs like last hidden states.
+
 pub fn new_3d_tensor_from_float_vecs(
     value: Vec<Vec<Vec<f32>>>,
 ) -> Result<GenericTensor, VectorError> {
@@ -130,7 +100,7 @@ pub fn new_3d_tensor_from_float_vecs(
     let d2 = value[0].len();
     let d3 = if d2 > 0 { value[0][0].len() } else { 0 };
     let shape = vec![d1, d2, d3];
-    // Flatten the 3D Vec into a 1D Vec.
+
     let flat_vec: Vec<f32> = value.into_iter().flatten().flatten().collect();
     let arr = Array::from_shape_vec(IxDyn(&shape), flat_vec)?;
     Ok(GenericTensor {
@@ -139,24 +109,19 @@ pub fn new_3d_tensor_from_float_vecs(
         dtype: TensorDataType::Numeric,
     })
 }
-/// @brief Creates a `GenericTensor` from a source value, inferring its shape.
+/// Creates a `GenericTensor` from a source value, inferring its shape.
 /// @tparam T The type of the value to convert, which must implement `IntoGenericTensor`.
-/// @param value The source data.
-/// @return A `Result` containing the new `GenericTensor` or a `VectorError`.
 pub fn new_tensor_with_shape_inference<T: IntoGenericTensor>(
     value: T,
 ) -> Result<GenericTensor, VectorError> {
     value.into_generic_tensor()
 }
-/// @brief Creates a `GenericTensor` from a source value with a specified shape.
+/// Creates a `GenericTensor` from a source value with a specified shape.
 ///
 /// This function first infers the tensor from the value and then reshapes it
 /// to the desired dimensions.
 ///
 /// @tparam T A type that implements `IntoGenericTensor`.
-/// @param value The source data.
-/// @param shape The desired output shape.
-/// @return A `Result` containing the reshaped `GenericTensor` or a `VectorError`.
 pub fn new_tensor_with_shape<T: IntoGenericTensor>(
     value: T,
     shape: &[i64],
@@ -165,11 +130,9 @@ pub fn new_tensor_with_shape<T: IntoGenericTensor>(
     tensor.reshape(shape)
 }
 impl GenericTensor {
-    /// @brief Reshapes the tensor to a new set of dimensions.
-    /// @param new_shape A slice of `i64` representing the new shape.
+    /// Reshapes the tensor to a new set of dimensions.
     ///                  Dimensions less than or equal to 0 are treated as dynamic and are
     ///                  inferred.
-    /// @return A `Result` containing the reshaped `GenericTensor` or a `VectorError`.
     pub fn reshape(mut self, new_shape: &[i64]) -> Result<Self, VectorError> {
         let total_elements = self.value.len();
         if new_shape.is_empty() {
@@ -210,14 +173,13 @@ impl GenericTensor {
         self.shape = final_shape;
         Ok(self)
     }
-    /// @brief Tries to convert the generic tensor into a flat `FloatVector`.
+    /// Tries to convert the generic tensor into a flat `FloatVector`.
     ///
     /// This method will flatten the underlying data if it's a higher-dimensional
     /// numeric tensor.
     ///
     /// This fails for non-numeric tensor types (`String`, `Dictionary`).
     ///
-    /// @return A `Result` containing the `FloatVector` or a `VectorError`.
     pub fn try_into_vector(self) -> Result<FloatVector, VectorError> {
         match self.dtype {
             TensorDataType::Numeric => {
@@ -229,18 +191,17 @@ impl GenericTensor {
             )),
         }
     }
-    /// @brief Converts the tensor to a 1D `FloatVector`.
+    /// Converts the tensor to a 1D `FloatVector`.
     ///
     /// This method is a more explicit and specific version of `try_into_vector`,
     /// now named to align with the rest of the `as_float_...` methods.
     pub fn as_float_vector(self) -> Result<FloatVector, VectorError> {
         self.try_into_vector()
     }
-    /// @brief Tries to convert the tensor to a 2D `FloatMatrix`.
+    /// Tries to convert the tensor to a 2D `FloatMatrix`.
     ///
     /// The tensor must be numeric and have a 2D shape.
     ///
-    /// @return A `Result` containing the `FloatMatrix` or a `VectorError` if the dimensions don't match.
     pub fn as_float_matrix(self) -> Result<FloatMatrix, VectorError> {
         if self.shape.len() != 2 {
             return Err(VectorError::DimensionMismatch {
@@ -261,11 +222,10 @@ impl GenericTensor {
         let cols = self.shape[1];
         Ok(Array::from_shape_vec(Dim([rows, cols]), flat_f32)?)
     }
-    /// @brief Tries to convert the tensor to a 3D `FloatCube`.
+    /// Tries to convert the tensor to a 3D `FloatCube`.
     ///
     /// The tensor must be numeric and have a 3D shape.
     ///
-    /// @return A `Result` containing the `FloatCube` or a `VectorError` if the dimensions don't match.
     pub fn as_float_cube(self) -> Result<FloatCube, VectorError> {
         if self.shape.len() != 3 {
             return Err(VectorError::DimensionMismatch {
@@ -288,11 +248,10 @@ impl GenericTensor {
         let d3 = self.shape[2];
         Ok(Array::from_shape_vec(Dim([d1, d2, d3]), flat_f32)?)
     }
-    /// @brief Tries to convert the tensor to a 4D `FloatQuad`.
+    /// Tries to convert the tensor to a 4D `FloatQuad`.
     ///
     /// The tensor must be numeric and have a 4D shape.
     ///
-    /// @return A `Result` containing the `FloatQuad` or a `VectorError` if the dimensions don't match.
     pub fn as_float_quad(self) -> Result<FloatQuad, VectorError> {
         if self.shape.len() != 4 {
             return Err(VectorError::DimensionMismatch {
@@ -317,11 +276,10 @@ impl GenericTensor {
         let d4 = self.shape[3];
         Ok(Array::from_shape_vec(Dim([d1, d2, d3, d4]), flat_f32)?)
     }
-    /// @brief Tries to convert the tensor to a 5D `FloatPenta`.
+    /// Tries to convert the tensor to a 5D `FloatPenta`.
     ///
     /// The tensor must be numeric and have a 5D shape.
     ///
-    /// @return A `Result` containing the `FloatPenta` or a `VectorError` if the dimensions don't match.
     pub fn as_float_penta(self) -> Result<FloatPenta, VectorError> {
         if self.shape.len() != 5 {
             return Err(VectorError::DimensionMismatch {
@@ -349,12 +307,11 @@ impl GenericTensor {
         Ok(Array::from_shape_vec(Dim([d1, d2, d3, d4, d5]), flat_f32)?)
     }
 
-    /// @brief Tries to get a read-only view of the underlying data as an `i64` ndarray.
+    /// Tries to get a read-only view of the underlying data as an `i64` ndarray.
     ///
     /// This is an efficient way to access `Int64` tensor data without cloning.
     /// It fails if the tensor's underlying `TensorValue` is not `Int64`.
     ///
-    /// @return A `Result` containing an `ArrayView` or a `VectorError`.
     pub fn as_int64_array(&self) -> Result<ArrayView<'_, i64, IxDyn>, VectorError> {
         match &self.value {
             TensorValue::Int64(arr) => Ok(arr.view()),
@@ -365,7 +322,7 @@ impl GenericTensor {
     }
 }
 impl TensorValue {
-    /// @brief Returns the total number of elements in the tensor value.
+    /// Returns the total number of elements in the tensor value.
     pub fn len(&self) -> usize {
         match self {
             TensorValue::Float32(arr) => arr.len(),
@@ -374,14 +331,12 @@ impl TensorValue {
             TensorValue::Dictionary(d) => d.len(),
         }
     }
-    /// @brief Checks if the tensor value is empty.
+    /// Checks if the tensor value is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// @brief Reshapes the underlying `ndarray::Array`.
+    /// Reshapes the underlying `ndarray::Array`.
     ///
-    /// @param new_shape The desired new shape.
-    /// @return A `Result` with the reshaped `TensorValue` or a `VectorError`.
     pub fn reshape(self, new_shape: &[usize]) -> Result<TensorValue, VectorError> {
         match self {
             TensorValue::Float32(arr) => {
@@ -400,7 +355,7 @@ impl TensorValue {
             )),
         }
     }
-    /// @brief Returns the shape of the underlying ndarray.
+    /// Returns the shape of the underlying ndarray.
     pub fn get_shape(&self) -> &[usize] {
         match self {
             TensorValue::Float32(arr) => arr.shape(),
@@ -408,7 +363,7 @@ impl TensorValue {
             _ => &[],
         }
     }
-    /// @brief Flattens the underlying numeric array into a 1D f32 vector.
+    /// Flattens the underlying numeric array into a 1D f32 vector.
     /// @note This involves casting, which might lose precision for non-f32 types.
     pub fn flatten_to_f32_vec(self) -> Vec<f32> {
         match self {
@@ -438,7 +393,7 @@ impl TensorValue {
         }
     }
 }
-/// @brief Helper macro to define the body of the `into_generic_tensor` implementation.
+/// Helper macro to define the body of the `into_generic_tensor` implementation.
 macro_rules! make_tensor_impl_body {
     ($value:expr) => {{
         let json_val = serde_json::to_value(&$value)?;
@@ -502,7 +457,7 @@ macro_rules! make_tensor_impl_body {
         })
     }};
 }
-/// @brief Helper macro to stamp out `IntoGenericTensor` implementations for a numeric type.
+/// Helper macro to stamp out `IntoGenericTensor` implementations for a numeric type.
 macro_rules! make_tensor_impls_for_type {
     ($numeric_type:ty) => {
         impl IntoGenericTensor for Vec<$numeric_type> {

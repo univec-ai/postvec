@@ -1,12 +1,5 @@
-// File: shared/src/vectors/vector_math.rs
-//! ## Vector Math and Utilities
-//!
-//!
-//! This module provides extensive mathematical and utility functions for `FloatVector`.
-//! Operations include statistical calculations, similarity metrics, normalization,
-//! and random vector generation.
-//!
-// Import from sibling modules.
+//! Stats, similarity, normalization and random construction for `FloatVector`.
+
 use super::error::VectorError;
 use super::types::{FloatVector, FloatX, INF, NEG_INF};
 use byteorder::{ByteOrder, LittleEndian};
@@ -21,24 +14,17 @@ use std::hash::{Hash, Hasher};
 
 const RANDOM_SEED: u64 = 1234;
 
-/// @brief Creates a new float vector of a given size, filled with a specific value.
-/// @param fill_value The `FloatX` value to fill the vector with.
-/// @param size The size of the new vector.
-/// @return A new `FloatVector`.
+/// Creates a new float vector of a given size, filled with a specific value.
 pub fn new_float_vector(fill_value: FloatX, size: usize) -> FloatVector {
     Array::from_elem(size, fill_value)
 }
-/// @brief Creates a new `FloatVector` from a slice of `f64` values.
-/// @param values A slice of `f64` values.
-/// @return A new `FloatVector`.
+/// Creates a new `FloatVector` from a slice of `f64` values.
 pub fn new_float_vector_from_float64(values: &[f64]) -> FloatVector {
     values.iter().map(|&v| v as FloatX).collect()
 }
-/// @brief Serializes a `FloatVector` into a byte vector.
+/// Serializes a `FloatVector` into a byte vector.
 ///
 /// The serialization uses Little Endian byte order.
-/// @param v A reference to the `FloatVector` to serialize.
-/// @return A `Vec<u8>` containing the serialized vector data.
 pub fn serialize_float_vector(v: &FloatVector) -> Vec<u8> {
     let mut bytes = vec![0; v.len() * 4];
     // This is safe because FloatX is f32. The explicit `as *const f32` is kept
@@ -51,12 +37,10 @@ pub fn serialize_float_vector(v: &FloatVector) -> Vec<u8> {
     LittleEndian::write_f32_into(slice_f32, &mut bytes);
     bytes
 }
-/// @brief Deserializes a byte slice into a `FloatVector`.
+/// Deserializes a byte slice into a `FloatVector`.
 ///
 /// The byte slice is expected to be in Little Endian format. The length of the
 /// slice must be a multiple of 4.
-/// @param bytes A slice of bytes to deserialize.
-/// @return A `Result` containing the `FloatVector` or a `VectorError`.
 pub fn deserialize_float_vector(bytes: &[u8]) -> Result<FloatVector, VectorError> {
     if !bytes.len().is_multiple_of(4) {
         return Err(VectorError::ConversionError(
@@ -68,27 +52,20 @@ pub fn deserialize_float_vector(bytes: &[u8]) -> Result<FloatVector, VectorError
     Ok(Array::from(vec_f32))
 }
 // --- Random Vector Generation ---
-/// @brief Generates a vector with elements from a uniform distribution [0, 1).
-/// @param dim The dimension (size) of the vector.
-/// @return A new `FloatVector`.
+/// Generates a vector with elements from a uniform distribution [0, 1).
 pub fn uniform_vector(dim: usize) -> FloatVector {
     let mut rng = StdRng::seed_from_u64(RANDOM_SEED);
     let dist = Uniform::new(0.0, 1.0);
     Array::from_iter(dist.sample_iter(&mut rng).take(dim).map(|x| x as FloatX))
 }
-/// @brief Generates a vector with random elements in a given range.
+/// Generates a vector with random elements in a given range.
 ///
 /// Elements are distributed uniformly in `[-top_bound, top_bound]`.
-/// @param dim The dimension (size) of the vector.
-/// @param top_bound The upper bound for the random value range.
-/// @return A new `FloatVector`.
 pub fn random_vector(dim: usize, top_bound: f64) -> FloatVector {
     let mut rng = rand::thread_rng();
     Array::from_iter((0..dim).map(|_| ((rng.gen::<f64>() * 2.0 - 1.0) * top_bound) as FloatX))
 }
-/// @brief Generates a vector with elements from a standard Gaussian (normal) distribution.
-/// @param dim The dimension (size) of the vector.
-/// @return A new `FloatVector`.
+/// Generates a vector with elements from a standard Gaussian (normal) distribution.
 pub fn gaussian_vector(dim: usize) -> FloatVector {
     let mut rng = rand::thread_rng();
     Array::from_iter(
@@ -98,11 +75,9 @@ pub fn gaussian_vector(dim: usize) -> FloatVector {
             .map(|x: f64| x as FloatX),
     )
 }
-/// @brief Generates a normalized vector from a Gaussian distribution.
+/// Generates a normalized vector from a Gaussian distribution.
 ///
 /// The resulting vector will have a unit L2 norm.
-/// @param dim The dimension (size) of the vector.
-/// @return A new, normalized `FloatVector`.
 pub fn gaussian_vector_normalized(dim: usize) -> FloatVector {
     let vec = gaussian_vector(dim);
     let norm = vec.norm_l2();
@@ -112,175 +87,117 @@ pub fn gaussian_vector_normalized(dim: usize) -> FloatVector {
         vec
     }
 }
-/// @brief A trait providing extensive mathematical operations for float vectors.
+/// A trait providing extensive mathematical operations for float vectors.
 pub trait VectorMathExt {
-    /// @brief Computes the cosine similarity between two vectors.
-    /// @param other The other vector.
-    /// @return A `Result` containing the similarity score (f64) or a `VectorError`.
+    /// Computes the cosine similarity between two vectors.
     fn cosine_similarity(&self, other: &Self) -> Result<f64, VectorError>;
-    /// @brief Computes the L2 norm (Euclidean norm) of the vector.
-    /// @return The L2 norm as a `FloatX`.
+    /// Computes the L2 norm (Euclidean norm) of the vector.
     fn norm_l2(&self) -> FloatX;
-    /// @brief Normalizes the vector in-place to have a unit L2 norm.
-    /// @return A `Result` indicating success or a `VectorError::ZeroNorm`.
+    /// Normalizes the vector in-place to have a unit L2 norm.
     fn normalize_in_place(&mut self) -> Result<(), VectorError>;
-    /// @brief Returns a new, normalized version of the vector with unit L2 norm.
-    /// @return A new `FloatVector`.
+    /// Returns a new, normalized version of the vector with unit L2 norm.
     fn normalized(&self) -> FloatVector;
-    /// @brief Computes the sum of all elements in the vector.
-    /// @return The sum as an `f64`.
+    /// Computes the sum of all elements in the vector.
     fn sum_f64(&self) -> f64;
-    /// @brief Finds the maximum element in the vector.
-    /// @return The maximum value as an `f64`.
+    /// Finds the maximum element in the vector.
     fn max_f64(&self) -> f64;
-    /// @brief Finds the minimum element in the vector.
-    /// @return The minimum value as an `f64`.
+    /// Finds the minimum element in the vector.
     fn min_f64(&self) -> f64;
-    /// @brief Calculates the mean (average) of the vector's elements.
+    /// Calculates the mean (average) of the vector's elements.
     ///
     /// Named `mean_f64` (not `mean`) for the same reason as `sum_f64`/`max_f64`/
     /// `min_f64`: `ndarray` provides an inherent `mean(&self) -> Option<A>` that
     /// would shadow a trait method called `mean` under method-call syntax,
     /// silently giving callers `Option<f32>` instead of this `Result<f64, _>`.
-    /// @return A `Result` containing the mean as an `f64` or a `VectorError::EmptyVector`.
     fn mean_f64(&self) -> Result<f64, VectorError>;
-    /// @brief Calculates the sample variance of the vector's elements.
-    /// @return A `Result` containing the variance as an `f64` or an error.
+    /// Calculates the sample variance of the vector's elements.
     fn variance(&self) -> Result<f64, VectorError>;
-    /// @brief Calculates the sample standard deviation of the vector's elements.
-    /// @return A `Result` containing the standard deviation as an `f64` or an error.
+    /// Calculates the sample standard deviation of the vector's elements.
     fn stdev(&self) -> Result<f64, VectorError>;
-    /// @brief Applies the Softmax function to the vector.
-    /// @return A new `FloatVector` of probabilities.
+    /// Applies the Softmax function to the vector.
     fn softmax(&self) -> FloatVector;
-    /// @brief Finds the index and value of the maximum element.
-    /// @return A tuple `(usize, FloatX)` of the index and value.
+    /// Finds the index and value of the maximum element.
     fn arg_max(&self) -> (usize, FloatX);
-    /// @brief Converts the vector to a `Vec<f64>`.
-    /// @return A `Vec<f64>` containing the vector's data.
+    /// Converts the vector to a `Vec<f64>`.
     fn as_f64_vec(&self) -> Vec<f64>;
-    /// @brief Samples indices from the vector, treating its values as probabilities.
-    /// @param num_samples The number of indices to sample.
-    /// @return A `Vec<usize>` of sampled indices.
+    /// Samples indices from the vector, treating its values as probabilities.
     fn multinomial(&self, num_samples: usize) -> Vec<usize>;
-    /// @brief Performs temperature-based sampling on the vector (logits).
-    /// @param temperature The temperature for scaling. Must be positive.
-    /// @param num_samples The number of samples to draw.
-    /// @return A `Result` containing a `Vec<usize>` of sampled indices or an error.
+    /// Performs temperature-based sampling on the vector (logits).
     fn temperature_sampling(
         &self,
         temperature: f64,
         num_samples: usize,
     ) -> Result<Vec<usize>, VectorError>;
-    /// @brief Performs nucleus (top-p) sampling on the vector (logits).
-    /// @param top_p The cumulative probability threshold. Must be in [0.0, 1.0].
-    /// @param temperature The temperature for scaling.
-    /// @param num_samples The number of samples to draw.
-    /// @return A `Result` containing a `Vec<usize>` of sampled indices or an error.
+    /// Performs nucleus (top-p) sampling on the vector (logits).
     fn nucleus_sampling(
         &self,
         top_p: f64,
         temperature: f64,
         num_samples: usize,
     ) -> Result<Vec<usize>, VectorError>;
-    /// @brief Computes the median of the vector's elements.
-    /// @return A `Result` with the median value or an error if the vector is empty.
+    /// Computes the median of the vector's elements.
     fn median(&self) -> Result<f64, VectorError>;
-    /// @brief Calculates the p-th percentile of the vector's elements.
-    /// @param p The percentile to compute (0.0 to 100.0).
-    /// @return A `Result` with the percentile value or an error.
+    /// Calculates the p-th percentile of the vector's elements.
     fn percentile(&self, p: f64) -> Result<f64, VectorError>;
-    /// @brief Checks if all elements of the vector are zero.
-    /// @return `true` if all elements are zero, `false` otherwise.
+    /// Checks if all elements of the vector are zero.
     fn is_zero(&self) -> bool;
-    /// @brief Computes the Euclidean distance to another vector.
-    /// @param other The other vector.
-    /// @return A `Result` with the distance or an error for dimension mismatch.
+    /// Computes the Euclidean distance to another vector.
     fn euclidean_distance(&self, other: &Self) -> Result<f64, VectorError>;
-    /// @brief Computes the cosine distance (1 - cosine similarity).
-    /// @param other The other vector.
-    /// @return A `Result` with the distance or an error.
+    /// Computes the cosine distance (1 - cosine similarity).
     fn cosine_distance(&self, other: &Self) -> Result<f64, VectorError>;
-    /// @brief Applies the sigmoid function element-wise.
-    /// @return A new `FloatVector` with the transformed values.
+    /// Applies the sigmoid function element-wise.
     fn sigmoid(&self) -> FloatVector;
-    /// @brief Computes the cumulative sum of the vector's elements.
-    /// @return A new `FloatVector` containing the cumulative sum.
+    /// Computes the cumulative sum of the vector's elements.
     fn cum_sum(&self) -> FloatVector;
-    /// @brief Sorts the vector's indices in descending order based on their values.
-    /// @return A `Vec<usize>` of indices sorted by the vector's values.
+    /// Sorts the vector's indices in descending order based on their values.
     fn arg_sort_descending(&self) -> Vec<usize>;
-    /// @brief Computes the Z-scores (standard scores) for each element.
+    /// Computes the Z-scores (standard scores) for each element.
     ///
     /// The Z-score is the number of standard deviations by which the value of a
     /// raw score is above or below the mean value of what is being observed.
-    /// @return A `Result` with a new `FloatVector` of Z-scores or an error if the
     ///         standard deviation is zero.
     fn z_scores(&self) -> Result<FloatVector, VectorError>;
-    /// @brief Computes the element-wise multiplication of two vectors.
-    /// @param other The vector to multiply with.
-    /// @return A `Result` with the resulting `FloatVector` or an error.
+    /// Computes the element-wise multiplication of two vectors.
     fn element_wise_multiply(&self, other: &Self) -> Result<FloatVector, VectorError>;
-    /// @brief Sorts the vector in place.
-    /// @param descending If `true`, sort in descending order; otherwise, ascending.
+    /// Sorts the vector in place.
     fn sort_in_place(&mut self, descending: bool);
-    /// @brief Returns a new, sorted version of the vector.
-    /// @param descending If `true`, sort in descending order; otherwise, ascending.
-    /// @return A new, sorted `FloatVector`.
+    /// Returns a new, sorted version of the vector.
     fn sorted(&self, descending: bool) -> FloatVector;
-    /// @brief Removes duplicate elements, preserving the first occurrence.
-    /// @return A new `FloatVector` with unique elements.
+    /// Removes duplicate elements, preserving the first occurrence.
     fn deduplicate(&self) -> FloatVector;
-    /// @brief Computes a hash of the vector's contents.
-    /// @return A `u64` hash value.
+    /// Computes a hash of the vector's contents.
     fn custom_hash(&self) -> u64;
-    /// @brief Gets the size of the vector in bytes.
-    /// @return The size in bytes as `usize`.
+    /// Gets the size of the vector in bytes.
     fn size_bytes(&self) -> usize;
-    /// @brief Creates a random sample of elements from the vector.
-    /// @param num_samples The number of items to sample.
-    /// @param with_replacement If `true`, samples with replacement.
-    /// @return A `Result` containing the sampled `FloatVector` or an error.
+    /// Creates a random sample of elements from the vector.
     fn random_sample(
         &self,
         num_samples: usize,
         with_replacement: bool,
     ) -> Result<FloatVector, VectorError>;
     // --- NEWLY PORTED FUNCTIONS ---
-    /// @brief Prints the first `n` values of the vector to the console for debugging.
-    /// @param message A descriptive message to print alongside the values.
-    /// @param n The maximum number of elements to print.
+    /// Prints the first `n` values of the vector to the console for debugging.
     fn print_values(&self, message: &str, n: usize);
-    /// @brief Creates a new vector containing only the values between two percentiles.
-    /// @param low_q The lower percentile bound (0.0 to 100.0).
-    /// @param high_q The upper percentile bound (0.0 to 100.0).
-    /// @return A `Result` containing the new `FloatVector` or an error.
+    /// Creates a new vector containing only the values between two percentiles.
     fn quantile_slice(&self, low_q: f64, high_q: f64) -> Result<FloatVector, VectorError>;
-    /// @brief Computes the angular similarity between two vectors.
+    /// Computes the angular similarity between two vectors.
     ///
     /// The angular similarity is defined as `1 - (arccos(cosine_similarity) / PI)`.
     /// It ranges from 0 (opposite) to 1 (identical).
-    /// @param other The other vector.
-    /// @return A `Result` containing the angular similarity or an error.
     fn angular_similarity(&self, other: &Self) -> Result<f64, VectorError>;
-    /// @brief Fills the vector in-place with a specified value.
-    /// @param value The value to fill the vector with.
+    /// Fills the vector in-place with a specified value.
     fn fill_in_place(&mut self, value: FloatX);
-    /// @brief Fills the vector in-place with random values from a standard Gaussian distribution.
+    /// Fills the vector in-place with random values from a standard Gaussian distribution.
     fn fill_gaussian_in_place(&mut self);
-    /// @brief Fills the vector in-place with random values from a uniform distribution [0, 1).
+    /// Fills the vector in-place with random values from a uniform distribution [0, 1).
     fn fill_uniform_in_place(&mut self);
-    /// @brief Scales the vector so that its maximum value is 1.0.
-    /// @return A `Result` with the new scaled `FloatVector` or an error if the max value is zero or invalid.
+    /// Scales the vector so that its maximum value is 1.0.
     fn scale_to_unit_values(&self) -> Result<FloatVector, VectorError>;
-    /// @brief Scales the vector so that its elements' sum is 1.0.
-    /// @return A `Result` with the new scaled `FloatVector` or an error if the sum is zero or invalid.
+    /// Scales the vector so that its elements' sum is 1.0.
     fn scale_to_unit_sum(&self) -> Result<FloatVector, VectorError>;
-    /// @brief Counts the number of unique elements in the vector.
-    /// @return The count of unique elements.
+    /// Counts the number of unique elements in the vector.
     fn count_uniques(&self) -> usize;
-    /// @brief Converts the vector to a `Vec<i64>`, casting each element.
-    /// @return A `Vec<i64>` containing the vector's data.
+    /// Converts the vector to a `Vec<i64>`, casting each element.
     fn as_i64_vec(&self) -> Vec<i64>;
 }
 

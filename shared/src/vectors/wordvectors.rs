@@ -1,12 +1,5 @@
-// File: shared/src/vectors/wordvectors.rs
-//!
-//! ## Word Embeddings (Word2Vec)
-//!
-//! This module provides structures and functions for working with word vector models,
-//! commonly known as word2vec. It supports loading pre-trained binary models,
-//! querying for word vectors, and calculating similarities.
+//! Load and query binary word2vec models.
 
-// Import from sibling modules.
 use super::error::VectorError;
 use super::types::{FloatMatrix, FloatVector, FloatX, Pair, PairList};
 use super::vector_math::VectorMathExt;

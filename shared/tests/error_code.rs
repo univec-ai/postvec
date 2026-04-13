@@ -1,5 +1,4 @@
-//! End-to-end tests for `shared::ErrorCode` — the cross-service error code
-//! exchanged between ninference and aphex (via gRPC metadata).
+//! Tests for `shared::ErrorCode`: the gRPC metadata round-trip.
 
 use shared::ErrorCode;
 
