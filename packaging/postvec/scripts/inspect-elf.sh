@@ -31,6 +31,7 @@ arch_facts "${RELEASE_ARCH}"
 # standalone run without --distro reports the requirement instead.
 [[ -n "${DISTRO}" ]] && distro_facts "${DISTRO}"
 need readelf objdump file
+[[ -n "${DISTRO}" ]] && need docker
 
 fail=0
 problem() { printf '  \033[1;31mFAIL\033[0m  %s\n' "$*" >&2; fail=1; }
@@ -50,6 +51,42 @@ glibc_floor_for() {
 }
 
 version_le() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$1" ]]; }
+
+# Resolve an artifact against the distribution it was built for, not against
+# the release host. Architecture equality is not enough: an Ubuntu 24.04
+# binary legitimately requiring GLIBC_2.39 cannot be loaded by ldd on an
+# Ubuntu 22.04 release host. Copying into a stopped container avoids bind-mount
+# differences between ordinary, rootless, and Snap-packaged Docker daemons.
+inspect_target_dependencies() {
+    local path="$1" container output="" run_status=0
+
+    if ! container="$(docker create \
+            --platform "${OCI_PLATFORM}" \
+            --entrypoint /bin/sh \
+            "${DIST_BASE_IMAGE}" \
+            -c 'ldd /tmp/postvec-inspect')"; then
+        problem "could not create the ${DIST_ID} dependency-inspection container"
+        return 0
+    fi
+
+    if ! docker cp "${path}" "${container}:/tmp/postvec-inspect"; then
+        docker rm --force "${container}" >/dev/null 2>&1 || true
+        problem "could not copy the artifact into the ${DIST_ID} dependency-inspection container"
+        return 0
+    fi
+
+    if ! output="$(docker start --attach "${container}" 2>&1)"; then
+        run_status=1
+    fi
+    docker rm --force "${container}" >/dev/null 2>&1 || true
+
+    if (( run_status )) || grep -q 'not found' <<<"${output}"; then
+        printf '%s\n' "${output}" >&2
+        problem "unresolved shared library dependencies in the ${DIST_ID} target"
+    else
+        pass "all shared libraries resolve in the ${DIST_ID} target"
+    fi
+}
 
 inspect() {
     local path="$1" kind="$2"
@@ -114,9 +151,12 @@ inspect() {
         problem "requires glibc ${highest}, above the ${DIST_ID} floor ${floor}"
     fi
 
-    # Unresolved dependencies, when the host can resolve them at all. On a
-    # cross-distro or cross-arch host this says nothing, so it only reports.
-    if command -v ldd >/dev/null 2>&1 && [[ "${RELEASE_ARCH}" == "$(host_release_arch)" ]]; then
+    # A target distribution was supplied by the release build, so resolve in
+    # that pinned target image. A standalone inspection without --distro may
+    # use host ldd, but only when the architecture matches.
+    if [[ -n "${DISTRO}" ]]; then
+        inspect_target_dependencies "${path}"
+    elif command -v ldd >/dev/null 2>&1 && [[ "${RELEASE_ARCH}" == "$(host_release_arch)" ]]; then
         if ldd "${path}" 2>/dev/null | grep 'not found' >/dev/null; then
             ldd "${path}" | grep 'not found' >&2
             problem "unresolved shared library dependencies"
