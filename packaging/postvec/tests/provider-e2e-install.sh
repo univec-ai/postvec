@@ -51,6 +51,11 @@ CONF_D=/etc/postvec-test/conf.d
 SOCKET_DIR=/var/run/postgresql
 mkdir -p "$(dirname "${DATA}")" "${CONF_D}" "${SOCKET_DIR}"
 chown -R postgres:postgres "$(dirname "${DATA}")" "${CONF_D}" "${SOCKET_DIR}"
+# Docker exec inherits the daemon's umask. Snap-packaged Docker can use 000,
+# which would make CONF_D world-writable and correctly trip postvec's safety
+# check. Test fixtures must have deterministic modes regardless of the daemon.
+chmod 0755 "$(dirname "${DATA}")" "$(dirname "${CONF_D}")" "${CONF_D}"
+chmod 2775 "${SOCKET_DIR}"
 
 as_pg() { su postgres -s /bin/bash -c "$*"; }
 

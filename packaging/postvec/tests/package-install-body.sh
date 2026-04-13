@@ -320,6 +320,11 @@ SOCKET_DIR=/var/run/postgresql
 # outside the data directory — which is also how a real deployment is laid out.
 mkdir -p "$(dirname "${DATA}")" "${CONF_D}" "${SOCKET_DIR}"
 chown -R "${PG_USER}:${PG_USER}" "$(dirname "${DATA}")" "${CONF_D}" "${SOCKET_DIR}"
+# Do not inherit the Docker daemon's umask for security-sensitive fixtures.
+# In particular, Snap-packaged Docker may give docker exec an umask of 000;
+# postvec must (and does) reject a group- or world-writable configuration path.
+chmod 0755 "$(dirname "${DATA}")" "$(dirname "${CONF_D}")" "${CONF_D}"
+chmod 2775 "${SOCKET_DIR}"
 
 as_pg() { su "${PG_USER}" -s /bin/bash -c "$*"; }
 
