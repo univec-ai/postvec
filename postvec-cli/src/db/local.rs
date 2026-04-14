@@ -55,12 +55,13 @@ impl Direct {
             // string. `sslmode` and every other parameter the operator chose
             // survives untouched — a requested TLS connection is never
             // silently downgraded.
-            DbTarget::Url(url) => PgConnectOptions::from_str(url).map_err(|e| {
-                CliError::usage(format!(
-                    "--database-url is not a valid PostgreSQL URI: {}",
-                    redact(&e.to_string())
-                ))
-            })?,
+            DbTarget::Url(url) => PgConnectOptions::from_str(&normalize_database_url(url))
+                .map_err(|e| {
+                    CliError::usage(format!(
+                        "--database-url is not a valid PostgreSQL URI: {}",
+                        redact(&e.to_string())
+                    ))
+                })?,
         };
         Ok(options
             .database(database)
@@ -732,6 +733,63 @@ fn classify(error: &sqlx::Error) -> ConnectFailure {
     }
 }
 
+/// Rewrite the libpq-only spelling `scheme://user[:pass]@/db?host=…` —
+/// userinfo over an empty host, which psql accepts for socket connections —
+/// into the equivalent URI sqlx's parser (the WHATWG `url` crate, which
+/// rejects userinfo without a host) understands, by moving the credentials
+/// into `user=`/`password=` query parameters. Every other shape passes
+/// through untouched: this is a compatibility shim for one documented libpq
+/// form, not a second URI parser.
+fn normalize_database_url(url: &str) -> std::borrow::Cow<'_, str> {
+    let pass = std::borrow::Cow::Borrowed(url);
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return pass;
+    };
+    if !matches!(scheme, "postgres" | "postgresql") {
+        return pass;
+    }
+    // A fragment is never meaningful in a connection URI; leave the string
+    // for the real parser to reject with its own message.
+    if rest.contains('#') {
+        return pass;
+    }
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    // The last '@' separates userinfo from host (RFC 3986); only the
+    // empty-host case needs rewriting.
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return pass;
+    };
+    if !host.is_empty() || userinfo.is_empty() {
+        return pass;
+    }
+    let (user, password) = match userinfo.split_once(':') {
+        Some((user, password)) => (user, Some(password)),
+        None => (userinfo, None),
+    };
+    // The moved text keeps its percent-encoding — query values are decoded
+    // the same way as userinfo — except '+', which only a query reads as a
+    // space.
+    let escape = |s: &str| s.replace('+', "%2B");
+    let mut out = String::with_capacity(url.len() + 16);
+    out.push_str(scheme);
+    out.push_str("://");
+    if !tail.starts_with('/') {
+        // `postgres:///?host=…` is the shape sqlx documents for an empty
+        // host; keep the path slash so the query is unambiguous.
+        out.push('/');
+    }
+    out.push_str(tail);
+    out.push(if tail.contains('?') { '&' } else { '?' });
+    out.push_str("user=");
+    out.push_str(&escape(user));
+    if let Some(password) = password {
+        out.push_str("&password=");
+        out.push_str(&escape(password));
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 fn connect_hint(target: &DbTarget, error: &sqlx::Error) -> String {
     let failure = classify(error);
     match (target, failure) {
@@ -804,6 +862,50 @@ mod tests {
             matches!(options.get_ssl_mode(), sqlx::postgres::PgSslMode::Require),
             "a requested TLS mode must never be downgraded"
         );
+    }
+
+    #[test]
+    fn the_libpq_empty_host_spelling_is_accepted() {
+        // psql accepts `postgresql://app@/demo?host=/dir`; sqlx's URL parser
+        // does not. The CLI must take the spelling operators already know.
+        let direct = Direct::new(
+            DbTarget::Url("postgresql://app@/other?host=/var/run/postgresql".into()),
+            None,
+        );
+        let options = direct.options("demo").unwrap();
+        assert_eq!(options.get_username(), "app");
+        assert_eq!(options.get_database(), Some("demo"));
+        assert_eq!(
+            options.get_socket(),
+            Some(&std::path::PathBuf::from("/var/run/postgresql"))
+        );
+    }
+
+    #[test]
+    fn empty_host_normalization_moves_the_password_too() {
+        let direct = Direct::new(
+            DbTarget::Url("postgres://alice:s3cret@/db?host=/tmp".into()),
+            None,
+        );
+        let options = direct.options("db").unwrap();
+        assert_eq!(options.get_username(), "alice");
+        assert_eq!(
+            options.get_socket(),
+            Some(&std::path::PathBuf::from("/tmp"))
+        );
+    }
+
+    #[test]
+    fn urls_with_a_real_host_are_not_rewritten() {
+        for url in [
+            "postgres://alice:s3cret@db.example:6000/other?sslmode=require",
+            "postgres://db.example/x",
+            "postgres:///x?host=/tmp",
+            "not a uri at all",
+            "mysql://a@/b",
+        ] {
+            assert_eq!(normalize_database_url(url), url);
+        }
     }
 
     #[test]
