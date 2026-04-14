@@ -13,12 +13,12 @@
 # self-signed certificates on a trusted network, which is the only kind of
 # network this port belongs on.
 #
-# Mount your own pair over /ninference/certs (or point --ssl-cert / --ssl-cert-key
-# elsewhere) and this step does nothing. Pass --insecure and it does nothing
-# either.
+# Mount your own pair over /opt/postvec/ninference/certs (or point --ssl-cert /
+# --ssl-cert-key elsewhere) and this step does nothing. Pass --insecure and it
+# does nothing either.
 set -Eeuo pipefail
 
-ROOT="${POSTVEC_SERVER_ROOT:-${NINFERENCE_PATH:-/ninference}}"
+ROOT="${POSTVEC_SERVER_ROOT:-${NINFERENCE_PATH:-/opt/postvec/ninference}}"
 CERTS="${ROOT}/certs"
 
 wants_insecure() {

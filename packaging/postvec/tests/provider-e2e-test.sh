@@ -333,7 +333,7 @@ setup_remote_image() {
 
 # --------------------------------------------------------------- provider ops
 
-provider_keys_dir() { if (( EMBEDDED )); then echo /etc/postvec/keys; else echo /ninference/keys; fi; }
+provider_keys_dir() { if (( EMBEDDED )); then echo /etc/postvec/keys; else echo /opt/postvec/ninference/keys; fi; }
 provider_key_path() { echo "$(provider_keys_dir)/e2e.key"; }
 provider_file_owner() {
     if [[ "${TARGET}" == package ]]; then echo postgres
@@ -343,12 +343,17 @@ provider_file_owner() {
 
 write_key() { # <value> — atomic replace, owner + 0600 preserved
     local owner root; owner="$(provider_file_owner)"
-    if (( EMBEDDED )); then root=/etc/postvec; else root=/ninference; fi
+    if (( EMBEDDED )); then root=/etc/postvec; else root=/opt/postvec/ninference; fi
     docker exec -u root -e KEYVAL="$1" "${SRV}" bash -c "
         set -e
         mkdir -p ${root} $(provider_keys_dir)
         chown ${owner}:${owner} ${root} $(provider_keys_dir)
-        chmod 700 $(provider_keys_dir)
+        # Docker exec inherits the daemon umask. Snap-packaged Docker can use
+        # 000, so mkdir -p would leave ${root} world-writable and provider add
+        # would correctly refuse it. Parent 0755, keys 0700, regardless of umask
+        # (same reason provider-e2e-install.sh pins CONF_D).
+        chmod 0755 ${root}
+        chmod 0700 $(provider_keys_dir)
         printf '%s' \"\${KEYVAL}\" > $(provider_key_path).new
         chmod 600 $(provider_key_path).new
         chown ${owner}:${owner} $(provider_key_path).new
@@ -372,7 +377,7 @@ provider_add() { # runs the shipped CLI, WITH the live verification probe
             --acknowledge-in-use --yes
     else
         docker exec "${SRV}" postvec provider add openai \
-            --path /ninference \
+            --path /opt/postvec/ninference \
             --model text-embedding-3-small \
             --api-key-file "$(provider_key_path)" \
             --base-url "http://127.0.0.1:${MOCK_PORT}" \
