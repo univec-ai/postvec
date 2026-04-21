@@ -40,7 +40,12 @@ distro_facts "${DISTRO}"
 arch_facts "${RELEASE_ARCH}"
 need docker
 
-WORK="$(mktemp -d)"
+# Under build/, not /tmp: this directory is bind-mounted into a container,
+# and a snap-installed docker silently mounts an EMPTY directory for host
+# paths outside $HOME (/tmp included). The checkout is already the one place
+# every other packaging step mounts from.
+mkdir -p "${PKG_DIR}/build"
+WORK="$(mktemp -d "${PKG_DIR}/build/elf-depends.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
 # Copy rather than bind-mount the originals: the generators only read, but a
@@ -70,6 +75,15 @@ deb)
         "${DIST_BASE_IMAGE}" \
         bash -euo pipefail -c '
             trap "chmod -R a+rwX /work" EXIT
+            # An empty mount means the host directory did not propagate at
+            # all (a snap-confined docker does this silently for paths it
+            # may not read). Say so instead of failing three steps later.
+            compgen -G "/work/in/*" >/dev/null || {
+                echo "the /work bind mount is empty inside the container:" >&2
+                echo "the host directory did not propagate (snap-confined" >&2
+                echo "docker? a daemon on another machine?)" >&2
+                exit 90
+            }
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends dpkg-dev libc-bin >/dev/null
             mkdir -p /work/src/debian
@@ -84,19 +98,23 @@ Architecture: any
 Description: dependency probe
 EOF
             cd /work/src
-            # -O prints to stdout instead of writing debian/substvars.
-            dpkg-shlibdeps -O --ignore-missing-info /work/in/* 2>/work/shlibdeps.err \
-                | sed -n "s/^shlibs:Depends=//p" \
-                | tr "," "\n" \
-                | sed "s/^ *//; s/ *$//" \
-                | grep -v "^$" \
-                | LC_ALL=C sort -u
-        ' > "${WORK}/out" || {
+            # -O prints to stdout instead of writing debian/substvars. Raw
+            # output; the host post-processes, so an empty result reaches the
+            # "produced nothing" check below instead of dying opaquely here.
+            dpkg-shlibdeps -O --ignore-missing-info /work/in/* \
+                >/work/raw 2>/work/shlibdeps.err
+        ' || {
         [[ -s "${WORK}/shlibdeps.err" ]] && cat "${WORK}/shlibdeps.err" >&2
         die "the deb dependency generator failed for ${FILES[*]}
 (the container output above says why: an apt/network failure inside the
-${DIST_BASE_IMAGE} container, or dpkg-shlibdeps itself)"
+${DIST_BASE_IMAGE} container, dpkg-shlibdeps itself, or a mount that did
+not propagate)"
     }
+    sed -n 's/^shlibs:Depends=//p' "${WORK}/raw" \
+        | tr ',' '\n' \
+        | sed 's/^ *//; s/ *$//' \
+        | grep -v '^$' \
+        | LC_ALL=C sort -u > "${WORK}/out" || true
     ;;
 rpm)
     docker run --rm \
