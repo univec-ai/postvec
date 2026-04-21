@@ -268,11 +268,10 @@ pub async fn probe_embedded(
     settings: &SettingsSnapshot,
     path_override: Option<PathBuf>,
 ) -> Result<EmbeddedProbe> {
-    let (root, source) = match (settings.ninference_path(), path_override) {
+    let (root, source) = match (settings.engine_path(), path_override) {
         (Some(path), _) => (Some(path), RootSource::Guc),
-        // The extension also honours the NINFERENCE_PATH environment variable,
-        // which a root-run CLI cannot observe in the server's environment. The
-        // override exists to diagnose that case without claiming to know it.
+        // A snippet-only view may not carry postvec.path; the override exists
+        // to diagnose a root the CLI cannot otherwise see.
         (None, Some(path)) => (Some(path), RootSource::Override),
         (None, None) => (None, RootSource::Unknown),
     };

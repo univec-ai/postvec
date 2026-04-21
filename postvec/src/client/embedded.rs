@@ -110,16 +110,11 @@ struct EmbeddedConfig {
 }
 
 fn config_from_gucs() -> Result<EmbeddedConfig, String> {
-    let root = crate::gucs::NINFERENCE_PATH
+    let root = crate::gucs::ENGINE_PATH
         .get()
         .map(|c| c.to_string_lossy().trim().to_string())
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("NINFERENCE_PATH").ok())
-        .ok_or_else(|| {
-            "no engine root: set postvec.ninference_path or the NINFERENCE_PATH \
-             environment variable"
-                .to_string()
-        })?;
+        .ok_or_else(|| "no engine root: set postvec.path".to_string())?;
     let root = PathBuf::from(root);
     if !root.is_dir() {
         return Err(format!(
@@ -457,7 +452,7 @@ fn try_init() -> Result<(), String> {
     // `postvec.embedded_max_inflight` (default 1) predictions engine-wide;
     // the permit is held until the native computation actually finishes, so
     // a timed-out caller cannot oversubscribe the gate. Standalone
-    // ninference nodes are untouched — this policy exists only in this
+    // Standalone inference nodes are untouched — this policy exists only in this
     // process.
     engine::set_session_thread_policy(engine::SessionThreadPolicy {
         intra_op_threads: (std::thread::available_parallelism()
@@ -788,9 +783,9 @@ mod tests {
     /// End to end over the loopback wire: postvec's production `GrpcClient`
     /// against the in-worker server. A missing model must cross as
     /// `NotFound` + `x-ravenna-error-code: MODEL_NOT_FOUND`, which the
-    /// client classifies exactly like a remote ninference answer.
+    /// client classifies exactly like a remote inference-node answer.
     #[test]
-    fn loopback_server_speaks_the_ninference_wire_contract() {
+    fn loopback_server_speaks_the_inference_wire_contract() {
         use crate::client::grpc::GrpcClient;
 
         let root = empty_engine_root();

@@ -70,19 +70,15 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
     // report with it — but it must not vanish either: it becomes a failing
     // check, so the report cannot come back green with the inference side
     // silently unexamined.
-    let inference = match collect::inference_probe(
-        &context,
-        &snapshot.settings,
-        args.tls,
-        args.ninference_path.clone(),
-    )
-    .await
-    {
-        Ok(probe) => probe,
-        Err(error) => collect::InferenceProbe::Unavailable {
-            error: error.to_string(),
-        },
-    };
+    let inference =
+        match collect::inference_probe(&context, &snapshot.settings, args.tls, args.path.clone())
+            .await
+        {
+            Ok(probe) => probe,
+            Err(error) => collect::InferenceProbe::Unavailable {
+                error: error.to_string(),
+            },
+        };
 
     // Pairing a URI with a local cluster is allowed, but the report must say
     // whether they are actually the same instance rather than quietly mixing

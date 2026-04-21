@@ -11,7 +11,7 @@ pub mod grpc;
 
 use std::fmt;
 
-/// ninference error vocabulary, carried as `x-ravenna-error-code` gRPC
+/// inference-engine error vocabulary, carried as `x-ravenna-error-code` gRPC
 /// metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RavennaCode {
@@ -79,15 +79,17 @@ pub enum ErrorClass {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PvError {
-    #[error("no ninference endpoints configured (set postvec.ninference_grpc_endpoints / postvec.ninference_http_endpoints)")]
+    #[error(
+        "no inference endpoints configured (set postvec.grpc_endpoints / postvec.http_endpoints)"
+    )]
     NoEndpoints,
-    #[error("transport error talking to ninference at {endpoint}: {message}")]
+    #[error("transport error talking to the inference host at {endpoint}: {message}")]
     Transport { endpoint: String, message: String },
     #[error("deadline exceeded after {ms} ms")]
     Deadline { ms: u64 },
-    #[error("ninference error {code:?}: {message}")]
+    #[error("inference error {code:?}: {message}")]
     Remote { code: RavennaCode, message: String },
-    #[error("bad response from ninference: {0}")]
+    #[error("bad response from the inference host: {0}")]
     Decode(String),
     #[error("model {0:?} not known to postvec (try postvec.refresh_models())")]
     UnknownModel(String),
@@ -145,10 +147,10 @@ impl PvError {
     }
 }
 
-/// One model as seen in ninference `GET /config`.
+/// One model as seen in the inference host's `GET /config`.
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
-    /// Internal ninference name (what goes into the gRPC `model` field).
+    /// Internal engine model name (what goes into the gRPC `model` field).
     pub name: String,
     /// "embed" | "convert" | "embed-bridge" | "convert-bridge" | "legacy"
     pub model_type: String,

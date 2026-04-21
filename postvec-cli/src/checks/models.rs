@@ -389,7 +389,7 @@ mod tests {
 
     fn store(models: Vec<crate::facts::StoredModelFacts>) -> crate::facts::ModelStoreFacts {
         crate::facts::ModelStoreFacts {
-            root: PathBuf::from("/opt/postvec/ninference"),
+            root: PathBuf::from("/opt/postvec"),
             models,
         }
     }

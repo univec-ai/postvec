@@ -55,12 +55,7 @@ pub fn inspect_root(
 ) -> EmbeddedProbe {
     let mut probe = EmbeddedProbe::new(root.clone(), source);
     let Some(root) = root else {
-        probe.root_error = Some(
-            "no engine root is configured: postvec.ninference_path is unset (the server may \
-             have inherited NINFERENCE_PATH from its environment, which this CLI cannot \
-             observe)"
-                .to_string(),
-        );
+        probe.root_error = Some("no engine root is configured: postvec.path is unset".to_string());
         return probe;
     };
     if !root.is_absolute() {
@@ -498,7 +493,7 @@ mod tests {
     #[test]
     fn a_missing_or_relative_root_is_reported_precisely() {
         let missing = inspect_root(
-            Some(PathBuf::from("/nonexistent/ninference")),
+            Some(PathBuf::from("/nonexistent/engine")),
             RootSource::Guc,
             None,
         );
@@ -508,7 +503,7 @@ mod tests {
         assert!(relative.root_error.unwrap().contains("not absolute"));
 
         let unset = inspect_root(None, RootSource::Unknown, None);
-        assert!(unset.root_error.unwrap().contains("NINFERENCE_PATH"));
+        assert!(unset.root_error.unwrap().contains("postvec.path"));
     }
 
     #[test]

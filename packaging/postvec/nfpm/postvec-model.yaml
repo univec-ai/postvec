@@ -43,7 +43,7 @@ description: |
   .
   A ${MODEL_TARGET_DIM}-dimensional sentence-embedding model with a
   ${MODEL_SEQUENCE_LEN}-token context, installed under
-  /opt/postvec/ninference/models where postvec's embedded inference engine
+  /opt/postvec/models where postvec's embedded inference engine
   loads it. Licensed ${MODEL_LICENSE}.
   .
   Taken from the postvec model registry's public channel, revision
@@ -59,8 +59,8 @@ description: |
   this model.
 
 contents:
-  - src: ${MODEL_PAYLOAD_DIR}/opt/postvec/ninference/models
-    dst: /opt/postvec/ninference/models
+  - src: ${MODEL_PAYLOAD_DIR}/opt/postvec/models
+    dst: /opt/postvec/models
     type: tree
     file_info: { owner: root, group: root }
   - src: ${MODEL_PAYLOAD_DIR}${MODEL_DOC_DIR}/SOURCE.json

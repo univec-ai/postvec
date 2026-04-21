@@ -105,7 +105,7 @@ fn loaded_configs(engine: &InferenceEngine) -> Vec<ModelConfiguration> {
 /// Memory is the binding constraint on an inference node — every resident
 /// model is a set of native sessions — so a discovery read that already
 /// costs a round trip may as well carry it. Zeroes elsewhere, matching what
-/// ninference reports when it cannot measure.
+/// the upstream engine reports when it cannot measure.
 fn system_object() -> Value {
     let (total, available) = read_meminfo().unwrap_or((0, 0));
     json!({

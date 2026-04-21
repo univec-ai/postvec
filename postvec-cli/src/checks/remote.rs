@@ -1,4 +1,4 @@
-//! Checks over remote ninference nodes.
+//! Checks over remote inference nodes.
 //!
 //! Aggregation follows how the extension actually behaves: it round-robins over
 //! the configured endpoints and can operate on a partial topology, so one dead
@@ -35,7 +35,7 @@ pub fn checks(input: &RemoteInput<'_>) -> Vec<CheckResult> {
             )
             .with_fix(
                 "the extension skips an unparseable endpoint silently; correct \
-                 postvec.ninference_grpc_endpoints / postvec.ninference_http_endpoints and \
+                 postvec.grpc_endpoints / postvec.http_endpoints and \
                  reload the configuration",
             ),
         );
@@ -52,7 +52,7 @@ pub fn checks(input: &RemoteInput<'_>) -> Vec<CheckResult> {
             )
             .required()
             .with_fix(
-                "set postvec.ninference_grpc_endpoints and postvec.ninference_http_endpoints \
+                "set postvec.grpc_endpoints and postvec.http_endpoints \
                  (an empty gRPC list makes the worker skip draining entirely)",
             ),
         );

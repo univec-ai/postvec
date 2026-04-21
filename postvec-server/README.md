@@ -112,9 +112,9 @@ hard error, because a typo that is ignored produces a node that starts and
 then behaves nothing like its configuration. See
 [postvec-server.example.json](postvec-server.example.json).
 
-`NINFERENCE_PATH` is honoured as a root alias, so a tree `postvec model pull`
-already wrote into works unchanged. The on-disk layout is identical to
-embedded mode's: a model root is portable between the two.
+The on-disk layout is identical to embedded mode's: a model root is portable
+between the two, and a tree `postvec model pull` already wrote into works
+unchanged (name it with `--root` or `POSTVEC_SERVER_ROOT`).
 
 ## Operating
 

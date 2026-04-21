@@ -188,7 +188,7 @@ expect_exit "an empty database list is refused" 64 POSTVEC_DATABASES=" , " -- po
 expect_exit "a newline in a value is refused" 64 \
     POSTVEC_DATABASES=$'app\n-c log_statement=all' -- postgres
 expect_exit "embedded mode without engine assets fails fast" 78 \
-    POSTVEC_MODE=embedded POSTVEC_NINFERENCE_PATH="${WORK}/absent" -- postgres
+    POSTVEC_MODE=embedded POSTVEC_PATH="${WORK}/absent" -- postgres
 
 # A preload list PostgreSQL would refuse must be refused here, not repaired
 # into one that starts.
@@ -205,21 +205,21 @@ mkdir -p "${root}/models/onnx-runtime/demo" "${root}/libs/onnxruntime/lib"
 touch "${root}/libs/onnxruntime/lib/libonnxruntime.so.1.22.0"
 
 expect_arg "the engine root is passed through" \
-    "postvec.ninference_path=${root}" \
-    POSTVEC_MODE=embedded POSTVEC_NINFERENCE_PATH="${root}" -- postgres
+    "postvec.path=${root}" \
+    POSTVEC_MODE=embedded POSTVEC_PATH="${root}" -- postgres
 expect_arg "the mode is set" "postvec.mode=embedded" \
-    POSTVEC_MODE=embedded POSTVEC_NINFERENCE_PATH="${root}" -- postgres
+    POSTVEC_MODE=embedded POSTVEC_PATH="${root}" -- postgres
 
 # The security contract: inference listeners are loopback, and no environment
 # variable can move them off it.
 expect_arg "the gRPC listener is loopback" \
     "postvec.embedded_listen=127.0.0.1:33433" \
-    POSTVEC_MODE=embedded POSTVEC_NINFERENCE_PATH="${root}" -- postgres
+    POSTVEC_MODE=embedded POSTVEC_PATH="${root}" -- postgres
 expect_arg "the discovery listener is loopback" \
     "postvec.embedded_http_listen=127.0.0.1:33434" \
-    POSTVEC_MODE=embedded POSTVEC_NINFERENCE_PATH="${root}" -- postgres
+    POSTVEC_MODE=embedded POSTVEC_PATH="${root}" -- postgres
 
-out="$(run_entrypoint POSTVEC_MODE=embedded POSTVEC_NINFERENCE_PATH="${root}" \
+out="$(run_entrypoint POSTVEC_MODE=embedded POSTVEC_PATH="${root}" \
         POSTVEC_EMBEDDED_LISTEN=0.0.0.0:33433 -- postgres)"
 if grep -q '0\.0\.0\.0' <<<"${out}"; then
     bad "an environment variable moved the inference listener off loopback"
@@ -231,14 +231,14 @@ echo
 echo "entrypoint: remote mode"
 
 expect_arg "gRPC endpoints are passed through" \
-    "postvec.ninference_grpc_endpoints=192.0.2.2:33333" \
+    "postvec.grpc_endpoints=192.0.2.2:33333" \
     POSTVEC_GRPC_ENDPOINTS=192.0.2.2:33333 -- postgres
 expect_arg "HTTP discovery endpoints are passed through" \
-    "postvec.ninference_http_endpoints=https://192.0.2.2:22222" \
+    "postvec.http_endpoints=https://192.0.2.2:22222" \
     POSTVEC_HTTP_ENDPOINTS=https://192.0.2.2:22222 -- postgres
 
-out="$(run_entrypoint POSTVEC_MODE=embedded POSTVEC_NINFERENCE_PATH="${root}" -- postgres)"
-if grep -q 'ninference_grpc_endpoints' <<<"${out}"; then
+out="$(run_entrypoint POSTVEC_MODE=embedded POSTVEC_PATH="${root}" -- postgres)"
+if grep -q 'postvec.grpc_endpoints' <<<"${out}"; then
     bad "remote endpoints were configured in embedded mode"
 else
     ok "embedded mode configures no remote endpoints"

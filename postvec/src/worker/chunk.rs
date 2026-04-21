@@ -1,7 +1,7 @@
 //! Local refresh phase: split one changed document and replace its chunk
 //! set atomically. No network I/O in this module. A refresh claims, splits
 //! and writes in one transaction, so chunk text and lexical search still
-//! converge while ninference is down.
+//! converge while inference is down.
 //!
 //! One refresh per transaction is deliberate. Multi-document batches would
 //! interleave source `FOR SHARE` row locks with arbitrary application

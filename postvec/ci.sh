@@ -6,7 +6,7 @@
 #   2. clippy         — lints as errors (thin build, then the embedded build)
 #   3. cargo pgrx test — unit + #[pg_test] (includes the proto-drift check and
 #                        the full trigger/queue/enable/search/status suites).
-#                        No ninference needed: tests use fixtures + a mock client.
+#                        No inference engine needed: tests use fixtures + a mock client.
 #   3b. the same, --features pg_test_concurrency, filtered to the cross-session
 #                        suite: real second sessions proving lock/waiter
 #                        behaviour, in their own cluster (see src/tests_concurrency.rs).

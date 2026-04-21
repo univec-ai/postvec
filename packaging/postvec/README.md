@@ -157,8 +157,8 @@ metadata still says `example`. For a throwaway local build:
 |---|---|---|
 | `postvec-cli` | native | `/usr/bin/postvec`, docs, licence |
 | `postgresql-16-postvec` / `-17-` / `-18-` | native | `postvec.so`, control file, install + upgrade SQL |
-| `postvec-onnxruntime` | native | pinned CPU ONNX Runtime under `/opt/postvec/ninference/libs` |
-| `postvec-model-<suffix>` | `all` / `noarch` | one reviewed model from the registry's public channel, under `/opt/postvec/ninference/models`. `postvec-model-minilm-l6-v2` today; the name follows `BUNDLED_MODEL_PKG_SUFFIX` |
+| `postvec-onnxruntime` | native | pinned CPU ONNX Runtime under `/opt/postvec/libs` |
+| `postvec-model-<suffix>` | `all` / `noarch` | one reviewed model from the registry's public channel, under `/opt/postvec/models`. `postvec-model-minilm-l6-v2` today; the name follows `BUNDLED_MODEL_PKG_SUFFIX` |
 | `postvec-extras` | `all` / `noarch` | metapackage: the two above, pinned exactly. Not a complete install — still needs the CLI and the extension |
 | `postvec-cli-dbgsym` / `-debuginfo` | native | detached symbols for the CLI |
 | `postgresql-NN-postvec-dbgsym` / `-debuginfo` | native | detached symbols for that major's library |
@@ -558,8 +558,8 @@ The same script runs **lintian** on every `.deb` and fails on any error that
 and each entry carries the reason it exists — an exception without one is
 indistinguishable from a workaround somebody added in a hurry. Today it holds
 exactly one tag: `dir-or-file-in-opt`, because the engine assets live under
-`/opt/postvec/ninference`, which is what the FHS reserves `/opt/<provider>` for
-and what `postvec.ninference_path` defaults to. Debian's rule is written for
+`/opt/postvec`, which is what the FHS reserves `/opt/<provider>` for
+and what `postvec.path` defaults to. Debian's rule is written for
 packages *in the Debian archive*; satisfying it would mean shipping model
 weights and a vendored runtime into a directory the distribution owns, which is
 the outcome the rule exists to prevent.

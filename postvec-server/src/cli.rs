@@ -23,7 +23,7 @@ pub const DEFAULT_ADMIN_PORT: u16 = 22223;
     version,
     about = "Inference node for postvec's remote (grpc) mode",
     long_about = "\
-Serves postvec's remote mode: the ninference gRPC contract (EmbedTexts, \
+Serves postvec's remote mode: the inference gRPC contract (EmbedTexts, \
 ConvertEmbeddings) plus the GET /config discovery envelope, backed by ONNX \
 models already present under <root>/models.
 
@@ -64,7 +64,7 @@ pub enum Command {
 pub struct ServeArgs {
     /// Engine root holding libs/ and models/.
     ///
-    /// [env: POSTVEC_SERVER_ROOT, then NINFERENCE_PATH] [default: current directory]
+    /// [env: POSTVEC_SERVER_ROOT] [default: current directory]
     #[arg(long, value_name = "PATH")]
     pub root: Option<PathBuf>,
 
@@ -283,7 +283,7 @@ mod tests {
         );
     }
 
-    /// `--cluster` is the spelling in the original sketch and in ninference's
+    /// `--cluster` is the spelling in the original sketch and in the upstream engine's
     /// configuration. It stays typeable; `--peers` is the documented name
     /// because "cluster" already means "PostgreSQL cluster" in postvec-cli.
     #[test]

@@ -1,11 +1,11 @@
 //! The in-worker loopback gRPC server (embedded mode).
 //!
-//! Serves the vendored ninference proto so connection backends can keep
+//! Serves the vendored inference proto so connection backends can keep
 //! using the unchanged `GrpcClient` for `search()`/`embed()`/`convert()`.
 //! Same shape as remote mode, just with the server hosted inside the
 //! bgworker. The handler bodies and error taxonomy are a port of
-//! the production ninference gRPC server (minus metrics), so behavior matches a
-//! remote ninference node byte for byte: same payload shapes into
+//! the production inference gRPC server (minus metrics), so behavior matches a
+//! remote inference node byte for byte: same payload shapes into
 //! `predict_raw`, same `x-ravenna-error-code` metadata out.
 //!
 //! Runs entirely on the engine runtime. Nothing in this module may touch

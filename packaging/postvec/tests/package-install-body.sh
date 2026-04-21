@@ -183,7 +183,7 @@ if (( MINIMAL )); then
     printf '  skip  --minimal: the model package was not installed\n'
 else
     step "the bundled model"
-    MODEL_ROOT="/opt/postvec/ninference/models/${BUNDLED_MODEL_BACKEND}/${BUNDLED_MODEL_NAME}"
+    MODEL_ROOT="/opt/postvec/models/${BUNDLED_MODEL_BACKEND}/${BUNDLED_MODEL_NAME}"
     [[ -f "${MODEL_ROOT}/ninference.hub.json" ]] \
         && ok "the descriptor is at ${MODEL_ROOT}" \
         || bad "no descriptor at ${MODEL_ROOT}"
@@ -204,7 +204,7 @@ else
     [[ -e "${MODEL_ROOT}/.postvec-install.json" ]] \
         && bad "the package ships the CLI install receipt" \
         || ok "no CLI install receipt in a package-owned tree"
-    if find /opt/postvec/ninference/models \
+    if find /opt/postvec/models \
             \( -name '.staging' -o -name '.trash' -o -name '.swap' \
                -o -name '.postvec.lock' \) 2>/dev/null | grep -q .; then
         bad "a transaction path was installed under the model root"
@@ -212,13 +212,13 @@ else
         ok "no transaction or lock path under the model root"
     fi
 
-    report="$(postvec model show --path /opt/postvec/ninference \
+    report="$(postvec model show --path /opt/postvec \
                   "${BUNDLED_MODEL_NAME}" 2>&1 || true)"
     grep -qi 'package' <<<"${report}" \
         && ok "postvec model show reports it as package-owned" \
         || bad "postvec model show did not report package ownership: $(head -3 <<<"${report}")"
 
-    removal="$(postvec model rm --path /opt/postvec/ninference \
+    removal="$(postvec model rm --path /opt/postvec \
                    "${BUNDLED_MODEL_NAME}" --yes 2>&1 || true)"
     if [[ -f "${MODEL_ROOT}/ninference.hub.json" ]]; then
         ok "postvec model rm refused a package-owned model"
@@ -465,7 +465,7 @@ doctor_must_pass "remote mode, no engine" \
     cluster.preload extension.installed extension.version extension.build-info \
     worker.heartbeat
 
-# …and the one thing that is genuinely wrong — there is no ninference on this
+# …and the one thing that is genuinely wrong — there is no inference host on this
 # host — must be what doctor reports, with the exit code to match. A doctor that
 # returned success here would be worse than useless.
 blocking="$(doctor_blocking)"
@@ -506,7 +506,7 @@ else
         --pg-config "${BIN}/pg_config" \
         --config-dir "${CONF_D}" \
         --database postgres \
-        --embedded --path /opt/postvec/ninference \
+        --embedded --path /opt/postvec \
         --model "${BUNDLED_MODEL_NAME}" \
         --switch-mode --no-restart --yes --allow-unreachable \
         >/tmp/setup-embedded.log 2>&1 || embedded_status=$?

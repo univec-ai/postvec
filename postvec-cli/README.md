@@ -55,7 +55,7 @@ engine actually loaded.
 ### `setup`
 
 ```bash
-# Remote mode: a thin client to ninference nodes.
+# Remote mode: a thin client to inference nodes (postvec-server).
 sudo postvec setup --cluster 18/main --database univec \
      --grpc 192.0.2.2:33333 --http https://192.0.2.2:22222
 
@@ -64,7 +64,7 @@ sudo postvec setup --database analytics \
      --grpc 192.0.2.2:33333 --http https://192.0.2.2:22222
 
 # Embedded mode: the engine runs inside the launcher process.
-sudo postvec setup --database univec --embedded --path /opt/ninference \
+sudo postvec setup --database univec --embedded --path /opt/postvec \
      --model baai-bge-m3 --model embed-bridge
 
 # See the plan without changing anything.

@@ -14,7 +14,7 @@
 # search falling back to full text — which proves the failure mode works and
 # says nothing about the success one.
 #
-# This replaces build-ninference-fixture.sh, which built a stand-in
+# This replaces the old fixture builder, which built a stand-in
 # (`fixtures/inference-server`) because no real server existed yet. The test
 # now runs against the artifact rather than an imitation of it.
 #
@@ -38,8 +38,8 @@ arch_facts "${RELEASE_ARCH}"
 distro_facts debian12
 need docker
 
-ORT_PAYLOAD="${PKG_DIR}/build/payload-${RELEASE_ARCH}/opt/postvec/ninference"
-MODEL_PAYLOAD="${PKG_DIR}/build/payload-common/opt/postvec/ninference"
+ORT_PAYLOAD="${PKG_DIR}/build/payload-${RELEASE_ARCH}/opt/postvec"
+MODEL_PAYLOAD="${PKG_DIR}/build/payload-common/opt/postvec"
 [[ -d "${ORT_PAYLOAD}/libs" ]] \
     || die "no ONNX Runtime payload; run scripts/build-onnxruntime-bundle.sh --arch ${RELEASE_ARCH}"
 [[ -d "${MODEL_PAYLOAD}/models" ]] \

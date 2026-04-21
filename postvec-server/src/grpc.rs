@@ -1,5 +1,5 @@
 //! The gRPC inference service: `EmbedTexts` and `ConvertEmbeddings` over the
-//! canonical ninference proto.
+//! canonical inference proto.
 //!
 //! Lifted from postvec's embedded loopback server
 //! (`postvec/src/client/embedded/server.rs`) by way of the packaging test

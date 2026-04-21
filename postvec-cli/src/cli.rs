@@ -261,7 +261,8 @@ pub struct ProviderAddArgs {
 
     /// Write into <DIR>/providers.d (or <DIR> itself when it already is
     /// one) instead of the selected cluster's providers path. This is how
-    /// remote postvec-server roots are administered.
+    /// remote postvec-server roots are administered. Default:
+    /// POSTVEC_PROVIDERS_PATH, then the selected cluster's providers path.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -289,7 +290,8 @@ pub struct ProviderAddArgs {
 #[derive(Debug, Args, Clone)]
 pub struct ProviderLsArgs {
     /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
-    /// cluster's providers path.
+    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then the
+    /// selected cluster's providers path.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 }
@@ -306,7 +308,8 @@ pub struct ProviderRmArgs {
     pub model: Option<String>,
 
     /// Operate on <DIR>/providers.d (or <DIR> itself) instead of the
-    /// selected cluster's providers path.
+    /// selected cluster's providers path. Default: POSTVEC_PROVIDERS_PATH,
+    /// then the selected cluster's providers path.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -336,7 +339,8 @@ pub struct ProviderTestArgs {
     pub model: Option<String>,
 
     /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
-    /// cluster's providers path.
+    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then the
+    /// selected cluster's providers path.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 }
@@ -350,6 +354,8 @@ pub struct ModelPullArgs {
 
     /// Manage this engine root directly instead of the selected cluster's.
     /// Filesystem management only: no activation, no database refresh.
+    /// Default: POSTVEC_PATH, then the selected cluster's root,
+    /// then /opt/postvec when no cluster exists.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -404,6 +410,8 @@ pub struct ModelUpgradeArgs {
     pub all: bool,
 
     /// Manage this engine root directly instead of the selected cluster's.
+    /// Default: POSTVEC_PATH, then the selected cluster's root,
+    /// then /opt/postvec when no cluster exists.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -458,6 +466,8 @@ pub struct ModelLsArgs {
     pub available: bool,
 
     /// Inspect this engine root instead of the selected cluster's.
+    /// Default: POSTVEC_PATH, then the selected cluster's root,
+    /// then /opt/postvec when no cluster exists.
     #[arg(long, value_name = "DIR", conflicts_with = "available")]
     pub path: Option<PathBuf>,
 
@@ -473,6 +483,8 @@ pub struct ModelShowArgs {
     pub name: String,
 
     /// Inspect this engine root instead of the selected cluster's.
+    /// Default: POSTVEC_PATH, then the selected cluster's root,
+    /// then /opt/postvec when no cluster exists.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -488,6 +500,8 @@ pub struct ModelRmArgs {
     pub names: Vec<String>,
 
     /// Manage this engine root directly instead of the selected cluster's.
+    /// Default: POSTVEC_PATH, then the selected cluster's root,
+    /// then /opt/postvec when no cluster exists.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -526,6 +540,8 @@ pub struct ModelActivateArgs {
 
     /// Manage this engine root directly instead of the selected cluster's.
     /// Marks the models enabled on disk only: no engine load, no SQL refresh.
+    /// Default: POSTVEC_PATH, then the selected cluster's root,
+    /// then /opt/postvec when no cluster exists.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -567,6 +583,8 @@ pub struct ModelDeactivateArgs {
     /// Manage this engine root directly instead of the selected cluster's.
     /// Marks the model disabled on disk only: no engine unload, no SQL
     /// refresh, and no database to check for columns still using it.
+    /// Default: POSTVEC_PATH, then the selected cluster's root,
+    /// then /opt/postvec when no cluster exists.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -636,12 +654,12 @@ pub struct SetupArgs {
     pub database: Vec<String>,
 
     /// Host the inference engine inside the launcher process instead of
-    /// calling remote ninference nodes.
+    /// calling remote inference nodes (postvec-server).
     #[arg(long, conflicts_with_all = ["grpc", "http"])]
     pub embedded: bool,
 
     /// Absolute engine root (contains libs/ and models/). Defaults to
-    /// /opt/postvec/ninference, where the packages install theirs.
+    /// /opt/postvec, where the packages install theirs.
     #[arg(long, requires = "embedded", value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -671,7 +689,8 @@ pub struct SetupArgs {
     #[arg(long, requires = "embedded", value_name = "ADDR")]
     pub embedded_http_listen: Option<SocketAddr>,
 
-    /// ninference gRPC endpoint as host:port. Repeatable; order is preserved
+    /// Inference gRPC endpoint (postvec-server) as host:port. Repeatable;
+    /// order is preserved
     /// (it drives round-robin).
     #[arg(
         long,
@@ -681,7 +700,7 @@ pub struct SetupArgs {
     )]
     pub grpc: Vec<String>,
 
-    /// ninference HTTP base URL used for GET /config discovery. Repeatable.
+    /// Inference HTTP base URL used for GET /config discovery. Repeatable.
     #[arg(
         long,
         required_unless_present = "embedded",
@@ -761,11 +780,11 @@ pub struct DoctorArgs {
     #[arg(long)]
     pub strict: bool,
 
-    /// Engine root to diagnose when postvec.ninference_path is unset and the
-    /// server inherited NINFERENCE_PATH from its environment. Never written
-    /// to any configuration file.
+    /// Engine root to diagnose when the cluster's postvec.path cannot be
+    /// read (a snippet-only view, say). Never written to any configuration
+    /// file.
     #[arg(long, value_name = "DIR")]
-    pub ninference_path: Option<PathBuf>,
+    pub path: Option<PathBuf>,
 
     /// TLS policy for the HTTP discovery probes.
     #[arg(long, value_enum, default_value_t = TlsPolicy::ExtensionCompatible)]
@@ -839,7 +858,7 @@ impl SetupArgs {
             }
             Mode::Embedded => {
                 // The packaged engine root, which is also what
-                // `postvec.ninference_path` defaults to — so on a package
+                // `postvec.path` defaults to — so on a package
                 // install `--embedded` needs no path at all. A root that is
                 // not there is caught by the engine preflight below, from the
                 // PostgreSQL account's perspective, which is the only vantage
@@ -972,7 +991,7 @@ mod tests {
 
     /// `--embedded` alone is a complete instruction on a package install:
     /// the path defaults to where the packages put the engine root, which is
-    /// also what the extension's `postvec.ninference_path` defaults to.
+    /// also what the extension's `postvec.path` defaults to.
     #[test]
     fn embedded_defaults_the_path_to_the_packaged_engine_root() {
         let cli = parse(&["setup", "--database", "d", "--embedded"]).unwrap();
@@ -983,8 +1002,8 @@ mod tests {
         match validated.target {
             ModeTarget::Embedded { path, .. } => assert_eq!(
                 path,
-                PathBuf::from("/opt/postvec/ninference"),
-                "must match postvec/src/gucs.rs::DEFAULT_NINFERENCE_PATH"
+                PathBuf::from("/opt/postvec"),
+                "must match postvec/src/gucs.rs::DEFAULT_ENGINE_PATH"
             ),
             other => panic!("expected embedded, got {other:?}"),
         }

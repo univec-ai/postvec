@@ -79,7 +79,7 @@ postvec setup \
     --pg-config "${BIN}/pg_config" \
     --config-dir "${CONF_D}" \
     --database postgres \
-    --embedded --path /opt/postvec/ninference \
+    --embedded --path /opt/postvec \
     --model "${BUNDLED_MODEL_NAME}" \
     --no-restart --yes --allow-unreachable >/tmp/setup.log 2>&1 || setup_status=$?
 if [[ "${setup_status}" != 0 && "${setup_status}" != 4 ]]; then

@@ -18,7 +18,7 @@
 //!   over exactly once instead of looping forever.
 //! - Transient/config errors leave the migration `running` with `error` set,
 //!   retried under the worker's in-memory exponential [`RetryBackoff`] —
-//!   ninference being down must not fail a migration, and neither must
+//!   inference being down must not fail a migration, and neither must
 //!   missing bridge inventory (`BridgePathNotFound`/`ConverterNotFound`:
 //!   rollout skew or a load window, Config class); permanent errors
 //!   (`InvalidInput`, `TargetRestricted`, no-such-model) mark it `failed`.
@@ -645,7 +645,7 @@ pub fn apply_migration_batch(batch: &MigrationBatch, results: &[RowResult]) -> M
 
 /// Record a retryable error: the migration stays `running`, but its
 /// `not_before` is pushed out exponentially (base `postvec.retry_backoff_ms`,
-/// capped at 5 minutes) so an unreachable ninference is not hammered every
+/// capped at 5 minutes) so an unreachable inference host is not hammered every
 /// poll tick. Persisted in the row — same idiom as `jobs.not_before` — so it
 /// survives worker restarts and is visible in SQL. A successful batch resets
 /// it ([`apply_migration_batch`]).
@@ -1372,7 +1372,7 @@ mod tests {
             "no watermark advance on a transient whole-batch failure"
         );
 
-        // ninference recovers: the same migration completes.
+        // inference recovers: the same migration completes.
         let ok_client = MockClient::new(5);
         let (converted, _, finished) = drive(&ok_client, mid, 64);
         assert_eq!(converted, 4);
@@ -1498,7 +1498,7 @@ mod tests {
         assert_eq!(state.as_deref(), Some("running"), "transient error retries");
         assert!(error.is_some(), "error surfaced for status()");
 
-        // Once ninference recovers, the same migration completes.
+        // Once inference recovers, the same migration completes.
         let ok_client = MockClient::new(3).with_convert_dim(4);
         let (converted, _, finished) = drive(&ok_client, mid, 64);
         assert_eq!(converted, 3);

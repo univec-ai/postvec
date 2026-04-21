@@ -4,8 +4,10 @@
 //! Target resolution mirrors the `model` family: an explicit `--path DIR`
 //! wins and is pure filesystem management (the directory is `<DIR>/providers.d`,
 //! or `<DIR>` itself when it already is one — the postvec-server
-//! administration story). Otherwise the selected cluster's effective
-//! settings decide: embedded mode manages `postvec.providers_path`
+//! administration story); `--database-url` is an explicit cluster choice;
+//! the `POSTVEC_PROVIDERS_PATH` environment variable acts like `--path`
+//! (the postvec-server image sets it). Otherwise the selected cluster's
+//! effective settings decide: embedded mode manages `postvec.providers_path`
 //! (default `/etc/postvec/providers.d`); a grpc-mode cluster is refused
 //! with the `--path` escape hatch named, because its provider files live on
 //! the postvec-server nodes.
@@ -180,26 +182,26 @@ pub async fn resolve_target(
 ) -> Result<ProviderTarget> {
     if let Some(path) = path {
         let path = crate::validate::absolute_path(path, "--path")?;
-        // The root must already be there. It is the only thing that says who
-        // the files belong to, and a typo would otherwise build a whole
-        // credential tree in a directory nothing reads.
-        if !path.is_dir() {
-            return Err(CliError::precondition(format!(
-                "--path {} is not an existing directory",
-                path.display()
-            ))
-            .with_fix(
-                "name a server root (or a providers.d) that already exists on this host; \
-                 `postvec provider` creates the providers.d inside it, not the root itself",
-            ));
-        }
-        let dir = providers_dir_from_path(&path);
-        let owner = owner_of_nearest_existing(&dir);
-        return Ok(ProviderTarget::Path { dir, owner });
+        return path_target(path, "--path");
     }
+    // An explicit URI beats the environment: an image may bake
+    // POSTVEC_PROVIDERS_PATH in, and it must not shadow a deliberate
+    // cluster choice.
     if cli.database_url.is_some() {
         let context = Context::open(cli, output).await?;
         return target_from_live(context).await;
+    }
+    // POSTVEC_PROVIDERS_PATH: same semantics as --path (pure file
+    // management, best-effort node reload). The postvec-server image sets
+    // it, which is what lets `docker exec <ctr> postvec provider …` run
+    // flag-free.
+    if let Some(dir) = crate::config::env_path_override(crate::config::PROVIDERS_PATH_ENV)? {
+        output.note(&format!(
+            "using providers path {} (from {})",
+            dir.display(),
+            crate::config::PROVIDERS_PATH_ENV
+        ));
+        return path_target(dir, crate::config::PROVIDERS_PATH_ENV);
     }
     let cluster = Context::discover_local(cli, output).await?;
     let cluster_id = cluster.identity.id.clone();
@@ -218,6 +220,26 @@ pub async fn resolve_target(
              --database-url. For files only, pass --path DIR",
         )),
     }
+}
+
+/// A direct filesystem target from `--path` or the environment override.
+fn path_target(path: PathBuf, source: &str) -> Result<ProviderTarget> {
+    // The root must already be there. It is the only thing that says who
+    // the files belong to, and a typo would otherwise build a whole
+    // credential tree in a directory nothing reads.
+    if !path.is_dir() {
+        return Err(CliError::precondition(format!(
+            "{source} {} is not an existing directory",
+            path.display()
+        ))
+        .with_fix(
+            "name a server root (or a providers.d) that already exists on this host; \
+             `postvec provider` creates the providers.d inside it, not the root itself",
+        ));
+    }
+    let dir = providers_dir_from_path(&path);
+    let owner = owner_of_nearest_existing(&dir);
+    Ok(ProviderTarget::Path { dir, owner })
 }
 
 async fn target_from_live(mut context: Context) -> Result<ProviderTarget> {

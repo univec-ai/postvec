@@ -89,14 +89,14 @@ fn path(input: &EmbeddedInput<'_>) -> CheckResult {
         return CheckResult::fail("embedded.path", SCOPE, error.clone())
             .required()
             .with_fix(
-                "set postvec.ninference_path to an absolute engine root containing libs/ and \
+                "set postvec.path to an absolute engine root containing libs/ and \
                  models/, and restart (it is a POSTMASTER setting)",
             );
     }
     let root = input.probe.root.as_ref().expect("checked above");
     let source = match input.probe.root_source {
-        RootSource::Guc => "from postvec.ninference_path",
-        RootSource::Override => "from --ninference-path (diagnostic override only)",
+        RootSource::Guc => "from postvec.path",
+        RootSource::Override => "from --path (diagnostic override only)",
         RootSource::Unknown => "source unknown",
     };
     if input.probe.readable_by_server == Some(false) {

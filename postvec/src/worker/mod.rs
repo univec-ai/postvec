@@ -710,7 +710,7 @@ fn worker_wake(state: &mut WorkerState<'_>) -> WakeOutcome {
         //
         // Local refresh and recursive-only cursor feeding also run behind
         // the closed gate, so chunk text and lexical search converge while
-        // ninference is down. Column-mode cursor backfill deliberately does
+        // inference is down. Column-mode cursor backfill deliberately does
         // not: advancing its watermark and filling the queue while inference
         // is down would change shipped behaviour. Refresh expansion
         // self-bounds at CHUNK_INFLIGHT_MAX child jobs, so this local loop
@@ -1310,7 +1310,7 @@ impl Recurring {
 }
 
 fn grpc_endpoints_empty() -> bool {
-    gucs::parse_validated_list(gucs::NINFERENCE_GRPC_ENDPOINTS.get(), 512)
+    gucs::parse_validated_list(gucs::GRPC_ENDPOINTS.get(), 512)
         .0
         .is_empty()
 }
@@ -1366,7 +1366,7 @@ fn maybe_refresh_models(
         if http_gate.check(|| !tcp_reachable(&gucs::embedded_http_listen())) {
             return;
         }
-    } else if gucs::parse_validated_list(gucs::NINFERENCE_HTTP_ENDPOINTS.get(), 512)
+    } else if gucs::parse_validated_list(gucs::HTTP_ENDPOINTS.get(), 512)
         .0
         .is_empty()
     {

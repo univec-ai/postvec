@@ -13,7 +13,7 @@ postvec launcher process — no external inference dependency, no raw-text
 egress off the DB host (see [Embedded mode](#embedded-mode-arch-b)); every
 published package carries the `embedded` build feature this needs. Remote
 mode (`postvec.mode = 'grpc'`) is instead a thin gRPC client to running
-**ninference** nodes on a trusted private network (`EmbedTexts` /
+**inference** nodes (postvec-server) on a trusted private network (`EmbedTexts` /
 `ConvertEmbeddings`) — the availability-oriented deployment, since a native
 engine fault in embedded mode shares PostgreSQL's crash domain.
 The maintainer's code walkthrough (file map, call chains, invariants,
@@ -39,7 +39,7 @@ internal design records.
   (the background worker registers at postmaster start).
 - **pgvector ≥ 0.8** in the same database (`CREATE EXTENSION postvec CASCADE`
   pulls it in).
-- A reachable **ninference** node (gRPC `:33333`, HTTP `:22222`) on the mesh.
+- A reachable **inference** node (postvec-server; gRPC `:33333`, HTTP `:22222`) on the mesh.
 
 ## Quickstart
 
@@ -73,7 +73,7 @@ SELECT d.body FROM postvec.search('docs', 'body',
 
 (Mount `/var/lib/postgresql/data` instead for the PG 16 and 17 images — the
 official image changed its layout in 18. The `:0.1.0-1-pg18` tag, without
-`-complete`, is the same thing pointed at remote ninference nodes; the tag is
+`-complete`, is the same thing pointed at remote inference nodes; the tag is
 `<version>-<packaging revision>`, and `pg18` is the moving equivalent.)
 
 **Packages, against your own cluster:**
@@ -115,14 +115,14 @@ The manual equivalent, for a cluster you configure by hand:
 CREATE EXTENSION postvec CASCADE;         -- brings in `vector`
 ```
 
-Point postvec at ninference and name the database(s) to serve (in
+Point postvec at the inference node(s) and name the database(s) to serve (in
 `postgresql.conf` or via `ALTER SYSTEM`):
 
 ```conf
 shared_preload_libraries = 'postvec'      # requires a restart
 postvec.database                = 'univec'                 # one or more, comma-separated (POSTMASTER)
-postvec.ninference_grpc_endpoints = '192.0.2.2:33333'       # comma-separated, round-robin
-postvec.ninference_http_endpoints = 'https://192.0.2.2:22222'  # /config discovery
+postvec.grpc_endpoints = '192.0.2.2:33333'       # comma-separated, round-robin
+postvec.http_endpoints = 'https://192.0.2.2:22222'  # /config discovery
 ```
 
 ```sql
@@ -134,8 +134,8 @@ SELECT postvec.refresh_models();          -- populate the model cache
 
 | GUC | Default | Context | Purpose |
 |---|---|---|---|
-| `postvec.ninference_grpc_endpoints` | `''` | SIGHUP | `host:33333` list (round-robin) |
-| `postvec.ninference_http_endpoints` | `''` | SIGHUP | `http(s)://host:22222` list for `/config` |
+| `postvec.grpc_endpoints` | `''` | SIGHUP | `host:33333` list (round-robin) |
+| `postvec.http_endpoints` | `''` | SIGHUP | `http(s)://host:22222` list for `/config` |
 | `postvec.database` | `''` | POSTMASTER | Comma-separated database(s); the launcher runs one worker per database |
 | `postvec.worker_enabled` | `on` | SIGHUP | Pause/resume job processing |
 | `postvec.poll_interval_ms` | `5000` | SIGHUP | Worker idle poll interval (writers wake the worker at commit; the poll is the backstop) |
@@ -147,12 +147,12 @@ SELECT postvec.refresh_models();          -- populate the model cache
 | `postvec.retry_backoff_ms` | `5000` | SIGHUP | Base for exponential backoff |
 | `postvec.job_visibility_timeout_ms` | `300000` | SIGHUP | Stale-claim reclamation |
 | `postvec.model_refresh_interval_ms` | `60000` | SIGHUP | `/config` poll cadence |
-| `postvec.search_degrade_to_fts` | `on` | USERSET | FTS-only fallback when ninference is down |
+| `postvec.search_degrade_to_fts` | `on` | USERSET | FTS-only fallback when inference is down |
 | `postvec.discovery_timeout_ms` | `5000` | SIGHUP | Per-node HTTP timeout for `GET /config` |
 | `postvec.worker_lock_timeout_ms` | `10000` | SIGHUP | `lock_timeout` for worker transactions (0 disables) — a blocked user table backs the batch off instead of freezing the worker |
 | `postvec.notify_on_write` | `off` | SIGHUP | `NOTIFY postvec, '<registry_id>'` after each write-back batch |
-| `postvec.mode` | `grpc` | POSTMASTER | `grpc` (remote ninference) or `embedded` (in-worker engine; needs the `embedded` build feature) |
-| `postvec.ninference_path` | `''` | POSTMASTER | Embedded: engine root (`libs/`, `models/`); falls back to `$NINFERENCE_PATH` |
+| `postvec.mode` | `grpc` | POSTMASTER | `grpc` (remote inference nodes) or `embedded` (in-worker engine; needs the `embedded` build feature) |
+| `postvec.path` | `/opt/postvec` | POSTMASTER | Embedded: engine root (`libs/`, `models/`) |
 | `postvec.embedded_models` | `''` | POSTMASTER | Embedded: comma-separated models to preload; empty = load every enabled model on disk |
 | `postvec.embedded_listen` | `127.0.0.1:33433` | POSTMASTER | Embedded: loopback address of the engine host's gRPC server (dialed by backends and, in launcher mode, per-DB workers) |
 | `postvec.embedded_http_listen` | `127.0.0.1:33434` | POSTMASTER | Embedded: loopback address of the engine host's `GET /config` listener (model discovery, `refresh_models()`) |
@@ -216,7 +216,7 @@ SELECT postvec.adopt('public.legacy_docs', 'body',
 --     migrating them. The adopted model doesn't have to be directly
 --     embeddable: if a converter targets its space and the converter's source
 --     is embeddable, search() embeds the query with the source model and
---     converts it into the stored space via ninference's embed-bridge executor
+--     converts it into the stored space via the engine's embed-bridge executor
 --     — one RPC, same search() call.
 --     backfill => 'none' preserves every existing vector while the default
 --     sync => true keeps future writes current through the same bridge.
@@ -347,7 +347,7 @@ Requirements and behavior:
   table ownership (or superuser) and quote every identifier. The worker
   connects as the bootstrap superuser and bypasses RLS — do not `enable()`
   columns whose RLS is meant to hide text from administrators. Text leaves the
-  DB host only to ninference over the mesh (no third-party egress).
+  DB host only to the inference nodes over the mesh (no third-party egress).
 - **Grants (what app roles get).** The generated triggers run as the
   DML-issuing role, so the extension ships the grants that make writes by
   plain application roles work out of the box: `USAGE` on schema `postvec`,
@@ -426,10 +426,10 @@ as `rows_skipped`), `'auto'` (prefer convert, fall back to reembed).
 
 **The target model does not need to be embeddable directly.** A model that
 exists only as a converter's target (e.g. a commercial space like
-`cohere-embed-v4.0` with no provider API key on any ninference node) is a
+`cohere-embed-v4.0` with no provider API key on any inference node) is a
 valid migration target: the column dimension comes from the converter's
 `target_dim`, stored vectors convert as usual, and fresh writes are embedded
-through ninference's **embed-bridge** executor (embed with the converter's
+through the engine's **embed-bridge** executor (embed with the converter's
 source model, convert engine-side — one RPC). Embed resolution is two-tier
 everywhere (worker, `search()`, `enable()`, `embed()`): a hosted embed model
 wins; the bridge is the fallback, re-resolved from the model cache on every
@@ -460,7 +460,7 @@ finalize the replacement column is postvec-owned, and a second
 Writes arriving mid-migration are embedded with the **new** model into the
 **new** column and always win over conversions (`new IS NULL` guards on both
 the driver and its write-back); `search()` keeps using the old column until
-the swap. ninference outages never fail a migration (transient errors retry
+the swap. Inference outages never fail a migration (transient errors retry
 forever, visible in `migration_status().error`), and so do bridge-inventory
 errors (`BridgePathNotFound`, `ConverterNotFound` — the chain isn't complete
 on any node *right now*: rollout skew or a model load window; postvec tries
@@ -472,7 +472,7 @@ column and `migration_abort()` reverts cleanly.
 ## Embedded mode (Arch B)
 
 Opt-in deployment mode in which the **background worker hosts the UniVec
-`engine` crate in-process** — no external ninference node, no network hop,
+`engine` crate in-process** — no external inference node, no network hop,
 and raw text never leaves the database host. It adds no SQL-level features;
 everything (queue, search, migrate, embed-bridge routing, error taxonomy)
 behaves exactly as in gRPC mode.
@@ -498,7 +498,7 @@ cargo pgrx package --no-default-features --features pg18,embedded \
 shared_preload_libraries = 'postvec'
 postvec.database        = 'univec,analytics'  # one or many — one shared engine either way
 postvec.mode            = 'embedded'
-postvec.ninference_path = '/opt/ninference'   # libs/**/libonnxruntime.so + models/
+postvec.path = '/opt/postvec'   # libs/**/libonnxruntime.so + models/
 # optional:
 postvec.embedded_models = 'baai-bge-m3,convert-bge-to-cohere,embed-bridge'
 postvec.embedded_listen      = '127.0.0.1:33433'   # gRPC (embed/convert)
@@ -515,7 +515,7 @@ Notes and constraints:
   gate draining on a listener reachability probe, so jobs don't burn retry
   attempts while the engine is still loading, and they discover models via
   the launcher's loopback `GET /config` (`postvec.embedded_http_listen`,
-  default `127.0.0.1:33434`) — same envelope as ninference's `/config`,
+  default `127.0.0.1:33434`) — same envelope as a remote node's `/config`,
   consumed by the unchanged discovery client. Launcher engine-init failures
   appear in the server log only (the launcher serves no database, so there
   is no `stats()` row for it; each worker's transport errors surface in its

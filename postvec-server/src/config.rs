@@ -93,7 +93,7 @@ pub struct FileConfig {
     pub grpc_port: Option<u16>,
     pub gossip_port: Option<u16>,
     pub admin_port: Option<u16>,
-    /// `cluster` is ninference's spelling and the one in the original
+    /// `cluster` is the upstream engine's spelling and the one in the original
     /// sketch; `peers` is the documented name.
     #[serde(alias = "cluster")]
     pub peers: Option<Vec<String>>,
@@ -200,17 +200,14 @@ pub fn default_max_inflight() -> usize {
         .clamp(MIN_AUTO_INFLIGHT, MAX_AUTO_INFLIGHT)
 }
 
-/// `--root` > `POSTVEC_SERVER_ROOT` > `NINFERENCE_PATH` > current directory.
+/// `--root` > `POSTVEC_SERVER_ROOT` > current directory.
 ///
-/// `NINFERENCE_PATH` is honoured because it is what `postvec model pull`,
-/// `postvec.ninference_path` and every existing model tree already use. The
-/// on-disk layout is shared with embedded mode on purpose: a root is portable
-/// between an in-database engine and this server.
+/// The on-disk layout is shared with embedded mode on purpose: a root is
+/// portable between an in-database engine and this server.
 pub fn resolve_root(flag: Option<&Path>, env: &dyn EnvSource) -> Result<PathBuf, String> {
     let raw = flag
         .map(|p| p.to_path_buf())
         .or_else(|| env.get("POSTVEC_SERVER_ROOT").map(PathBuf::from))
-        .or_else(|| env.get("NINFERENCE_PATH").map(PathBuf::from))
         .map(Ok)
         .unwrap_or_else(|| {
             std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))
@@ -1087,20 +1084,8 @@ mod tests {
             flag
         );
         assert_eq!(
-            resolve_root(
-                None,
-                &env(&[
-                    ("POSTVEC_SERVER_ROOT", "/from/env"),
-                    ("NINFERENCE_PATH", "/from/legacy"),
-                ])
-            )
-            .unwrap(),
+            resolve_root(None, &env(&[("POSTVEC_SERVER_ROOT", "/from/env")])).unwrap(),
             PathBuf::from("/from/env")
-        );
-        assert_eq!(
-            resolve_root(None, &env(&[("NINFERENCE_PATH", "/from/legacy")])).unwrap(),
-            PathBuf::from("/from/legacy"),
-            "NINFERENCE_PATH is what every existing model tree already uses"
         );
     }
 

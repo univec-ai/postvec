@@ -89,8 +89,12 @@ FROM ${BUILD_BASE} AS server
 # The engine root uses the same path the host packages install theirs to —
 # and that the postvec CLI treats as its default — so `--path` values are
 # identical on a database host, in the complete image, and in this image.
+# POSTVEC_PATH / POSTVEC_PROVIDERS_PATH point the bundled CLI at
+# this root, so `docker exec <ctr> postvec model|provider …` needs no --path.
 ENV DEBIAN_FRONTEND=noninteractive \
-    POSTVEC_SERVER_ROOT=/opt/postvec/ninference \
+    POSTVEC_SERVER_ROOT=/opt/postvec \
+    POSTVEC_PATH=/opt/postvec \
+    POSTVEC_PROVIDERS_PATH=/opt/postvec \
     RUST_LOG=info
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -101,8 +105,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY --from=builder /out/postvec-server /usr/local/bin/postvec-server
 # The postvec CLI, so operators can administer models and providers on the
-# node (`docker exec <ctr> postvec model|provider ... --path
-# /opt/postvec/ninference`) without copying a binary in. It is the same
+# node (`docker exec <ctr> postvec model|provider ...` — the ENV above points
+# it at this root) without copying a binary in. It is the same
 # PostgreSQL-licensed CLI the packages ship; only `postvec-server` itself
 # carries this image's server license.
 COPY --from=builder /out/postvec /usr/local/bin/postvec
@@ -111,14 +115,14 @@ COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
 # The same ONNX Runtime and the same model bundle the complete image carries,
 # staged by the caller from the verified payloads. The engine root layout is
 # identical to embedded mode's, so this tree is portable between the two.
-COPY payload/ /opt/postvec/ninference/
+COPY payload/ /opt/postvec/
 
 # Run unprivileged. The server reads model files and opens sockets; it needs
 # nothing a root process would have.
 RUN set -eux; \
     useradd --system --create-home --home-dir /var/lib/postvec-server \
         --shell /usr/sbin/nologin postvec-server; \
-    chown -R postvec-server:postvec-server /opt/postvec/ninference
+    chown -R postvec-server:postvec-server /opt/postvec
 USER postvec-server
 
 # 22222 discovery (HTTPS), 33333 gRPC (plaintext), 11111 gossip. The admin port

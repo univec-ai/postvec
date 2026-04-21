@@ -16,7 +16,7 @@ extension_sql!(
 GRANT USAGE ON SCHEMA postvec TO PUBLIC;
 
 CREATE TABLE postvec.models (
-    name          text PRIMARY KEY,          -- internal ninference name
+    name          text PRIMARY KEY,          -- internal engine model name
     model_type    text NOT NULL,             -- embed|convert|embed-bridge|convert-bridge|legacy
     source_model  text,                      -- public source name (convert)
     target_model  text,                      -- public target name (embed/convert)

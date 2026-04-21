@@ -183,9 +183,9 @@ check_model_engine_paths() {
             fi
         done <<<"${files}"
         (( skip )) && continue
-        grep -qE '^\.?/opt/postvec/ninference/models/[^/]+/[^/]+/.+' <<<"${path}" \
+        grep -qE '^\.?/opt/postvec/models/[^/]+/[^/]+/.+' <<<"${path}" \
             || problem "packaged outside models/<backend>/<name>/: ${path}"
-    done <<<"$(grep '/opt/postvec/ninference/models/' <<<"${files}" || true)"
+    done <<<"$(grep '/opt/postvec/models/' <<<"${files}" || true)"
 }
 
 # ${1} package basename, ${2} newline-separated file list, ${3} dependency text
@@ -237,9 +237,9 @@ check_contents() {
         ;;
     postvec-onnxruntime[-_]*)
         grep -q 'libonnxruntime\.so' <<<"${files}" || problem "no libonnxruntime.so"
-        grep -q '/opt/postvec/ninference/libs/' <<<"${files}" \
+        grep -q '/opt/postvec/libs/' <<<"${files}" \
             || problem "runtime is not under the engine root the extension searches"
-        pass "installs ONNX Runtime under /opt/postvec/ninference/libs"
+        pass "installs ONNX Runtime under /opt/postvec/libs"
         ;;
     postvec-model-*)
         grep -q 'ninference\.hub\.json$' <<<"${files}" || problem "no engine descriptor"

@@ -2,7 +2,7 @@ use pgrx::prelude::*;
 
 ::pgrx::pg_module_magic!(name, version);
 
-/// Generated tonic/prost stubs for the vendored ninference proto.
+/// Generated tonic/prost stubs for the vendored inference proto.
 pub mod proto {
     tonic::include_proto!("ninference");
 }

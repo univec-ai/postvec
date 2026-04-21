@@ -173,17 +173,11 @@ impl SettingsSnapshot {
     }
 
     pub fn grpc_endpoints(&self) -> Vec<String> {
-        crate::config::guc::parse_extension_list(
-            self.value("postvec.ninference_grpc_endpoints")
-                .unwrap_or(""),
-        )
+        crate::config::guc::parse_extension_list(self.value("postvec.grpc_endpoints").unwrap_or(""))
     }
 
     pub fn http_endpoints(&self) -> Vec<String> {
-        crate::config::guc::parse_extension_list(
-            self.value("postvec.ninference_http_endpoints")
-                .unwrap_or(""),
-        )
+        crate::config::guc::parse_extension_list(self.value("postvec.http_endpoints").unwrap_or(""))
     }
 
     pub fn embedded_models(&self) -> Vec<String> {
@@ -202,8 +196,8 @@ impl SettingsSnapshot {
             .unwrap_or_else(|| crate::config::DEFAULT_EMBEDDED_HTTP_LISTEN.to_string())
     }
 
-    pub fn ninference_path(&self) -> Option<PathBuf> {
-        non_empty(self.value("postvec.ninference_path")).map(PathBuf::from)
+    pub fn engine_path(&self) -> Option<PathBuf> {
+        non_empty(self.value("postvec.path")).map(PathBuf::from)
     }
 
     /// The providers.d directory the embedded host reads (with the
@@ -436,7 +430,7 @@ pub struct InventoryModel {
     pub target_dim: Option<u32>,
 }
 
-/// A parsed ninference `/config` envelope.
+/// A parsed inference-host `/config` envelope.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigInventory {
     pub models: Vec<InventoryModel>,
@@ -502,7 +496,7 @@ pub struct RemoteProbe {
     pub grpc: Vec<GrpcProbe>,
     pub http: Vec<HttpProbe>,
     /// Configured endpoint values that are not valid at all — a hand-edited
-    /// `postvec.ninference_*_endpoints` with a typo. Reported rather than
+    /// `postvec.grpc_endpoints`/`postvec.http_endpoints` with a typo. Reported rather than
     /// silently skipped, because the extension skips them silently too.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub malformed: Vec<MalformedEndpoint>,
@@ -640,7 +634,7 @@ pub struct RegistryProbeFacts {
 #[serde(rename_all = "kebab-case")]
 pub enum RootSource {
     Guc,
-    /// Supplied by `doctor --ninference-path` for diagnosis only.
+    /// Supplied by `doctor --path` for diagnosis only.
     Override,
     Unknown,
 }

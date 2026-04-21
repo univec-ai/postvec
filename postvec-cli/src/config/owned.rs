@@ -969,15 +969,15 @@ mod tests {
 # Managed by postvec. Manual edits are refused; use `postvec setup`.
 postvec.database = 'app,work'
 postvec.mode = 'embedded'
-postvec.ninference_path = '/opt/postvec/ninference'
+postvec.path = '/opt/postvec'
 postvec.embedded_http_listen = '127.0.0.1:33434'
-postvec.ninference_http_endpoints = 'http://192.0.2.2:22222'
+postvec.http_endpoints = 'http://192.0.2.2:22222'
 ";
         let settings = settings_from_snippet(content);
         assert_eq!(settings.mode(), Some(crate::cli::Mode::Embedded));
         assert_eq!(
-            settings.ninference_path().as_deref(),
-            Some(std::path::Path::new("/opt/postvec/ninference"))
+            settings.engine_path().as_deref(),
+            Some(std::path::Path::new("/opt/postvec"))
         );
         assert_eq!(settings.configured_databases(), ["app", "work"]);
         assert_eq!(settings.embedded_http_listen(), "127.0.0.1:33434");

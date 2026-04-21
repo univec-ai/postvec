@@ -12,7 +12,7 @@
 #                 applies; it is a cache, not an escape hatch.
 # --refresh       ignore the digest-keyed cache and pull again.
 #
-# Writes build/payload-common/opt/postvec/ninference/models/<backend>/<name>/
+# Writes build/payload-common/opt/postvec/models/<backend>/<name>/
 # in the layout the engine loads, plus the licence, provenance and per-file
 # digests under build/payload-common/usr/share/doc/<package>/, and the derived
 # facts every later stage reads from build/payload-common/model-facts.env.
@@ -255,7 +255,7 @@ fi
 # package name, version and doc directory follow the pin rather than a literal.
 parse_env_file "${META}/model-facts.env" model-facts.env
 
-MODEL_DIR="${PAYLOAD}/opt/postvec/ninference/models/${MODEL_BACKEND}/${MODEL_NAME}"
+MODEL_DIR="${PAYLOAD}/opt/postvec/models/${MODEL_BACKEND}/${MODEL_NAME}"
 DOC="${PAYLOAD}/usr/share/doc/${MODEL_PKG_NAME}"
 
 # ------------------------------------------------------------------ the payload
@@ -263,7 +263,7 @@ DOC="${PAYLOAD}/usr/share/doc/${MODEL_PKG_NAME}"
 # Every previous bundle goes, including one built under a different model name
 # or package name: a leftover tree would be packaged by the `type: tree` entry
 # and would ship two models in a package that names one.
-rm -rf "${PAYLOAD}/opt/postvec/ninference/models" \
+rm -rf "${PAYLOAD}/opt/postvec/models" \
        "${PAYLOAD}/usr/share/doc" \
        "${PAYLOAD}/model-facts.env"
 mkdir -p "${MODEL_DIR}" "${DOC}"

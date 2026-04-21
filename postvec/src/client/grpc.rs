@@ -1,4 +1,4 @@
-//! gRPC transport to running ninference nodes, plus `GET /config` over
+//! gRPC transport to running inference nodes, plus `GET /config` over
 //! HTTP for model discovery.
 
 use super::{EmbedRoute, InferenceClient, ModelInfo, PvError, RavennaCode};
@@ -236,13 +236,13 @@ impl GrpcClient {
         // silently ignored endpoint is operator-visible, like the database
         // list's handling.
         let (grpc_ok, grpc_rejected) =
-            crate::gucs::parse_validated_list(crate::gucs::NINFERENCE_GRPC_ENDPOINTS.get(), 512);
-        warn_rejected_endpoints("postvec.ninference_grpc_endpoints", &grpc_rejected);
+            crate::gucs::parse_validated_list(crate::gucs::GRPC_ENDPOINTS.get(), 512);
+        warn_rejected_endpoints("postvec.grpc_endpoints", &grpc_rejected);
         let grpc = resolve_grpc_endpoints(mode, &crate::gucs::embedded_listen(), grpc_ok);
         prune_channels(&grpc);
         let (http_ok, http_rejected) =
-            crate::gucs::parse_validated_list(crate::gucs::NINFERENCE_HTTP_ENDPOINTS.get(), 512);
-        warn_rejected_endpoints("postvec.ninference_http_endpoints", &http_rejected);
+            crate::gucs::parse_validated_list(crate::gucs::HTTP_ENDPOINTS.get(), 512);
+        warn_rejected_endpoints("postvec.http_endpoints", &http_rejected);
         let http = resolve_http_endpoints(mode, &crate::gucs::embedded_http_listen(), http_ok);
         Self::new(
             grpc,
@@ -414,7 +414,7 @@ impl InferenceClient for GrpcClient {
                     // the request should say what it means rather than
                     // treating "absent" as "document". Both postvec hosts
                     // strip the field on the engine path. A third-party
-                    // ninference node that honours it would apply templates.
+                    // inference node that honours it would apply templates.
                     input_type: route.purpose.as_wire().to_string(),
                     ..Default::default()
                 });
@@ -546,14 +546,14 @@ pub fn status_to_error(endpoint: &str, status: &tonic::Status) -> PvError {
             PvError::Decode(format!("gRPC resource exhausted: {}", status.message()))
         }
         // Fail-fast codes: these mean the endpoint is not (or is no longer) a
-        // ninference node — retrying max_retries times just delays the
+        // inference node — retrying max_retries times just delays the
         // inevitable and hides the misconfiguration. Internal => Permanent.
         tonic::Code::Unimplemented
         | tonic::Code::NotFound
         | tonic::Code::PermissionDenied
         | tonic::Code::Unauthenticated
         | tonic::Code::FailedPrecondition => PvError::Internal(format!(
-            "gRPC {}: {} (is {endpoint} a ninference node?)",
+            "gRPC {}: {} (is {endpoint} an inference node?)",
             status.code(),
             status.message()
         )),
@@ -746,7 +746,7 @@ mod tests {
         assert!(matches!(err, PvError::InvalidInput(_)));
     }
 
-    /// Pointing the GUC at a non-ninference gRPC service must surface
+    /// Pointing the GUC at a gRPC service that does not speak the inference proto must surface
     /// immediately (Permanent), not burn max_retries on it.
     #[test]
     fn fail_fast_status_codes_are_permanent() {
@@ -768,7 +768,7 @@ mod tests {
         }
     }
 
-    /// ninference's embed-bridge restriction refusal (deployment licence
+    /// the engine's embed-bridge restriction refusal (deployment licence
     /// policy) arrives as FailedPrecondition + TARGET_RESTRICTED metadata:
     /// it must parse to the typed code and classify Permanent, so restricted
     /// jobs dead-letter with the real reason instead of retrying forever.
@@ -914,7 +914,7 @@ mod tests {
         use std::sync::Arc;
         use tonic::{Request, Response, Status};
 
-        /// A ninference node whose EmbedTexts answers depend on a *shared*
+        /// An inference node whose EmbedTexts answers depend on a *shared*
         /// call counter: calls whose global index is below `fail_first` fail
         /// with the structured bridge-inventory code; later calls answer one
         /// embedding. Sharing the counter between nodes makes the failover

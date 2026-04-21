@@ -8,7 +8,7 @@
 //!   the other nodes cannot reach, and the symptom is a node that serves
 //!   fine and sees only itself. So the derivation is explicit, logged, and
 //!   warns whenever it had to guess.
-//! - **Name resolution.** ninference's cluster configuration is literal
+//! - **Name resolution.** The upstream engine's cluster configuration is literal
 //!   `ip:port` because its seeds come from Ansible. A published server is
 //!   pointed at Compose service names and DNS records, so peers are resolved
 //!   here before they reach memberlist's socket-address transport.
@@ -63,7 +63,7 @@ pub fn resolve_advertise(settings: &Settings) -> Result<Advertise, String> {
 /// The URL a human (or `postvec doctor`) can curl to reach this node's HTTP
 /// API.
 ///
-/// This is ninference's `frontend_address`, which exists because the
+/// This is the upstream engine's `frontend_address`, which exists because the
 /// reachable URL is not always `{scheme}://{advertise}:{http_port}` — NAT, a
 /// load balancer, a DNS name the operator would rather see printed. It is
 /// gossiped and echoed in `/config`; nothing dials it, and postvec never

@@ -592,8 +592,8 @@ mod tests {
 shared_preload_libraries = 'pg_stat_statements,postvec'
 postvec.database = 'analytics,univec'
 postvec.mode = 'grpc'
-postvec.ninference_grpc_endpoints = '192.0.2.2:33333'
-postvec.ninference_http_endpoints = 'https://192.0.2.2:22222'
+postvec.grpc_endpoints = '192.0.2.2:33333'
+postvec.http_endpoints = 'https://192.0.2.2:22222'
 ";
 
     #[test]

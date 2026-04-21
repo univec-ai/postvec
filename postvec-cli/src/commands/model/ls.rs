@@ -241,7 +241,7 @@ async fn run_installed(cli: &Cli, args: &ModelLsArgs, output: &Output) -> Result
         let names = probe.advertised_enabled();
         let noun = if names.len() == 1 { "model" } else { "models" };
         let mut human = format!(
-            "remote mode — {} {noun} advertised by the configured ninference nodes\n\n",
+            "remote mode — {} {noun} advertised by the configured inference nodes\n\n",
             names.len()
         );
         for name in &names {

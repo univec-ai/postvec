@@ -3,7 +3,7 @@
 //! controls.
 //!
 //! `/config` serves the same `{success, data: {models: [...]}}` envelope
-//! ninference's HTTP API serves, rendered from the in-process engine's
+//! the standalone inference host's HTTP API serves, rendered from the in-process engine's
 //! loaded models — so postvec's existing discovery client
 //! (`client/discovery.rs`) consumes it unchanged. This is what lets the
 //! launcher-hosted engine feed the model caches of per-database workers
@@ -137,7 +137,7 @@ fn results_envelope(results: Vec<Value>) -> (StatusCode, Json<Value>) {
 }
 
 /// `spawn` only warns about a non-loopback bind (a `/config` read exposes
-/// what ninference already advertises), but the admin routes mutate the
+/// what the inference host already advertises), but the admin routes mutate the
 /// engine — so even on a hand-configured non-loopback listener they refuse
 /// any peer that is not loopback. v1 deliberately trusts local OS users
 /// and nobody else.
@@ -835,7 +835,7 @@ dim = 999
     }
 
     /// The envelope must round-trip through postvec's own discovery parser —
-    /// that parser is the wire contract with real ninference nodes, so this
+    /// that parser is the wire contract with real inference nodes, so this
     /// pins the embedded /config to the exact same shape (model_type
     /// inference, dims, and the parser-side enabled filter included).
     #[test]

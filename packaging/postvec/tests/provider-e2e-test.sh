@@ -333,7 +333,7 @@ setup_remote_image() {
 
 # --------------------------------------------------------------- provider ops
 
-provider_keys_dir() { if (( EMBEDDED )); then echo /etc/postvec/keys; else echo /opt/postvec/ninference/keys; fi; }
+provider_keys_dir() { if (( EMBEDDED )); then echo /etc/postvec/keys; else echo /opt/postvec/keys; fi; }
 provider_key_path() { echo "$(provider_keys_dir)/e2e.key"; }
 provider_file_owner() {
     if [[ "${TARGET}" == package ]]; then echo postgres
@@ -343,7 +343,7 @@ provider_file_owner() {
 
 write_key() { # <value> — atomic replace, owner + 0600 preserved
     local owner root; owner="$(provider_file_owner)"
-    if (( EMBEDDED )); then root=/etc/postvec; else root=/opt/postvec/ninference; fi
+    if (( EMBEDDED )); then root=/etc/postvec; else root=/opt/postvec; fi
     docker exec -u root -e KEYVAL="$1" "${SRV}" bash -c "
         set -e
         mkdir -p ${root} $(provider_keys_dir)
@@ -377,7 +377,7 @@ provider_add() { # runs the shipped CLI, WITH the live verification probe
             --acknowledge-in-use --yes
     else
         docker exec "${SRV}" postvec provider add openai \
-            --path /opt/postvec/ninference \
+            --path /opt/postvec \
             --model text-embedding-3-small \
             --api-key-file "$(provider_key_path)" \
             --base-url "http://127.0.0.1:${MOCK_PORT}" \

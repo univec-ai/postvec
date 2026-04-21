@@ -91,7 +91,7 @@ mod onnx_initializer {
         let lib_path = find_library_recursively(&libs_search_path, lib_name).ok_or_else(|| {
             anyhow!(
                 "Could not find the ONNX Runtime library ('{}') within '{}'. \
-                 Please ensure `NINFERENCE_PATH` is set correctly and the library exists.",
+                 Please ensure the engine root is set correctly and the library exists.",
                 lib_name,
                 libs_search_path.display()
             )

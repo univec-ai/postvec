@@ -114,15 +114,15 @@ RUN set -eux; \
         /tmp/postvec-complete/postvec-model-*.deb \
         /tmp/postvec-complete/postvec-extras_*.deb; \
     rm -rf /tmp/postvec-complete /var/lib/apt/lists/*; \
-    test -d "/opt/postvec/ninference/models/${BUNDLED_MODEL_BACKEND}/${BUNDLED_MODEL_NAME}"; \
-    ls /opt/postvec/ninference/libs/onnxruntime/lib/libonnxruntime.so
+    test -d "/opt/postvec/models/${BUNDLED_MODEL_BACKEND}/${BUNDLED_MODEL_NAME}"; \
+    ls /opt/postvec/libs/onnxruntime/lib/libonnxruntime.so
 
 # LD_LIBRARY_PATH is for ONNX Runtime's own adjacent libraries; the extension
 # itself finds libonnxruntime by searching the engine root and dlopen()ing it.
 ENV POSTVEC_MODE=embedded \
-    POSTVEC_NINFERENCE_PATH=/opt/postvec/ninference \
+    POSTVEC_PATH=/opt/postvec \
     POSTVEC_EMBEDDED_MODELS=${BUNDLED_MODEL_NAME} \
-    LD_LIBRARY_PATH=/opt/postvec/ninference/libs/onnxruntime/lib
+    LD_LIBRARY_PATH=/opt/postvec/libs/onnxruntime/lib
 
 # The model label is <name>@<registry revision>, which is the identity a reader
 # can look up in the registry — a package version is a packaging fact and says

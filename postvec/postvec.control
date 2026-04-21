@@ -1,4 +1,4 @@
-comment = 'transparent auto-embedding, hybrid search and embedding-model migration via UniVec ninference'
+comment = 'transparent auto-embedding, hybrid search and embedding-model migration via UniVec inference'
 default_version = '@CARGO_VERSION@'
 module_pathname = 'postvec'
 relocatable = false

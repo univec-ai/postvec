@@ -67,7 +67,7 @@ $check$;
 SQL
 
 # Deliberately no refresh_models() here. In embedded mode the engine may still
-# be loading, and in remote mode ninference may not be reachable yet; making
+# be loading, and in remote mode the inference host may not be reachable yet; making
 # first initialisation depend on either would turn a recoverable, retried
 # condition into a database that failed to initialise. The worker refreshes the
 # cache on its own cadence and the healthcheck waits for the result.

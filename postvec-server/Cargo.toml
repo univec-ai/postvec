@@ -72,7 +72,7 @@ axum-server = { version = "0.7", default-features = false, features = [
 
 # Cluster membership.
 #
-# 0.8, not the 0.6.6 UniVec's internal ninference pins: the entire 0.6 line is
+# 0.8, not the 0.6.6 the upstream engine pins: the entire 0.6 line is
 # yanked on crates.io, so a published crate cannot depend on it. The API
 # differences are small and noted in src/cluster.rs. Default features are off
 # because they pull QUIC, encryption and a DNS resolver this node does not

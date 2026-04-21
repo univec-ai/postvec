@@ -12,7 +12,7 @@ use crate::cli::Mode;
 use crate::error::Result;
 use crate::validate::{self, GrpcEndpoint, HttpEndpoint};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Marker on line 1 of the owned file. Its presence identifies the file as
 /// CLI-managed even when the state file has been lost.
@@ -28,9 +28,9 @@ pub const MANAGED_SETTINGS: &[&str] = &[
     "shared_preload_libraries",
     "postvec.database",
     "postvec.mode",
-    "postvec.ninference_grpc_endpoints",
-    "postvec.ninference_http_endpoints",
-    "postvec.ninference_path",
+    "postvec.grpc_endpoints",
+    "postvec.http_endpoints",
+    "postvec.path",
     "postvec.embedded_models",
     "postvec.embedded_listen",
     "postvec.embedded_http_listen",
@@ -43,12 +43,35 @@ pub const DEFAULT_EMBEDDED_LISTEN: &str = "127.0.0.1:33433";
 pub const DEFAULT_EMBEDDED_HTTP_LISTEN: &str = "127.0.0.1:33434";
 
 /// Where the packages install the engine root, and what
-/// `postvec.ninference_path` defaults to
-/// (`postvec/src/gucs.rs::DEFAULT_NINFERENCE_PATH`).
+/// `postvec.path` defaults to
+/// (`postvec/src/gucs.rs::DEFAULT_ENGINE_PATH`).
 ///
 /// Duplicated rather than shared because the extension is a pgrx crate this
 /// one cannot link. The pair is asserted in `cli.rs`; change both together.
-pub const DEFAULT_ENGINE_ROOT: &str = "/opt/postvec/ninference";
+pub const DEFAULT_ENGINE_ROOT: &str = "/opt/postvec";
+
+/// Environment override for the engine root `model` commands act on when no
+/// `--path` is given. It ranks below an explicit `--path` or `--database-url`
+/// and above cluster discovery, and it selects pure filesystem management the
+/// way `--path` does. The container images set it so `docker exec <ctr>
+/// postvec model …` needs no flags.
+pub const ENGINE_ROOT_ENV: &str = "POSTVEC_PATH";
+
+/// Environment override for the providers.d directory `provider` commands
+/// act on when no `--path` is given. Same rank and semantics as
+/// [`ENGINE_ROOT_ENV`]; the value may name the providers.d itself or the
+/// root that contains one.
+pub const PROVIDERS_PATH_ENV: &str = "POSTVEC_PROVIDERS_PATH";
+
+/// Read a path override from the environment. Unset or empty means none;
+/// a set value must be an absolute path (same rules as `--path`).
+pub fn env_path_override(var: &str) -> crate::error::Result<Option<PathBuf>> {
+    match std::env::var_os(var) {
+        None => Ok(None),
+        Some(value) if value.is_empty() => Ok(None),
+        Some(value) => crate::validate::absolute_path(Path::new(&value), var).map(Some),
+    }
+}
 
 /// What `postvec.providers_path` defaults to
 /// (`postvec/src/gucs.rs::DEFAULT_PROVIDERS_PATH`). Deliberately outside the
@@ -159,17 +182,17 @@ impl DesiredConfig {
                 let grpc: Vec<String> = remote.grpc.iter().map(|e| e.authority.clone()).collect();
                 let http: Vec<String> = remote.http.iter().map(|e| e.base.clone()).collect();
                 out.push_str(&format!(
-                    "postvec.ninference_grpc_endpoints = {}\n",
+                    "postvec.grpc_endpoints = {}\n",
                     validate::config_literal(&guc::render_extension_list(&grpc))?
                 ));
                 out.push_str(&format!(
-                    "postvec.ninference_http_endpoints = {}\n",
+                    "postvec.http_endpoints = {}\n",
                     validate::config_literal(&guc::render_extension_list(&http))?
                 ));
             }
             InferenceSettings::Embedded(embedded) => {
                 out.push_str(&format!(
-                    "postvec.ninference_path = {}\n",
+                    "postvec.path = {}\n",
                     validate::config_literal(&embedded.path.display().to_string())?
                 ));
                 // Always rendered, including empty. An omitted setting cannot
@@ -230,7 +253,7 @@ impl DesiredConfig {
         match &self.inference {
             InferenceSettings::Grpc(remote) => {
                 out.push((
-                    "postvec.ninference_grpc_endpoints",
+                    "postvec.grpc_endpoints",
                     remote
                         .grpc
                         .iter()
@@ -239,7 +262,7 @@ impl DesiredConfig {
                         .join(","),
                 ));
                 out.push((
-                    "postvec.ninference_http_endpoints",
+                    "postvec.http_endpoints",
                     remote
                         .http
                         .iter()
@@ -249,10 +272,7 @@ impl DesiredConfig {
                 ));
             }
             InferenceSettings::Embedded(embedded) => {
-                out.push((
-                    "postvec.ninference_path",
-                    embedded.path.display().to_string(),
-                ));
+                out.push(("postvec.path", embedded.path.display().to_string()));
                 out.push((
                     "postvec.embedded_models",
                     guc::render_extension_list(&embedded.models),
@@ -278,6 +298,28 @@ impl DesiredConfig {
 mod tests {
     use super::*;
 
+    /// Unset and empty mean "no override"; a set value must be absolute and
+    /// is normalized the way `--path` is. Distinct variable names keep the
+    /// cases race-free under the parallel test runner.
+    #[test]
+    fn env_path_override_rules() {
+        std::env::remove_var("PV_TEST_ROOT_UNSET");
+        assert_eq!(env_path_override("PV_TEST_ROOT_UNSET").unwrap(), None);
+
+        std::env::set_var("PV_TEST_ROOT_EMPTY", "");
+        assert_eq!(env_path_override("PV_TEST_ROOT_EMPTY").unwrap(), None);
+
+        std::env::set_var("PV_TEST_ROOT_REL", "relative/root");
+        let err = env_path_override("PV_TEST_ROOT_REL").unwrap_err();
+        assert!(err.to_string().contains("PV_TEST_ROOT_REL"), "{err}");
+
+        std::env::set_var("PV_TEST_ROOT_ABS", "/opt/./postvec/engine/");
+        assert_eq!(
+            env_path_override("PV_TEST_ROOT_ABS").unwrap(),
+            Some(PathBuf::from("/opt/postvec/engine"))
+        );
+    }
+
     fn remote() -> DesiredConfig {
         DesiredConfig {
             preload: Some(vec!["pg_stat_statements".into(), "postvec".into()]),
@@ -294,7 +336,7 @@ mod tests {
             preload: Some(vec!["pg_stat_statements".into(), "postvec".into()]),
             databases: vec!["univec".into()],
             inference: InferenceSettings::Embedded(EmbeddedSettings::new(
-                PathBuf::from("/opt/ninference"),
+                PathBuf::from("/opt/engine"),
                 None,
                 vec!["baai-bge-m3".into(), "embed-bridge".into()],
                 None,
@@ -311,8 +353,8 @@ mod tests {
 shared_preload_libraries = 'pg_stat_statements,postvec'
 postvec.database = 'analytics,univec'
 postvec.mode = 'grpc'
-postvec.ninference_grpc_endpoints = '192.0.2.2:33333'
-postvec.ninference_http_endpoints = 'https://192.0.2.2:22222'
+postvec.grpc_endpoints = '192.0.2.2:33333'
+postvec.http_endpoints = 'https://192.0.2.2:22222'
 ";
         assert_eq!(remote().render("0.1.0").unwrap(), expected);
         assert_eq!(remote().render("0.1.0").unwrap(), expected, "deterministic");
@@ -322,11 +364,11 @@ postvec.ninference_http_endpoints = 'https://192.0.2.2:22222'
     fn embedded_rendering_includes_listeners_and_models() {
         let rendered = embedded().render("0.1.0").unwrap();
         assert!(rendered.contains("postvec.mode = 'embedded'"));
-        assert!(rendered.contains("postvec.ninference_path = '/opt/ninference'"));
+        assert!(rendered.contains("postvec.path = '/opt/engine'"));
         assert!(rendered.contains("postvec.embedded_models = 'baai-bge-m3,embed-bridge'"));
         assert!(rendered.contains("postvec.embedded_listen = '127.0.0.1:33433'"));
         assert!(rendered.contains("postvec.embedded_http_listen = '127.0.0.1:33434'"));
-        assert!(!rendered.contains("ninference_grpc_endpoints"));
+        assert!(!rendered.contains("grpc_endpoints"));
     }
 
     /// providers_path renders only when the operator overrode it: unset means

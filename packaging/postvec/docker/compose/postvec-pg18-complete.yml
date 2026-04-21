@@ -1,6 +1,6 @@
 # All-in-one postvec: PostgreSQL, pgvector, the CLI, ONNX Runtime and the
 # default model, in one container. Defaults to in-process inference; set
-# POSTVEC_MODE=grpc to use remote ninference instead. No API key required.
+# POSTVEC_MODE=grpc to use remote inference nodes instead. No API key required.
 #
 #   mkdir -p secrets && head -c 32 /dev/urandom | base64 > secrets/postgres-password
 #   docker compose -f postvec-pg18-complete.yml up -d

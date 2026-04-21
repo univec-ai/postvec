@@ -29,7 +29,7 @@ use tonic::Request;
 
 fn root() -> PathBuf {
     PathBuf::from(
-        std::env::var("POSTVEC_SERVER_TEST_ROOT").unwrap_or_else(|_| "/ninference".to_string()),
+        std::env::var("POSTVEC_SERVER_TEST_ROOT").unwrap_or_else(|_| "/engine".to_string()),
     )
 }
 

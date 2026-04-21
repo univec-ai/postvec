@@ -84,7 +84,13 @@ Unused dependencies the deletions stranded:
 
 ## Added in this copy
 
-The fork is trimmed by deletion only, with exactly one recorded addition:
+The fork is trimmed by deletion only, with two recorded amendments:
+
+- `engine/src/lib.rs`: the ONNX-Runtime-not-found error no longer tells the
+  operator to check `NINFERENCE_PATH` (an environment variable this stack
+  dropped, 2026-08-31); it says "ensure the engine root is set correctly".
+  One string literal; a backport diff shows it as the fork's only edited line
+  in this file.
 
 - `shared/src/error.rs`: the `UpstreamAuthFailed` error code (wire string
   `UPSTREAM_AUTH_FAILED`), added 2026-08-19 for postvec's external embedding

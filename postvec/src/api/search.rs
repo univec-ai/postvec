@@ -928,7 +928,7 @@ fn search(
 
 /// Like [`search`] but with a caller-supplied query vector — skips the inline
 /// embed call. Use when you already have the query embedding (app-side caching)
-/// or to search without a reachable ninference. `query_text` (may be empty)
+/// or to search without reachable inference. `query_text` (may be empty)
 /// still drives the FTS leg. `filter` has identical semantics to `search()`'s.
 #[pg_extern]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1030,7 +1030,7 @@ pub(crate) fn validate_query_embedding(
 ) -> Result<Vec<f32>, String> {
     if vecs.len() != 1 {
         return Err(format!(
-            "ninference returned {} query embeddings, expected exactly 1",
+            "inference returned {} query embeddings, expected exactly 1",
             vecs.len()
         ));
     }
@@ -1219,7 +1219,7 @@ mod tests {
     #[pg_test]
     fn search_with_vector_skips_embed_and_ranks() {
         setup();
-        // Caller-supplied query vector nearest row 1; no ninference involved.
+        // Caller-supplied query vector nearest row 1; no inference involved.
         let pk = Spi::get_one::<String>(
             "SELECT pk_value FROM postvec.search_with_vector(
                  'docs','body', ARRAY[1,0,0]::real[], 'no keywords') LIMIT 1",

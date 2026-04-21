@@ -3,10 +3,8 @@
 use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
 use std::ffi::CString;
 
-pub static NINFERENCE_GRPC_ENDPOINTS: GucSetting<Option<CString>> =
-    GucSetting::<Option<CString>>::new(None);
-pub static NINFERENCE_HTTP_ENDPOINTS: GucSetting<Option<CString>> =
-    GucSetting::<Option<CString>>::new(None);
+pub static GRPC_ENDPOINTS: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
+pub static HTTP_ENDPOINTS: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static DATABASE: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static NOTIFY_ON_WRITE: GucSetting<bool> = GucSetting::<bool>::new(false);
 pub static WORKER_ENABLED: GucSetting<bool> = GucSetting::<bool>::new(true);
@@ -46,10 +44,10 @@ pub static MODE: GucSetting<Option<CString>> =
 /// path configuration either. A source build on a host without that tree
 /// fails engine init with an error naming the path, which is the right
 /// answer — it is exactly what is missing.
-pub const DEFAULT_NINFERENCE_PATH: &str = "/opt/postvec/ninference";
+pub const DEFAULT_ENGINE_PATH: &str = "/opt/postvec";
 
-pub static NINFERENCE_PATH: GucSetting<Option<CString>> =
-    GucSetting::<Option<CString>>::new(Some(c"/opt/postvec/ninference"));
+pub static ENGINE_PATH: GucSetting<Option<CString>> =
+    GucSetting::<Option<CString>>::new(Some(c"/opt/postvec"));
 pub static EMBEDDED_MODELS: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static EMBEDDED_LISTEN: GucSetting<Option<CString>> = GucSetting::<Option<CString>>::new(None);
 pub static EMBEDDED_HTTP_LISTEN: GucSetting<Option<CString>> =
@@ -59,7 +57,7 @@ pub static EMBEDDED_MAX_INFLIGHT: GucSetting<i32> = GucSetting::<i32>::new(1);
 /// Where the embedded engine host reads external-provider connector files
 /// (`providers.d/*.toml`). A **path**, never a credential — provider API keys
 /// live only in the (0600) files under it, on the inference side. Default
-/// deliberately outside `postvec.ninference_path`: the model asset tree gets
+/// deliberately outside `postvec.path`: the model asset tree gets
 /// rsynced, baked into images and backed up; the credential directory must
 /// not ride along.
 pub const DEFAULT_PROVIDERS_PATH: &str = "/etc/postvec/providers.d";
@@ -144,18 +142,18 @@ pub fn embedded_http_listen() -> String {
 
 pub fn register() {
     GucRegistry::define_string_guc(
-        c"postvec.ninference_grpc_endpoints",
-        c"Comma-separated host:port list of ninference gRPC endpoints",
+        c"postvec.grpc_endpoints",
+        c"Comma-separated host:port list of inference gRPC endpoints (postvec-server)",
         c"Round-robined. Addresses are expected to be on a trusted private network (gRPC has no TLS).",
-        &NINFERENCE_GRPC_ENDPOINTS,
+        &GRPC_ENDPOINTS,
         GucContext::Sighup,
         GucFlags::default(),
     );
     GucRegistry::define_string_guc(
-        c"postvec.ninference_http_endpoints",
-        c"Comma-separated http(s)://host:port list of ninference HTTP endpoints",
+        c"postvec.http_endpoints",
+        c"Comma-separated http(s)://host:port list of inference HTTP endpoints (postvec-server)",
         c"Used only for GET /config model discovery.",
-        &NINFERENCE_HTTP_ENDPOINTS,
+        &HTTP_ENDPOINTS,
         GucContext::Sighup,
         GucFlags::default(),
     );
@@ -179,20 +177,19 @@ pub fn register() {
             c"'embedded' hosts the UniVec engine in-process (build with --features embedded): \
               the launcher hosts one shared engine and serves the per-database workers and \
               connection backends over loopback listeners; \
-              postvec.ninference_*_endpoints are then ignored. \
+              postvec.grpc_endpoints and postvec.http_endpoints are then ignored. \
               'grpc' makes this a thin client to postvec-server nodes named by \
-              postvec.ninference_grpc_endpoints and postvec.ninference_http_endpoints.",
+              postvec.grpc_endpoints and postvec.http_endpoints.",
             &MODE,
             GucContext::Postmaster,
             GucFlags::default(),
         );
         GucRegistry::define_string_guc(
-            c"postvec.ninference_path",
+            c"postvec.path",
             c"Engine root path for embedded mode (libs/, models/)",
-            c"Defaults to /opt/postvec/ninference, where the postvec-onnxruntime and \
-              postvec-model-* packages install their payloads. Falls back to the \
-              NINFERENCE_PATH environment variable when set to the empty string.",
-            &NINFERENCE_PATH,
+            c"Defaults to /opt/postvec, where the postvec-onnxruntime and \
+              postvec-model-* packages install their payloads.",
+            &ENGINE_PATH,
             GucContext::Postmaster,
             GucFlags::default(),
         );
@@ -243,7 +240,7 @@ pub fn register() {
             c"postvec.embedded_http_listen",
             c"host:port the engine host serves GET /config on in embedded mode",
             c"Default 127.0.0.1:33434. Model discovery for per-database workers and \
-              refresh_models(); same envelope shape as ninference's /config. Keep it on \
+              refresh_models(); same envelope shape as the inference host's /config. Keep it on \
               loopback.",
             &EMBEDDED_HTTP_LISTEN,
             GucContext::Postmaster,
@@ -360,7 +357,7 @@ pub fn register() {
     );
     GucRegistry::define_bool_guc(
         c"postvec.search_degrade_to_fts",
-        c"Degrade search() to FTS-only with a WARNING when ninference is unreachable",
+        c"Degrade search() to FTS-only with a WARNING when inference is unreachable",
         c"",
         &SEARCH_DEGRADE_TO_FTS,
         GucContext::Userset,
@@ -521,10 +518,10 @@ mod tests {
             Some("embedded".to_string())
         );
         assert_eq!(
-            super::NINFERENCE_PATH
+            super::ENGINE_PATH
                 .get()
                 .map(|c| c.to_string_lossy().to_string()),
-            Some(super::DEFAULT_NINFERENCE_PATH.to_string())
+            Some(super::DEFAULT_ENGINE_PATH.to_string())
         );
     }
 

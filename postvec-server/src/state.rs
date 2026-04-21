@@ -20,7 +20,7 @@ pub struct NodeIdentity {
     /// `{scheme}://{advertise}:{http_port}` — what a peer would dial.
     pub api_address: String,
     /// `{advertise}:{grpc_port}` — what postvec would put in
-    /// `postvec.ninference_grpc_endpoints`.
+    /// `postvec.grpc_endpoints`.
     pub grpc_address: String,
     /// The reachable HTTP URL, which is `api_address` unless the operator
     /// pinned something else.

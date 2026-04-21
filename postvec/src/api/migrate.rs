@@ -1,5 +1,5 @@
 //! `postvec.migrate()`: switch a column's embedding model and convert the
-//! existing vectors in place via ninference `ConvertEmbeddings`. No
+//! existing vectors in place via the engine's `ConvertEmbeddings`. No
 //! re-embedding of source text. Build-new-column-then-swap, never in-place
 //! `ALTER COLUMN TYPE` (that would rewrite the table under
 //! `ACCESS EXCLUSIVE`).

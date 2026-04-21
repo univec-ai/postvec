@@ -263,11 +263,11 @@ fi
 # they are built once per architecture and packaged only when their payload is
 # present. Absence is normal for a remote-only release job.
 if wanted onnxruntime; then
-    if [[ -d "${ORT_PAYLOAD_ROOT}/opt/postvec/ninference/libs/onnxruntime" ]]; then
+    if [[ -d "${ORT_PAYLOAD_ROOT}/opt/postvec/libs/onnxruntime" ]]; then
         # Every real shared object in the payload, resolved as one set — the
         # providers library needs libstdc++ even though the main one does not.
         mapfile -t ort_libs < <(
-            find "${ORT_PAYLOAD_ROOT}/opt/postvec/ninference/libs/onnxruntime" \
+            find "${ORT_PAYLOAD_ROOT}/opt/postvec/libs/onnxruntime" \
                  -type f -name '*.so*' | LC_ALL=C sort
         )
         SHLIB_DEPENDS="$(shlib_depends_for onnxruntime "${ort_libs[@]}")" \
@@ -279,7 +279,7 @@ if wanted onnxruntime; then
 fi
 
 if wanted model; then
-    if [[ -d "${MODEL_PAYLOAD_ROOT}/opt/postvec/ninference/models/${MODEL_BACKEND}/${MODEL_NAME}" ]]; then
+    if [[ -d "${MODEL_PAYLOAD_ROOT}/opt/postvec/models/${MODEL_BACKEND}/${MODEL_NAME}" ]]; then
         # `all`/`noarch`: one build per distribution, into the noarch root. The
         # architecture in this invocation names nothing about these two packages
         # and must not end up in their path, or an arm64 consumer would have to

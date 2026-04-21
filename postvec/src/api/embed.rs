@@ -209,7 +209,7 @@ impl EmbedResolution {
 /// to an embed-bridge route (embed with a converter's source model, convert
 /// into the requested space). Deterministic: candidate converters are ranked
 /// by name. Re-resolved from the cache on every use, so a model that later
-/// becomes directly embeddable (e.g. a provider API key added to ninference)
+/// becomes directly embeddable (e.g. a provider API key added on the inference side)
 /// upgrades to `Direct` automatically.
 pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvError> {
     match resolve_embed(model) {
@@ -442,7 +442,7 @@ pub(crate) fn prune_unseen_models(models: &[ModelInfo]) -> Result<(), pgrx::spi:
 
 /// Poll the discovery endpoints and refresh the model cache. Returns the
 /// number of models seen. In gRPC mode discovery polls the configured
-/// ninference HTTP endpoints; in embedded mode it polls the engine host's
+/// the configured HTTP endpoints; in embedded mode it polls the engine host's
 /// loopback `/config` listener (`postvec.embedded_http_listen`), so it
 /// errors with a transport error while the worker/engine is still coming up.
 /// Rarely needed either way — the worker refreshes the cache on the
@@ -565,7 +565,7 @@ REVOKE EXECUTE ON FUNCTION postvec.convert(real[], text, text) FROM PUBLIC;
 mod tests {
     use super::*;
 
-    /// Canned /config payload (the ninference /config models shape): one embed
+    /// Canned /config payload (the inference host's /config models shape): one embed
     /// model, two chained convert models, a convert-bridge executor, an
     /// embed-bridge executor, a converter to an external (convert-only)
     /// target space, plus a disabled model that must not land in the cache.
@@ -742,7 +742,7 @@ mod tests {
     /// Direct calls may address an embed model by internal name, but the
     /// engine-side embed-bridge resolver accepts the model's semantic output
     /// name only (`target_model`, falling back to `name` when it is absent).
-    /// Do not preflight a route that ninference will reject at execution time.
+    /// Do not preflight a route the engine will reject at execution time.
     #[pg_test]
     fn embed_route_bridge_source_matches_engine_resolver_semantics() {
         load_fixture();

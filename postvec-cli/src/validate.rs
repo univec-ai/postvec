@@ -99,7 +99,7 @@ pub fn model_list(raw: &[String]) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// A ninference gRPC endpoint. The hostname is preserved verbatim for the
+/// An inference gRPC endpoint. The hostname is preserved verbatim for the
 /// configuration file; resolution happens only for probing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct GrpcEndpoint {
@@ -194,7 +194,7 @@ pub fn grpc_endpoints(raw: &[String]) -> Result<Vec<GrpcEndpoint>> {
     Ok(out)
 }
 
-/// A ninference HTTP base URL used for `GET /config`.
+/// An inference HTTP base URL used for `GET /config`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HttpEndpoint {
     /// Exactly what goes into the GUC (no trailing slash).
@@ -256,7 +256,7 @@ pub fn http_endpoint(raw: &str) -> Result<HttpEndpoint> {
         return Err(bad("empty host"));
     }
     // Keep any base path the operator supplied (a reverse proxy may mount
-    // ninference under a prefix), but normalize the trailing slash so
+    // the inference host under a prefix), but normalize the trailing slash so
     // `/config` is joined exactly once.
     let base = url.as_str().trim_end_matches('/').to_string();
     Ok(HttpEndpoint {
@@ -528,8 +528,8 @@ mod tests {
     #[test]
     fn absolute_paths_are_required_and_normalized() {
         assert_eq!(
-            absolute_path(Path::new("/opt/./ninference/"), "--path").unwrap(),
-            PathBuf::from("/opt/ninference")
+            absolute_path(Path::new("/opt/./engine/"), "--path").unwrap(),
+            PathBuf::from("/opt/engine")
         );
         assert!(absolute_path(Path::new("relative/path"), "--path").is_err());
     }

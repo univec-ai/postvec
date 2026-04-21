@@ -82,7 +82,7 @@ esac
 # silently mangled — refuse rather than guess.
 for value in "${POSTVEC_DATABASES}" "${POSTVEC_SHARED_PRELOAD_LIBRARIES}" \
              "${POSTVEC_GRPC_ENDPOINTS:-}" "${POSTVEC_HTTP_ENDPOINTS:-}" \
-             "${POSTVEC_EMBEDDED_MODELS:-}" "${POSTVEC_NINFERENCE_PATH:-}"; do
+             "${POSTVEC_EMBEDDED_MODELS:-}" "${POSTVEC_PATH:-}"; do
     if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
         usage "configuration values may not contain line breaks"
     fi
@@ -110,7 +110,7 @@ postvec_args=(
 )
 
 if [[ "${mode}" == embedded ]]; then
-    root="${POSTVEC_NINFERENCE_PATH:-/opt/postvec/ninference}"
+    root="${POSTVEC_PATH:-/opt/postvec}"
     # Fail fast on image corruption: an embedded image whose engine assets are
     # missing can never become healthy, and saying so now is far better than a
     # server that starts, retries every 30 seconds and queues jobs forever.
@@ -122,7 +122,7 @@ Use a *-complete image tag, or set POSTVEC_MODE=grpc to use remote inference."
         || fatal "no ONNX Runtime under ${root}/libs — the engine could not load a model"
 
     postvec_args+=(
-        -c "postvec.ninference_path=${root}"
+        -c "postvec.path=${root}"
         # Loopback only, and deliberately not configurable from the
         # environment: anything that can reach the gRPC listener can drive
         # inference, and it has neither authentication nor TLS.
@@ -134,14 +134,14 @@ Use a *-complete image tag, or set POSTVEC_MODE=grpc to use remote inference."
     fi
 else
     if [[ -n "${POSTVEC_GRPC_ENDPOINTS:-}" ]]; then
-        postvec_args+=(-c "postvec.ninference_grpc_endpoints=${POSTVEC_GRPC_ENDPOINTS}")
+        postvec_args+=(-c "postvec.grpc_endpoints=${POSTVEC_GRPC_ENDPOINTS}")
     fi
     if [[ -n "${POSTVEC_HTTP_ENDPOINTS:-}" ]]; then
-        postvec_args+=(-c "postvec.ninference_http_endpoints=${POSTVEC_HTTP_ENDPOINTS}")
+        postvec_args+=(-c "postvec.http_endpoints=${POSTVEC_HTTP_ENDPOINTS}")
     fi
     if [[ -z "${POSTVEC_GRPC_ENDPOINTS:-}" ]]; then
         printf 'postvec: no POSTVEC_GRPC_ENDPOINTS set — the worker will start and idle.\n' >&2
-        printf 'postvec: vectors fill once an ninference endpoint is configured.\n' >&2
+        printf 'postvec: vectors fill once an inference endpoint is configured.\n' >&2
     fi
 fi
 

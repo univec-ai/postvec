@@ -69,4 +69,4 @@ terms:
   * bundled embedding model — see the model package's own LICENSE, NOTICE and
                               SOURCE.json under
                               /usr/share/doc/postvec-model-*/ and
-                              /opt/postvec/ninference/models/
+                              /opt/postvec/models/

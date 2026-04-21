@@ -15,14 +15,14 @@
 # scripts/lib.sh:render_changelog from packaging/postvec/changelog.Debian.
 
 # The engine assets — the ONNX Runtime shared libraries and the bundled model —
-# live under /opt/postvec/ninference.
+# live under /opt/postvec.
 #
 # Debian Policy §9.1.1 forbids /opt to packages *in the Debian archive*, and
 # defers to the FHS, which reserves /opt/<provider> for exactly this: add-on
 # software from a third-party distributor. postvec is not in the Debian
-# archive, and the path is not incidental — `postvec.ninference_path` defaults
-# to it, the container image sets POSTVEC_NINFERENCE_PATH to it, and
-# `postvec setup --embedded --path /opt/postvec/ninference` is the documented
+# archive, and the path is not incidental — `postvec.path` defaults
+# to it, the container image sets POSTVEC_PATH to it, and
+# `postvec setup --embedded --path /opt/postvec` is the documented
 # command. Moving the assets to /usr/lib to satisfy a rule written for archive
 # packages would mean shipping model weights and a vendored runtime into a
 # directory the distribution owns, which is the outcome the rule exists to

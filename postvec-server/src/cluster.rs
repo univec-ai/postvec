@@ -1,8 +1,8 @@
 //! Cluster membership over the `memberlist` gossip protocol.
 //!
-//! Modelled on UniVec's internal ninference (`app_lib/src/cluster.rs`) so the
+//! Modelled on UniVec's internal inference engine (`app_lib/src/cluster.rs`) so the
 //! two fleets behave the same way under partition. It is not a literal
-//! transcription, because ninference pins `memberlist` 0.6.6 and **the whole
+//! transcription, because the upstream engine pins `memberlist` 0.6.6 and **the whole
 //! 0.6 line is yanked on crates.io** — a published crate cannot depend on it.
 //! This targets 0.8, whose API differs in three places: `join` takes an
 //! address rather than a `Node`, bind addresses are added one at a time, and
@@ -12,17 +12,17 @@
 //!
 //! What changed deliberately, and why:
 //!
-//! - **The default group is `postvec`, not `ninference`.** A stray internal
+//! - **The default group is `postvec`, not the upstream's.** A stray internal
 //!   node must never join a customer's fleet, and a published server must
 //!   never join UniVec's mesh because somebody copied a remembered
-//!   `--group ninference`.
+//!   the upstream group name via `--group`.
 //! - **Peers are resolved before they get here** ([`crate::net`]), so
-//!   Compose service names and DNS records work. ninference's seeds are
+//!   Compose service names and DNS records work. The upstream's seeds are
 //!   literal `ip:port` because Ansible renders them.
 //! - **The gossip advertise address is set explicitly** rather than inferred
 //!   from a wildcard bind. `--advertise` therefore controls what peers dial
 //!   at the transport layer, not only what the metadata claims.
-//! - **Self-detection compares real addresses.** ninference decides a seed is
+//! - **Self-detection compares real addresses.** The upstream engine decides a seed is
 //!   itself when the *ports* match and its own bind is a wildcard — which,
 //!   since gossip always binds `0.0.0.0:<gossip_port>` and every node in a
 //!   fleet uses the same gossip port, classifies **every peer** as self and
@@ -382,7 +382,7 @@ fn active_count(members: &[ClusterMember]) -> usize {
 /// only, leaving a node permanently half-connected with nothing to notice it.
 ///
 /// With **no** configured peers there is nothing to re-join to, so a
-/// deliberate single-node deployment must not qualify. ninference's version
+/// deliberate single-node deployment must not qualify. The upstream's version
 /// of this heuristic omits that clause and logs "cluster appears degraded"
 /// every thirty seconds, forever, on every single-node install.
 pub fn should_rejoin(active: usize, seed_count: usize) -> bool {
@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(active_count(&members), 2);
     }
 
-    /// The bug this replaces: ninference decides a seed is itself when the
+    /// The bug this replaces: the upstream engine decides a seed is itself when the
     /// ports match and its own bind is a wildcard, which discards every peer
     /// in a fleet that (correctly) uses one gossip port everywhere.
     #[test]

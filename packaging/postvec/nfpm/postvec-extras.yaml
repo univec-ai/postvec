@@ -10,7 +10,7 @@
 # postgresql-NN-postvec (it is all/noarch and cannot pick a PostgreSQL major).
 # Installing it still changes nothing by itself — the extension has to be
 # preloaded and a database enrolled, which `postvec setup --embedded` does.
-# The payload lands where postvec.ninference_path already points by default,
+# The payload lands where postvec.path already points by default,
 # so no --path is needed.
 
 name: ${EXTRAS_METAPACKAGE}
@@ -34,7 +34,7 @@ description: |
   After the extension is installed, enable in-process inference with:
   postvec setup --database <name> --embedded
   .
-  The payload installs where postvec.ninference_path already points, so no
+  The payload installs where postvec.path already points, so no
   --path is needed. Embedded is also the extension's default mode.
 
 contents:

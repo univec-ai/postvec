@@ -1,4 +1,4 @@
-//! Probing remote ninference nodes: DNS, TCP, `/health`, `/config`.
+//! Probing remote inference nodes: DNS, TCP, `/health`, `/config`.
 
 use super::{parse_config_body, HttpProbes, ProbeOutcome};
 use crate::error::Result;

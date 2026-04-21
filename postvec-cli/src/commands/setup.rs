@@ -394,10 +394,7 @@ enum Activation {
 /// Restarting for an endpoint change would be a needless outage: the endpoint
 /// settings are SIGHUP-context and the worker picks them up on the next wake.
 fn activation(desired: &DesiredConfig, snapshot: &SettingsSnapshot) -> Activation {
-    const SIGHUP_SETTINGS: [&str; 2] = [
-        "postvec.ninference_grpc_endpoints",
-        "postvec.ninference_http_endpoints",
-    ];
+    const SIGHUP_SETTINGS: [&str; 2] = ["postvec.grpc_endpoints", "postvec.http_endpoints"];
     let mut activation = Activation::None;
     for (name, expected) in desired.expected_settings() {
         let active = snapshot.value(name).unwrap_or("");
@@ -1399,11 +1396,8 @@ mod tests {
                 ("shared_preload_libraries", "postvec"),
                 ("postvec.database", "univec"),
                 ("postvec.mode", "grpc"),
-                ("postvec.ninference_grpc_endpoints", "192.0.2.2:33333"),
-                (
-                    "postvec.ninference_http_endpoints",
-                    "https://192.0.2.2:22222",
-                ),
+                ("postvec.grpc_endpoints", "192.0.2.2:33333"),
+                ("postvec.http_endpoints", "https://192.0.2.2:22222"),
             ],
             None,
         );
@@ -1416,11 +1410,8 @@ mod tests {
                 ("shared_preload_libraries", "postvec"),
                 ("postvec.database", "univec"),
                 ("postvec.mode", "grpc"),
-                ("postvec.ninference_grpc_endpoints", "192.0.2.9:33333"),
-                (
-                    "postvec.ninference_http_endpoints",
-                    "https://192.0.2.2:22222",
-                ),
+                ("postvec.grpc_endpoints", "192.0.2.9:33333"),
+                ("postvec.http_endpoints", "https://192.0.2.2:22222"),
             ],
             None,
         );
@@ -1432,11 +1423,8 @@ mod tests {
                 ("shared_preload_libraries", "postvec"),
                 ("postvec.database", "other"),
                 ("postvec.mode", "grpc"),
-                ("postvec.ninference_grpc_endpoints", "192.0.2.2:33333"),
-                (
-                    "postvec.ninference_http_endpoints",
-                    "https://192.0.2.2:22222",
-                ),
+                ("postvec.grpc_endpoints", "192.0.2.2:33333"),
+                ("postvec.http_endpoints", "https://192.0.2.2:22222"),
             ],
             None,
         );
@@ -1463,7 +1451,7 @@ mod tests {
             &snapshot(&[], None),
             &Ownership::Unmanaged,
             &ModeTarget::Embedded {
-                path: PathBuf::from("/opt/postvec/ninference"),
+                path: PathBuf::from("/opt/postvec"),
                 providers_path: None,
                 models: vec![],
                 grpc_listen: None,
@@ -1476,7 +1464,7 @@ mod tests {
             activation(
                 &embedded,
                 &unset(&[
-                    ("postvec.ninference_path", "/opt/postvec/ninference"),
+                    ("postvec.path", "/opt/postvec"),
                     ("postvec.embedded_models", ""),
                     ("postvec.embedded_listen", "127.0.0.1:33433"),
                     ("postvec.embedded_http_listen", "127.0.0.1:33434"),
@@ -1491,11 +1479,8 @@ mod tests {
             activation(
                 &remote,
                 &unset(&[
-                    ("postvec.ninference_grpc_endpoints", "192.0.2.2:33333"),
-                    (
-                        "postvec.ninference_http_endpoints",
-                        "https://192.0.2.2:22222",
-                    ),
+                    ("postvec.grpc_endpoints", "192.0.2.2:33333"),
+                    ("postvec.http_endpoints", "https://192.0.2.2:22222",),
                 ])
             ),
             Activation::Restart,
@@ -1512,11 +1497,8 @@ mod tests {
                 ("shared_preload_libraries", " postvec "),
                 ("postvec.database", "univec"),
                 ("postvec.mode", "grpc"),
-                ("postvec.ninference_grpc_endpoints", "192.0.2.2:33333"),
-                (
-                    "postvec.ninference_http_endpoints",
-                    "https://192.0.2.2:22222",
-                ),
+                ("postvec.grpc_endpoints", "192.0.2.2:33333"),
+                ("postvec.http_endpoints", "https://192.0.2.2:22222"),
             ],
             None,
         );
@@ -1612,18 +1594,18 @@ mod tests {
     #[test]
     fn embedded_inference_is_described_for_the_prompt() {
         let described = describe_inference(&InferenceSettings::Embedded(EmbeddedSettings::new(
-            PathBuf::from("/opt/ninference"),
+            PathBuf::from("/opt/engine"),
             None,
             vec!["baai-bge-m3".into()],
             None,
             None,
         )));
-        assert!(described.contains("/opt/ninference"));
+        assert!(described.contains("/opt/engine"));
         assert!(described.contains("baai-bge-m3"));
         assert!(described.contains("127.0.0.1:33433"));
 
         let scan = describe_inference(&InferenceSettings::Embedded(EmbeddedSettings::new(
-            PathBuf::from("/opt/ninference"),
+            PathBuf::from("/opt/engine"),
             None,
             vec![],
             None,

@@ -1,7 +1,7 @@
 # CPU ONNX Runtime for embedded mode, laid out where the engine looks for it.
 #
 # postvec never links this library: engine::initialize_onnx() searches
-# <postvec.ninference_path>/libs recursively and dlopen()s what it finds. So
+# <postvec.path>/libs recursively and dlopen()s what it finds. So
 # this package is optional — remote-mode installations neither need nor load
 # it — and installing it changes nothing until postvec.mode = 'embedded'.
 #
@@ -22,7 +22,7 @@ license: MIT
 description: |
   ONNX Runtime ${ORT_VERSION} (CPU) for postvec embedded mode.
   .
-  Installs the runtime under /opt/postvec/ninference/libs/onnxruntime, where
+  Installs the runtime under /opt/postvec/libs/onnxruntime, where
   postvec's in-process inference engine finds and loads it (embedded mode,
   the default). Not required for remote mode (postvec.mode = 'grpc').
   .
@@ -42,8 +42,8 @@ ${SHLIB_DEPENDS}
 ${SHLIB_DEPENDS}
 
 contents:
-  - src: ${ORT_PAYLOAD_DIR}/opt/postvec/ninference/libs/onnxruntime
-    dst: /opt/postvec/ninference/libs/onnxruntime
+  - src: ${ORT_PAYLOAD_DIR}/opt/postvec/libs/onnxruntime
+    dst: /opt/postvec/libs/onnxruntime
     type: tree
     file_info: { owner: root, group: root }
   - src: ${ORT_PAYLOAD_DIR}/usr/share/doc/postvec-onnxruntime/LICENSE

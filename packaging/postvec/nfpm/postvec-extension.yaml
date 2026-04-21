@@ -32,7 +32,7 @@ description: |
   .
   Inference runs inside the database host's background worker by default
   (embedded mode; add postvec-extras for the runtime and bundled model), or on
-  remote ninference nodes (postvec.mode = 'grpc').
+  remote inference nodes (postvec.mode = 'grpc').
   .
   Installing this package changes no configuration and no database. Run
   `postvec setup` to configure a cluster, and `postvec doctor` to diagnose one.

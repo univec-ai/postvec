@@ -1,4 +1,4 @@
-//! Model discovery: `GET /config` on ninference HTTP endpoints.
+//! Model discovery: `GET /config` on the configured inference HTTP endpoints.
 //!
 //! Poll every configured node and aggregate models by internal name. The
 //! SQL-cache upsert lives in api/; this module is transport and parsing.
@@ -28,8 +28,8 @@ pub const DISCOVERY_CONCURRENCY: usize = 4;
 /// instead of a fresh client (new pool, new TLS context) per refresh.
 /// Per-request timeouts are applied on the request builder.
 ///
-/// ninference may serve HTTPS with a local self-signed cert (ssl.active in
-/// ninference.json); aphex's discovery accepts those certs too
+/// The inference host may serve HTTPS with a local self-signed certificate;
+/// discovery accepts those certs too
 /// (danger_accept_invalid_certs, same as the hosted gateway's discovery) —
 /// private-network-only trust.
 static HTTP_CLIENT: Lazy<Result<reqwest::Client, String>> = Lazy::new(|| {
@@ -49,7 +49,7 @@ pub struct DiscoveryReport {
     pub failed_nodes: usize,
 }
 
-/// `{ "success": true, "data": ... }` envelope every ninference HTTP route uses.
+/// `{ "success": true, "data": ... }` envelope every inference HTTP route uses.
 #[derive(Debug, Deserialize)]
 struct Envelope {
     #[serde(default)]
@@ -64,7 +64,7 @@ struct ConfigData {
     models: Vec<HubModel>,
 }
 
-/// Mirrors ninference's HubModel envelope (the subset postvec needs).
+/// Mirrors the inference host's HubModel envelope (the subset postvec needs).
 #[derive(Debug, Deserialize)]
 struct HubModel {
     name: String,

@@ -24,7 +24,7 @@ use std::time::Duration;
 /// endpoint, not an inventory.
 pub const MAX_CONFIG_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-/// The `{success, data: {...}}` envelope every ninference HTTP route uses.
+/// The `{success, data: {...}}` envelope every inference HTTP route uses.
 #[derive(Debug, Deserialize)]
 struct Envelope {
     #[serde(default)]
@@ -106,7 +106,7 @@ impl HubModel {
 pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
     let envelope: Envelope = serde_json::from_str(body).map_err(|e| {
         CliError::precondition(format!(
-            "the response is not a ninference /config envelope: {e}"
+            "the response is not an inference /config envelope: {e}"
         ))
     })?;
     if !envelope.success {

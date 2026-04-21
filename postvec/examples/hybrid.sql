@@ -4,8 +4,8 @@
 -- legs, fused on the document key. Handy as a standalone reference.
 --
 -- Prereqs:
---   * a running ninference with an embed model (set :model below)
---   * postvec.ninference_grpc_endpoints / _http_endpoints GUCs set
+--   * a running inference node with an embed model (set :model below)
+--   * postvec.grpc_endpoints / _http_endpoints GUCs set
 --   * CREATE EXTENSION postvec CASCADE; SELECT postvec.refresh_models();
 --
 -- Run:  psql -v model=snowflake-arctic-embed-l-v2.0 -f hybrid.sql

@@ -126,7 +126,7 @@ sql() { docker exec --interactive "${RUN_ID}" psql -U app -d app -tAX -v ON_ERRO
 
 # The worker's first /config poll is jittered 0–15 s so a cluster start does
 # not fire every database at once. Remote health does not wait for the cache
-# (ninference may come up later), so callers that need a model must poll.
+# (the engine may come up later), so callers that need a model must poll.
 wait_for_model() {
     local deadline=$(( SECONDS + 45 )) n=""
     while (( SECONDS < deadline )); do
@@ -262,7 +262,7 @@ if [[ "${VARIANT}" == remote ]]; then
     # Without a reachable engine the worker must *degrade*, not fail: it keeps
     # beating, queues work without burning retry attempts, and search falls
     # back to full text. That is the documented behaviour and it is what makes
-    # a temporarily unreachable ninference survivable.
+    # a temporarily unreachable inference host survivable.
     sql <<'SQL' >/dev/null
 CREATE TABLE IF NOT EXISTS smoke (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, body text NOT NULL);
 SQL
@@ -453,7 +453,7 @@ expect_startup_failure "an empty database list is refused"    --env POSTVEC_DATA
 expect_startup_failure "a newline in a value is refused"      --env "POSTVEC_DATABASES=app
 -c log_statement=all"
 expect_startup_failure "embedded mode without engine assets fails fast" \
-    --env POSTVEC_MODE=embedded --env POSTVEC_NINFERENCE_PATH=/nonexistent
+    --env POSTVEC_MODE=embedded --env POSTVEC_PATH=/nonexistent
 
 echo
 printf '%d passed, %d failed\n' "${passed}" "${failed}"

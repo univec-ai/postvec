@@ -3,7 +3,7 @@
 //! That last part is the whole point. A postvec-server fleet runs the same
 //! command on every node, so every node uses the same gossip port and a
 //! seed list is a list of bare hosts. The bug this suite exists to catch is
-//! the one inherited from ninference: deciding a seed is "me" because the
+//! the one inherited from the upstream engine: deciding a seed is "me" because the
 //! *ports* match while the local bind is a wildcard, which — since every node
 //! in a fleet shares the gossip port — throws away the entire seed list and
 //! leaves every node seeing only itself.

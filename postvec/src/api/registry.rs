@@ -344,7 +344,7 @@ fn adopt_dim(rel: &RelInfo, vec_col: &str, model: &str, col_dim: i32) -> i32 {
     if known.len() > 1 {
         error!(
             "postvec: the model catalogue disagrees about {model:?}: known dimensions are \
-             {known:?}; fix the ninference fleet/model cache before adoption"
+             {known:?}; fix the inference fleet/model cache before adoption"
         );
     }
     if let Some(known) = known.first() {

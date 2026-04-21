@@ -1519,7 +1519,7 @@ STUB
         && bad "--from reached the registry" \
         || ok "--from pulls nothing"
 
-    model_out="${payload}/opt/postvec/ninference/models/onnx-runtime/${BUNDLED_MODEL_NAME}"
+    model_out="${payload}/opt/postvec/models/onnx-runtime/${BUNDLED_MODEL_NAME}"
     if [[ -d "${model_out}" ]]; then
         got="$( ( cd "${model_out}" && find . -type f -printf '%P\n' | LC_ALL=C sort ) | tr '\n' ' ')"
         want="LICENSE assets/tokenizer.json ninference.hub.json onnx/model.onnx "
@@ -1652,25 +1652,25 @@ if case_ "package verify: RPM directory entries are not stray model files"; then
     # The expensive matrix never saw this on Ubuntu-only runs.
     model="${BUNDLED_MODEL_NAME}"
     rpm_listing="$(cat <<LIST
-/opt/postvec/ninference/models/onnx-runtime
-/opt/postvec/ninference/models/onnx-runtime/${model}
-/opt/postvec/ninference/models/onnx-runtime/${model}/LICENSE
-/opt/postvec/ninference/models/onnx-runtime/${model}/assets
-/opt/postvec/ninference/models/onnx-runtime/${model}/assets/tokenizer.json
-/opt/postvec/ninference/models/onnx-runtime/${model}/ninference.hub.json
-/opt/postvec/ninference/models/onnx-runtime/${model}/onnx
-/opt/postvec/ninference/models/onnx-runtime/${model}/onnx/model.onnx
+/opt/postvec/models/onnx-runtime
+/opt/postvec/models/onnx-runtime/${model}
+/opt/postvec/models/onnx-runtime/${model}/LICENSE
+/opt/postvec/models/onnx-runtime/${model}/assets
+/opt/postvec/models/onnx-runtime/${model}/assets/tokenizer.json
+/opt/postvec/models/onnx-runtime/${model}/ninference.hub.json
+/opt/postvec/models/onnx-runtime/${model}/onnx
+/opt/postvec/models/onnx-runtime/${model}/onnx/model.onnx
 /usr/share/doc/postvec-model-${BUNDLED_MODEL_PKG_SUFFIX}/SOURCE.json
 LIST
 )"
     deb_listing="$(cat <<LIST
-./opt/postvec/ninference/models/
-./opt/postvec/ninference/models/onnx-runtime/
-./opt/postvec/ninference/models/onnx-runtime/${model}/
-./opt/postvec/ninference/models/onnx-runtime/${model}/LICENSE
-./opt/postvec/ninference/models/onnx-runtime/${model}/ninference.hub.json
-./opt/postvec/ninference/models/onnx-runtime/${model}/onnx/
-./opt/postvec/ninference/models/onnx-runtime/${model}/onnx/model.onnx
+./opt/postvec/models/
+./opt/postvec/models/onnx-runtime/
+./opt/postvec/models/onnx-runtime/${model}/
+./opt/postvec/models/onnx-runtime/${model}/LICENSE
+./opt/postvec/models/onnx-runtime/${model}/ninference.hub.json
+./opt/postvec/models/onnx-runtime/${model}/onnx/
+./opt/postvec/models/onnx-runtime/${model}/onnx/model.onnx
 LIST
 )"
 
@@ -1691,9 +1691,9 @@ LIST
         printf '%s\n' "${out}" | sed 's/^/          /' >&2
     fi
 
-    if out="$(layout "${rpm_listing}"$'\n'"/opt/postvec/ninference/models/README")"; then
+    if out="$(layout "${rpm_listing}"$'\n'"/opt/postvec/models/README")"; then
         bad "a file sitting in models/ was accepted"
-    elif grep -qF "packaged outside models/<backend>/<name>/: /opt/postvec/ninference/models/README" \
+    elif grep -qF "packaged outside models/<backend>/<name>/: /opt/postvec/models/README" \
             <<<"${out}"; then
         ok "a file sitting in models/ is still refused"
     else
@@ -1701,9 +1701,9 @@ LIST
         printf '%s\n' "${out}" | sed 's/^/          /' >&2
     fi
 
-    if out="$(layout "${rpm_listing}"$'\n'"/opt/postvec/ninference/models/onnx-runtime/orphan.bin")"; then
+    if out="$(layout "${rpm_listing}"$'\n'"/opt/postvec/models/onnx-runtime/orphan.bin")"; then
         bad "a file sitting in the backend directory was accepted"
-    elif grep -qF "packaged outside models/<backend>/<name>/: /opt/postvec/ninference/models/onnx-runtime/orphan.bin" \
+    elif grep -qF "packaged outside models/<backend>/<name>/: /opt/postvec/models/onnx-runtime/orphan.bin" \
             <<<"${out}"; then
         ok "a file sitting in the backend directory is still refused"
     else

@@ -3,7 +3,7 @@
 #
 #   build-onnxruntime-bundle.sh --arch amd64
 #
-# Writes build/payload-<arch>/opt/postvec/ninference/libs/onnxruntime/ in the
+# Writes build/payload-<arch>/opt/postvec/libs/onnxruntime/ in the
 # layout engine::initialize_onnx() expects, plus the licence, third-party
 # notices and a SOURCE.json recording exactly where the bytes came from.
 #
@@ -27,7 +27,7 @@ arch_facts "${RELEASE_ARCH}"
 need curl tar sha256sum find
 
 PAYLOAD="${PKG_DIR}/build/payload-${RELEASE_ARCH}"
-DEST="${PAYLOAD}/opt/postvec/ninference/libs/onnxruntime"
+DEST="${PAYLOAD}/opt/postvec/libs/onnxruntime"
 DOC="${PAYLOAD}/usr/share/doc/postvec-onnxruntime"
 CACHE="${PKG_DIR}/build/downloads"
 ARCHIVE_NAME="onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz"
@@ -78,7 +78,7 @@ cat > "${DOC}/SOURCE.json" <<JSON
   "archive_sha256": "${ORT_SHA256}",
   "architecture": "${RELEASE_ARCH}",
   "license": "MIT",
-  "installed_root": "/opt/postvec/ninference/libs/onnxruntime",
+  "installed_root": "/opt/postvec/libs/onnxruntime",
   "pruned": ["include/", "lib/cmake/", "lib/pkgconfig/"],
   "files": {
 $(manifest_of_tree "${DEST}" | awk '{printf "    \"%s\": \"%s\",\n", $2, $1}' | sed '$ s/,$//')

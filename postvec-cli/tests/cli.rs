@@ -25,6 +25,8 @@ fn run(args: &[&str]) -> Output {
         .args(args)
         // A cluster on the host must not influence these tests.
         .env_remove("POSTVEC_DATABASE_URL")
+        .env_remove("POSTVEC_PATH")
+        .env_remove("POSTVEC_PROVIDERS_PATH")
         .env("NO_COLOR", "1")
         .output()
         .expect("run postvec")
@@ -213,6 +215,8 @@ fn whoami_succeeds_anonymously() {
     let output = Command::new(binary())
         .args(["whoami", "--timeout", "1s"])
         .env_remove("POSTVEC_DATABASE_URL")
+        .env_remove("POSTVEC_PATH")
+        .env_remove("POSTVEC_PROVIDERS_PATH")
         .env_remove("POSTVEC_API_KEY")
         // An unreachable loopback override keeps the test off the network.
         .env(
@@ -383,7 +387,7 @@ fn a_non_loopback_embedded_listener_is_refused() {
         "univec",
         "--embedded",
         "--path",
-        "/opt/ninference",
+        "/opt/engine",
         "--embedded-grpc-listen",
         "192.0.2.2:33433",
         "--dry-run",
@@ -400,7 +404,7 @@ fn a_relative_engine_root_is_refused() {
         "univec",
         "--embedded",
         "--path",
-        "relative/ninference",
+        "relative/engine",
         "--dry-run",
     ]);
     assert_eq!(code(&output), 2);
@@ -1667,6 +1671,8 @@ fn nothing_the_host_would_refuse_is_ever_probed() {
         Command::new(binary())
             .args(args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             // Resolvable, so every one of these runs would otherwise reach
             // the mock.
@@ -1789,6 +1795,8 @@ fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
         Command::new(binary())
             .args(&args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .env("POSTVEC_DIM_DISCOVERY_KEY", "not-a-real-key")
             .output()
@@ -1877,6 +1885,8 @@ fn a_composed_file_over_the_byte_ceiling_is_refused_before_anything_is_spent() {
             "--yes",
         ])
         .env_remove("POSTVEC_DATABASE_URL")
+        .env_remove("POSTVEC_PATH")
+        .env_remove("POSTVEC_PROVIDERS_PATH")
         .env("NO_COLOR", "1")
         .env("POSTVEC_CEILING_KEY", "not-a-real-key")
         .output()
@@ -1976,6 +1986,8 @@ fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
         Command::new(binary())
             .args(&args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .env("POSTVEC_DIR_KEY", "not-a-real-key")
             .output()
@@ -2055,6 +2067,8 @@ fn an_oversized_connector_file_is_refused_not_truncated() {
         let output = Command::new(binary())
             .args(&verb)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .env("POSTVEC_TRUNC_KEY", "not-a-real-key")
             .output()
@@ -2116,6 +2130,8 @@ fn removing_a_contested_claimant_without_a_host_is_refused() {
         Command::new(binary())
             .args(&args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .output()
             .expect("run postvec")
@@ -2169,6 +2185,8 @@ fn without_a_host_an_untouched_sibling_takes_the_recipient_acknowledgement() {
         Command::new(binary())
             .args(&args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .output()
             .expect("run postvec")
@@ -2240,6 +2258,8 @@ fn a_repair_that_changes_the_vector_space_under_a_name_is_refused() {
                 "--acknowledge-in-use",
             ])
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .output()
             .expect("run postvec");
@@ -2287,6 +2307,8 @@ fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgem
         Command::new(binary())
             .args(&args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .output()
             .expect("run postvec")
@@ -2318,6 +2340,8 @@ fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgem
             "json",
         ])
         .env_remove("POSTVEC_DATABASE_URL")
+        .env_remove("POSTVEC_PATH")
+        .env_remove("POSTVEC_PROVIDERS_PATH")
         .env("NO_COLOR", "1")
         .output()
         .expect("run postvec");
@@ -2372,6 +2396,8 @@ fn a_bare_file_beside_a_surviving_route_is_refused_without_a_host() {
         let output = Command::new(binary())
             .args(&args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .output()
             .expect("run postvec");
@@ -2417,6 +2443,8 @@ fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledg
         Command::new(binary())
             .args(&args)
             .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
             .output()
             .expect("run postvec")

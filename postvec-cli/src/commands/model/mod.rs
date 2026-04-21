@@ -2,11 +2,15 @@
 //!
 //! Target resolution, in order: an explicit `--path DIR` wins and is
 //! pure filesystem management (no cluster, no activation, no database
-//! refresh). Otherwise the selected cluster's effective settings decide.
-//! Embedded mode manages (and can activate against)
-//! `postvec.ninference_path`. Remote mode can only list what the
+//! refresh); `--database-url` is an explicit cluster choice; the
+//! `POSTVEC_PATH` environment variable acts like `--path`
+//! (the container images set it). Otherwise the selected cluster's
+//! effective settings decide. Embedded mode manages (and can activate
+//! against) `postvec.path`. Remote mode can only list what the
 //! configured nodes advertise and refuses local mutation: a remote fleet
-//! is administered through `nin`, not through this CLI.
+//! is administered through `nin`, not through this CLI. With no cluster
+//! on the host at all, the packaged default root
+//! (`/opt/postvec`) is used when it exists.
 
 pub mod activate;
 pub mod admin;
@@ -119,13 +123,46 @@ async fn resolve_target_inner(
         return Ok(ModelTarget::Path(ModelRoot::new(path)));
     }
     // An operator-supplied URI is an explicit authentication choice. Do not
-    // fall back to a local snippet that may belong to a different server.
+    // fall back to a local snippet that may belong to a different server —
+    // and do not let an image-baked environment override shadow it either.
     if cli.database_url.is_some() {
         let context = Context::open(cli, output).await?;
         return target_from_live(context).await;
     }
+    // POSTVEC_PATH: same semantics as --path (pure filesystem
+    // management). The container images set it, which is what lets
+    // `docker exec <ctr> postvec model …` run flag-free.
+    if let Some(root) = crate::config::env_path_override(crate::config::ENGINE_ROOT_ENV)? {
+        output.note(&format!(
+            "using engine root {} (from {})",
+            root.display(),
+            crate::config::ENGINE_ROOT_ENV
+        ));
+        return Ok(ModelTarget::Path(ModelRoot::new(root)));
+    }
 
-    let cluster = Context::discover_local(cli, output).await?;
+    let cluster = match Context::discover_local(cli, output).await {
+        Ok(cluster) => cluster,
+        // No cluster on this host at all. The packaged engine root is still a
+        // meaningful target when it exists (a container, or packages installed
+        // before `postvec setup`), and managing it directly is exactly what an
+        // explicit `--path /opt/postvec` would do.
+        Err(error) => {
+            let default_root = Path::new(crate::config::DEFAULT_ENGINE_ROOT);
+            if default_root.is_dir() {
+                output.note(&format!(
+                    "no PostgreSQL cluster found; using the default engine root {} \
+                     (pass --path or set {} to override)",
+                    default_root.display(),
+                    crate::config::ENGINE_ROOT_ENV
+                ));
+                return Ok(ModelTarget::Path(ModelRoot::new(
+                    default_root.to_path_buf(),
+                )));
+            }
+            return Err(error);
+        }
+    };
     let cluster_id = cluster.identity.id.clone();
     match Context::connect_to(cli, cluster.clone(), output).await {
         Ok(context) => target_from_live(context).await,
@@ -187,11 +224,9 @@ fn target_from_settings(
     let boxed = context.map(Box::new);
     match settings.mode() {
         Some(Mode::Embedded) => {
-            let Some(root) = settings.ninference_path() else {
+            let Some(root) = settings.engine_path() else {
                 return Err(CliError::precondition(
-                    "the cluster is in embedded mode but postvec.ninference_path is unset \
-                     (the server may inherit NINFERENCE_PATH from its environment, which \
-                     this CLI cannot observe)",
+                    "the cluster is in embedded mode but postvec.path could not be read",
                 )
                 .with_fix("pass --path <DIR> to manage the root directly"));
             };
@@ -1318,7 +1353,7 @@ mod tests {
     fn a_readable_snippet_is_enough_to_resolve_an_embedded_root() {
         let settings = crate::config::owned::settings_from_snippet(
             "postvec.mode = 'embedded'\n\
-             postvec.ninference_path = '/opt/postvec/ninference'\n\
+             postvec.path = '/opt/postvec'\n\
              postvec.database = 'app'\n",
         );
         let target = target_from_settings(settings, None, Some("18/main".into())).unwrap();
@@ -1331,10 +1366,7 @@ mod tests {
             } => {
                 assert!(context.is_none());
                 assert_eq!(cluster_id, "18/main");
-                assert_eq!(
-                    root.root,
-                    std::path::PathBuf::from("/opt/postvec/ninference")
-                );
+                assert_eq!(root.root, std::path::PathBuf::from("/opt/postvec"));
             }
             ModelTarget::Path(_) | ModelTarget::Remote { .. } => {
                 panic!("expected an embedded target")

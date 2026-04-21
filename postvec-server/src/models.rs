@@ -125,9 +125,8 @@ pub fn descriptor_index(root: &Path) -> Result<DescriptorIndex, String> {
     let backends = std::fs::read_dir(&models_dir).map_err(|e| {
         format!(
             "cannot scan {}: {e}\n\
-             (this is the engine root's models directory; set --root, \
-             POSTVEC_SERVER_ROOT or NINFERENCE_PATH to the tree `postvec model pull` \
-             writes into)",
+             (this is the engine root's models directory; set --root or \
+             POSTVEC_SERVER_ROOT to the tree `postvec model pull` writes into)",
             models_dir.display()
         )
     })?;
@@ -413,7 +412,7 @@ mod tests {
     fn a_missing_models_directory_names_the_root() {
         let dir = tempfile::tempdir().unwrap();
         let err = descriptor_index(dir.path()).unwrap_err();
-        assert!(err.contains("NINFERENCE_PATH"), "{err}");
+        assert!(err.contains("POSTVEC_SERVER_ROOT"), "{err}");
     }
 
     #[test]

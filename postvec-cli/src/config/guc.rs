@@ -11,7 +11,7 @@
 //!   earlier version of this module wrongly imitated: lower-casing an
 //!   operator's entry would have pointed a working cluster at a library that
 //!   does not exist.)
-//! - `postvec.database`, `postvec.ninference_*_endpoints` and
+//! - `postvec.database`, `postvec.grpc_endpoints`, `postvec.http_endpoints` and
 //!   `postvec.embedded_models` are parsed by the extension itself with a
 //!   plain `split(',')` + `trim` (see `postvec/src/gucs.rs`
 //!   `parse_endpoint_list`), so they have no quoting mechanism at all.

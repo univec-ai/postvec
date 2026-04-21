@@ -13,7 +13,7 @@ Comment:
  file, in @DOC_DIR@.
  .
  A verbatim copy of the licence travels with the weights themselves, under
- /opt/postvec/ninference/models/, which is what a redistribution licence
+ /opt/postvec/models/, which is what a redistribution licence
  requires and what a reader of the installed model directory will look for.
 
 Files: *

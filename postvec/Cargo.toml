@@ -62,7 +62,7 @@ postgres = { version = "0.19", optional = true }
 # Embedded mode (feature "embedded") only. `engine` is a path dependency into
 # the workspace tree; legal from this workspace-excluded crate — it resolves
 # against postvec's own Cargo.lock. ONNX Runtime is load-dynamic: nothing
-# links at build time, the .so is dlopen'ed from $NINFERENCE_PATH/libs at
+# links at build time, the .so is dlopen'ed from the engine root's libs/ at
 # worker start.
 engine = { path = "../engine", features = ["onnx"], optional = true }
 shared = { path = "../shared", optional = true }
