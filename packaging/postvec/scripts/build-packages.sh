@@ -227,7 +227,10 @@ build_one() {
 }
 
 if wanted cli; then
-    SHLIB_DEPENDS="$(shlib_depends_for cli "${CELL_DIR}/cli/postvec")" \
+    # Plain assignment first: `VAR="$(...)" cmd` would discard the generator's
+    # failure and hand nfpm an empty ${SHLIB_DEPENDS}.
+    cli_shlibs="$(shlib_depends_for cli "${CELL_DIR}/cli/postvec")"
+    SHLIB_DEPENDS="${cli_shlibs}" \
         build_one postvec-cli.yaml "postvec-cli" "${COMMON_DIR}"
     # The CLI's symbols belong with the CLI: one package for every major, so
     # two majors' debug packages cannot conflict over the same file.
@@ -241,7 +244,8 @@ A publishable build must ship postvec-cli-${DEBUG_SUFFIX}."
     fi
 fi
 if wanted extension; then
-    SHLIB_DEPENDS="$(shlib_depends_for extension "${so_path}")" \
+    ext_shlibs="$(shlib_depends_for extension "${so_path}")"
+    SHLIB_DEPENDS="${ext_shlibs}" \
         build_one postvec-extension.yaml "${EXTENSION_PACKAGE}" "${EXTENSION_DIR_OUT}"
 
     # A published release ships symbols. Both builds emit line tables, so their
@@ -270,7 +274,8 @@ if wanted onnxruntime; then
             find "${ORT_PAYLOAD_ROOT}/opt/postvec/libs/onnxruntime" \
                  -type f -name '*.so*' | LC_ALL=C sort
         )
-        SHLIB_DEPENDS="$(shlib_depends_for onnxruntime "${ort_libs[@]}")" \
+        ort_shlibs="$(shlib_depends_for onnxruntime "${ort_libs[@]}")"
+        SHLIB_DEPENDS="${ort_shlibs}" \
             build_one postvec-onnxruntime.yaml "postvec-onnxruntime ${ORT_VERSION}" "${COMMON_DIR}"
     else
         warn "no ONNX Runtime payload at ${ORT_PAYLOAD_ROOT} — skipping postvec-onnxruntime"

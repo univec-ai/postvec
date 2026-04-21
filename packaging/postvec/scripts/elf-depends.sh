@@ -60,12 +60,16 @@ deb)
     # minimal one. `--ignore-missing-info` keeps a library without shlibs
     # metadata (there are none here, but the flag makes the failure mode a
     # warning rather than an abort on some releases).
+    # The generator's stderr is kept (/work/shlibdeps.err) and replayed on
+    # failure: apt or dpkg-shlibdeps failing inside the container was
+    # otherwise invisible.
     docker run --rm \
         --platform "${OCI_PLATFORM}" \
         --volume "${WORK}:/work" \
         --env DEBIAN_FRONTEND=noninteractive \
         "${DIST_BASE_IMAGE}" \
         bash -euo pipefail -c '
+            trap "chmod -R a+rwX /work" EXIT
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends dpkg-dev libc-bin >/dev/null
             mkdir -p /work/src/debian
@@ -81,15 +85,18 @@ Description: dependency probe
 EOF
             cd /work/src
             # -O prints to stdout instead of writing debian/substvars.
-            dpkg-shlibdeps -O --ignore-missing-info /work/in/* 2>/dev/null \
+            dpkg-shlibdeps -O --ignore-missing-info /work/in/* 2>/work/shlibdeps.err \
                 | sed -n "s/^shlibs:Depends=//p" \
                 | tr "," "\n" \
                 | sed "s/^ *//; s/ *$//" \
                 | grep -v "^$" \
                 | LC_ALL=C sort -u
-            # The container runs as root; leave the work tree removable.
-            chmod -R a+rwX /work
-        ' > "${WORK}/out"
+        ' > "${WORK}/out" || {
+        [[ -s "${WORK}/shlibdeps.err" ]] && cat "${WORK}/shlibdeps.err" >&2
+        die "the deb dependency generator failed for ${FILES[*]}
+(the container output above says why: an apt/network failure inside the
+${DIST_BASE_IMAGE} container, or dpkg-shlibdeps itself)"
+    }
     ;;
 rpm)
     docker run --rm \
