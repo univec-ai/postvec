@@ -380,6 +380,19 @@ untrusted_ancestor() {
     return 0
 }
 
+# A scratch path docker can bind-mount. A snap-confined docker (or a daemon
+# on another machine) silently mounts an EMPTY directory for host paths it
+# cannot read — /tmp included — so anything destined for `--volume` must live
+# in the checkout, where every other packaging mount already comes from.
+mktemp_mountable_dir() {
+    mkdir -p "${PKG_DIR}/build"
+    mktemp -d "${PKG_DIR}/build/${1}.XXXXXX"
+}
+mktemp_mountable_file() {
+    mkdir -p "${PKG_DIR}/build"
+    mktemp "${PKG_DIR}/build/${1}.XXXXXX"
+}
+
 # A temporary directory the CLI will accept as an engine root's parent.
 # `${PKG_DIR}/build` first — it shares a filesystem with the model cache, so
 # promoting a finished pull is a rename — and TMPDIR when the checkout itself

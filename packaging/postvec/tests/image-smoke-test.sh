@@ -74,7 +74,9 @@ RUN_ID="postvec-smoke-$$"
 VOLUME="${RUN_ID}-data"
 NETWORK="${RUN_ID}-net"
 SERVER="${RUN_ID}-server"
-PASSWORD_FILE="$(mktemp)"
+# Bind-mounted below; /tmp paths do not propagate under a snap-confined docker.
+mkdir -p "${PKG_DIR}/build"
+PASSWORD_FILE="$(mktemp "${PKG_DIR}/build/smoke-pw.XXXXXX")"
 printf 'smoke-%s' "$$" > "${PASSWORD_FILE}"
 
 passed=0 failed=0

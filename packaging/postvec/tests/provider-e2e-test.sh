@@ -218,7 +218,7 @@ setup_package() {
     cell="$(extension_dist_dir "${DISTRO}" "${PG_MAJOR}" "${RELEASE_ARCH}")"
     [[ -d "${common}" && -d "${noarch}" && -d "${cell}" ]] \
         || die "packages missing; build ${DISTRO}/pg${PG_MAJOR} first (scripts/release.sh --distro ${DISTRO} --pg ${PG_MAJOR})"
-    STAGE="$(mktemp -d)"
+    STAGE="$(mktemp_mountable_dir e2e-stage)"
     shopt -s nullglob
     local f
     for f in "${common}"/postvec-cli[-_]* "${common}"/postvec-onnxruntime[-_]* \
@@ -276,7 +276,7 @@ setup_image_common_bits() {
 
 setup_complete_image() {
     [[ -n "${IMAGE}" ]] || die "pass the complete image reference"
-    image_password_file="$(mktemp)"; printf 'pv13-%s' "$$" > "${image_password_file}"
+    image_password_file="$(mktemp_mountable_file e2e-pw)"; printf 'pv13-%s' "$$" > "${image_password_file}"
     local pg_major
     pg_major="$(docker run --rm --entrypoint sh "${IMAGE}" -c 'echo "$PG_MAJOR"' 2>/dev/null || echo 18)"
     if (( pg_major >= 18 )); then DATA_MOUNT=/var/lib/postgresql; else DATA_MOUNT=/var/lib/postgresql/data; fi
@@ -291,7 +291,7 @@ setup_complete_image() {
 setup_remote_image() {
     [[ -n "${IMAGE}" ]] || die "pass the remote image reference"
     [[ -n "${SERVER_IMAGE}" ]] || die "pass --server-image (a postvec-server image)"
-    image_password_file="$(mktemp)"; printf 'pv13-%s' "$$" > "${image_password_file}"
+    image_password_file="$(mktemp_mountable_file e2e-pw)"; printf 'pv13-%s' "$$" > "${image_password_file}"
     local pg_major
     pg_major="$(docker run --rm --entrypoint sh "${IMAGE}" -c 'echo "$PG_MAJOR"' 2>/dev/null || echo 18)"
     if (( pg_major >= 18 )); then DATA_MOUNT=/var/lib/postgresql; else DATA_MOUNT=/var/lib/postgresql/data; fi
@@ -322,7 +322,7 @@ setup_remote_image() {
                     -name 'postvec-cli_*.deb' 2>/dev/null | head -1)"
         [[ -n "${deb}" ]] || die "no built postvec CLI and no postvec-cli deb; build debian12 first"
         need dpkg-deb
-        STAGE="${STAGE:-$(mktemp -d)}"
+        STAGE="${STAGE:-$(mktemp_mountable_dir e2e-stage)}"
         cli="${STAGE}/postvec"
         dpkg-deb --fsys-tarfile "${deb}" | tar -xO ./usr/bin/postvec > "${cli}"
         chmod +x "${cli}"

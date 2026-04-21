@@ -40,12 +40,9 @@ distro_facts "${DISTRO}"
 arch_facts "${RELEASE_ARCH}"
 need docker
 
-# Under build/, not /tmp: this directory is bind-mounted into a container,
-# and a snap-installed docker silently mounts an EMPTY directory for host
-# paths outside $HOME (/tmp included). The checkout is already the one place
-# every other packaging step mounts from.
-mkdir -p "${PKG_DIR}/build"
-WORK="$(mktemp -d "${PKG_DIR}/build/elf-depends.XXXXXX")"
+# Bind-mounted into a container, so it must not live in /tmp (see
+# mktemp_mountable_dir).
+WORK="$(mktemp_mountable_dir elf-depends)"
 trap 'rm -rf "${WORK}"' EXIT
 
 # Copy rather than bind-mount the originals: the generators only read, but a

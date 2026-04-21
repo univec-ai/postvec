@@ -53,7 +53,7 @@ distro_facts "${DISTRO}"
 arch_facts "${RELEASE_ARCH}"
 need docker
 
-STAGE="$(mktemp -d)"
+STAGE="$(mktemp_mountable_dir install-stage)"   # bind-mounted; /tmp does not propagate under snap docker
 STAGE_DEBUG="${STAGE}.debug"
 trap 'rm -rf "${STAGE}" "${STAGE_DEBUG}"' EXIT
 
