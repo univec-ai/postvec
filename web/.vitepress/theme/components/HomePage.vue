@@ -1,14 +1,19 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { withBase } from "vitepress";
 import { SITE } from "../site";
 import PgSnippet from "./PgSnippet.vue";
 
+/* ------------------------------------------------------------------ */
+/* SQL walkthrough tabs                                                */
+/* ------------------------------------------------------------------ */
+
 type Tab = {
   id: string;
   label: string;
-  state: string;
-  note: string;
+  title: string;
+  body: string;
+  expect: string;
   href: string;
   linkText: string;
 };
@@ -16,549 +21,677 @@ type Tab = {
 const tabs: Tab[] = [
   {
     id: "enable",
-    label: "ENABLE ON A TEXT COLUMN",
-    state: "A text column that should become searchable.",
-    note:
-      "postvec adds a vector column beside the source, installs the triggers that keep it current, and fills it in the background.",
+    label: "enable()",
+    title: "Declare a column semantic",
+    body:
+      "Creates the shadow vector column and registers the sync. Inserts and updates queue embedding work, and a background worker fills vectors after each commit.",
+    expect:
+      "The column appears at once; vectors fill in the background. Watch postvec.status() until pending_jobs reaches 0.",
     href: "/docs/guides/enable",
-    linkText: "Enable a column",
+    linkText: "Enable guide",
   },
   {
     id: "search",
-    label: "HYBRID SEARCH",
-    state: "One call, ranked rows.",
-    note:
-      "Semantic and full-text candidates get filtered, ranked and fused. The primary key comes back as text, so the join works on any table shape.",
+    label: "search()",
+    title: "Hybrid search, one call",
+    body:
+      "Full-text and vector retrieval run together and the two rankings are fused. Typed metadata filters narrow the candidates. The primary key comes back as text, so it joins to any table.",
+    expect:
+      "Rows that are close in meaning rank highly even with almost no keyword overlap.",
     href: "/docs/guides/search",
-    linkText: "Search and filters",
+    linkText: "Search guide",
   },
   {
     id: "adopt",
-    label: "ENABLE ON PRE-EXISTING VECTORS",
-    state: "A populated pgvector column, filled by application code.",
-    note:
-      "adopt() registers the column and leaves every stored byte alone. If the model behind it is retired, queries are embedded with an available model and converted into that space.",
+    label: "adopt()",
+    title: "Take over existing vectors",
+    body:
+      "A column already filled by some other pipeline, even in a retired space like ada-002, is registered as it is. Queries are embedded with a local model and converted into that space.",
+    expect: "Stored bytes untouched; search works on the next query.",
     href: "/docs/guides/adopt",
-    linkText: "Adopt existing vectors",
+    linkText: "Adopt guide",
   },
   {
     id: "migrate",
-    label: "MIGRATE VECTOR FORMATS",
-    state: "The stored space is the one that has to move.",
-    note:
-      "Stored vectors convert in batches into a new column while writes keep flowing. The columns swap at finalization. The source text stays put.",
+    label: "migrate()",
+    title: "Change models in place",
+    body:
+      "Stored vectors convert directly into the new model's space, drawing on a catalogue of " +
+      SITE.conversionPairs +
+      " conversion pairs. The source text is not re-embedded. Finalize is a deliberate second step.",
+    expect: "The old column keeps serving search until you finalize.",
     href: "/docs/guides/migrate",
-    linkText: "Migrate in place",
+    linkText: "Migrate guide",
   },
 ];
 
 const active = ref(tabs[0].id);
+
+function onTabKey(e: KeyboardEvent, idx: number) {
+  const dir = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+  if (!dir) return;
+  e.preventDefault();
+  const next = (idx + dir + tabs.length) % tabs.length;
+  active.value = tabs[next].id;
+  const bar = (e.currentTarget as HTMLElement).parentElement;
+  (bar?.children[next] as HTMLElement | undefined)?.focus();
+}
+
+/* ------------------------------------------------------------------ */
+/* Topology figure                                                     */
+/* ------------------------------------------------------------------ */
+/* Three phases cycle in the hero. Dots travel on SMIL animateMotion,
+   so no JavaScript runs per frame; the only timer is one setInterval
+   for the phase change. The SVG is paused whenever it is scrolled out
+   of view or the tab is hidden, and prefers-reduced-motion gets a
+   static drawing of the full topology. */
+
+type Phase = "a" | "b" | "c";
+const PHASES: Phase[] = ["a", "b", "c"];
+const PHASE_MS = 7000;
+
+const captions: Record<Phase, { title: string; body: string }> = {
+  a: {
+    title: "Inference is embedded.",
+    body:
+      "Text is embedded inside PostgreSQL. Models on disk, no API key, nothing leaves the host.",
+  },
+  b: {
+    title: "Need more throughput? Add nodes.",
+    body:
+      "Optional postvec-server nodes take inference off the database host, over gRPC. Same SQL.",
+  },
+  c: {
+    title: "Nodes form a cluster.",
+    body:
+      "Servers find each other by gossip. Add one and the fleet grows, with no reconfiguration.",
+  },
+};
+
+const phase = ref<Phase>("a");
+const animate = ref(true); // false under prefers-reduced-motion
+const paused = ref(false);
+const figure = ref<HTMLElement | null>(null);
+const svg = ref<SVGSVGElement | null>(null);
+
+let timer: number | undefined;
+let observer: IntersectionObserver | undefined;
+let inView = true;
+
+function setPhase(p: Phase, restart = true) {
+  phase.value = p;
+  if (restart && animate.value) startTimer();
+}
+
+function startTimer() {
+  stopTimer();
+  timer = window.setInterval(() => {
+    const i = PHASES.indexOf(phase.value);
+    phase.value = PHASES[(i + 1) % PHASES.length];
+  }, PHASE_MS);
+}
+
+function stopTimer() {
+  if (timer !== undefined) {
+    window.clearInterval(timer);
+    timer = undefined;
+  }
+}
+
+function syncRunning() {
+  const shouldRun = animate.value && inView && !document.hidden;
+  paused.value = !shouldRun;
+  if (shouldRun) {
+    svg.value?.unpauseAnimations();
+    if (timer === undefined) startTimer();
+  } else {
+    svg.value?.pauseAnimations();
+    stopTimer();
+  }
+}
+
+function onVisibility() {
+  syncRunning();
+}
+
+onMounted(() => {
+  const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+  if (mq.matches) {
+    animate.value = false;
+    phase.value = "c";
+    return;
+  }
+  if ("IntersectionObserver" in window && figure.value) {
+    observer = new IntersectionObserver(
+      (entries) => {
+        inView = entries[0]?.isIntersecting ?? true;
+        syncRunning();
+      },
+      { threshold: 0.15 },
+    );
+    observer.observe(figure.value);
+  }
+  document.addEventListener("visibilitychange", onVisibility);
+  syncRunning();
+});
+
+onBeforeUnmount(() => {
+  stopTimer();
+  observer?.disconnect();
+  document.removeEventListener("visibilitychange", onVisibility);
+});
 </script>
 
 <template>
   <main class="home-page">
-    <div class="wrap">
-      <header class="hero">
+    <!-- ============================================================ -->
+    <!-- Hero                                                          -->
+    <!-- ============================================================ -->
+    <header class="hero">
+      <div class="wrap hero__grid">
         <div class="hero__copy">
+          <p class="pill">PostgreSQL extension · pg 16 / 17 / 18</p>
           <h1>
-            Managed embeddings, hybrid search and vector conversion
-            for PostgreSQL
+            <em>Evergreen</em> hybrid search for PostgreSQL
           </h1>
           <p class="subhead">
-            Inference with local models, postvec-server nodes or hosted
-            embedding providers. Compatible with PostgreSQL 16, 17 and 18.
+            Full-text and semantic search in one call. Embedding runs
+            inside the database with local models, or through hosted
+            providers. Stored vectors convert between model spaces in
+            place, OpenAI to Gemini, Cohere to Snowflake, with no
+            re-embedding.
           </p>
           <p class="lede">
-            postvec makes a text column semantic. It keeps a
-            <code>pgvector</code> column beside your data, answers
-            full-text and semantic queries in one call, and converts
-            stored vectors from one model space into another.
+            postvec makes a text column semantic. It keeps a shadow
+            <code>pgvector</code> column in sync with the text, fuses
+            full-text and semantic search in one call and converts stored
+            vectors from one model space into another directly, without
+            re-embedding the source text.
           </p>
-          <p class="lede lede--soft">
-            That last part is why it exists. A knowledge base held as
-            vectors is tied to the model that produced them. Providers
-            retire a generation every year or two. The usual answer is
-            to re-embed the corpus and rebuild the index. Then you do
-            it again at the next generation.
-          </p>
-          <nav class="links" aria-label="Primary documentation">
-            <a class="lead-link" :href="withBase('/docs/quickstart')">Quick start</a>
-            <a :href="withBase('/docs/install/')">Install</a>
-            <a :href="withBase('/docs/guides/starting')">Which SQL call</a>
-            <a :href="withBase('/download')">Downloads</a>
-          </nav>
-        </div>
-
-        <aside class="hero__aside" aria-label="Definitions and a first container">
-          <dl class="defs">
-            <div>
-              <dt>Vector lock-in</dt>
-              <dd>
-                The dependency between stored vectors and the model
-                that produced them.
-              </dd>
-            </div>
-            <div>
-              <dt>Embedding debt</dt>
-              <dd>The cost of changing that dependency later.</dd>
-            </div>
-          </dl>
-          <p class="follow">
-            postvec is how those two are operated on.
-          </p>
-          <div class="hero__try">
-            <p class="hero__try-label">A disposable container</p>
-            <PgSnippet
-              id="docker-quickstart"
-              caption="PostgreSQL, pgvector, postvec and MiniLM. Tabs pick the major."
-            />
-            <p class="note">
-              Then the
-              <a :href="withBase('/docs/quickstart')">quick start</a>.
-              Packages and source builds are on
-              <a :href="withBase('/docs/install/')">Install</a>.
-              RDS and Aurora cannot load the worker.
-            </p>
+          <div class="hero__cta">
+            <a class="btn btn--go" :href="withBase('/docs/quickstart')">Quick start</a>
+            <a class="btn" :href="withBase('/docs/')">Documentation</a>
           </div>
-        </aside>
-      </header>
-
-      <section class="band band--facts" aria-label="What it does">
-        <dl class="caps">
-          <div>
-            <dt>No keys in your database</dt>
-            <dd>
-              Embedding runs on open-weight models by default, either
-              inside PostgreSQL or on inference nodes you operate, and
-              the text stays on the host. Hosted providers are opt-in
-              per column; their credentials live in the inference
-              layer, never in the database.
-              <a :href="withBase('/docs/models/providers')">External providers</a>.
-            </dd>
-          </div>
-          <div>
-            <dt>Knowledge bases that outlast a model</dt>
-            <dd>
-              Stored vectors convert between embedding spaces through local
-              converter models or UniVec's hosted conversion API. The
-              catalogue contains {{ SITE.conversionPairs }} UniVec pairs.
-              <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>.
-            </dd>
-          </div>
-          <div>
-            <dt>Retired spaces stay searchable</dt>
-            <dd>
-              A column of <code>ada-002</code> vectors can stay exactly
-              as it is. postvec embeds the query with a model that is
-              still around and converts that one vector into the stored
-              space.
-              <a :href="withBase('/docs/guides/bridge')">Bridge search</a>.
-            </dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="band" aria-labelledby="figure-heading">
-        <div class="band__head band__head--row">
-          <h2 id="figure-heading">How a request moves</h2>
-          <p>
-            Writes go through a background worker. Search embeds the
-            query on the spot. Changing model works on the stored
-            vectors.
+          <p class="hero__fine">
+            Local inference by default. No API key. PostgreSQL License.
           </p>
         </div>
 
-        <figure class="pvd">
-          <svg viewBox="0 0 1040 480" role="img" aria-labelledby="pvd-home-title pvd-home-desc">
-          <title id="pvd-home-title">The three paths through postvec</title>
-          <desc id="pvd-home-desc">Three panels. On the write path a committed row is enqueued by a trigger into postvec.jobs, embedded by the worker and written back to the vector column. On the read path one call embeds the query, ranks a semantic and a full-text leg and fuses the two rankings into ranked primary keys. On the model-change path stored vectors pass through the UniVec converter into a new model space while the source text stays put.</desc>
-          <defs>
-            <marker id="pvd-hm-head" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-              <polygon class="head" points="0 0, 8 3, 0 6"/>
-            </marker>
-          </defs>
+        <figure
+          ref="figure"
+          class="topo"
+          :data-phase="phase"
+          :class="{ 'is-static': !animate, 'is-paused': paused }"
+        >
+          <svg
+            ref="svg"
+            viewBox="0 0 760 330"
+            xmlns="http://www.w3.org/2000/svg"
+            role="img"
+            aria-labelledby="topo-title topo-desc"
+          >
+            <title id="topo-title">Where inference runs</title>
+            <desc id="topo-desc">
+              A PostgreSQL database holding a text column and a shadow vector
+              column, with an embedded inference engine. Optional
+              postvec-server nodes take inference off the host over gRPC and
+              discover each other by gossip.
+            </desc>
 
-          <rect class="s-mask" width="1040" height="480"/>
+            <!-- database -->
+            <g class="db">
+              <path
+                class="db__body"
+                d="M 60 70 a 110 26 0 0 1 220 0 v 190 a 110 26 0 0 1 -220 0 z"
+              />
+              <ellipse class="db__lid" cx="170" cy="70" rx="110" ry="26" />
+              <text class="t-name" x="170" y="76" text-anchor="middle">PostgreSQL</text>
+            </g>
 
-          <rect class="s-zone" x="16" y="40" width="320" height="408" rx="8"/>
-          <rect class="s-zone" x="360" y="40" width="320" height="408" rx="8"/>
-          <rect class="s-zone" x="704" y="40" width="320" height="408" rx="8"/>
+            <!-- table rows -->
+            <g class="rows">
+              <rect class="row" x="88" y="112" width="164" height="24" rx="4" />
+              <text class="t-mono" x="98" y="128">body</text>
+              <text class="t-mono t-type" x="242" y="128" text-anchor="end">text</text>
 
-          <path class="c" d="M 176,128 V 168" marker-end="url(#pvd-hm-head)"/>
-          <path class="c" d="M 176,224 V 264" marker-end="url(#pvd-hm-head)"/>
-          <path class="c" d="M 176,320 V 360" marker-end="url(#pvd-hm-head)"/>
+              <rect class="row row--vec" x="88" y="142" width="164" height="24" rx="4" />
+              <text class="t-mono t-accent" x="98" y="158">body_semantic</text>
+              <text class="t-mono t-accent" x="242" y="158" text-anchor="end">vector</text>
+            </g>
 
-          <path class="c" d="M 456,128 V 168" marker-end="url(#pvd-hm-head)"/>
-          <path class="c" d="M 584,128 V 168" marker-end="url(#pvd-hm-head)"/>
-          <path class="c" d="M 456,224 V 264" marker-end="url(#pvd-hm-head)"/>
-          <path class="c" d="M 584,224 V 264" marker-end="url(#pvd-hm-head)"/>
-          <path class="c" d="M 520,320 V 360" marker-end="url(#pvd-hm-head)"/>
+            <!-- embedded inference chip -->
+            <g class="chip">
+              <rect class="chip__body" x="88" y="184" width="164" height="46" rx="6" />
+              <rect
+                v-if="animate"
+                class="chip__pulse"
+                x="88"
+                y="184"
+                width="164"
+                height="46"
+                rx="6"
+              />
+              <text class="t-chip" x="170" y="203" text-anchor="middle">embedded inference</text>
+              <text class="t-chip-sub" x="170" y="219" text-anchor="middle">
+                models on disk · no API key
+              </text>
+            </g>
 
-          <path class="c" d="M 864,128 V 216" marker-end="url(#pvd-hm-head)"/>
-          <path class="c" d="M 864,272 V 360" marker-end="url(#pvd-hm-head)"/>
+            <!-- rails inside the database (invisible, dots ride them) -->
+            <path id="topo-rail-down" d="M 132 138 C 108 158, 108 172, 128 186" fill="none" stroke="none" />
+            <path id="topo-rail-up" d="M 212 186 C 232 172, 232 162, 212 148" fill="none" stroke="none" />
 
-          <rect class="s-mask" x="48" y="34" width="64" height="12"/>
-          <text class="t-zone" x="80" y="43" text-anchor="middle">WRITE PATH</text>
-          <rect class="s-mask" x="392" y="34" width="60" height="12"/>
-          <text class="t-zone" x="422" y="43" text-anchor="middle">READ PATH</text>
-          <rect class="s-mask" x="736" y="34" width="76" height="12"/>
-          <text class="t-zone" x="774" y="43" text-anchor="middle">MODEL CHANGE</text>
+            <!-- gRPC links -->
+            <g class="grpc">
+              <path id="topo-g1" class="wire" d="M 285 130 C 355 88, 410 43, 474 43" />
+              <path id="topo-g2" class="wire" d="M 285 165 C 370 168, 460 165, 579 165" />
+              <path id="topo-g3" class="wire" d="M 285 200 C 355 244, 410 287, 474 287" />
+              <text class="t-wire" x="375" y="150" text-anchor="middle">gRPC</text>
+            </g>
 
-          <rect class="s-mask" x="184" y="142" width="48" height="12"/>
-          <text class="t-arrow" x="208" y="151" text-anchor="middle">TRIGGER</text>
-          <rect class="s-mask" x="184" y="238" width="48" height="12"/>
-          <text class="t-arrow" x="208" y="247" text-anchor="middle">WORKER</text>
-          <rect class="s-mask" x="184" y="334" width="64" height="12"/>
-          <text class="t-arrow" x="216" y="343" text-anchor="middle">WRITE-BACK</text>
+            <!-- cluster mesh -->
+            <g class="mesh">
+              <path id="topo-c12" class="wire wire--mesh" d="M 566 75 C 600 89, 626 109, 642 133" />
+              <path id="topo-c23" class="wire wire--mesh" d="M 642 197 C 626 221, 600 241, 566 255" />
+              <path id="topo-c31" class="wire wire--mesh" d="M 536 253 L 536 77" />
+              <text class="t-wire t-accent" x="688" y="105" text-anchor="middle">gossip</text>
+            </g>
 
-          <rect class="s-mask" x="464" y="142" width="40" height="12"/>
-          <text class="t-arrow" x="484" y="151" text-anchor="middle">EMBED</text>
+            <!-- server nodes -->
+            <g class="servers">
+              <g class="node n1">
+                <rect x="478" y="15" width="118" height="60" rx="6" />
+                <circle cx="492" cy="29" r="3" />
+                <text class="t-node" x="537" y="45" text-anchor="middle">postvec-server</text>
+                <text class="t-node-sub" x="537" y="61" text-anchor="middle">inference node</text>
+              </g>
+              <g class="node n2">
+                <rect x="583" y="135" width="118" height="60" rx="6" />
+                <circle cx="597" cy="149" r="3" />
+                <text class="t-node" x="642" y="165" text-anchor="middle">postvec-server</text>
+                <text class="t-node-sub" x="642" y="181" text-anchor="middle">inference node</text>
+              </g>
+              <g class="node n3">
+                <rect x="478" y="255" width="118" height="60" rx="6" />
+                <circle cx="492" cy="269" r="3" />
+                <text class="t-node" x="537" y="285" text-anchor="middle">postvec-server</text>
+                <text class="t-node-sub" x="537" y="301" text-anchor="middle">inference node</text>
+              </g>
+            </g>
 
-          <rect class="s-mask" x="872" y="166" width="56" height="12"/>
-          <text class="t-arrow" x="900" y="175" text-anchor="middle">migrate()</text>
-          <rect class="s-mask" x="872" y="310" width="92" height="12"/>
-          <text class="t-arrow" x="918" y="319" text-anchor="middle">FINALIZE · SWAP</text>
+            <!-- traveling dots: declarative, no per-frame script -->
+            <g v-if="animate" class="dots">
+              <!-- embedded loop: text down to the engine, vector back up -->
+              <g class="dots--local">
+              <circle class="dot dot--in" r="3" opacity="0">
+                <animateMotion dur="1.4s" begin="0s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+                  <mpath href="#topo-rail-down" />
+                </animateMotion>
+                <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.85;1" dur="1.4s" begin="0s" repeatCount="indefinite" />
+              </circle>
+              <circle class="dot dot--out" r="3" opacity="0">
+                <animateMotion dur="1.4s" begin="1.5s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+                  <mpath href="#topo-rail-up" />
+                </animateMotion>
+                <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.85;1" dur="1.4s" begin="1.5s" repeatCount="indefinite" />
+              </circle>
+              </g>
 
-          <rect class="s-mask" x="56" y="72" width="240" height="56" rx="6"/>
-          <rect class="s-store" x="56" y="72" width="240" height="56" rx="6"/>
-          <text class="t-name" x="176" y="96" text-anchor="middle">docs.body</text>
-          <text class="t-sub" x="176" y="110" text-anchor="middle">source text</text>
+              <!-- gRPC round trips, one per link, staggered -->
+              <g class="dots--grpc">
+                <circle class="dot dot--in" r="3" opacity="0">
+                  <animateMotion dur="1.6s" begin="0.2s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-g1" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="1.6s" begin="0.2s" repeatCount="indefinite" />
+                </circle>
+                <circle class="dot dot--out" r="3" opacity="0">
+                  <animateMotion dur="1.6s" begin="1.9s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-g1" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="1.6s" begin="1.9s" repeatCount="indefinite" />
+                </circle>
 
-          <rect class="s-mask" x="56" y="168" width="240" height="56" rx="6"/>
-          <rect class="s-store" x="56" y="168" width="240" height="56" rx="6"/>
-          <text class="t-name" x="176" y="192" text-anchor="middle">postvec.jobs</text>
-          <text class="t-sub" x="176" y="206" text-anchor="middle">coalesced per row</text>
+                <circle class="dot dot--in" r="3" opacity="0">
+                  <animateMotion dur="1.6s" begin="1.3s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-g2" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="1.6s" begin="1.3s" repeatCount="indefinite" />
+                </circle>
+                <circle class="dot dot--out" r="3" opacity="0">
+                  <animateMotion dur="1.6s" begin="3s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-g2" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="1.6s" begin="3s" repeatCount="indefinite" />
+                </circle>
 
-          <rect class="s-mask" x="56" y="264" width="240" height="56" rx="6"/>
-          <rect class="s-node" x="56" y="264" width="240" height="56" rx="6"/>
-          <text class="t-name" x="176" y="288" text-anchor="middle">Embedding model</text>
-          <text class="t-sub" x="176" y="302" text-anchor="middle">embedded or remote</text>
+                <circle class="dot dot--in" r="3" opacity="0">
+                  <animateMotion dur="1.6s" begin="2.4s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-g3" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="1.6s" begin="2.4s" repeatCount="indefinite" />
+                </circle>
+                <circle class="dot dot--out" r="3" opacity="0">
+                  <animateMotion dur="1.6s" begin="4.1s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-g3" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.12;0.88;1" dur="1.6s" begin="4.1s" repeatCount="indefinite" />
+                </circle>
+              </g>
 
-          <rect class="s-mask" x="56" y="360" width="240" height="56" rx="6"/>
-          <rect class="s-store" x="56" y="360" width="240" height="56" rx="6"/>
-          <text class="t-name" x="176" y="384" text-anchor="middle">docs.body_semantic</text>
-          <text class="t-sub" x="176" y="398" text-anchor="middle">vector(384)</text>
-
-          <rect class="s-mask" x="400" y="72" width="240" height="56" rx="6"/>
-          <rect class="s-node" x="400" y="72" width="240" height="56" rx="6"/>
-          <text class="t-name" x="520" y="96" text-anchor="middle">Query text</text>
-          <text class="t-sub" x="520" y="110" text-anchor="middle">one search() call</text>
-
-          <rect class="s-mask" x="400" y="168" width="112" height="56" rx="6"/>
-          <rect class="s-node" x="400" y="168" width="112" height="56" rx="6"/>
-          <text class="t-name" x="456" y="192" text-anchor="middle">Semantic</text>
-          <text class="t-sub" x="456" y="206" text-anchor="middle">pgvector rank</text>
-
-          <rect class="s-mask" x="528" y="168" width="112" height="56" rx="6"/>
-          <rect class="s-node" x="528" y="168" width="112" height="56" rx="6"/>
-          <text class="t-name" x="584" y="192" text-anchor="middle">Full-text</text>
-          <text class="t-sub" x="584" y="206" text-anchor="middle">tsvector rank</text>
-
-          <rect class="s-mask" x="400" y="264" width="240" height="56" rx="6"/>
-          <rect class="s-node" x="400" y="264" width="240" height="56" rx="6"/>
-          <text class="t-name" x="520" y="288" text-anchor="middle">Fusion</text>
-          <text class="t-sub" x="520" y="302" text-anchor="middle">reciprocal rank</text>
-
-          <rect class="s-mask" x="400" y="360" width="240" height="56" rx="6"/>
-          <rect class="s-node" x="400" y="360" width="240" height="56" rx="6"/>
-          <text class="t-name" x="520" y="384" text-anchor="middle">Ranked rows</text>
-          <text class="t-sub" x="520" y="398" text-anchor="middle">primary keys</text>
-
-          <rect class="s-mask" x="744" y="72" width="240" height="56" rx="6"/>
-          <rect class="s-store" x="744" y="72" width="240" height="56" rx="6"/>
-          <text class="t-name" x="864" y="96" text-anchor="middle">Stored vectors</text>
-          <text class="t-sub" x="864" y="110" text-anchor="middle">old model space</text>
-
-          <rect class="s-mask" x="744" y="216" width="240" height="56" rx="6"/>
-          <rect class="s-focal" x="744" y="216" width="240" height="56" rx="6"/>
-          <text class="t-name" x="864" y="240" text-anchor="middle">UniVec converter</text>
-          <text class="t-sub" x="864" y="254" text-anchor="middle">source text stays put</text>
-
-          <rect class="s-mask" x="744" y="360" width="240" height="56" rx="6"/>
-          <rect class="s-store" x="744" y="360" width="240" height="56" rx="6"/>
-          <text class="t-name" x="864" y="384" text-anchor="middle">Stored vectors</text>
-          <text class="t-sub" x="864" y="398" text-anchor="middle">new model space</text>
+              <!-- gossip: small accent dots around the mesh -->
+              <g class="dots--mesh">
+                <circle class="dot dot--out" r="2.4" opacity="0">
+                  <animateMotion dur="1.2s" begin="0s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-c12" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.85;1" dur="1.2s" begin="0s" repeatCount="indefinite" />
+                </circle>
+                <circle class="dot dot--out" r="2.4" opacity="0">
+                  <animateMotion dur="1.2s" begin="0.9s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-c23" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.85;1" dur="1.2s" begin="0.9s" repeatCount="indefinite" />
+                </circle>
+                <circle class="dot dot--out" r="2.4" opacity="0">
+                  <animateMotion dur="1.2s" begin="1.8s" repeatCount="indefinite" keyPoints="1;0" keyTimes="0;1" calcMode="linear">
+                    <mpath href="#topo-c31" />
+                  </animateMotion>
+                  <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.85;1" dur="1.2s" begin="1.8s" repeatCount="indefinite" />
+                </circle>
+              </g>
+            </g>
           </svg>
-        </figure>
 
-        <dl class="fig-list">
+          <figcaption class="topo__caps">
+            <div
+              v-for="p in PHASES"
+              :key="p"
+              class="topo__cap"
+              :class="{ 'is-on': phase === p }"
+              :aria-hidden="phase !== p"
+            >
+              <h3>{{ captions[p].title }}</h3>
+              <p>{{ captions[p].body }}</p>
+            </div>
+          </figcaption>
+
+          <div v-if="animate" class="topo__steps" role="group" aria-label="Topology phases">
+            <button
+              v-for="(p, i) in PHASES"
+              :key="p"
+              type="button"
+              class="topo__step"
+              :class="{
+                'is-on': phase === p,
+                'is-done': PHASES.indexOf(phase) > i,
+              }"
+              :style="{ '--stepdur': PHASE_MS / 1000 + 's' }"
+              :aria-label="captions[p].title"
+              :aria-pressed="phase === p"
+              @click="setPhase(p)"
+            />
+          </div>
+        </figure>
+      </div>
+    </header>
+
+    <!-- ============================================================ -->
+    <!-- The SQL surface                                               -->
+    <!-- ============================================================ -->
+    <section class="band" aria-labelledby="sql-heading">
+      <div class="wrap">
+        <p class="eyebrow">The whole API, in four verbs</p>
+        <h2 id="sql-heading">Enable, search, adopt, migrate.</h2>
+        <p class="prose">
+          Every operation is a schema-qualified SQL function. Pick the tab
+          that matches what you have. Each one shows the call, what it
+          does and the result you should see.
+        </p>
+
+        <div class="try">
+          <div class="try__head">
+            <p class="try__label">Try it</p>
+            <p class="try__hint">
+              One disposable container with PostgreSQL, pgvector, postvec
+              and the bundled MiniLM model. Tabs pick the major.
+            </p>
+          </div>
+          <PgSnippet id="docker-quickstart" />
+        </div>
+
+        <div class="tabs">
+          <div class="tabs__bar" role="tablist" aria-label="SQL walkthrough">
+            <button
+              v-for="(tab, i) in tabs"
+              :id="'tab-' + tab.id"
+              :key="tab.id"
+              type="button"
+              role="tab"
+              class="tabs__tab"
+              :class="{ 'is-active': active === tab.id }"
+              :aria-selected="active === tab.id"
+              :aria-controls="'panel-' + tab.id"
+              :tabindex="active === tab.id ? 0 : -1"
+              @click="active = tab.id"
+              @keydown="onTabKey($event, i)"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+
+          <div
+            v-for="tab in tabs"
+            v-show="active === tab.id"
+            :id="'panel-' + tab.id"
+            :key="tab.id"
+            class="tabs__panel"
+            role="tabpanel"
+            :aria-labelledby="'tab-' + tab.id"
+          >
+            <div class="tabs__code vp-doc">
+              <slot :name="tab.id" />
+            </div>
+            <div class="tabs__why">
+              <h3>{{ tab.title }}</h3>
+              <p>{{ tab.body }}</p>
+              <p class="expect"><b>Expected:</b> {{ tab.expect }}</p>
+              <a class="more" :href="withBase(tab.href)">{{ tab.linkText }} &rarr;</a>
+            </div>
+          </div>
+        </div>
+
+        <p class="note">
+          Long documents go through
+          <a :href="withBase('/docs/guides/chunking')">recursive chunking</a>,
+          <a :href="withBase('/docs/guides/templates')">templates</a> control
+          what text is sent for embedding and the
+          <a :href="withBase('/docs/reference/sql')">SQL reference</a> lists
+          every function.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Why migrate matters                                          -->
+    <!-- ============================================================ -->
+    <section class="band" aria-labelledby="why-heading">
+      <div class="wrap">
+        <p class="eyebrow">Why the migrate tab matters</p>
+        <h2 id="why-heading">A vector store should not expire with its model.</h2>
+        <div class="prose">
+          <p>
+            A knowledge base held as vectors is tied to the model that
+            produced them. Providers retire a model generation every year
+            or two, and each time that means re-embedding the corpus and
+            rebuilding the index. Semantic retrieval brings two costs with
+            it that are easy to miss at the start.
+          </p>
+        </div>
+
+        <dl class="defs">
           <div>
-            <dt>Write path</dt>
+            <dt>Vector lock-in</dt>
             <dd>
-              A committed row is enqueued by a trigger, embedded by the
-              worker and written back to the vector column.
+              The dependency between stored vectors and the model that
+              produced them. postvec can translate a search query into an
+              older model's space, so a deprecated index keeps answering
+              with no migration.
             </dd>
           </div>
           <div>
-            <dt>Read path</dt>
+            <dt>Embedding debt</dt>
             <dd>
-              One call embeds the query, ranks both legs and fuses the
-              two rankings.
-            </dd>
-          </div>
-          <div>
-            <dt>Model change</dt>
-            <dd>
-              Stored vectors convert into the new model's space in
-              place. The source text stays put.
+              The cost of changing that dependency later. postvec migrates a
+              vector store straight into a newer model's space, using
+              {{ SITE.conversionPairs }} conversion pairs from the UniVec
+              catalogue.
             </dd>
           </div>
         </dl>
 
-        <p class="note note--wide">
-          <a :href="withBase('/docs/concepts/')">How it works</a> covers
-          the worker, the queue and the consistency window.
-        </p>
-      </section>
+        <div class="pledges">
+          <article class="pledge">
+            <h3>Zero API keys</h3>
+            <p>
+              Swappable embedding models run locally, inside PostgreSQL or
+              on inference nodes you operate. Raw text stays on hosts you
+              control. Hosted providers are opt-in per column, and their
+              keys never enter the database.
+            </p>
+            <a :href="withBase('/docs/models/providers')">External providers</a>
+          </article>
+          <article class="pledge">
+            <h3>Evergreen knowledge bases</h3>
+            <p>
+              Convert existing vectors between embedding spaces through the
+              UniVec catalogue of {{ SITE.conversionPairs }} pairs. No
+              re-embedding, no shadow pipeline, and search stays up while
+              the migration runs.
+            </p>
+            <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
+          </article>
+          <article class="pledge">
+            <h3>Deprecated spaces keep working</h3>
+            <p>
+              Bridge search embeds the query with a local model, then
+              converts that one vector into the stored space. An
+              <code>ada-002</code> index answers as if nothing changed.
+            </p>
+            <a :href="withBase('/docs/guides/bridge')">Search a retired space</a>
+          </article>
+        </div>
+      </div>
+    </section>
 
-      <section class="band" aria-labelledby="example-heading">
-        <div class="band__head band__head--row">
-          <h2 id="example-heading">The SQL surface</h2>
+    <!-- ============================================================ -->
+    <!-- Documentation map                                             -->
+    <!-- ============================================================ -->
+    <section class="band" aria-labelledby="map-heading">
+      <div class="wrap">
+        <p class="eyebrow">Find your page</p>
+        <h2 id="map-heading">The documentation map.</h2>
+        <div class="dir">
+          <div class="dir__card">
+            <h3>Get running</h3>
+            <a :href="withBase('/docs/quickstart')">
+              Quick start
+              <small>one disposable container, then delete it</small>
+            </a>
+            <a :href="withBase('/docs/install/docker')">
+              Docker
+              <small>images for pg 16 / 17 / 18</small>
+            </a>
+            <a :href="withBase('/docs/install/packages')">
+              Packages
+              <small>.deb and .rpm, checksummed</small>
+            </a>
+            <a :href="withBase('/docs/install/setup')">
+              Configure
+              <small>postvec setup, then one restart</small>
+            </a>
+            <a :href="withBase('/docs/install/uninstall')">Uninstall</a>
+          </div>
+          <div class="dir__card">
+            <h3>Day to day</h3>
+            <a :href="withBase('/docs/guides/starting')">
+              Which SQL call
+              <small>enable, adopt, bridge or migrate</small>
+            </a>
+            <a :href="withBase('/docs/guides/search')">Search and filters</a>
+            <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
+            <a :href="withBase('/docs/guides/bridge')">Search a retired space</a>
+            <a :href="withBase('/docs/guides/status')">Observe the worker</a>
+          </div>
+          <div class="dir__card">
+            <h3>Models and reference</h3>
+            <a :href="withBase('/docs/models/')">
+              Manage models
+              <small>pull / activate / upgrade</small>
+            </a>
+            <a :href="withBase('/docs/server/')">
+              Remote inference
+              <small>nodes, fleets, gossip</small>
+            </a>
+            <a :href="withBase('/docs/reference/sql')">SQL reference</a>
+            <a :href="withBase('/docs/reference/cli')">CLI reference</a>
+            <a :href="withBase('/docs/troubleshooting')">Troubleshooting</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Worth knowing                                                 -->
+    <!-- ============================================================ -->
+    <section class="band band--last" aria-labelledby="know-heading">
+      <div class="wrap">
+        <p class="eyebrow">Worth knowing before you start</p>
+        <h2 id="know-heading" class="visually-hidden">Requirements and licensing</h2>
+        <div class="prose prose--wide">
           <p>
-            Application work is SQL, in the <code>postvec</code> schema.
-            The CLI configures the cluster and, in embedded mode, the
-            models. Each tab is a starting state.
+            You need PostgreSQL 16, 17 or 18 on a host where you can set
+            <code>shared_preload_libraries</code>. A restart is part of
+            first-time setup. Managed services that forbid the setting (RDS,
+            Aurora) cannot run the worker. Vectors fill after commit, not
+            inside the inserting transaction.
+          </p>
+          <p>
+            Inference runs embedded in PostgreSQL or on remote
+            <code>postvec-server</code> nodes; the mode is one cluster-wide
+            setting and the SQL is the same in both.
+            <a :href="withBase('/docs/concepts/modes')">Embedded vs remote</a>
+            has the trade-offs.
+          </p>
+          <p>
+            The extension, the CLI and their packages are under the
+            PostgreSQL License. The bundled MiniLM model works offline;
+            converter weights are a separate UniVec product, with a public
+            catalogue and a larger private one for verified accounts.
+            Release {{ SITE.version }} is {{ SITE.releaseStage }}.
           </p>
         </div>
-
-          <div class="tabs">
-            <div class="tabs__bar" role="tablist" aria-label="Starting state">
-              <button
-                v-for="tab in tabs"
-                :key="tab.id"
-                type="button"
-                role="tab"
-                class="tabs__tab"
-                :class="{ 'is-active': active === tab.id }"
-                :aria-selected="active === tab.id"
-                @click="active = tab.id"
-              >
-                {{ tab.label }}
-              </button>
-            </div>
-
-            <div
-              v-for="tab in tabs"
-              v-show="active === tab.id"
-              :key="tab.id"
-              class="tabs__panel"
-              role="tabpanel"
-            >
-              <p class="tabs__state">{{ tab.state }}</p>
-              <div class="example-code vp-doc">
-                <slot :name="tab.id" />
-              </div>
-              <p class="tabs__note">
-                {{ tab.note }}
-                <a :href="withBase(tab.href)">{{ tab.linkText }}</a>
-                Long documents go through
-                <a :href="withBase('/docs/guides/chunking')">recursive chunking</a>.
-                <a :href="withBase('/docs/guides/templates')">Templates</a>
-                control what text is sent for embedding.
-                <a :href="withBase('/docs/reference/sql')">SQL reference</a>
-                lists every function.
-              </p>
-            </div>
-          </div>
-      </section>
-
-      <section class="band" aria-labelledby="modes-heading">
-        <h2 id="modes-heading">Two inference modes, one SQL surface</h2>
-        <div class="modes">
-          <article>
-            <h3>Embedded</h3>
-            <p>
-              The engine runs inside the PostgreSQL launcher. Text and
-              weights stay on the database host, and you don't have to
-              deploy anything else. Inference shares CPU, memory and
-              failures with PostgreSQL. That's the trade.
-            </p>
-          </article>
-          <article>
-            <h3>Remote</h3>
-            <p>
-              Backends call ninference over gRPC, so inference can sit
-              on its own CPU or GPU nodes. That's the shape for
-              production at size. Mode is one cluster-wide setting. The
-              SQL stays the same.
-            </p>
-          </article>
-        </div>
-        <p class="note note--wide">
-          The extension, the CLI and their packages are under the
-          PostgreSQL License. ninference is licensed separately, under
-          community (non-commercial) and organisation (commercial)
-          terms. Converter weights are a UniVec product: the public
-          catalogue is a subset, and a verified account sees the
-          private superset. The bundled MiniLM model needs neither an
-          account nor a network.
-          <a :href="withBase('/docs/concepts/modes')">Embedded vs remote</a>.
-        </p>
-      </section>
-
-      <section class="band band--docs" aria-labelledby="docs-heading">
-        <h2 id="docs-heading">Documentation</h2>
-        <div class="index">
-          <div>
-            <h3>Install</h3>
-            <ul>
-              <li><a :href="withBase('/docs/quickstart')">Quick start</a></li>
-              <li><a :href="withBase('/docs/install/docker')">Docker</a></li>
-              <li><a :href="withBase('/docs/install/packages')">Packages</a></li>
-              <li><a :href="withBase('/docs/install/setup')">Configure the cluster</a></li>
-              <li><a :href="withBase('/docs/install/uninstall')">Uninstall</a></li>
-            </ul>
-          </div>
-          <div>
-            <h3>Use</h3>
-            <ul>
-              <li><a :href="withBase('/docs/guides/starting')">Which SQL call</a></li>
-              <li><a :href="withBase('/docs/guides/search')">Search and filters</a></li>
-              <li><a :href="withBase('/docs/guides/chunking')">Chunk long documents</a></li>
-              <li><a :href="withBase('/docs/guides/migrate')">Migrate in place</a></li>
-              <li><a :href="withBase('/docs/models/')">Models</a></li>
-            </ul>
-          </div>
-          <div>
-            <h3>Operate</h3>
-            <ul>
-              <li><a :href="withBase('/docs/guides/status')">Status and health</a></li>
-              <li><a :href="withBase('/docs/troubleshooting')">Troubleshooting</a></li>
-              <li><a :href="withBase('/docs/security')">Security and grants</a></li>
-              <li><a :href="withBase('/docs/limits')">Limits</a></li>
-              <li><a :href="withBase('/docs/faq')">FAQ</a></li>
-            </ul>
-          </div>
-        </div>
-        <p class="note">
-          Release {{ SITE.version }} is {{ SITE.releaseStage }}. Search
-          in the header jumps to a function, GUC or topic.
-        </p>
-      </section>
-    </div>
+      </div>
+    </section>
   </main>
 </template>
 
 <style scoped>
+/* ------------------------------------------------------------------ */
+/* Page frame                                                          */
+/* ------------------------------------------------------------------ */
+
 .home-page {
+  --home-radius: 6px;
+  --home-ink-line: var(--vp-c-text-1);
   color: var(--vp-c-text-1);
+  font-size: 1rem;
+  line-height: 1.65;
 }
 
 .wrap {
   width: min(72rem, calc(100% - 3.5rem));
   margin: 0 auto;
-  padding: 3.75rem 0 5rem;
-}
-
-h1 {
-  margin: 0;
-  max-width: 20ch;
-  font-family: var(--pv-font-display);
-  font-size: clamp(2.05rem, 3.6vw, 2.85rem);
-  font-weight: 500;
-  letter-spacing: -0.03em;
-  line-height: 1.12;
-  text-wrap: balance;
-}
-
-h1::after {
-  content: "";
-  display: block;
-  width: 2.4rem;
-  height: 2px;
-  margin-top: 1.1rem;
-  background: var(--pv-mark);
-}
-
-.subhead {
-  max-width: 38rem;
-  margin: 1.05rem 0 0;
-  font-size: 1.08rem;
-  line-height: 1.5;
-  color: var(--vp-c-text-2);
-}
-
-.lede {
-  max-width: 38rem;
-  margin: 1.1rem 0 0;
-  font-size: 1.05rem;
-  line-height: 1.65;
-}
-
-.lede--soft {
-  color: var(--vp-c-text-2);
-  font-size: 1rem;
-}
-
-.follow {
-  margin: 0.95rem 0 0;
-  color: var(--vp-c-text-1);
-  font-size: 0.98rem;
-  font-family: var(--pv-font-display);
-  font-weight: 500;
-  line-height: 1.5;
-}
-
-.hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
-  gap: 3.25rem;
-  align-items: start;
-  padding-bottom: 3.2rem;
-}
-
-.hero__aside {
-  margin-top: 0.35rem;
-  padding-left: 1.85rem;
-  border-left: 1px solid var(--vp-c-divider);
-}
-
-.defs {
-  margin: 0;
-}
-
-.defs > div {
-  padding: 1.05rem 0 1.1rem;
-  border-bottom: 1px solid var(--vp-c-divider);
-}
-
-.defs dt {
-  font-family: var(--pv-font-display);
-  font-weight: 500;
-  margin-bottom: 0.28rem;
-}
-
-.defs dd {
-  margin: 0;
-  color: var(--vp-c-text-2);
-  font-size: 0.95rem;
-  line-height: 1.55;
-}
-
-.hero__try {
-  padding-top: 1.15rem;
-}
-
-.hero__try-label {
-  margin: 0 0 0.45rem;
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.7rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--vp-c-text-3);
-}
-
-.links {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.4rem 1.35rem;
-  margin-top: 1.55rem;
-  font-size: 0.95rem;
-}
-
-.lead-link {
-  font-weight: 600;
 }
 
 a {
@@ -572,270 +705,653 @@ a:focus-visible {
   text-underline-offset: 0.18em;
 }
 
-.band {
-  padding: 2.5rem 0;
-  border-top: 1px solid var(--vp-c-divider);
-}
-
-.home-page h2 {
-  margin: 0 0 1.15rem;
-  padding-top: 0;
-  border-top: 0;
-  font-family: var(--pv-font-display);
-  font-size: 1.32rem;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-}
-
-h3 {
-  margin: 0 0 0.4rem;
-  font-family: var(--pv-font-display);
-  font-size: 1.02rem;
-  font-weight: 500;
-}
-
-.band__head--row {
-  margin-bottom: 0.25rem;
-}
-
-.band__head--row h2 {
-  margin: 0 0 1.15rem;
-}
-
-.band__head--row p,
-.band > p {
-  margin: 0;
-  max-width: 42rem;
-  color: var(--vp-c-text-2);
-  line-height: 1.65;
-}
-
 code {
   font-family: var(--vp-font-family-mono);
-  font-size: 0.88em;
+  font-size: 0.86em;
 }
 
 p code,
-li code,
 dd code {
-  padding: 0.08rem 0.26rem;
-  background: var(--vp-c-default-soft);
+  padding: 0.08rem 0.3rem;
+  background: var(--vp-code-bg);
+  color: var(--vp-code-color);
+  border: 1px solid rgb(34 129 101 / 18%);
+}
+
+.dark p code,
+.dark dd code {
+  border-color: rgb(73 212 161 / 28%);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* Hero                                                                */
+/* ------------------------------------------------------------------ */
+
+.hero {
+  padding: 3.75rem 0 3.5rem;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.hero__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 3rem;
+  align-items: center;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 1.35rem;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: var(--home-radius);
+  background: var(--vp-c-bg-elv);
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--pv-field);
+}
+
+.pill::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pv-mark);
+}
+
+h1 {
+  margin: 0;
+  font-family: var(--pv-font-display);
+  font-size: clamp(2.1rem, 4.4vw, 3.15rem);
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+h1 em {
+  font-style: italic;
+  font-weight: 400;
+  color: var(--pv-mark);
+}
+
+.subhead {
+  max-width: 34em;
+  margin: 1.25rem 0 0;
+  font-size: 1.08rem;
+  line-height: 1.55;
+  color: var(--vp-c-text-2);
+}
+
+.lede {
+  max-width: 34em;
+  margin: 1rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+}
+
+.hero__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 1.7rem;
+}
+
+.btn {
+  display: inline-block;
+  padding: 0.7rem 1.3rem;
+  border: 1.5px solid var(--home-ink-line);
+  border-radius: var(--home-radius);
+  color: var(--vp-c-text-1);
+  font-size: 0.94rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.btn:hover,
+.btn:focus-visible {
+  text-decoration: none;
+  background: var(--vp-c-bg-elv);
+}
+
+.btn--go {
+  background: var(--vp-button-brand-bg);
+  border-color: var(--vp-button-brand-bg);
+  color: var(--vp-button-brand-text);
+}
+
+.btn--go:hover,
+.btn--go:focus-visible {
+  background: var(--vp-button-brand-hover-bg);
+  border-color: var(--vp-button-brand-hover-bg);
+  color: var(--vp-button-brand-hover-text);
+}
+
+.hero__fine {
+  margin: 1.1rem 0 0;
+  font-size: 0.82rem;
+  color: var(--vp-c-text-3);
+}
+
+/* ------------------------------------------------------------------ */
+/* Topology figure                                                     */
+/* ------------------------------------------------------------------ */
+
+.topo {
+  margin: 0;
+  padding: 1.5rem 1.25rem 1rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: var(--home-radius);
+  background: var(--vp-c-bg-elv);
+}
+
+.topo svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* drawing */
+.topo .db__body { fill: var(--vp-c-bg-elv); stroke: var(--vp-c-text-1); stroke-width: 2; }
+.topo .db__lid { fill: var(--vp-c-bg-soft); stroke: var(--vp-c-text-1); stroke-width: 2; }
+.topo .row { fill: var(--vp-c-bg); stroke: var(--vp-c-divider); }
+.topo .row--vec { fill: var(--vp-c-brand-soft); stroke: var(--vp-c-brand-1); stroke-opacity: 0.45; }
+.topo .chip__body { fill: var(--pv-field); }
+.topo .chip__pulse { fill: none; stroke: var(--pv-mark); stroke-width: 2; animation: chip 3.2s ease-in-out infinite; }
+.topo .servers rect { fill: var(--vp-c-bg-elv); stroke: var(--pv-field); stroke-width: 1.6; }
+.topo .servers circle { fill: var(--pv-field); }
+.topo .wire { fill: none; stroke: var(--vp-c-text-3); stroke-width: 1.5; stroke-dasharray: 6 6; animation: flow 1.2s linear infinite; }
+.topo .wire--mesh { stroke: var(--pv-mark); stroke-width: 1.4; stroke-dasharray: 3 7; animation-duration: 1.6s; }
+.topo .dot--in { fill: var(--pv-field); }
+.topo .dot--out { fill: var(--pv-mark); }
+
+.topo text { font-family: var(--vp-font-family-base); }
+.topo .t-name { font-size: 13px; font-weight: 600; fill: var(--vp-c-text-1); }
+.topo .t-mono { font-family: var(--vp-font-family-mono); font-size: 11px; fill: var(--vp-c-text-2); }
+.topo .t-type { fill: var(--pv-field); }
+.topo .t-accent { fill: var(--pv-mark); }
+.topo .t-chip { font-size: 12px; font-weight: 600; fill: var(--vp-button-brand-text); }
+.topo .t-chip-sub { font-size: 10px; fill: var(--vp-button-brand-text); opacity: 0.78; }
+.topo .t-node { font-size: 11.5px; font-weight: 600; fill: var(--vp-c-text-1); }
+.topo .t-node-sub { font-size: 9.5px; fill: var(--vp-c-text-3); }
+.topo .t-wire { font-family: var(--vp-font-family-mono); font-size: 10px; fill: var(--vp-c-text-3); }
+
+.dark .topo .chip__body { fill: #2c4a42; }
+.dark .topo .t-chip,
+.dark .topo .t-chip-sub { fill: #e6eadf; }
+
+/* phase transitions. visibility is transitioned alongside opacity so a
+   hidden group is skipped by the painter, not just drawn transparent. */
+.topo .servers .node,
+.topo .grpc,
+.topo .mesh,
+.topo .chip,
+.topo .dots--local,
+.topo .dots--grpc,
+.topo .dots--mesh {
+  transition:
+    opacity 1s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 1s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 1s;
+}
+
+.topo .servers .node { transform-origin: center; transform-box: fill-box; }
+
+.topo[data-phase="a"] .servers .node { opacity: 0; visibility: hidden; transform: translateX(16px); }
+.topo[data-phase="a"] .grpc,
+.topo[data-phase="a"] .dots--grpc,
+.topo[data-phase="a"] .mesh,
+.topo[data-phase="a"] .dots--mesh { opacity: 0; visibility: hidden; }
+
+.topo[data-phase="b"] .mesh,
+.topo[data-phase="b"] .dots--mesh { opacity: 0; visibility: hidden; }
+
+/* once nodes exist, inference is fully remote: the embedded chip goes */
+.topo .chip { transform-origin: center; transform-box: fill-box; }
+.topo[data-phase="b"] .chip,
+.topo[data-phase="c"] .chip,
+.topo[data-phase="b"] .dots--local,
+.topo[data-phase="c"] .dots--local { opacity: 0; visibility: hidden; transform: scale(0.94); }
+.topo[data-phase="b"] .servers .node { transition-delay: 0.35s; }
+.topo[data-phase="b"] .servers .n2 { transition-delay: 0.53s; }
+.topo[data-phase="b"] .servers .n3 { transition-delay: 0.71s; }
+
+/* paused when out of view or tab hidden; SMIL is paused from script */
+.topo.is-paused .wire,
+.topo.is-paused .chip__pulse { animation-play-state: paused; }
+
+/* static under prefers-reduced-motion */
+.topo.is-static .wire { animation: none; }
+.topo.is-static .servers .node,
+.topo.is-static .grpc,
+.topo.is-static .mesh,
+.topo.is-static .chip { transition: none; }
+
+@keyframes flow { to { stroke-dashoffset: -12; } }
+@keyframes chip {
+  0%, 100% { opacity: 0; }
+  18% { opacity: 0.55; }
+  36% { opacity: 0; }
+}
+
+/* captions */
+.topo__caps {
+  position: relative;
+  min-height: 5.6rem;
+  margin-top: 0.6rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--vp-c-divider);
+  text-align: center;
+}
+
+.topo__cap {
+  position: absolute;
+  inset: 0.75rem 0 0;
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity 0.9s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.topo__cap.is-on { opacity: 1; transform: translateY(0); pointer-events: auto; }
+
+.topo__cap h3 {
+  margin: 0;
+  font-family: var(--pv-font-display);
+  font-size: 1.12rem;
+  font-weight: 500;
   color: var(--vp-c-text-1);
 }
 
+.topo__cap p {
+  margin: 0.2rem auto 0;
+  max-width: 34em;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--vp-c-text-2);
+}
+
+.topo.is-static .topo__cap { transition: none; }
+
+/* step bars */
+.topo__steps {
+  display: flex;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.35rem;
+}
+
+.topo__step {
+  position: relative;
+  width: 2.1rem;
+  height: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--vp-c-divider);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.topo__step::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--pv-mark);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.topo__step.is-on::after {
+  transform: scaleX(1);
+  transition: transform var(--stepdur, 7s) linear;
+}
+
+.topo.is-paused .topo__step.is-on::after { transition: none; transform: scaleX(0.35); }
+.topo__step.is-done::after { transform: scaleX(1); background: var(--vp-c-text-3); }
+
+/* ------------------------------------------------------------------ */
+/* Sections                                                            */
+/* ------------------------------------------------------------------ */
+
+.band {
+  padding: 3.75rem 0;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.band--last { border-bottom: 0; padding-bottom: 4.5rem; }
+
+.eyebrow {
+  margin: 0 0 0.6rem;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--pv-mark);
+}
+
+.home-page h2 {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  max-width: 20em;
+  font-family: var(--pv-font-display);
+  font-size: clamp(1.5rem, 2.8vw, 2.05rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.home-page h3 {
+  margin: 0 0 0.5rem;
+  font-family: var(--pv-font-display);
+  font-size: 1.12rem;
+  font-weight: 500;
+  color: var(--vp-c-text-1);
+}
+
+.prose {
+  max-width: 40em;
+  margin-top: 0.9rem;
+  color: var(--vp-c-text-2);
+}
+
+.prose--wide { max-width: 48em; margin-top: 0.4rem; }
+.prose p { margin: 0; }
+.prose p + p { margin-top: 0.75rem; }
+
 .note {
-  margin: 0.85rem 0 0;
-  font-size: 0.9rem;
+  margin: 1.25rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.55;
   color: var(--vp-c-text-3);
-  line-height: 1.55;
-  max-width: none;
 }
 
-.band > p.note--wide {
-  margin-top: 1.35rem;
-  max-width: none;
+/* ------------------------------------------------------------------ */
+/* Try it                                                              */
+/* ------------------------------------------------------------------ */
+
+.try {
+  margin-top: 2rem;
+  padding: 0.9rem 1rem 0;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: var(--home-radius);
+  background: var(--vp-c-bg-elv);
 }
 
-.caps {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0;
+.try__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+}
+
+.try__label {
   margin: 0;
-  border-top: 0;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
 }
 
-.caps > div {
-  padding: 1.15rem 1.5rem 0.25rem;
-  border-right: 1px solid var(--vp-c-divider);
-}
-
-.caps > div:first-child {
-  padding-left: 0;
-}
-
-.caps > div:last-child {
-  padding-right: 0;
-  border-right: 0;
-}
-
-.caps dt {
-  font-family: var(--pv-font-display);
-  font-weight: 500;
-  margin-bottom: 0.45rem;
-}
-
-.caps dd {
+.try__hint {
   margin: 0;
-  color: var(--vp-c-text-2);
-  font-size: 0.95rem;
-  line-height: 1.6;
+  font-size: 0.86rem;
+  color: var(--vp-c-text-3);
 }
 
-.pvd {
-  margin: 1.35rem 0 0.15rem;
-}
+.try :deep(.pg-snippet) { margin: 0.6rem 0 0.9rem; }
+.try :deep(.pg-snippet__bar) { border-color: var(--vp-c-divider); }
+.try :deep(.pg-snippet__body) { border-color: var(--vp-c-divider); }
 
-.fig-list {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1.5rem 2rem;
-  margin: 1.15rem 0 0;
-}
+/* ------------------------------------------------------------------ */
+/* SQL tabs                                                            */
+/* ------------------------------------------------------------------ */
 
-.fig-list dt {
-  font-family: var(--pv-font-display);
-  font-weight: 500;
-  margin-bottom: 0.3rem;
-}
-
-.fig-list dd {
-  margin: 0;
-  color: var(--vp-c-text-2);
-  font-size: 0.92rem;
-  line-height: 1.55;
-}
-
-.tabs {
-  margin: 0.85rem 0 0.15rem;
-}
+.tabs { margin-top: 2rem; }
 
 .tabs__bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 0;
-  border-bottom: 1px solid var(--vp-c-divider);
+  gap: 0.35rem;
 }
 
 .tabs__tab {
   appearance: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  background: transparent;
-  color: var(--vp-c-text-3);
-  padding: 0.5rem 0.85rem 0.5rem 0;
-  margin-right: 0.85rem;
+  position: relative;
+  top: 1.5px;
+  padding: 0.55rem 1.05rem;
+  border: 1.5px solid var(--vp-c-divider);
+  border-bottom: 0;
+  border-radius: 4px 4px 0 0;
+  background: var(--vp-c-bg-elv);
+  color: var(--vp-c-text-2);
   font-family: var(--vp-font-family-mono);
-  font-size: 0.74rem;
-  letter-spacing: 0.03em;
+  font-size: 0.84rem;
+  font-weight: 500;
   cursor: pointer;
 }
 
-.tabs__tab.is-active {
-  color: var(--vp-c-brand-1);
-  border-bottom-color: var(--vp-c-brand-1);
-}
-
 .tabs__tab:hover,
-.tabs__tab:focus-visible {
+.tabs__tab:focus-visible { color: var(--vp-c-text-1); }
+
+.tabs__tab.is-active {
+  border-color: var(--home-ink-line);
+  background: var(--vp-code-block-bg);
   color: var(--vp-c-text-1);
 }
 
-.tabs__state {
-  margin: 0.85rem 0 0;
-  color: var(--vp-c-text-2);
-  font-size: 0.95rem;
-}
-
-.tabs__note {
-  margin: 1.05rem 0 0;
-  color: var(--vp-c-text-3);
-  font-size: 0.9rem;
-  line-height: 1.6;
-}
-
-.example-code :deep(div[class*="language-"]) {
-  margin: 0.75rem 0;
-}
-
-.modes {
+.tabs__panel {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.75rem 2.5rem;
-  margin-top: 0;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+  min-height: 17rem;
+  border: 1.5px solid var(--home-ink-line);
+  border-radius: 0 var(--home-radius) var(--home-radius) var(--home-radius);
+  background: var(--vp-code-block-bg);
+  overflow: hidden;
 }
 
-.modes p {
+.tabs__code {
+  display: flex;
+  align-items: flex-start;
+  padding: 0.6rem 0.75rem;
+}
+
+.tabs__code :deep(div[class*="language-"]) {
+  width: 100%;
+  min-width: 0;
   margin: 0;
-  color: var(--vp-c-text-2);
-  font-size: 0.95rem;
-  line-height: 1.6;
+  border: 0 !important;
+  background: transparent;
 }
 
-.index {
+.tabs__code :deep(pre) {
+  padding: 0.85rem 1rem;
+  font-size: 0.82rem;
+  line-height: 1.66;
+}
+
+.tabs__code :deep(.lang),
+.tabs__code :deep(.line-numbers-wrapper) { display: none; }
+
+.tabs__why {
+  padding: 1.5rem 1.6rem;
+  border-left: 1.5px solid var(--home-ink-line);
+  background: var(--vp-c-bg-elv);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+.tabs__why p { margin: 0; }
+
+.expect {
+  margin-top: 1rem !important;
+  padding: 0.65rem 0.85rem;
+  border-left: 2px solid var(--vp-c-tip-1);
+  background: var(--vp-c-tip-soft);
+  font-size: 0.86rem;
+  color: var(--vp-c-text-1);
+}
+
+.expect b { color: var(--vp-c-tip-1); font-weight: 600; }
+.dark .expect b { color: var(--pv-mark); }
+
+.more {
+  display: inline-block;
+  margin-top: 0.9rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ */
+/* Why migrate                                                         */
+/* ------------------------------------------------------------------ */
+
+.defs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem 2.5rem;
+  max-width: 56rem;
+  margin: 1.6rem 0 0;
+}
+
+.defs > div {
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--vp-c-divider);
+  border-left: 2px solid var(--pv-mark);
+  border-radius: 0 var(--home-radius) var(--home-radius) 0;
+  background: var(--vp-c-bg-elv);
+}
+
+.defs dt {
+  margin-bottom: 0.3rem;
+  font-family: var(--pv-font-display);
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+.defs dd {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+.pledges {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1.75rem;
-  margin: 0.85rem 0 0.35rem;
+  margin-top: 2.5rem;
 }
 
-.index ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.pledge {
+  padding-top: 1.1rem;
+  border-top: 2px solid var(--home-ink-line);
 }
 
-.index li + li {
-  margin-top: 0.32rem;
-}
-
-.index a {
+.pledge p {
+  margin: 0 0 0.6rem;
   font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
 }
+
+.pledge a { font-size: 0.9rem; font-weight: 600; }
+
+/* ------------------------------------------------------------------ */
+/* Documentation map                                                   */
+/* ------------------------------------------------------------------ */
+
+.dir {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin-top: 1.9rem;
+}
+
+.dir__card {
+  padding: 1.25rem 1.4rem 1rem;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: var(--home-radius);
+  background: var(--vp-c-bg-elv);
+}
+
+.dir__card h3 {
+  margin-bottom: 0.6rem;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+}
+
+.dir__card a {
+  display: block;
+  padding: 0.42rem 0;
+  color: var(--vp-c-text-1);
+  font-size: 0.95rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.dir__card a + a { border-top: 1px solid var(--vp-c-border-soft); }
+
+.dir__card a:hover,
+.dir__card a:focus-visible {
+  color: var(--vp-c-brand-1);
+  text-decoration: none;
+}
+
+.dir__card a small {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: var(--vp-c-text-3);
+}
+
+/* ------------------------------------------------------------------ */
+/* Responsive                                                          */
+/* ------------------------------------------------------------------ */
 
 @media (max-width: 980px) {
-  .hero,
-  .band__head--row {
-    grid-template-columns: 1fr;
-    gap: 1.6rem;
-  }
-
-  .hero__aside {
-    margin-top: 0.4rem;
-    padding-left: 0;
-    border-left: 0;
-    border-top: 1px solid var(--vp-c-divider);
-    padding-top: 1.2rem;
-  }
-
-  .caps,
-  .fig-list {
-    grid-template-columns: 1fr;
-    gap: 0;
-  }
-
-  .caps > div,
-  .caps > div:first-child,
-  .caps > div:last-child {
-    padding: 0.95rem 0;
-    border-right: 0;
-    border-bottom: 1px solid var(--vp-c-divider);
-  }
-
-  .fig-list > div {
-    padding: 0.85rem 0;
-    border-top: 1px solid var(--vp-c-divider);
-  }
+  .hero { padding-top: 2.75rem; }
+  .hero__grid { grid-template-columns: minmax(0, 1fr); gap: 2.25rem; }
+  .tabs__panel { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .tabs__why { border-left: 0; border-top: 1.5px solid var(--home-ink-line); }
+  .pledges, .dir { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .defs { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 }
 
 @media (max-width: 720px) {
-  .wrap {
-    width: min(100% - 2rem, 72rem);
-    padding-top: 2.75rem;
-  }
-
-  h1 {
-    max-width: none;
-  }
-
-  .modes,
-  .index {
-    grid-template-columns: 1fr;
-    gap: 1.15rem;
-  }
-
-  .pvd {
-    display: none;
-  }
+  .wrap { width: min(100% - 2rem, 72rem); }
+  .band { padding: 2.75rem 0; }
+  .topo { padding: 1rem 0.75rem 0.75rem; }
+  .topo__cap p { font-size: 0.82rem; }
+  .tabs__bar { gap: 0.25rem; }
+  .tabs__tab { padding: 0.5rem 0.8rem; font-size: 0.78rem; }
+  .tabs__code { padding: 0.35rem 0.25rem; }
+  .tabs__code :deep(pre) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tabs__why { padding: 1.15rem 1rem; }
+  .try :deep(.pg-snippet__code) { flex-basis: auto; }
 }
 </style>
