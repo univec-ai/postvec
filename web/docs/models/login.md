@@ -40,6 +40,13 @@ postvec model ls --available
 postvec logout
 ```
 
+:::: tip Expected
+`whoami` prints the account after `login`, or reports anonymous before
+it. `ls --available` lists the public catalogue without a credential
+and the private superset after a valid `login`. `logout` returns you
+to public-only.
+::::
+
 None of these need `sudo`. If the next step is `sudo model pull`, log
 in again as root (`sudo postvec login`) or pass `--api-key-file`:
 credentials are stored per effective user.

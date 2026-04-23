@@ -76,7 +76,7 @@ sudo postvec setup --database app \
 | `--database NAME` | Repeatable / comma-separated |
 | `--grpc`, `--http` | Remote endpoints. gRPC order is round-robin |
 | `--embedded` | In-process inference |
-| `--path DIR` | Absolute engine root. Defaults to `/opt/postvec/ninference` |
+| `--path DIR` | Absolute engine root. Defaults to `/opt/postvec` |
 | `--model NAME` | Embedded preload allow-list; omit to scan-load |
 | `--providers-path DIR` | Move the [provider](/docs/models/providers) connector directory. Omit to keep `/etc/postvec/providers.d` |
 | `--embedded-grpc-listen`, `--embedded-http-listen` | Loopback only |
@@ -100,7 +100,7 @@ sudo postvec doctor --format json --strict
 | `--database NAME` | Default: the configured set |
 | `--deep` | Heartbeat must advance; hash CLI model receipts |
 | `--strict` | Warnings become failure |
-| `--ninference-path DIR` | Diagnose an env-supplied root without writing it |
+| `--path DIR` | Diagnose an engine root the cluster settings do not reveal, without writing it |
 | `--tls extension-compatible\|strict` | Self-signed tolerance vs a trusted chain |
 
 `doctor` is read-only. It does not run inference and does not call
@@ -138,6 +138,9 @@ model activate [NAME...|--all] [--path DIR] [--dry-run] [--yes]
 model deactivate NAME... [--path DIR] [--force] [--acknowledge-in-use]
             [--dry-run] [--yes]
 ```
+
+`POSTVEC_PATH` has the same meaning as `--path`. Container images set it,
+so `docker exec <ctr> postvec model ...` needs no extra flags.
 
 `pull` installs **deactivated**; `activate` / `deactivate` are the only verbs
 that change serving state, and both persist across a PostgreSQL restart.
@@ -192,7 +195,8 @@ Converter mode is available only with `univec`. `--convert-source` and
 `DIR` must already exist, and new files inherit its owner. That is how a
 `postvec-server` node is administered, and it is the only form accepted on
 a remote-mode cluster; without it, such a cluster is refused with a message
-naming the server root. An embed change through `--path` requires
+naming the server root. `POSTVEC_PROVIDERS_PATH` has the same meaning as
+`--path`. The postvec-server image sets it to the server root. An embed change through `--path` requires
 `--acknowledge-in-use` because there is no cluster to scan. Adding a converter
 does not send source text and does not require that acknowledgement. Removing
 one can break an active migration, so `provider rm` requires it.

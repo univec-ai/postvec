@@ -23,17 +23,30 @@ in the inference layer, never in the database.
 ## What you need
 
 PostgreSQL 16, 17 or 18 on a host that can set
-`shared_preload_libraries = 'postvec'`. A restart is part of first-time
-setup.
+`shared_preload_libraries = 'postvec'`. First-time setup restarts the
+cluster.
 
 RDS and Aurora cannot load the worker.
+
+## Start here
+
+| Situation | Page |
+|---|---|
+| Try it without touching the host cluster | [Quick start](/docs/quickstart) |
+| Install on an existing PostgreSQL | [Install](/docs/install/), then [configure](/docs/install/setup) |
+| Decide enable vs adopt vs migrate | [Which SQL call](/docs/guides/starting) |
 
 ## The path
 
 1. [Install the files](/docs/install/) - Docker, packages or a source build.
+   Packages put files on disk and stop. They do not restart PostgreSQL or
+   create a database.
 2. [Configure the cluster](/docs/install/setup) with `postvec setup`.
+   Expected: `postvec doctor --deep` exits 0 and `postvec.models` lists
+   MiniLM (or whatever the node advertises in remote mode).
 3. [Enable](/docs/guides/enable) a text column, or [adopt](/docs/guides/adopt)
    one that already has vectors.
+   Expected: a registry id. Vectors stay NULL until the worker writes them.
 4. Wait until `pending_jobs = 0`. Vectors fill after commit, not inside
    the inserting transaction.
 5. [Build an ANN index](/docs/guides/indexes). Nothing builds one unless
@@ -68,8 +81,9 @@ Every function lives in the `postvec` schema. Qualify the call:
 | Models | `postvec model ...` on this host | On each node |
 
 SQL is the same in both modes. Embedded is what a package install does
-with `setup --embedded`. Use remote when inference should not share a
-crash domain, a CPU budget or a GPU with PostgreSQL.
+with `setup --embedded`. The engine root is `/opt/postvec`. Use remote
+when inference should not share a crash domain, a CPU budget or a GPU
+with PostgreSQL.
 
 [Embedded vs remote](/docs/concepts/modes) compares them.
 [Remote inference](/docs/server/) covers running the nodes.

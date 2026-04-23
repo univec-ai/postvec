@@ -93,11 +93,11 @@ The engine root must contain:
 
 ```
 {root}/libs/**/libonnxruntime.so     # unversioned filename required
-{root}/models/{backend}/{name}/ninference.hub.json
+{root}/models/{backend}/{name}/      # descriptor and weights
 ```
 
-Workers keep jobs pending until the engine listener is ready. Models
-pulled with `postvec model pull` hot-load.
+Workers keep jobs pending until the engine listener is ready. `model
+pull` installs files deactivated; `model activate` is what loads them.
 
 The embedded gRPC/HTTP listeners stay on **127.0.0.1**.
 

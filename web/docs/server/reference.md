@@ -25,7 +25,7 @@ with `//` are comments.
 
 | Flag | Environment | File key | Default |
 |---|---|---|---|
-| `--root PATH` | `POSTVEC_SERVER_ROOT`, then `NINFERENCE_PATH` | - | Current directory |
+| `--root PATH` | `POSTVEC_SERVER_ROOT` | - | Current directory |
 | `--config PATH` | `POSTVEC_SERVER_CONFIG` | - | The search order above |
 | `--bind ADDR` | `POSTVEC_SERVER_BIND` | `bind_address` | `0.0.0.0` |
 | `--http PORT` | `POSTVEC_SERVER_HTTP` | `http_port` | `22222` |

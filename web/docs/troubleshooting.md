@@ -53,7 +53,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 
 1. `SELECT * FROM postvec.status();` - pending vs dead vs last_error.
 2. `SELECT * FROM postvec.jobs_dead;`
-3. `SHOW shared_preload_libraries; SHOW postvec.database; SHOW postvec.mode;`
+3. `SHOW shared_preload_libraries; SHOW postvec.database; SHOW postvec.mode; SHOW postvec.path;`
 4. `sudo postvec doctor --database app --deep`
 
 If pending stays non-zero and `doctor` fails endpoint checks, inference

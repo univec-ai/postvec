@@ -29,7 +29,7 @@ from the CLI-owned config.
 | The name in `99-postvec.conf` | pgvector, source tables, source data |
 | Shadow columns, only with `--drop-columns` | Adopted / user-owned vector columns |
 | | Chunk destinations and their views |
-| | Models under `/opt/postvec/ninference` |
+| | Models under `/opt/postvec` |
 | | [Provider connector files](/docs/models/providers) and their keys |
 
 There is **no** `--drop-destinations` on the CLI. Destinations stay as

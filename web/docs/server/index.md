@@ -48,17 +48,15 @@ database, no queue and no scheduler. All of that stays in PostgreSQL.
 ```text
 $root/
 ├── libs/**/libonnxruntime.so     ONNX Runtime (the postvec-onnxruntime package)
-├── models/<backend>/<name>/
-│   ├── ninference.hub.json       the descriptor
-│   └── ...                       the weights it names
+├── models/<backend>/<name>/      descriptor and weights
 ├── providers.d/*.toml            external providers, optional (0700 dir, 0600 files)
 └── certs/server.{crt,key}        TLS for the discovery listener, optional path
 ```
 
 The layout is the same one embedded mode uses. A model root is portable
-between an in-database engine and a node, and `NINFERENCE_PATH` is accepted as
-an alias for `--root`, so a tree that `postvec model pull` already wrote into
-needs no new configuration.
+between an in-database engine and a node, and a tree that
+`postvec model pull` already wrote into works unchanged: name it with
+`--root` or `POSTVEC_SERVER_ROOT`.
 
 ## The path
 

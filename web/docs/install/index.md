@@ -16,7 +16,8 @@ does that: writes cluster configuration, creates the extension and
 starts the worker.
 
 An existing cluster can receive the files and stay up until that setup
-step.
+step. After packages, `postvec --version` succeeding is enough to move
+on. Worker health is a `setup` result, not an install result.
 
 **Embedded mode** (`setup --embedded`) runs inference on the host. No
 third-party embedding API is involved. Remote mode talks to

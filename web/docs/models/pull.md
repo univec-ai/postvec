@@ -71,7 +71,7 @@ sudo postvec model activate --yes                  # every eligible model
 sudo postvec model deactivate baai-bge-m3 --yes    # off, and it stays off
 ```
 
-Both rewrite the `enabled` field of the installed `ninference.hub.json`, which
+Both rewrite the `enabled` field of the installed descriptor, which
 the engine reads at **every** start, so neither is undone by a PostgreSQL
 restart. No GUC and no catalogue is involved.
 

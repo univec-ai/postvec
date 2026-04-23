@@ -13,6 +13,17 @@ the cluster and, in embedded mode, the model inventory. A
 If the table already exists, start at [Which SQL call](/docs/guides/starting).
 If you are filling a new table, the block below is the whole first pass.
 
+What each call does, in one line:
+
+| Call | Does |
+|---|---|
+| `enable()` | Adds a shadow vector column and starts syncing |
+| `adopt()` | Takes over an existing vector column; does not rewrite it |
+| `search()` | Hybrid full-text + vector ranking, one query |
+| `create_vector_index()` | Builds the ANN index `search()` wants |
+| `set_format()` | Changes the embedding template and refreshes every row |
+| `migrate()` | Converts stored vectors to another model, then waits for you to finalize |
+
 ## First pass
 
 ```sql

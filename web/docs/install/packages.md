@@ -38,8 +38,8 @@ inference; `setup --embedded` afterwards.
 
 <PgSnippet id="packages-complete" />
 
-Files land under `/opt/postvec/ninference`. MiniLM is 384-d and needs no
-API key. Installing this payload leaves embedded mode off.
+Files land under `/opt/postvec`. MiniLM is 384-d and needs no API key.
+Installing this payload leaves embedded mode off.
 `postvec setup --embedded` turns it on.
 
 ## 3. Extension + CLI only
@@ -68,16 +68,17 @@ the complete release is present.
 <PgSnippet id="packages-verify-files" />
 
 :::: tip Expected
-These checks succeed on the files alone. Worker and database
-configuration happens during
+These checks succeed on the files alone. A complete install also has
+`libonnxruntime.so` under `/opt/postvec/libs` and a model tree under
+`/opt/postvec/models`. Worker and database configuration happens during
 [cluster configuration](/docs/install/setup).
 ::::
 
 ## After the packages are installed
 
-The packages place files. `postvec setup` writes cluster configuration,
-creates the extension and starts the worker. `apt remove` / `dnf remove`
-remove those files and leave user data in place.
+The packages place files. They do not enrol a database or start the
+worker. `postvec setup` does that. `apt remove` / `dnf remove` remove
+the files and leave user data in place.
 
 ## Cluster configuration
 

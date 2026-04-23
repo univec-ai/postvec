@@ -23,9 +23,9 @@ sudo postvec setup --database app ... --dry-run
 
 The engine runs in the launcher. No account or outbound embedding API is
 required. This is the extension's **default** mode, and
-`postvec.ninference_path` defaults to `/opt/postvec/ninference`, where
-the engine-asset packages install, so `setup --embedded` needs no
-`--path` on a package install.
+`postvec.path` defaults to `/opt/postvec`, where the engine-asset
+packages install, so `setup --embedded` needs no `--path` on a package
+install.
 
 `setup` still has to run: it is what enrols the database in
 `postvec.database`, installs the extension and restarts. The defaults
@@ -117,6 +117,8 @@ CLI-owned `99-postvec.conf`.
 :::: code-group
 
 ```sql [SQL]
+SHOW postvec.mode;
+SHOW postvec.path;
 SELECT postvec.version(), postvec.build_info();
 SELECT extname, extversion FROM pg_extension
  WHERE extname IN ('vector', 'postvec');
@@ -133,9 +135,11 @@ sudo postvec doctor --database app --deep --format json \
 ::::
 
 :::: tip Expected
-Both extensions are present. At least one model is listed when inference
-is reachable. `worker_last_beat` is recent and advances between samples.
-`doctor` exit 0 is clean.
+`postvec.mode` is `embedded` (or `grpc` if you passed `--grpc`).
+`postvec.path` is `/opt/postvec` on a package install. Both extensions
+are present. At least one model is listed when inference is reachable.
+`worker_last_beat` is recent and advances between samples. `doctor` exit
+0 is clean.
 ::::
 
 ## Manual configuration
@@ -146,11 +150,12 @@ Manual configuration keeps the file outside CLI ownership:
 shared_preload_libraries = 'postvec'
 postvec.database = 'app'
 postvec.mode = 'embedded'
-postvec.ninference_path = '/opt/postvec/ninference'
+postvec.path = '/opt/postvec'
 ```
 
-Remote deployments set `postvec.mode = 'grpc'` and the two endpoint
-GUCs. `setup` is preferred over manual editing.
+Remote deployments set `postvec.mode = 'grpc'` plus
+`postvec.grpc_endpoints` and `postvec.http_endpoints`. `setup` is
+preferred over manual editing.
 
 Create the database and `CREATE EXTENSION postvec CASCADE` **before**
 adding the name to `postvec.database`, then restart.

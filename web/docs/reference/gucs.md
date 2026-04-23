@@ -14,8 +14,8 @@ includes `postvec`.
 
 | GUC (`postvec.*`) | Default | Context |
 |---|---:|---|
-| `ninference_grpc_endpoints` | - | SIGHUP |
-| `ninference_http_endpoints` | - | SIGHUP |
+| `grpc_endpoints` | - | SIGHUP |
+| `http_endpoints` | - | SIGHUP |
 | `database` | - | **POSTMASTER** (comma-separated) |
 | `worker_enabled` | on | SIGHUP |
 | `poll_interval_ms` | 5000 | SIGHUP - empty-queue backstop; writers wake the worker at commit |
@@ -36,18 +36,19 @@ includes `postvec`.
 | `ddl_lock_timeout_ms` | 60000 | USERSET - applied `SET LOCAL` in lifecycle verbs |
 | `heartbeat_interval_ms` | 30000 | SIGHUP - idle workers write no WAL between beats |
 | `mode` | `embedded` | **POSTMASTER** |
-| `ninference_path` | `/opt/postvec/ninference` | **POSTMASTER** (else `$NINFERENCE_PATH`) |
+| `path` | `/opt/postvec` | **POSTMASTER** |
 | `embedded_models` | - | **POSTMASTER** (empty = scan-load) |
 | `embedded_listen` | `127.0.0.1:33433` | **POSTMASTER** |
 | `embedded_http_listen` | `127.0.0.1:33434` | **POSTMASTER** |
 | `embedded_max_inflight` | 1 | **POSTMASTER** |
 | `providers_path` | `/etc/postvec/providers.d` | **POSTMASTER** - a path, never a credential |
 
-`postvec setup` is the supported way to write these. The CLI merges
-`shared_preload_libraries` and owns `99-postvec.conf`.
+`path` is the engine root (`libs/`, `models/`). Package payloads install
+there. CLI `--path` and `POSTVEC_PATH` name the same directory. The CLI
+merges `shared_preload_libraries` and owns `99-postvec.conf`.
 
 `pg_reload_conf()` does not apply POSTMASTER settings. A restart is required
-after a change to `database`, `mode`, `ninference_path`, `embedded_*`,
+after a change to `database`, `mode`, `path`, `embedded_*`,
 `providers_path` or preload.
 
 `providers_path` names the directory of

@@ -32,8 +32,8 @@ creates the extension and restarts. The three settings it records are:
 
 ```text
 postvec.mode = grpc
-postvec.ninference_grpc_endpoints = '10.0.0.20:33333'
-postvec.ninference_http_endpoints = 'https://10.0.0.20:22222'
+postvec.grpc_endpoints = '10.0.0.20:33333'
+postvec.http_endpoints = 'https://10.0.0.20:22222'
 ```
 
 With several nodes, give the cluster all of them as comma-separated lists.

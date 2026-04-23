@@ -23,20 +23,22 @@ descriptor.
 
 ```bash
 postvec model pull baai-bge-m3 --path /var/lib/postvec-server
+postvec model activate baai-bge-m3 --path /var/lib/postvec-server
 postvec-server load baai-bge-m3
 postvec-server status
 ```
 
 :::: tip Expected
 `pull` prints a plan with the download size, peak disk and licences, then
-installs the model **deactivated**. `postvec-server load` makes it resident and
-returns a per-model result. `status` then lists it, and the database sees it in
-`postvec.models` after the next discovery refresh.
+installs the model **deactivated**. `activate` sets `enabled: true` so a
+restart would load it. `postvec-server load` makes it resident now and
+returns a per-model result. `status` then lists it, and the database sees
+it in `postvec.models` after the next discovery refresh.
 ::::
 
-`pull` lands models deactivated on every path, so `model activate` means the
-same thing on a node as it does on a database host. A deactivated descriptor
-never loads, which is what makes deactivation survive a restart.
+A deactivated descriptor never loads, on any path. That is why
+`model activate` means the same thing on a node as it does on a database
+host. `load` of a deactivated model fails and names `activate`.
 
 The registry side of `pull` (the catalogue, private models, `postvec login`) is
 identical to the database-host case: [pull, activate, upgrade,

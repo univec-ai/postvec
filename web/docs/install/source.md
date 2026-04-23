@@ -65,11 +65,11 @@ scripts/build-onnxruntime-bundle.sh --arch amd64
 # pulled by the postvec CLI built above.
 scripts/build-model-bundle.sh
 
-sudo install -d -m 0755 /opt/postvec/ninference
-sudo cp -a build/payload-amd64/opt/postvec/ninference/libs \
-  /opt/postvec/ninference/
-sudo cp -a build/payload-common/opt/postvec/ninference/models \
-  /opt/postvec/ninference/
+sudo install -d -m 0755 /opt/postvec
+sudo cp -a build/payload-amd64/opt/postvec/libs \
+  /opt/postvec/
+sudo cp -a build/payload-common/opt/postvec/models \
+  /opt/postvec/
 ```
 
 Manually copied models are operator-owned. `postvec model rm` will not

@@ -31,7 +31,7 @@ planned later. The current release identity is `0.1.0-1`.
 |---|---|
 | `postvec-cli` | `/usr/bin/postvec` |
 | `postgresql-NN-postvec` / `postgresqlNN-postvec` | Extension library, control file, versioned SQL |
-| `postvec-onnxruntime` | CPU ONNX Runtime under `/opt/postvec/ninference/libs`; independently versioned |
+| `postvec-onnxruntime` | CPU ONNX Runtime under `/opt/postvec/libs`; independently versioned |
 | `postvec-model-minilm-l6-v2` | Bundled 384-d model; independently versioned (`2.1.0` = registry revision 2, bundle 1) |
 | `postvec-extras` | Metapackage pinning the runtime + model (not a complete install) |
 | `...-pgNN` image | PostgreSQL + pgvector + postvec + CLI, remote mode |

@@ -74,7 +74,7 @@ export default defineConfig({
         },
         {
           text: "Install",
-          collapsed: true,
+          collapsed: false,
           items: [
             { text: "Choose a method", link: "/docs/install/" },
             { text: "Docker", link: "/docs/install/docker" },

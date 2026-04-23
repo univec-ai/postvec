@@ -33,11 +33,11 @@ Both come from the same packages the database host uses:
 
 | Artifact | Installs |
 |---|---|
-| `postvec-onnxruntime` | `libonnxruntime.so` under `/opt/postvec/ninference/libs` |
+| `postvec-onnxruntime` | `libonnxruntime.so` under `/opt/postvec/libs` |
 | `postvec-model-minilm-l6-v2` | The bundled 384-d model |
 | `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands |
 
-Point `--root` at `/opt/postvec/ninference` to use those directly, or copy the
+Point `--root` at `/opt/postvec` to use those directly, or copy the
 tree to `/var/lib/postvec-server` and keep the node's inventory separate from
 any local cluster. See [packages](/docs/install/packages) for the download and
 verification steps, and [models on a node](/docs/server/models) for pulling
@@ -89,7 +89,7 @@ docker run -d --name postvec-server \
 ```
 
 The container generates its own self-signed certificate at start, per
-container, never baked into the image. Mount a pair over `/ninference/certs`
+container, never baked into the image. Mount a pair over `/opt/postvec/certs`
 or pass `--ssl-cert` / `--ssl-cert-key` to override it. The healthcheck is
 `/ready`, so `docker inspect` reports healthy only once a model can answer.
 

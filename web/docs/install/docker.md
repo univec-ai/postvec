@@ -69,7 +69,7 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 | `POSTVEC_DATABASES` | `POSTGRES_DB` | Comma-separated worker databases |
 | `POSTVEC_GRPC_ENDPOINTS` | unset | Remote gRPC |
 | `POSTVEC_HTTP_ENDPOINTS` | unset | Remote `/config` |
-| `POSTVEC_NINFERENCE_PATH` | `/opt/postvec/ninference` | Embedded engine root |
+| `POSTVEC_PATH` | `/opt/postvec` | Embedded engine root |
 | `POSTVEC_EMBEDDED_MODELS` | bundled model | Preload allow-list |
 | `POSTVEC_SHARED_PRELOAD_LIBRARIES` | unset | Existing preloads; postvec is appended |
 | `POSTVEC_CREATE_EXTENSION` | `1` | `0` skips first-run `CREATE EXTENSION` |
@@ -155,9 +155,9 @@ docker exec -u postgres postvec \
 ## Persistent model storage
 
 Pulled models land under the image's engine root. A **named volume** on
-`/opt/postvec/ninference/models` copies the bundled MiniLM in. A **bind
-mount or PVC** masks the bundled directory, so MiniLM must be copied
-into the mounted directory.
+`/opt/postvec/models` copies the bundled MiniLM in. A **bind mount or
+PVC** masks the bundled directory, so MiniLM must be copied into the
+mounted directory.
 
 ## Tags
 
