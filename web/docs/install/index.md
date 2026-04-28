@@ -10,20 +10,17 @@ Installation has two stages:
 1. **Deliver files** - an image, packages or a manual copy.
 2. **Configure the cluster** - `postvec setup`.
 
-Packages and images place binaries and libraries. They do not restart
-PostgreSQL, create databases or run `CREATE EXTENSION`. `postvec setup`
-does that: writes cluster configuration, creates the extension and
-starts the worker.
+Packages and images copy binaries and libraries. `postvec setup` then
+writes cluster configuration, creates the extension and starts the
+worker.
 
-An existing cluster can receive the files and stay up until that setup
-step. After packages, `postvec --version` succeeding is enough to move
-on. Worker health is a `setup` result, not an install result.
+After a package install, `postvec --version` confirms the files. Worker
+health is checked after `setup`.
 
-**Embedded mode** (`setup --embedded`) runs inference on the host. No
-third-party embedding API is involved. Remote mode talks to
-`postvec-server` nodes you operate. The postvec repository ships one.
-See [embedded vs remote](/docs/concepts/modes), and
-[remote inference](/docs/server/) for installing and running the nodes.
+**Embedded mode** (`setup --embedded`) runs inference on the host.
+Remote mode talks to `postvec-server` nodes. The postvec repository
+ships one. See [embedded vs remote](/docs/concepts/modes) and
+[remote inference](/docs/server/).
 
 :::: info Release status
 Commands in these guides use the planned `0.1.0-1` artifact identity.

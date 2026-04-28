@@ -30,9 +30,9 @@ are synchronized.
 ## Model provenance
 
 The column's declared dimension is fact. The model name is an
-operator-supplied assertion. The catalogue can only *contradict* an
-incorrect model (dimension mismatch). Nothing can prove which model
-produced the bytes.
+operator-supplied assertion. The catalogue can contradict an incorrect
+model (dimension mismatch). Provenance of the stored bytes is not
+verified.
 
 An incorrect assertion makes `search()` embed the query into an
 incompatible space. `migrate(strategy => 'convert')` then produces

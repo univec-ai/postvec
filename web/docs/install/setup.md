@@ -27,9 +27,9 @@ required. This is the extension's **default** mode, and
 packages install, so `setup --embedded` needs no `--path` on a package
 install.
 
-`setup` still has to run: it is what enrols the database in
-`postvec.database`, installs the extension and restarts. The defaults
-remove the *inference* configuration, not the enrolment.
+`setup` enrols the database in `postvec.database`, installs the
+extension and restarts. Default `postvec.path` only covers the engine
+root; enrolment is still this command.
 
 <PgSnippet id="setup-embedded" />
 
@@ -49,11 +49,11 @@ absent. An empty or missing directory changes nothing.
 
 ## Remote gRPC
 
-Remote mode uses `postvec-server` nodes on the local network. Pick it
-for GPU inference, for keeping engine faults off the database host or
-for one engine shared by several databases. The SQL surface is
-unchanged. See [embedded vs remote](/docs/concepts/modes), and
-[remote inference](/docs/server/) for the node side.
+Remote mode uses `postvec-server` nodes on the local network. Typical
+reasons: GPU inference, engine faults off the database host, one engine
+shared by several databases. SQL is unchanged. See
+[embedded vs remote](/docs/concepts/modes) and
+[remote inference](/docs/server/).
 
 Every node must carry the same enabled models: postvec round-robins the
 configured endpoints, so a converter present on two nodes out of three

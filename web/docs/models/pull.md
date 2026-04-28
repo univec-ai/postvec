@@ -8,15 +8,15 @@ description: postvec model pull / activate / deactivate / upgrade / rm / ls / sh
 These commands change an **engine root**. On an embedded cluster they also
 refresh `postvec.models` in every configured database.
 
-Installing is not serving. `pull` lands files deactivated.
-`model activate` is what turns a model on.
+`pull` writes the model deactivated (`enabled: false`). `model activate`
+loads it and keeps it enabled across restarts.
 
 <PgSnippet id="model-pull" />
 
-:::: warning Installing is not activating
-`pull` puts the files in place and stops. The installed descriptor is written
-`enabled: false`, so the model is **not** loaded now and **not** loaded at the
-next PostgreSQL restart. `model activate` is the only command that turns it on.
+:::: warning `pull` does not load the model
+The installed descriptor is written `enabled: false`. Until
+`model activate`, it is neither loaded now nor at the next PostgreSQL
+restart.
 ::::
 
 :::: tip Expected
@@ -55,8 +55,7 @@ installed models are not replaced.
 
 An upgrade **preserves activation state**: a serving model is unloaded, swapped
 and reloaded; a deactivated model is swapped on disk and stays deactivated,
-with no engine involvement. Replacing a model's bytes is not a decision about
-whether it should serve.
+with no engine involvement. Activation state is unchanged.
 
 On a live embedded target the swap is recoverable: a crash leaves enough
 state for the next model command to finish or roll forward. During the
@@ -95,8 +94,8 @@ restart. No GUC and no catalogue is involved.
 
 ### Columns that would lose their embedding route
 
-Deactivating or removing a model that managed columns still depend on is
-**allowed, never silent**:
+Deactivating or removing a model that managed columns still depend on
+requires an explicit acknowledgement:
 
 ```text
 - WARNING: convert-bge-to-ada is the embedding route for these columns:
@@ -107,15 +106,13 @@ Deactivating or removing a model that managed columns still depend on is
     model or disabled. Stored vectors are not touched.
 ```
 
-The question is **not** "does a column name this model" but "can this column
-still be embedded afterwards". A column on `openai-text-embedding-ada-002` is
-served by a *converter* into that space plus `embed-bridge`. Neither carries
-the target's name, so a name match alone would miss the migration story
-postvec exists for. The check mirrors the extension's two-tier resolution
-against the inventory with the models removed: a direct embed model named for
-the space, or a converter into it whose own source space is embeddable, through
-`embed-bridge`. Deactivating any leg of that route trips the acknowledgement;
-none of them does when a second route into the same space survives.
+The check is whether the column still has an embedding route afterwards.
+A column declared as `openai-text-embedding-ada-002` is often served by a
+converter into that space plus `embed-bridge`, neither of which carries
+the target's name. The resolver matches a direct embed model for the
+space, or a converter into it whose source space is embeddable, through
+`embed-bridge`. Deactivating any leg of that route requires
+acknowledgement; a surviving second route into the same space does not.
 
 Interactively, type the model names back exactly as the prompt prints them
 (separators and quotes are normalized). Non-interactively, pass

@@ -94,6 +94,5 @@ error.
 
 ## Query embedding is synchronous
 
-`search()` embeds the **query** inline. That is the only synchronous
-inference step on the search path. Document vectors still fill after
+`search()` embeds the **query** inline. Document vectors still fill after
 commit. See [eventual consistency](/docs/concepts/consistency).

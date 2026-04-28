@@ -5,8 +5,7 @@ description: Discovery, embed versus convert and which CLI commands apply in eac
 
 # How models work
 
-A name in `postvec.models` is a cache of what the engine currently
-advertises. It is not a download list.
+`postvec.models` caches what the engine currently advertises.
 
 On an embedded host, add models with `postvec model pull`. In remote
 mode, administer them on the `postvec-server` nodes ([models on a
@@ -81,10 +80,9 @@ bundled MiniLM package works without the registry. The
 | Remote | Each `postvec-server` node. Local mutation is **refused**. See [models on a node](/docs/server/models) |
 | Either | `model ls` - local inventory, or node-advertised names in remote |
 
-Installing and serving are separate steps: `pull` lands a model
-**deactivated**, and `model activate` turns it on. Both that and
-`model deactivate` persist across a PostgreSQL restart, because they rewrite
-the installed descriptor's own `enabled` field.
+`pull` installs a model **deactivated**. `model activate` / `deactivate`
+rewrite the descriptor's `enabled` field, so the choice survives a
+PostgreSQL restart.
 
 `--path DIR` manages a standalone engine root as **files only**: it flips
 descriptors, but performs no engine load and no SQL refresh.

@@ -5,10 +5,7 @@ description: Match enable, adopt, bridge, migrate or chunking to the table you h
 
 # Which SQL call
 
-Column registration, search and migration are SQL functions. The CLI
-configures the cluster and, in embedded mode, the model inventory.
-
-Pick the row that matches the table **as it is now**.
+Dedicated SQL functions per usage scenario:
 
 | Starting point | Call | Result |
 |---|---|---|
@@ -17,10 +14,10 @@ Pick the row that matches the table **as it is now**.
 | Vectors in a retired or provider-only space | [Bridge search](/docs/guides/bridge) | Queries convert into that space. The corpus stays. |
 | Ready to change model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. |
 | Long source documents | [Recursive chunking](/docs/guides/chunking) | A managed 1:N destination stores passage vectors. Search returns documents. |
-| Want OpenAI, Gemini or another hosted API | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key never enters PostgreSQL |
+| Hosted embedding API (OpenAI, Gemini, ...) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
 
-Functions live in the `postvec` schema. Qualify every call:
-`postvec.*`. The extension leaves `search_path` unchanged.
+Functions live in the `postvec` schema (`postvec.enable(...)`).
+`search_path` is left unchanged.
 
 ## Text, no vectors
 

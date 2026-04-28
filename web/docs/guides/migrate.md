@@ -12,8 +12,9 @@ translates the stored vectors. Source text is not re-embedded.
 When the corpus should stay put, [bridge search](/docs/guides/bridge)
 converts queries into the existing space instead.
 
-A migration does not finish on its own. It stops and waits at the two
-accented states below.
+A migration waits at two operator steps: `awaiting_finalize` (column
+swap) and, if an ANN index existed, `awaiting_index` (rebuild then a
+second finalize).
 
 <figure class="pvd">
 <svg viewBox="0 0 576 456" role="img" aria-labelledby="pvd-mig-title pvd-mig-desc">

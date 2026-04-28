@@ -5,36 +5,27 @@ description: What postvec-server is, when remote mode is worth the extra process
 
 # Remote inference
 
-Embedded mode runs the inference engine inside the PostgreSQL launcher. It
-needs nothing else running and it is the default. Remote mode moves that
-engine to `postvec-server`, a node you operate, and PostgreSQL talks to it over
-gRPC.
+Default mode (`embedded`) runs the engine inside the PostgreSQL launcher.
+Remote mode (`grpc`) runs it in `postvec-server`. PostgreSQL talks to that
+process over gRPC. SQL, the job queue and the wire contract are the same.
+Switching is `postvec.mode` plus a restart.
 
-Both modes speak the same SQL, the same job queue and the same wire contract.
-Switching is a setting and a restart, not a different build or a rewrite.
 `postvec-server` ships in the postvec repository.
 
-## When it is worth a second process
+## When to run remote mode
 
-Move inference out when one of these is true:
-
-- **Crash domain.** A native fault in ONNX Runtime takes down the process it
-  runs in. In embedded mode that process is PostgreSQL's launcher.
-- **CPU or memory.** The engine competes with the database for both. Embedded
-  mode runs under a deliberately conservative host policy for that reason. A
-  dedicated node does not have to.
+- **Crash domain.** An ONNX fault takes down the process it runs in. In
+  embedded mode that is PostgreSQL's launcher.
+- **CPU or memory.** Embedded mode uses a conservative host policy so the
+  engine does not starve the database.
 - **GPU.** Embedded mode is CPU-only.
-- **Sharing.** Several databases, or several services, against one engine.
+- **Sharing.** Several databases or services against one engine.
 - **Read replicas.** A replica that should search but not embed.
-
-Traffic volume alone is not on that list. A two-person team with 40k rows may
-want remote mode for the crash domain, and that is an ordinary way to run this.
 
 ## What a node is
 
-One process. It loads models from a directory, serves three ports and joins an
-optional gossip group so that the nodes can report on each other. It has no
-database, no queue and no scheduler. All of that stays in PostgreSQL.
+One process: loads models from a directory, serves three ports, optionally
+joins a gossip group. Queue, scheduler and SQL stay in PostgreSQL.
 
 | Port | Purpose | Exposure |
 |---|---|---|
@@ -72,9 +63,7 @@ between an in-database engine and a node, and a tree that
 ## Licensing
 
 The extension, CLI and their packages are under the PostgreSQL License. Terms
-for `postvec-server` are not settled yet and are not stated here. The omission
-is deliberate rather than an oversight, and it will be stated before the first
-release.
+for `postvec-server` will be stated before the first release.
 
 ## Related documentation
 

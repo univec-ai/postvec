@@ -113,8 +113,8 @@ No. Only [`migrate()`](/docs/guides/migrate) or a re-embed does that.
 ## Is the extension AGPL?
 
 No. The extension, CLI and packages use the PostgreSQL License, in either
-inference mode and whatever you build with it. Terms for `postvec-server`,
-the remote-mode inference node, are not settled yet and are not stated here.
+inference mode and whatever you build with it. Terms for `postvec-server`
+will be stated before the first release.
 
 ## Which PostgreSQL versions are supported?
 

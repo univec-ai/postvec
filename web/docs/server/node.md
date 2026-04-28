@@ -48,13 +48,11 @@ more.
 The discovery listener requires TLS. Without `--insecure` and without a
 readable certificate pair, the node **refuses to start**.
 
-That refusal is deliberate. Operators write
-`POSTVEC_HTTP_ENDPOINTS=https://...` into a cluster, and a silent fallback to
-plain HTTP produces a listener that answers and a client that fails
-confusingly.
+Operators write `POSTVEC_HTTP_ENDPOINTS=https://...` into a cluster. A
+silent fallback to plain HTTP would leave a listener that answers and a
+client that fails.
 
-Self-signed certificates are accepted. postvec's discovery client tolerates
-them, because the trust boundary here is the network rather than the PKI.
+Self-signed certificates are accepted. The trust boundary is the network.
 
 ```bash
 # Local development, no certificates.
@@ -119,18 +117,17 @@ admin listening on http://127.0.0.1:22223 (loopback only)
 serving: 1 model(s) ready, ...
 ```
 
-Two lines repay reading every time:
+Check these two lines:
 
 - **`advertising ...`** If a warning says the address was autodetected and the
-  host has more than one interface, pin it with `--advertise`. This is the most
-  common cause of a node that serves correctly and never joins its peers.
-- **`configuration file: ...`** Which file was actually read, if any. A
-  configuration change that had no effect is usually a different file.
+  host has more than one interface, pin it with `--advertise`. Otherwise a
+  node can serve locally and never join its peers.
+- **`configuration file: ...`** The file that was actually read. A change
+  that had no effect usually hit a different file.
 
-Sockets are reserved before the models load, so a port conflict fails in the
-first second rather than after a multi-minute warmup. Between reservation and
-serving, the ports are open but silent, and a healthcheck sees a refused
-connection. That is the honest answer for "still starting".
+Sockets are reserved before models load, so a port conflict fails immediately.
+Between reservation and serving the ports are open but silent; a healthcheck
+sees a refused connection while the node is still starting.
 
 ## 6. Confirm it serves
 
@@ -143,8 +140,8 @@ curl -sk https://127.0.0.1:22222/ready
 `status` prints the version, the engine root, the advertised addresses and one
 line per loaded model. `/ready` answers `200` once a model can serve a
 prediction, and `503` before that. Boot warmup runs one throwaway prediction
-per embedding model, so `/ready` means "answers at steady-state latency"
-rather than "has finished loading".
+per embedding model, so `/ready` means the node answers at steady-state
+latency.
 ::::
 
 Next: [connect PostgreSQL](/docs/server/connect).

@@ -16,9 +16,8 @@ the query.
 Inference runs on the database host by default. Models live on disk. The
 bundled MiniLM model needs no API key.
 
-A column can also be bound to a hosted embedding API instead. The key stays
-in the inference layer, never in the database.
-[External providers](/docs/models/providers).
+A column can also use a hosted embedding API. The key stays in the
+inference layer. [External providers](/docs/models/providers).
 
 ## What you need
 
@@ -49,12 +48,12 @@ RDS and Aurora cannot load the worker.
    Expected: a registry id. Vectors stay NULL until the worker writes them.
 4. Wait until `pending_jobs = 0`. Vectors fill after commit, not inside
    the inserting transaction.
-5. [Build an ANN index](/docs/guides/indexes). Nothing builds one unless
-   you ask.
+5. [Build an ANN index](/docs/guides/indexes). Default `index_mode` is
+   `manual`.
 6. [Search](/docs/guides/search).
 
 The [quick start](/docs/quickstart) is the same path in one disposable
-container. It does not touch the host cluster.
+container.
 
 ## Which SQL call
 
@@ -66,11 +65,11 @@ container. It does not touch the host cluster.
 | Ready to change the stored model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert, or re-embed if you choose that. |
 | Long source documents | [Chunking](/docs/guides/chunking) | A managed 1:N table holds passage vectors. Search still returns documents. |
 
-[Which SQL call](/docs/guides/starting) walks each row with the SQL and
-the expected result.
+[Which SQL call](/docs/guides/starting) has the SQL and expected result
+for each case.
 
-Every function lives in the `postvec` schema. Qualify the call:
-`postvec.enable(...)`. The extension does not change `search_path`.
+Functions live in the `postvec` schema (`postvec.enable(...)`).
+`search_path` is left unchanged.
 
 ## Two inference modes
 
@@ -80,22 +79,21 @@ Every function lives in the `postvec` schema. Qualify the call:
 | Text leaves the DB host | No | Only to those nodes |
 | Models | `postvec model ...` on this host | On each node |
 
-SQL is the same in both modes. Embedded is what a package install does
-with `setup --embedded`. The engine root is `/opt/postvec`. Use remote
-when inference should not share a crash domain, a CPU budget or a GPU
-with PostgreSQL.
+SQL is the same in both modes. A package install plus `setup --embedded`
+uses `/opt/postvec` as the engine root. Remote mode isolates inference
+from the database process (CPU, GPU, crash domain).
 
 [Embedded vs remote](/docs/concepts/modes) compares them.
 [Remote inference](/docs/server/) covers running the nodes.
 
 ## Out of scope
 
-- Store provider API keys in PostgreSQL. Hosted providers are opt-in per
-  column and their credentials live only in the inference layer.
+- Provider API keys in PostgreSQL. Hosted providers are opt-in per
+  column; credentials live in the inference layer.
   [External providers](/docs/models/providers).
-- Parse PDFs or HTML in the database.
-- Provide `rag()` or chat-completion SQL. Generation belongs in the application.
-- Invent a new index access method. Storage and ANN indexes are pgvector's.
+- PDF or HTML parsing in the database
+- `rag()` / chat-completion SQL. Generation belongs in the application.
+- A new index access method. Storage and ANN indexes are pgvector's.
 
 ## License
 
@@ -104,5 +102,4 @@ Converter weights are a separate UniVec product. The public model
 catalogue is a subset; a verified account sees the private superset. The
 bundled MiniLM model works offline and does not need registry access.
 
-Terms for `postvec-server`, the remote-mode inference node, are not
-settled yet and are not stated here.
+Terms for `postvec-server` will be stated before the first release.

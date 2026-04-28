@@ -74,10 +74,9 @@ would rather see printed all break that assumption, and `--frontend`
 overrides what `/config` and `postvec-server status` display and what peers
 learn.
 
-It is decoration. Nothing dials it: gRPC uses the advertised IP, membership
-uses the gossip socket, and postvec's discovery never reads it. It is also
-never discovered from the network. The process does not ask the internet what
-its address is.
+gRPC uses the advertised IP, membership uses the gossip socket, and
+postvec's discovery never reads `frontend`. The process does not discover
+its own public address.
 
 ## Health routes
 
@@ -93,7 +92,7 @@ Gate load balancers and compose healthchecks on `/ready`, and supervisors on
 before it can serve it, or a supervisor that restarts a node mid-drain.
 
 Boot warmup runs one throwaway prediction per embedding model, so `/ready`
-means "answers at steady-state latency" rather than "has finished loading".
+means the node answers at steady-state latency.
 `--no-warmup` skips it, and `postvec_server_warmup_failures_total` counts what
 went wrong.
 
@@ -109,8 +108,7 @@ went wrong.
 | `postvec_server_cluster_members` | Below the fleet size means a partition or a wrong `--advertise` |
 
 Error codes are the same values that cross the wire and drive postvec's retry
-and dead-letter policy, which is what makes "why is this column stuck" a query
-rather than a log trawl.
+and dead-letter policy.
 
 ## Security
 
@@ -119,23 +117,21 @@ postvec's client speaks plaintext and the extension's own setting help says
 so, so adding TLS on the server side alone would break every existing
 `postvec setup --grpc`.
 
-That is a workable posture on a private network and a bad one anywhere else.
-Restrict both ports with a firewall, a security group or `--bind <private-ip>`.
-The node logs a warning at boot whenever it binds every interface.
+Restrict both ports to a private network with a firewall, a security group
+or `--bind <private-ip>`. The node logs a warning at boot whenever it binds
+every interface.
 
 **Only the loopback admin port can change what is loaded.** `/admin/load`,
 `/admin/unload` and `/admin/providers/reload` live on their own socket bound
-to `127.0.0.1`, never on the published one, and a routable admin bind is a
-boot failure rather than a warning. A per-request loopback peer check sits
-behind that as defence in depth. The trust boundary is local OS users.
+to `127.0.0.1`, never on the published one. A routable admin bind is a
+boot failure. A per-request loopback peer check sits behind that. The
+trust boundary is local OS users.
 
-**Nothing phones home.** No telemetry and no licence check. The node contacts
-nothing on its own initiative; models arrive on disk by whatever mechanism you
-choose. The one deliberate exception is an [external
-provider](/docs/models/providers) you configure yourself: with a connector
-file present, the node calls that provider's API for the models it declares,
-and only for those. A UniVec converter sends stored vectors; an embed entry
-sends text.
+No telemetry and no licence check. Models arrive on disk by whatever
+mechanism you choose. An [external provider](/docs/models/providers)
+connector is the exception: the node then calls that provider's API for
+the models it declares. A UniVec converter sends stored vectors; an
+embed entry sends text.
 
 ## Troubleshooting
 

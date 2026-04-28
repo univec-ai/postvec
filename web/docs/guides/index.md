@@ -10,10 +10,10 @@ the cluster and, in embedded mode, the model inventory. A
 [hosted embedding API](/docs/models/providers) is configured with
 `postvec provider add` first; the SQL after that is the same.
 
-If the table already exists, start at [Which SQL call](/docs/guides/starting).
-If you are filling a new table, the block below is the whole first pass.
+Existing tables: [Which SQL call](/docs/guides/starting). New table: the
+sequence below.
 
-What each call does, in one line:
+SQL functions:
 
 | Call | Does |
 |---|---|
@@ -68,20 +68,18 @@ Vectors fill **after** the inserting transaction commits. Poll
 
 ## Guides in this section
 
-Use, in roughly this order:
-
 1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt)
-   one that already exists.
-   A [hosted API](/docs/models/providers) is `provider add` then the same
+   an existing vector column.
+   Hosted API: [provider add](/docs/models/providers), then the same
    `enable()`.
-2. [Search](/docs/guides/search), then [filters](/docs/guides/filters) and
-   an [index](/docs/guides/indexes).
-3. [Templates](/docs/guides/templates) if short texts need row context.
-   [Chunk](/docs/guides/chunking) if the source is long.
+2. [Search](/docs/guides/search), [filters](/docs/guides/filters),
+   [index](/docs/guides/indexes).
+3. [Templates](/docs/guides/templates) for row context on short text.
+   [Chunking](/docs/guides/chunking) for long source documents.
 4. [Bridge](/docs/guides/bridge) an existing space, or
    [migrate](/docs/guides/migrate) it.
 
-Operate, when something needs watching:
+Operation:
 
 - [Status](/docs/guides/status) and `postvec doctor`
 - [`retry_dead()`](/docs/guides/retry)

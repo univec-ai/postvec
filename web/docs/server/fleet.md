@@ -35,22 +35,21 @@ sudo postvec setup --database app \
   --http https://10.0.0.10:22222,https://10.0.0.11:22222,https://10.0.0.12:22222
 ```
 
-## What clustering does not do
+## Clustering scope
 
-- **It does not replicate models.** Load a converter on node A and node B does
-  not grow one.
-- **It does not load-balance.** postvec round-robins the gRPC list itself.
-- **It does not feed discovery.** postvec never joins gossip and never reads
-  membership. The endpoint lists are the routing table.
+- **Models.** Load a converter on node A and node B does not grow one.
+- **Load balancing.** postvec round-robins the gRPC list itself.
+- **Discovery.** postvec never joins gossip and never reads membership.
+  The endpoint lists are the routing table.
 
 ## The parity rule
 
 **Every node carries the same enabled set**, or the HTTP endpoint list is
 restricted to the nodes that do.
 
-Nothing enforces it, and the failure it produces is unpleasant: postvec routes
-a request to a node that lacks the model, and one request in three fails with
-`MODEL_NOT_LOADED` that looks intermittent and reads like a network fault.
+The operator has to keep that true. Otherwise postvec routes a request
+to a node that lacks the model, and a fraction of requests fail with
+`MODEL_NOT_LOADED`.
 
 The check:
 
@@ -104,11 +103,11 @@ sleep usually does, so you do not need both.
 Version skew across a fleet is visible. Each node gossips its version and
 `postvec-server status` prints it.
 
-`/config` keeps advertising a draining node's models, which looks untidy and
-is deliberate: postvec prunes its SQL model cache only on a **complete**
-discovery refresh, so a single-node deployment that emptied its model list
-mid-restart would empty the database's cache with it. Traffic reroutes on the
-transport error, which postvec already retries against the next endpoint.
+`/config` keeps advertising a draining node's models. postvec prunes its
+SQL model cache only on a **complete** discovery refresh, so a
+single-node deployment that emptied its model list mid-restart would
+empty the database's cache with it. Traffic reroutes on the transport
+error, which postvec already retries against the next endpoint.
 
 ## A node sees only itself
 

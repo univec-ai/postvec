@@ -69,11 +69,10 @@ export default defineConfig({
             { text: "Overview", link: "/docs/" },
             { text: "Quick start", link: "/docs/quickstart" },
             { text: "Which SQL call", link: "/docs/guides/starting" },
-            { text: "How it works", link: "/docs/concepts/" },
           ],
         },
         {
-          text: "Install",
+          text: "Installation",
           collapsed: false,
           items: [
             { text: "Choose a method", link: "/docs/install/" },
@@ -86,7 +85,7 @@ export default defineConfig({
           ],
         },
         {
-          text: "Use",
+          text: "Usage",
           collapsed: true,
           items: [
             { text: "Usage overview", link: "/docs/guides/" },
@@ -103,7 +102,7 @@ export default defineConfig({
           ],
         },
         {
-          text: "Operate",
+          text: "Operation",
           collapsed: true,
           items: [
             { text: "Status and health", link: "/docs/guides/status" },
@@ -138,18 +137,13 @@ export default defineConfig({
           ],
         },
         {
-          text: "Understand",
-          collapsed: true,
-          items: [
-            { text: "Eventual consistency", link: "/docs/concepts/consistency" },
-            { text: "Embedded vs remote", link: "/docs/concepts/modes" },
-            { text: "Vector lock-in", link: "/docs/concepts/lock-in" },
-          ],
-        },
-        {
           text: "Reference",
           collapsed: true,
           items: [
+            { text: "How it works", link: "/docs/concepts/" },
+            { text: "Eventual consistency", link: "/docs/concepts/consistency" },
+            { text: "Embedded vs remote", link: "/docs/concepts/modes" },
+            { text: "Vector lock-in", link: "/docs/concepts/lock-in" },
             { text: "SQL functions", link: "/docs/reference/sql" },
             { text: "CLI", link: "/docs/reference/cli" },
             { text: "GUCs", link: "/docs/reference/gucs" },

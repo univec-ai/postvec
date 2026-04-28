@@ -6,8 +6,8 @@ outline: deep
 
 # Downloads
 
-Packages and images for a given identity. Until a tag is published, the
-names below are the contract for a local build.
+Packages and images for identity `0.1.0-1`. Until a tag is published,
+the names below are the local-build contract.
 
 Publication channels:
 
@@ -17,11 +17,10 @@ Publication channels:
 | [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pg16` / `-pg17` / `-pg18`, with or without `-complete`) |
 
 The selector checks GitHub for a published postvec release and links
-assets only when they exist. Until then the names below are the contract
-for a local build.
+assets only when they exist.
 
 Install from the downloaded files. A signed apt/yum repository is
-planned later. The current release identity is `0.1.0-1`.
+planned later.
 
 <DownloadPanel />
 
@@ -46,14 +45,13 @@ binaries.
 No package and no image for the [remote inference node](/docs/server/) is
 published yet, and the release manifest does not reference one. Build it from
 a checkout with `cargo build --release -p postvec-server`, or build the
-container with `packaging/postvec/scripts/build-server-image.sh`. Its
-licensing terms are not settled yet either, and are not stated here.
+container with `packaging/postvec/scripts/build-server-image.sh`. License
+terms for the node will be stated before the first release.
 
 ## After the files are on disk
 
-After the files are on disk, configure the cluster. Packages leave
-PostgreSQL configuration, databases and the model inventory for that
-later step.
+Configure the cluster next. Packages leave PostgreSQL configuration,
+databases and the model inventory for that step.
 
 - [Configure the cluster](/docs/install/setup)
 - [Docker runtime notes](/docs/install/docker)

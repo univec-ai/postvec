@@ -5,8 +5,7 @@ description: The dependency between stored vectors and their embedding model.
 
 # Vector lock-in and embedding debt
 
-Stored vectors are bound to the model that produced them. That binding
-rarely appears on a schema diagram, but it is part of the data.
+Stored vectors are bound to the model that produced them.
 
 ## Vector lock-in
 
@@ -17,8 +16,8 @@ with model B and search a corpus from model A, and the ranks are
 invalid.
 
 Once the stored corpus, its ANN index and every query caller assume
-space A, the model is no longer an ordinary configuration value. It is
-part of the data contract. That binding is **vector lock-in**.
+space A, the model is part of the data contract. That binding is
+**vector lock-in**.
 
 ## Embedding debt
 
@@ -30,7 +29,7 @@ grows the eventual migration.
 
 That accumulated, deferred migration work is **embedding debt**.
 
-## What postvec does about it
+## Operations
 
 | Requirement | postvec operation |
 |---|---|

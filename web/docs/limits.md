@@ -65,9 +65,7 @@ description: Supported environments and explicit limitations.
 | Converter catalogue | UniVec, under a separate license |
 | Bundled MiniLM | Upstream license, shipped in the model package |
 
-Terms for `postvec-server` are not settled yet. The omission is
-deliberate rather than an oversight; it will be stated before the first
-release.
+Terms for `postvec-server` will be stated before the first release.
 
 A verified UniVec account sees the private catalogue superset. The
 public channel is a subset and does not require a key.

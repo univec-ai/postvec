@@ -5,8 +5,7 @@ description: Pull, activate, load, unload and remove models on a postvec-server 
 
 # Models on a node
 
-Three separate things happen to a model on a node, and conflating them is the
-most common day-one surprise:
+Pull, activate and load are separate steps:
 
 | Step | What it does | Where it lands |
 |---|---|---|
@@ -36,9 +35,9 @@ returns a per-model result. `status` then lists it, and the database sees
 it in `postvec.models` after the next discovery refresh.
 ::::
 
-A deactivated descriptor never loads, on any path. That is why
-`model activate` means the same thing on a node as it does on a database
-host. `load` of a deactivated model fails and names `activate`.
+A deactivated descriptor is skipped at load and at restart.
+`model activate` is the same switch on a node as on a database host.
+`load` of a deactivated model fails and names `activate`.
 
 The registry side of `pull` (the catalogue, private models, `postvec login`) is
 identical to the database-host case: [pull, activate, upgrade,

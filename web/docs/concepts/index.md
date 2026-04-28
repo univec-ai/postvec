@@ -5,9 +5,11 @@ description: Runtime shape, write path and common operational constraints.
 
 # How it works
 
-Three facts cause most of the surprises: empty vectors right after
-`INSERT`, a worker that never started and `search()` that takes too
-long.
+## Implementation details
+
+Vectors fill after commit. Automatic sync needs
+`shared_preload_libraries = 'postvec'` and a restart. Search without an
+ANN index is a sequential scan.
 
 ## Runtime
 

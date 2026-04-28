@@ -14,8 +14,7 @@ unchanged. `search()` embeds the query with an available open model,
 converts that one vector to ada-002 space, then runs pgvector and
 full-text search against the existing table.
 
-The bridge route is selected inside ordinary `search()`. Nothing extra
-is called.
+`search()` selects the bridge route. There is no extra function.
 
 ## Route resolution
 

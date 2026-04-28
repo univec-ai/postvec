@@ -5,14 +5,14 @@ description: Hybrid search in a disposable postvec container. Pick PostgreSQL 16
 
 # Quick start
 
-A single disposable container. The host PostgreSQL cluster is left
-alone. No API key. One example table.
+A disposable container with PostgreSQL, postvec and the bundled MiniLM
+model. The host cluster is not modified. No API key.
 
-You will: start the image, prove inference, enable a column, wait for
-vectors, index and search, then remove the container.
+Steps: start the image, confirm inference, enable a column, wait for
+vectors, index, search, remove the container.
 
-The tabs on each command pick the PostgreSQL major. The same choice is
-remembered on the install pages.
+Tabs select the PostgreSQL major. The same choice is remembered on the
+installation pages.
 
 :::: info Release status
 Commands use the planned `0.1.0-1` image. Publication status is listed

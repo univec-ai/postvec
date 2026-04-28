@@ -5,8 +5,8 @@ description: postvec container images for PostgreSQL 16, 17 and 18. Volume layou
 
 # Install with Docker
 
-One container holds PostgreSQL, pgvector, postvec, the CLI, ONNX Runtime
-and MiniLM. Use this to try postvec without touching the host cluster.
+The image includes PostgreSQL, pgvector, postvec, the CLI, ONNX Runtime
+and MiniLM. It does not modify the host cluster.
 
 Tabs pick the PostgreSQL major. The data-directory mount follows the
 official `postgres` image for that major.
@@ -87,8 +87,7 @@ listeners stay loopback-only.
 
 ## External providers
 
-Both images work with no provider configuration at all. Nothing here is needed
-for local models.
+Local models need no provider configuration.
 
 To serve a hosted model from a container, give it a `providers.d` and a key.
 The lighter path keeps the key out of the filesystem and names a variable the
@@ -154,7 +153,7 @@ docker exec -u postgres postvec \
 
 ## Persistent model storage
 
-Pulled models land under the image's engine root. A **named volume** on
+Pulled models are stored under the image's engine root. A **named volume** on
 `/opt/postvec/models` copies the bundled MiniLM in. A **bind mount or
 PVC** masks the bundled directory, so MiniLM must be copied into the
 mounted directory.

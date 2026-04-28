@@ -75,7 +75,7 @@ started without `--insecure` serves `https`.
 
 ## 4. Use it
 
-Nothing about the SQL changes:
+SQL is unchanged:
 
 ```sql
 SELECT postvec.enable('docs', 'body', model => 'baai-bge-m3');

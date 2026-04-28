@@ -441,12 +441,11 @@ onBeforeUnmount(() => {
     <!-- ============================================================ -->
     <section class="band" aria-labelledby="sql-heading">
       <div class="wrap">
-        <p class="eyebrow">The whole API, in four verbs</p>
+        <p class="eyebrow">SQL</p>
         <h2 id="sql-heading">Enable, search, adopt, migrate.</h2>
         <p class="prose">
-          Every operation is a schema-qualified SQL function. Pick the tab
-          that matches what you have. Each one shows the call, what it
-          does and the result you should see.
+          Dedicated SQL functions per usage scenario. Each tab shows the
+          call, what it does and the expected result.
         </p>
 
         <div class="try">

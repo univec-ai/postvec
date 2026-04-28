@@ -5,11 +5,10 @@ description: Operational differences between embedded inference and remote gRPC 
 
 # Embedded vs remote
 
-Embedded is the default: inference on the database host, nothing else
-to run. Remote mode moves inference to nodes you operate
-(`postvec-server`, which this project ships). Pick remote when
-inference should not share a crash domain, a CPU budget or a GPU with
-PostgreSQL, or when several databases should share one engine.
+Embedded is the default: inference on the database host. Remote mode
+runs inference on `postvec-server` nodes. Use remote to isolate
+inference from PostgreSQL (crash domain, CPU, GPU) or to share one
+engine across databases.
 
 <figure class="pvd">
 <svg viewBox="0 0 632 368" role="img" aria-labelledby="pvd-modes-title pvd-modes-desc">
@@ -75,10 +74,8 @@ stay the same.
 | Engine crash | Restarts the launcher | Stays outside PostgreSQL |
 | Typical use | Single-node, private, edge, air-gapped, regulated | Crash-domain isolation, GPU, one engine shared by several databases |
 
-One package does both: mode is configuration, not a different build.
-`postvec setup --embedded` selects embedded mode, and is also what the
-extension does with no configuration at all. `setup` with `--grpc` /
-`--http` selects remote mode.
+The same package supports both modes. `setup --embedded` (the default)
+selects embedded; `setup --grpc` / `--http` selects remote.
 
 ## Embedded
 
@@ -121,10 +118,10 @@ postvec-server --root /var/lib/postvec-server \
   --ssl-cert-key /etc/postvec-server/tls.key
 ```
 
-Every node must carry the same enabled models. Nothing replicates them,
-and postvec round-robins the endpoints it was given, so a converter
-present on some nodes and not others fails intermittently.
-`postvec-server status --fleet` is the check.
+Every node must carry the same enabled models. postvec round-robins the
+endpoints it was given, so a converter present on some nodes and not
+others fails intermittently. `postvec-server status --fleet` is the
+check.
 
 `postvec-server` is a CPU or GPU inference node on the deployment
 network, shipped in the postvec repository. Every node in a fleet runs
@@ -161,13 +158,13 @@ sudo postvec setup --database app \
   --embedded --switch-mode
 ```
 
-Engine files on disk are unused in remote mode. They are not deleted.
+Engine files already on the database host stay in place in remote mode
+and are unused.
 
 ## Selection
 
 :::: warning Embedded mode shares resources with PostgreSQL
-Embedded faults restart the launcher. Remote keeps engine faults off the
-database host. Embedded is the default because it needs nothing else
-running; move to remote when the shared crash domain, the shared CPU
-budget or the absence of a GPU starts to matter.
+An engine fault restarts the launcher. Remote mode keeps that fault off
+the database host. Embedded is the default (no extra process). Remote is
+the choice for crash isolation, a dedicated CPU budget or GPU inference.
 ::::

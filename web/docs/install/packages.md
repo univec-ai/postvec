@@ -10,8 +10,8 @@ matches **one** release, **one** distribution, **one** architecture and
 **one** PostgreSQL major. The [release artifacts](/download) page lists
 names and publication status.
 
-The packages place files. They do not configure the cluster. After
-step 5, run [setup](/docs/install/setup).
+Packages install files. After step 5, run
+[setup](/docs/install/setup) to configure the cluster.
 
 Tabs pick the PostgreSQL major and the package family. Debian examples
 use the `+deb12` filename tag. Ubuntu files use `+ubuntu22.04` or
@@ -38,9 +38,8 @@ inference; `setup --embedded` afterwards.
 
 <PgSnippet id="packages-complete" />
 
-Files land under `/opt/postvec`. MiniLM is 384-d and needs no API key.
-Installing this payload leaves embedded mode off.
-`postvec setup --embedded` turns it on.
+Default installation directory is `/opt/postvec`. MiniLM is 384-d and
+needs no API key. Embedded mode starts with `postvec setup --embedded`.
 
 ## 3. Extension + CLI only
 
@@ -76,9 +75,9 @@ These checks succeed on the files alone. A complete install also has
 
 ## After the packages are installed
 
-The packages place files. They do not enrol a database or start the
-worker. `postvec setup` does that. `apt remove` / `dnf remove` remove
-the files and leave user data in place.
+`postvec setup` enrols a database and starts the worker.
+`apt remove` / `dnf remove` remove the files and leave user data in
+place.
 
 ## Cluster configuration
 
