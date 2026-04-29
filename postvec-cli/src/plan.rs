@@ -47,9 +47,20 @@ pub enum PlanStep {
     CleanupPostvecObjects {
         database: String,
         drop_columns: bool,
+        /// Whether recursive entries' managed chunk destinations go too.
+        /// Only meaningful with `drop_columns`.
+        #[serde(default)]
+        drop_destinations: bool,
     },
     DropExtension {
         database: String,
+    },
+    /// `uninstall --purge`: delete one path on this host that postvec (the
+    /// CLI, `setup`, a model pull, or a manual install) created.
+    RemovePath {
+        path: PathBuf,
+        /// What the path is, for the operator ("pulled model baai-bge-m3").
+        what: String,
     },
     /// Model management (`postvec model …`).
     DownloadArchive {
@@ -189,14 +200,17 @@ impl PlanStep {
             PlanStep::CleanupPostvecObjects {
                 database,
                 drop_columns,
+                drop_destinations,
             } => format!(
                 "remove postvec's runtime objects in {database:?}{}",
-                if *drop_columns {
-                    " AND DROP THE SHADOW VECTOR COLUMNS"
-                } else {
-                    " (keeping the shadow vector columns)"
+                match (*drop_columns, *drop_destinations) {
+                    (true, true) => " AND DROP THE SHADOW VECTOR COLUMNS AND CHUNK DESTINATIONS",
+                    (true, false) =>
+                        " AND DROP THE SHADOW VECTOR COLUMNS (keeping chunk destinations)",
+                    (false, _) => " (keeping the shadow vector columns and chunk destinations)",
                 }
             ),
+            PlanStep::RemovePath { path, what } => format!("delete {} ({what})", path.display()),
             PlanStep::DropExtension { database } => {
                 format!("drop the postvec extension from {database:?} (without CASCADE)")
             }
@@ -1015,14 +1029,17 @@ mod tests {
         plan.push(PlanStep::CleanupPostvecObjects {
             database: "univec".into(),
             drop_columns: true,
+            drop_destinations: true,
         });
         assert!(plan.destructive);
         assert!(plan.steps[0].describe().contains("DROP THE SHADOW VECTOR"));
+        assert!(plan.steps[0].describe().contains("CHUNK DESTINATIONS"));
 
         let mut keeping = Plan::new("uninstall", "18/main");
         keeping.push(PlanStep::CleanupPostvecObjects {
             database: "univec".into(),
             drop_columns: false,
+            drop_destinations: false,
         });
         assert!(!keeping.destructive);
         assert!(keeping.steps[0].describe().contains("keeping"));
@@ -1054,6 +1071,7 @@ mod tests {
         plan.push(PlanStep::CleanupPostvecObjects {
             database: "univec".into(),
             drop_columns: true,
+            drop_destinations: false,
         });
         // Nobody to ask and no --yes: refused before any mutation.
         let error = confirm(&plan, false, Some("univec"), Prompt::non_interactive()).unwrap_err();
@@ -1072,6 +1090,7 @@ mod tests {
         destructive.push(PlanStep::CleanupPostvecObjects {
             database: "univec".into(),
             drop_columns: true,
+            drop_destinations: false,
         });
         for (plan, ack, yes) in [
             (setup_plan(), None, false),

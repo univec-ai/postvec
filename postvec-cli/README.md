@@ -102,13 +102,23 @@ cache — which otherwise means reading the server log.
 # Retains data: the database, pgvector, and the shadow vector columns.
 sudo postvec uninstall --database univec
 
-# Destructive: needs two independent acknowledgements.
+# Destructive: needs two independent acknowledgements. Drops the shadow
+# columns and the chunk destination tables postvec created
+# (--keep-destinations keeps the latter).
 sudo postvec uninstall --database univec \
      --drop-columns --acknowledge-data-loss --yes
+
+# Every database in the cluster, then postvec's files on this host:
+# pulled models, provider connector files, CLI state, an unpackaged
+# extension library. Package-owned files stay; the apt/dnf line is printed.
+sudo postvec uninstall --all --drop-columns --acknowledge-data-loss --purge --yes
 ```
 
 `DROP EXTENSION` is never issued with `CASCADE`. Only databases whose SQL
 removal actually succeeded are removed from the launcher configuration.
+`--purge` runs after the restart, refuses while another cluster on the host is
+still set up or while the CLI does not own the preload entry, and leaves the
+engine root alone while a `postvec-server` process is running.
 
 Where the launcher configuration cannot be changed — it was written by hand, it
 has drifted, or the server is not on this host — the SQL is still removed but

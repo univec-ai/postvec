@@ -121,8 +121,12 @@ pub enum DbRequest {
     UninstallExtension {
         database: String,
         drop_columns: bool,
+        #[serde(default)]
+        drop_destinations: bool,
         lock_timeout_ms: u32,
     },
+    /// Every connectable, non-template database in the cluster.
+    ListDatabases,
     /// `postvec.refresh_models()`. Mutating: `setup` smoke checks only.
     RefreshModels { database: String },
     /// A single heartbeat reading, for advancement sampling.
@@ -229,14 +233,20 @@ impl Db {
         &mut self,
         database: &str,
         drop_columns: bool,
+        drop_destinations: bool,
         lock_timeout: Duration,
     ) -> Result<UninstallOutcome> {
         self.request(DbRequest::UninstallExtension {
             database: database.to_string(),
             drop_columns,
+            drop_destinations,
             lock_timeout_ms: lock_timeout.as_millis().min(u32::MAX as u128) as u32,
         })
         .await
+    }
+
+    pub async fn list_databases(&mut self) -> Result<Vec<String>> {
+        self.request(DbRequest::ListDatabases).await
     }
 
     pub async fn reload_config(&mut self, database: &str) -> Result<()> {
@@ -325,9 +335,11 @@ mod tests {
         assert!(DbRequest::UninstallExtension {
             database: "d".into(),
             drop_columns: false,
+            drop_destinations: false,
             lock_timeout_ms: 1000
         }
         .is_mutating());
+        assert!(!DbRequest::ListDatabases.is_mutating());
     }
 
     #[test]

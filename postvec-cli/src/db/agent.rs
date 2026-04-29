@@ -233,10 +233,13 @@ fn describe(request: &DbRequest) -> String {
         DbRequest::UninstallExtension {
             database,
             drop_columns,
+            drop_destinations,
             ..
         } => format!(
-            "postvec.uninstall(drop_columns => {drop_columns}) and DROP EXTENSION in {database:?}"
+            "postvec.uninstall(drop_columns => {drop_columns}, drop_destinations => \
+             {drop_destinations}) and DROP EXTENSION in {database:?}"
         ),
+        DbRequest::ListDatabases => "list the cluster's databases".to_string(),
         DbRequest::RefreshModels { database } => {
             format!("postvec.refresh_models() in {database:?}")
         }

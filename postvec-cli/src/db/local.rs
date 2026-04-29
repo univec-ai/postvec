@@ -142,11 +142,18 @@ impl Direct {
             DbRequest::UninstallExtension {
                 database,
                 drop_columns,
+                drop_destinations,
                 lock_timeout_ms,
             } => Ok(json!(
-                self.uninstall_extension(&database, drop_columns, lock_timeout_ms)
-                    .await?
+                self.uninstall_extension(
+                    &database,
+                    drop_columns,
+                    drop_destinations,
+                    lock_timeout_ms
+                )
+                .await?
             )),
+            DbRequest::ListDatabases => Ok(json!(self.list_databases().await?)),
             DbRequest::ReloadConfig { database } => {
                 self.reload_config(&database).await?;
                 Ok(Value::Null)
@@ -443,6 +450,7 @@ impl Direct {
                     source_column_exists: row.try_get("source_column_exists")?,
                     vector_column_exists: row.try_get("vector_column_exists")?,
                     trigger_count: row.try_get("trigger_count")?,
+                    destination: row.try_get("destination")?,
                 })
             })
             .collect()
@@ -569,10 +577,21 @@ impl Direct {
     /// Runtime cleanup plus `DROP EXTENSION`, in one transaction with a lock
     /// timeout: a blocked `ALTER TABLE` rolls the whole thing back and leaves
     /// the extension usable rather than half-removed.
+    async fn list_databases(&mut self) -> Result<Vec<String>> {
+        let conn = self.maintenance_conn().await?;
+        let rows = sqlx::query(sql::LIST_DATABASES)
+            .fetch_all(&mut *conn)
+            .await?;
+        rows.iter()
+            .map(|row| Ok(row.try_get::<String, _>("datname")?))
+            .collect()
+    }
+
     async fn uninstall_extension(
         &mut self,
         database: &str,
         drop_columns: bool,
+        drop_destinations: bool,
         lock_timeout_ms: u32,
     ) -> Result<UninstallOutcome> {
         let conn = self.conn(database).await?;
@@ -607,6 +626,7 @@ impl Direct {
             .await?;
         let cleaned_entries: i64 = sqlx::query(sql::UNINSTALL_ENTRIES)
             .bind(drop_columns)
+            .bind(drop_destinations)
             .fetch_one(&mut *tx)
             .await
             .map_err(|e| {

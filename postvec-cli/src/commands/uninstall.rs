@@ -14,7 +14,7 @@
 //!   succeeded, and only where the CLI owns the configuration in the first
 //!   place.
 
-use super::{collect, require_host_privileges, Context};
+use super::{collect, purge, require_host_privileges, Context};
 use crate::checks::{self, SCHEMA_VERSION};
 use crate::cli::{Cli, UninstallArgs};
 use crate::config;
@@ -23,6 +23,7 @@ use crate::error::{CliError, Exit, Result};
 use crate::facts::{DatabaseFacts, SettingsSnapshot};
 use crate::output::{CommandResult, Output};
 use crate::plan::{ApplyJournal, DatabasePlan, Plan, PlanStep, Prompt};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 /// Bound on how long the removal transaction waits for locks. A blocked user
@@ -33,7 +34,7 @@ const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit> {
     let started = Instant::now();
     let started_at = checks::timestamp_now();
-    let targets = args.validated()?;
+    let explicit = args.validated()?;
 
     if args.drop_columns && !args.acknowledge_data_loss {
         return Err(CliError::usage(
@@ -48,10 +49,13 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     let paths = context.owned_paths().ok();
     if paths.is_none() && !args.keep_config {
         return Err(CliError::precondition(
-            "there is no local configuration for this cluster, so the database cannot be              removed from the launcher configuration",
+            "there is no local configuration for this cluster, so the database cannot be \
+             removed from the launcher configuration",
         )
         .with_fix(
-            "pass --keep-config for an SQL-only removal (the worker will keep connecting to              the database and idling until its configuration is changed on the host), or run              the command on the database host",
+            "pass --keep-config for an SQL-only removal (the worker will keep connecting to \
+             the database and idling until its configuration is changed on the host), or run \
+             the command on the database host",
         ));
     }
     if !args.keep_config {
@@ -76,32 +80,50 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         None => Ownership::Unmanaged,
     };
 
+    // Which databases. `--all` is every database the launcher is configured
+    // to serve — from the live setting, the owned file and the CLI's memory —
+    // plus any other database in the cluster that has the extension installed
+    // (a `CREATE EXTENSION` by hand, or a database `setup` never saw).
+    let (targets, facts) = if args.all {
+        discover_all(&mut context, &snapshot, &ownership, output).await?
+    } else {
+        let mut facts = Vec::new();
+        for name in &explicit {
+            let mut db = context.read_only();
+            facts.push(db.inspect_database(name).await?);
+        }
+        (explicit, facts)
+    };
+    if args.all {
+        output.note(&if targets.is_empty() {
+            "--all: no database is configured for postvec and none has the extension installed"
+                .to_string()
+        } else {
+            format!("--all: {}", targets.join(", "))
+        });
+    }
+
     // Preflight: show what will be torn down, per database.
     let mut plan = Plan::new("uninstall", context.cluster.identity.id.clone());
     plan.config_path = paths.as_ref().map(|paths| paths.config.clone());
-    let mut facts = Vec::new();
-    for name in &targets {
-        let database = {
-            let mut db = context.read_only();
-            db.inspect_database(name).await?
-        };
+    for database in &facts {
         plan.databases.push(DatabasePlan {
-            name: name.clone(),
+            name: database.name.clone(),
             exists: database.exists,
             extension_installed: database.postvec.is_some(),
         });
         if database.postvec.is_some() {
             plan.push(PlanStep::CleanupPostvecObjects {
-                database: name.clone(),
+                database: database.name.clone(),
                 drop_columns: args.drop_columns,
+                drop_destinations: args.drop_destinations(),
             });
             plan.push(PlanStep::DropExtension {
-                database: name.clone(),
+                database: database.name.clone(),
             });
         }
-        facts.push(database);
     }
-    for summary in summarize(&facts, args.drop_columns) {
+    for summary in summarize(&facts, args.drop_columns, args.drop_destinations()) {
         output.note(&summary);
     }
 
@@ -131,6 +153,39 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         }
     }
 
+    // The host sweep, planned now so the operator confirms every path, and
+    // applied last — after the restart, when nothing runs from those files.
+    let purge_plan = match (&args.purge, &paths) {
+        (true, Some(paths)) => {
+            if !host_will_be_clear(&config_change, &ownership, &snapshot.settings) {
+                return Err(CliError::precondition(
+                    "--purge refused: postvec would still be configured for this cluster after \
+                     the removal (the launcher configuration is not this CLI's to remove), and \
+                     deleting the files under a configured extension would break the next start",
+                )
+                .with_fix(
+                    "remove postvec from shared_preload_libraries and postvec.database in the \
+                     file named above, restart, then rerun `uninstall --all --purge`",
+                ));
+            }
+            let roots = purge_roots(&context, &snapshot.settings, &ownership, paths);
+            let purge_plan = purge::plan(&roots, cli.timeout).await?;
+            for step in purge_plan.steps() {
+                plan.push(step);
+            }
+            for note in &purge_plan.notes {
+                output.note(note);
+            }
+            if let Some(note) = purge_plan.package_note() {
+                output.note(&note);
+            }
+            Some(purge_plan)
+        }
+        // clap: --purge requires --all and conflicts with --keep-config, and
+        // without --keep-config a missing host configuration errored above.
+        _ => None,
+    };
+
     output.show_plan(&plan);
     if args.dry_run {
         let mut planned = ApplyJournal::default();
@@ -156,7 +211,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     }
     // A typed database name is required for data loss; `--yes` alone is
     // deliberately not enough for it.
-    let acknowledgement = args.drop_columns.then(|| targets.join(","));
+    let acknowledgement = (args.drop_columns && !targets.is_empty()).then(|| targets.join(","));
     crate::plan::confirm(
         &plan,
         args.yes,
@@ -175,7 +230,12 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         }
         match context
             .db
-            .uninstall_extension(&database.name, args.drop_columns, LOCK_TIMEOUT)
+            .uninstall_extension(
+                &database.name,
+                args.drop_columns,
+                args.drop_destinations(),
+                LOCK_TIMEOUT,
+            )
             .await
         {
             Ok(outcome) if outcome.was_present => {
@@ -183,10 +243,10 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                     "removed postvec from {} ({} registry entry/entries cleaned{})",
                     database.name,
                     outcome.cleaned_entries,
-                    if args.drop_columns {
-                        ", shadow vector columns dropped"
-                    } else {
-                        ", shadow vector columns kept"
+                    match (args.drop_columns, args.drop_destinations()) {
+                        (true, true) => ", shadow vector columns and chunk destinations dropped",
+                        (true, false) => ", shadow vector columns dropped, chunk destinations kept",
+                        (false, _) => ", shadow vector columns kept",
                     }
                 );
                 output.progress(&format!("postvec: {message}"));
@@ -206,7 +266,8 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     }
 
     // Only databases whose SQL removal succeeded leave the configuration.
-    if journal.succeeded_databases.is_empty() {
+    // (With `--all` and nothing to remove there is nothing to fail.)
+    if journal.succeeded_databases.is_empty() && !plan.databases.is_empty() {
         let first = journal
             .failed_databases
             .first()
@@ -221,6 +282,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         ));
     }
 
+    let mut host_clear = false;
     if let (false, Some(paths)) = (args.keep_config, paths.as_ref()) {
         // Recomputed against the databases whose SQL removal actually
         // succeeded: a database that could not be cleaned up stays configured.
@@ -232,6 +294,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
             &journal.succeeded_databases.clone(),
             &args,
         )?;
+        host_clear = host_will_be_clear(&effective, &ownership, &snapshot.settings);
         match effective {
             ConfigChange::Rewrite { rendered, state } => {
                 paths.commit(&rendered, &state)?;
@@ -248,9 +311,12 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                 // Nothing postvec-managed is left on this host, so this is the
                 // moment the provider credentials become orphaned. Teardown
                 // never destroys what it did not create, and it never deletes
-                // credentials silently either — so say where they are.
-                if let Some(note) = leftover_provider_files(&snapshot.settings) {
-                    messages.push(format!("postvec: {note}"));
+                // credentials silently either — so say where they are. With
+                // --purge they are in the confirmed plan instead.
+                if purge_plan.is_none() {
+                    if let Some(note) = leftover_provider_files(&snapshot.settings) {
+                        messages.push(format!("postvec: {note}"));
+                    }
                 }
             }
             // Nothing was changed, and the command was asked to change
@@ -298,11 +364,158 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         );
     }
 
+    if let Some(purge_plan) = &purge_plan {
+        if host_clear {
+            output.progress("postvec: deleting postvec's files on this host");
+            purge::apply(purge_plan, &mut journal);
+            if let Some(note) = purge_plan.package_note() {
+                messages.push(format!("postvec: {note}"));
+            }
+            for note in &purge_plan.notes {
+                messages.push(format!("postvec: {note}"));
+            }
+        } else {
+            // Planned against a prediction that did not hold (a database
+            // failed to clean up, so its configuration stayed). Deleting the
+            // files under a still-configured extension is the one thing this
+            // must never do.
+            journal.incomplete(
+                "--purge was skipped: postvec is still configured for this cluster after the \
+                 partial removal; fix the failure above and rerun"
+                    .to_string(),
+            );
+        }
+    }
+
     let result = result_for(&context, plan, journal, started, started_at, messages, None);
     output.show_result(&result)?;
     let exit = Exit::from_code(result.exit_code);
     context.close().await;
     Ok(exit)
+}
+
+/// `--all`: the databases to remove postvec from, with their facts.
+///
+/// Configured databases are targets whether or not they exist (a dropped
+/// database must still leave the launcher configuration). Every other
+/// database in the cluster is inspected and joins only when the extension is
+/// installed; one that cannot be connected to is reported and skipped rather
+/// than failing the whole command.
+async fn discover_all(
+    context: &mut Context,
+    snapshot: &collect::ClusterSnapshot,
+    ownership: &Ownership,
+    output: &Output,
+) -> Result<(Vec<String>, Vec<DatabaseFacts>)> {
+    let mut configured: BTreeSet<String> = snapshot
+        .settings
+        .configured_databases()
+        .into_iter()
+        .collect();
+    if let Some(state) = ownership.state() {
+        configured.extend(state.managed_databases.iter().cloned());
+        configured.extend(state.preserved_databases.iter().cloned());
+    }
+    configured.extend(ownership.configured_databases());
+
+    let mut candidates: Vec<(String, bool)> =
+        configured.iter().map(|name| (name.clone(), true)).collect();
+    match context.db.list_databases().await {
+        Ok(all) => candidates.extend(
+            all.into_iter()
+                .filter(|name| !configured.contains(name))
+                .map(|name| (name, false)),
+        ),
+        Err(error) => output.note(&format!(
+            "could not list the cluster's databases ({error}); only the configured ones are \
+             considered"
+        )),
+    }
+
+    let mut targets = Vec::new();
+    let mut facts = Vec::new();
+    for (name, is_configured) in candidates {
+        let database = {
+            let mut db = context.read_only();
+            db.inspect_database(&name).await?
+        };
+        if !is_configured {
+            if let Some(reason) = &database.unreachable {
+                output.note(&format!("{name}: skipped, cannot connect: {reason}"));
+                continue;
+            }
+            if database.postvec.is_none() {
+                continue;
+            }
+        }
+        targets.push(name);
+        facts.push(database);
+    }
+    Ok((targets, facts))
+}
+
+/// Whether, after `change` is applied, nothing on this host configures
+/// postvec any more — the precondition for deleting its files.
+fn host_will_be_clear(
+    change: &ConfigChange,
+    ownership: &Ownership,
+    settings: &SettingsSnapshot,
+) -> bool {
+    match change {
+        ConfigChange::Remove => true,
+        ConfigChange::Rewrite { .. } => false,
+        // Nothing owned to remove: clear only if nothing configures postvec
+        // at all (a purge after an earlier uninstall, say).
+        ConfigChange::None { .. } => {
+            matches!(ownership, Ownership::Unmanaged)
+                && !settings
+                    .preload_items()
+                    .iter()
+                    .any(|item| item == "postvec")
+                && settings.configured_databases().is_empty()
+        }
+    }
+}
+
+fn purge_roots(
+    context: &Context,
+    settings: &SettingsSnapshot,
+    ownership: &Ownership,
+    paths: &crate::config::owned::OwnedPaths,
+) -> purge::PurgeRoots {
+    // `preload_was_already_present`: postvec was in shared_preload_libraries
+    // from a file the CLI does not own before setup ran, and removing the
+    // owned snippet leaves it there — the library must stay.
+    let foreign_preload = match ownership.state() {
+        Some(state) => state.preload_was_already_present,
+        None => settings
+            .preload_items()
+            .iter()
+            .any(|item| item == "postvec"),
+    };
+    purge::PurgeRoots {
+        engine_root: settings
+            .engine_path()
+            .unwrap_or_else(|| std::path::PathBuf::from(config::DEFAULT_ENGINE_ROOT)),
+        engine_root_in_use: purge::server_process_running(),
+        providers_dir: settings.providers_path(),
+        state_dir: paths
+            .state
+            .parent()
+            .and_then(|clusters| clusters.parent())
+            .map(|dir| dir.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/postvec")),
+        lock_dir: paths
+            .lock
+            .parent()
+            .map(|dir| dir.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("/run/lock/postvec")),
+        cluster_key: context.cluster.identity.key(),
+        pkglibdir: context.cluster.pkglibdir.clone(),
+        sharedir: context.cluster.sharedir.clone(),
+        extension_files_removable: !foreign_preload,
+        cli_binary: std::env::current_exe().ok(),
+    }
 }
 
 /// What should happen to the owned configuration file.
@@ -492,7 +705,7 @@ fn leftover_provider_files(settings: &SettingsSnapshot) -> Option<String> {
 }
 
 /// Per-database preflight summary: what exists and what will be torn down.
-fn summarize(facts: &[DatabaseFacts], drop_columns: bool) -> Vec<String> {
+fn summarize(facts: &[DatabaseFacts], drop_columns: bool, drop_destinations: bool) -> Vec<String> {
     let mut out = Vec::new();
     for database in facts {
         if !database.exists {
@@ -515,18 +728,33 @@ fn summarize(facts: &[DatabaseFacts], drop_columns: bool) -> Vec<String> {
             unfinished
         ));
         for entry in &database.registry {
-            out.push(format!(
-                "  {}.{} -> {} ({}){}",
-                entry.relation,
-                entry.source_column,
-                entry.vector_column,
-                entry.state,
-                if drop_columns {
-                    " — WILL BE DROPPED"
-                } else {
-                    " — kept"
-                }
-            ));
+            match &entry.destination {
+                Some(destination) => out.push(format!(
+                    "  {}.{} -> {}.{} (chunk destination, {}){}",
+                    entry.relation,
+                    entry.source_column,
+                    destination,
+                    entry.vector_column,
+                    entry.state,
+                    if drop_columns && drop_destinations {
+                        " — TABLE AND VIEW WILL BE DROPPED"
+                    } else {
+                        " — kept as an ordinary table"
+                    }
+                )),
+                None => out.push(format!(
+                    "  {}.{} -> {} ({}){}",
+                    entry.relation,
+                    entry.source_column,
+                    entry.vector_column,
+                    entry.state,
+                    if drop_columns {
+                        " — WILL BE DROPPED (unless adopted)"
+                    } else {
+                        " — kept"
+                    }
+                )),
+            }
         }
         if unfinished > 0 {
             // Not a blocker: postvec.uninstall() marks them aborted safely. It
@@ -669,6 +897,7 @@ postvec.http_endpoints = 'https://192.0.2.2:22222'
                 source_column_exists: true,
                 vector_column_exists: true,
                 trigger_count: 3,
+                destination: None,
             }];
             facts.migrations = vec![crate::facts::MigrationFacts {
                 id: 1,
@@ -686,7 +915,7 @@ postvec.http_endpoints = 'https://192.0.2.2:22222'
 
     #[test]
     fn the_summary_names_what_will_be_kept_or_dropped() {
-        let keeping = summarize(&[facts("univec", true)], false).join("\n");
+        let keeping = summarize(&[facts("univec", true)], false, false).join("\n");
         assert!(keeping.contains("1 enabled column(s)"));
         assert!(keeping.contains("4 pending job(s)"));
         assert!(keeping.contains("1 dead-lettered"));
@@ -694,15 +923,85 @@ postvec.http_endpoints = 'https://192.0.2.2:22222'
         assert!(keeping.contains("kept"));
         assert!(keeping.contains("marked aborted"));
 
-        let dropping = summarize(&[facts("univec", true)], true).join("\n");
+        let dropping = summarize(&[facts("univec", true)], true, true).join("\n");
         assert!(dropping.contains("WILL BE DROPPED"));
+    }
+
+    /// A chunked entry names its destination table, and says whether the
+    /// table goes: only with both flags, never on `--drop-columns` alone
+    /// when `--keep-destinations` was given.
+    #[test]
+    fn the_summary_names_chunk_destinations() {
+        let mut chunked = facts("univec", true);
+        chunked.registry[0].destination = Some("public.docs_body_chunks".into());
+        let kept = summarize(std::slice::from_ref(&chunked), true, false).join("\n");
+        assert!(kept.contains("public.docs_body_chunks"), "{kept}");
+        assert!(kept.contains("kept as an ordinary table"), "{kept}");
+        assert!(!kept.contains("TABLE AND VIEW WILL BE DROPPED"));
+        let dropped = summarize(std::slice::from_ref(&chunked), true, true).join("\n");
+        assert!(
+            dropped.contains("TABLE AND VIEW WILL BE DROPPED"),
+            "{dropped}"
+        );
+    }
+
+    #[test]
+    fn the_host_is_clear_only_when_nothing_configures_postvec() {
+        let empty = settings(&[]);
+        assert!(host_will_be_clear(
+            &ConfigChange::Remove,
+            &Ownership::Unmanaged,
+            &empty
+        ));
+        assert!(!host_will_be_clear(
+            &ConfigChange::Rewrite {
+                rendered: String::new(),
+                state: ClusterState {
+                    schema_version: STATE_SCHEMA_VERSION,
+                    cluster: "18/main".into(),
+                    config_path: "/c".into(),
+                    config_sha256: String::new(),
+                    managed_databases: vec![],
+                    preserved_databases: vec![],
+                    preload_was_already_present: false,
+                    preload_base: vec![],
+                    mode: "embedded".into(),
+                    updated_by_cli_version: String::new(),
+                    updated_at: String::new(),
+                },
+            },
+            &Ownership::Unmanaged,
+            &empty
+        ));
+        // Nothing owned and nothing configured: a purge after an earlier
+        // uninstall is fine.
+        assert!(host_will_be_clear(
+            &ConfigChange::None { note: None },
+            &Ownership::Unmanaged,
+            &empty
+        ));
+        // Nothing owned but a hand-written configuration still preloads it.
+        let foreign = settings(&[("shared_preload_libraries", "postvec")]);
+        assert!(!host_will_be_clear(
+            &ConfigChange::None { note: None },
+            &Ownership::Unmanaged,
+            &foreign
+        ));
+        let foreign_file = Ownership::Foreign {
+            content: String::new(),
+        };
+        assert!(!host_will_be_clear(
+            &ConfigChange::None { note: None },
+            &foreign_file,
+            &empty
+        ));
     }
 
     #[test]
     fn the_summary_handles_absent_and_uninstalled_databases() {
-        let absent = summarize(&[DatabaseFacts::absent("gone")], false).join("\n");
+        let absent = summarize(&[DatabaseFacts::absent("gone")], false, false).join("\n");
         assert!(absent.contains("does not exist"));
-        let clean = summarize(&[facts("univec", false)], false).join("\n");
+        let clean = summarize(&[facts("univec", false)], false, false).join("\n");
         assert!(clean.contains("postvec is not installed"));
     }
 

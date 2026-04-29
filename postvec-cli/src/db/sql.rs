@@ -77,7 +77,13 @@ pub const LIBRARY_VERSION: &str = "SELECT postvec.version() AS version";
 
 pub const BUILD_INFO: &str = "SELECT postvec.build_info() AS info";
 
-pub const UNINSTALL_ENTRIES: &str = "SELECT postvec.uninstall(drop_columns => $1) AS cleaned";
+pub const UNINSTALL_ENTRIES: &str =
+    "SELECT postvec.uninstall(drop_columns => $1, drop_destinations => $2) AS cleaned";
+
+/// Databases a superuser can connect to. Templates and `datallowconn = false`
+/// databases cannot hold a usable postvec installation.
+pub const LIST_DATABASES: &str =
+    "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname";
 
 /// No CASCADE, ever: it would silently drop objects the operator did not ask
 /// about.
@@ -204,7 +210,13 @@ SELECT reg.id,
                   AND a.attnum > 0 AND NOT a.attisdropped) AS vector_column_exists,
        (SELECT count(*)::bigint FROM pg_trigger t
          WHERE t.tgrelid = reg.rel AND NOT t.tgisinternal
-           AND t.tgname LIKE 'postvec\\_%')                 AS trigger_count
+           AND t.tgname LIKE 'postvec\\_%')                 AS trigger_count,
+       -- The managed chunk destination of a recursive entry (NULL for a
+       -- column-mode entry, and on an older schema without the columns).
+       CASE WHEN to_jsonb(reg) ->> 'destination_table' IS NOT NULL
+            THEN (to_jsonb(reg) ->> 'destination_schema') || '.' ||
+                 (to_jsonb(reg) ->> 'destination_table')
+       END                                                  AS destination
   FROM reg
   LEFT JOIN postvec.status() s ON s.registry_id = reg.id
  ORDER BY reg.id";
@@ -255,6 +267,7 @@ mod tests {
             ("LIBRARY_VERSION", LIBRARY_VERSION),
             ("BUILD_INFO", BUILD_INFO),
             ("UNINSTALL_ENTRIES", UNINSTALL_ENTRIES),
+            ("LIST_DATABASES", LIST_DATABASES),
             ("DROP_EXTENSION", DROP_EXTENSION),
             ("RELOAD_CONF", RELOAD_CONF),
             ("REFRESH_MODELS", REFRESH_MODELS),

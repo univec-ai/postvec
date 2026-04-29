@@ -331,6 +331,10 @@ pub struct RegistryEntryFacts {
     pub source_column_exists: bool,
     pub vector_column_exists: bool,
     pub trigger_count: i64,
+    /// `schema.table` of a recursive entry's managed chunk destination;
+    /// `None` for a column-mode entry.
+    #[serde(default)]
+    pub destination: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

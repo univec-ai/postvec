@@ -5,6 +5,7 @@ pub mod collect;
 pub mod doctor;
 pub mod model;
 pub mod provider;
+pub mod purge;
 pub mod setup;
 pub mod uninstall;
 

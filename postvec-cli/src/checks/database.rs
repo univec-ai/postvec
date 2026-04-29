@@ -936,6 +936,7 @@ mod tests {
             source_column_exists: true,
             vector_column_exists: true,
             trigger_count: 3,
+            destination: None,
         }
     }
 

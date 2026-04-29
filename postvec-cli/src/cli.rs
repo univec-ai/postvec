@@ -735,18 +735,47 @@ pub struct SetupArgs {
 
 #[derive(Debug, Args, Clone)]
 pub struct UninstallArgs {
-    /// Database to stop serving. Repeatable.
-    #[arg(long, required = true, value_name = "NAME", value_delimiter = ',')]
+    /// Database to stop serving. Repeatable. Either this or --all.
+    #[arg(
+        long,
+        value_name = "NAME",
+        value_delimiter = ',',
+        conflicts_with = "all"
+    )]
     pub database: Vec<String>,
 
-    /// Also drop the shadow vector columns postvec created. Destroys stored
-    /// embeddings.
+    /// Every database: those the launcher is configured to serve plus any
+    /// other database in the cluster where the extension is installed.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Also drop what postvec created to hold vectors: the shadow vector
+    /// columns and, for chunked entries, the managed chunk destination
+    /// tables and views. Destroys stored embeddings. Adopted (user-owned)
+    /// columns are never dropped.
     #[arg(long)]
     pub drop_columns: bool,
+
+    /// With --drop-columns: keep the chunk destination tables and views as
+    /// ordinary frozen tables, dropping only the shadow columns.
+    #[arg(long, requires = "drop_columns")]
+    pub keep_destinations: bool,
 
     /// Required acknowledgement for --drop-columns.
     #[arg(long, requires = "drop_columns")]
     pub acknowledge_data_loss: bool,
+
+    /// With --all: after the SQL and configuration removal, also delete
+    /// postvec's files on this host — pulled/manual models and CLI state under
+    /// the engine root, provider connector files, the CLI's state and lock
+    /// directories, and an unpackaged extension library. Package-owned files
+    /// are never deleted; the packages to purge are printed instead.
+    #[arg(
+        long,
+        requires = "all",
+        conflicts_with_all = ["keep_config", "no_restart"]
+    )]
+    pub purge: bool,
 
     /// Remove SQL state only; leave cluster configuration untouched.
     #[arg(long)]
@@ -909,8 +938,32 @@ impl SetupArgs {
 }
 
 impl UninstallArgs {
+    /// The explicitly named databases. Empty with `--all`, whose targets are
+    /// discovered from the cluster.
     pub fn validated(&self) -> Result<Vec<String>> {
+        // Repeated here: clap treats a `requires` as satisfied when the named
+        // argument's conflict partner is present, so `--database d --purge`
+        // parses.
+        if self.purge && !self.all {
+            return Err(CliError::usage(
+                "--purge deletes postvec's files on this host and only makes sense with --all",
+            ));
+        }
+        if self.all {
+            return Ok(Vec::new());
+        }
+        if self.database.is_empty() {
+            return Err(CliError::usage(
+                "name the database(s) to remove postvec from with --database, or pass --all",
+            ));
+        }
         validate::database_list(&self.database)
+    }
+
+    /// Whether `postvec.uninstall()` should drop the managed chunk
+    /// destinations as well as the shadow columns.
+    pub fn drop_destinations(&self) -> bool {
+        self.drop_columns && !self.keep_destinations
     }
 }
 
@@ -1041,6 +1094,67 @@ mod tests {
             "--acknowledge-data-loss"
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn uninstall_targets_are_database_or_all() {
+        // Neither: a usage error at validation time (clap cannot express
+        // "one of a repeatable and a flag" without a group).
+        let cli = parse(&["uninstall"]).unwrap();
+        let Command::Uninstall(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(args.validated().is_err());
+        // Both: refused by clap.
+        assert!(parse(&["uninstall", "--all", "--database", "d"]).is_err());
+        let cli = parse(&["uninstall", "--all"]).unwrap();
+        let Command::Uninstall(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(args.validated().unwrap().is_empty());
+    }
+
+    #[test]
+    fn purge_needs_all_and_a_real_teardown() {
+        assert!(parse(&["uninstall", "--purge"]).is_err());
+        // clap lets this one through (the conflict partner of `all` counts
+        // as satisfying `requires`); validation catches it.
+        let cli = parse(&["uninstall", "--database", "d", "--purge"]).unwrap();
+        let Command::Uninstall(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(args.validated().is_err());
+        assert!(parse(&["uninstall", "--all", "--purge", "--keep-config"]).is_err());
+        assert!(parse(&["uninstall", "--all", "--purge", "--no-restart"]).is_err());
+        assert!(parse(&["uninstall", "--all", "--purge", "--yes"]).is_ok());
+    }
+
+    #[test]
+    fn drop_columns_covers_destinations_unless_kept() {
+        assert!(parse(&["uninstall", "--all", "--keep-destinations"]).is_err());
+        let cli = parse(&[
+            "uninstall",
+            "--all",
+            "--drop-columns",
+            "--acknowledge-data-loss",
+        ])
+        .unwrap();
+        let Command::Uninstall(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(args.drop_destinations());
+        let cli = parse(&[
+            "uninstall",
+            "--all",
+            "--drop-columns",
+            "--keep-destinations",
+            "--acknowledge-data-loss",
+        ])
+        .unwrap();
+        let Command::Uninstall(args) = cli.command else {
+            unreachable!()
+        };
+        assert!(!args.drop_destinations());
     }
 
     #[test]
