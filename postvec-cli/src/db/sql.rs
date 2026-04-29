@@ -80,10 +80,26 @@ pub const BUILD_INFO: &str = "SELECT postvec.build_info() AS info";
 pub const UNINSTALL_ENTRIES: &str =
     "SELECT postvec.uninstall(drop_columns => $1, drop_destinations => $2) AS cleaned";
 
-/// Databases a superuser can connect to. Templates and `datallowconn = false`
-/// databases cannot hold a usable postvec installation.
-pub const LIST_DATABASES: &str =
-    "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY datname";
+/// Every database. Templates can carry the extension (installing into
+/// `template1` is a standard way to make new databases inherit it), and a
+/// database can be set `datallowconn = false` after the fact — both are the
+/// caller's problem to report, never to hide.
+pub const LIST_DATABASES: &str = "\
+SELECT datname, datallowconn AS allow_conn, datistemplate AS is_template
+  FROM pg_database
+ ORDER BY datname";
+
+/// The chunk destinations the registry names, read through `to_jsonb` so an
+/// older schema without the columns yields no rows instead of an error.
+pub const REGISTRY_DESTINATIONS: &str = "\
+SELECT (to_jsonb(r) ->> 'destination_schema') AS destination_schema,
+       (to_jsonb(r) ->> 'destination_table')  AS destination_table
+  FROM postvec.registry r
+ WHERE to_jsonb(r) ->> 'destination_table' IS NOT NULL
+ ORDER BY 1, 2";
+
+pub const RELATION_EXISTS: &str =
+    "SELECT to_regclass(quote_ident($1) || '.' || quote_ident($2)) IS NOT NULL AS present";
 
 /// No CASCADE, ever: it would silently drop objects the operator did not ask
 /// about.
@@ -268,6 +284,8 @@ mod tests {
             ("BUILD_INFO", BUILD_INFO),
             ("UNINSTALL_ENTRIES", UNINSTALL_ENTRIES),
             ("LIST_DATABASES", LIST_DATABASES),
+            ("REGISTRY_DESTINATIONS", REGISTRY_DESTINATIONS),
+            ("RELATION_EXISTS", RELATION_EXISTS),
             ("DROP_EXTENSION", DROP_EXTENSION),
             ("RELOAD_CONF", RELOAD_CONF),
             ("REFRESH_MODELS", REFRESH_MODELS),

@@ -86,6 +86,20 @@ pub struct UninstallOutcome {
     pub was_present: bool,
     /// Registry entries `postvec.uninstall()` tore down.
     pub cleaned_entries: i64,
+    /// Chunk destinations (`schema.table`) that were asked to be dropped but
+    /// survived: `postvec.uninstall()` keeps a destination whose ownership
+    /// proof fails and only warns, so the CLI checks the catalog afterwards
+    /// rather than trusting a count.
+    #[serde(default)]
+    pub retained_destinations: Vec<String>,
+}
+
+/// One `pg_database` row, for `uninstall --all`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseListing {
+    pub name: String,
+    pub allow_conn: bool,
+    pub is_template: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,7 +139,8 @@ pub enum DbRequest {
         drop_destinations: bool,
         lock_timeout_ms: u32,
     },
-    /// Every connectable, non-template database in the cluster.
+    /// Every database in the cluster, templates and non-connectable ones
+    /// included — the caller decides what to do about those.
     ListDatabases,
     /// `postvec.refresh_models()`. Mutating: `setup` smoke checks only.
     RefreshModels { database: String },
@@ -245,7 +260,7 @@ impl Db {
         .await
     }
 
-    pub async fn list_databases(&mut self) -> Result<Vec<String>> {
+    pub async fn list_databases(&mut self) -> Result<Vec<DatabaseListing>> {
         self.request(DbRequest::ListDatabases).await
     }
 

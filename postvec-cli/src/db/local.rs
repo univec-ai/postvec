@@ -9,8 +9,8 @@
 
 use super::sql;
 use super::{
-    DbRequest, DbTarget, ExtensionExpectation, HeartbeatSample, InstallOutcome, UninstallOutcome,
-    MAINTENANCE_DATABASES,
+    DatabaseListing, DbRequest, DbTarget, ExtensionExpectation, HeartbeatSample, InstallOutcome,
+    UninstallOutcome, MAINTENANCE_DATABASES,
 };
 use crate::error::{redact, CliError, Result};
 use crate::facts::*;
@@ -577,13 +577,19 @@ impl Direct {
     /// Runtime cleanup plus `DROP EXTENSION`, in one transaction with a lock
     /// timeout: a blocked `ALTER TABLE` rolls the whole thing back and leaves
     /// the extension usable rather than half-removed.
-    async fn list_databases(&mut self) -> Result<Vec<String>> {
+    async fn list_databases(&mut self) -> Result<Vec<DatabaseListing>> {
         let conn = self.maintenance_conn().await?;
         let rows = sqlx::query(sql::LIST_DATABASES)
             .fetch_all(&mut *conn)
             .await?;
         rows.iter()
-            .map(|row| Ok(row.try_get::<String, _>("datname")?))
+            .map(|row| {
+                Ok(DatabaseListing {
+                    name: row.try_get("datname")?,
+                    allow_conn: row.try_get("allow_conn")?,
+                    is_template: row.try_get("is_template")?,
+                })
+            })
             .collect()
     }
 
@@ -603,6 +609,7 @@ impl Direct {
             return Ok(UninstallOutcome {
                 was_present: false,
                 cleaned_entries: 0,
+                retained_destinations: Vec::new(),
             });
         }
         let has_uninstall: bool = sqlx::query(sql::HAS_UNINSTALL)
@@ -624,6 +631,23 @@ impl Direct {
         // SET LOCAL: scoped to this transaction, gone on rollback.
         tx.execute(format!("SET LOCAL lock_timeout = {lock_timeout_ms}").as_str())
             .await?;
+        // What was asked to go, so the catalog can be checked afterwards:
+        // a failed ownership proof keeps a destination with only a WARNING.
+        let destinations: Vec<(String, String)> = if drop_destinations {
+            sqlx::query(sql::REGISTRY_DESTINATIONS)
+                .fetch_all(&mut *tx)
+                .await?
+                .iter()
+                .map(|row| {
+                    Ok((
+                        row.try_get("destination_schema")?,
+                        row.try_get("destination_table")?,
+                    ))
+                })
+                .collect::<Result<_>>()?
+        } else {
+            Vec::new()
+        };
         let cleaned_entries: i64 = sqlx::query(sql::UNINSTALL_ENTRIES)
             .bind(drop_columns)
             .bind(drop_destinations)
@@ -640,6 +664,18 @@ impl Direct {
                 )
             })?
             .try_get("cleaned")?;
+        let mut retained_destinations = Vec::new();
+        for (schema, table) in &destinations {
+            let present: bool = sqlx::query(sql::RELATION_EXISTS)
+                .bind(schema)
+                .bind(table)
+                .fetch_one(&mut *tx)
+                .await?
+                .try_get("present")?;
+            if present {
+                retained_destinations.push(format!("{schema}.{table}"));
+            }
+        }
         tx.execute(sql::DROP_EXTENSION).await.map_err(|e| {
             CliError::apply(format!(
                 "DROP EXTENSION postvec in {database:?} failed: {}",
@@ -654,6 +690,7 @@ impl Direct {
         Ok(UninstallOutcome {
             was_present: true,
             cleaned_entries,
+            retained_destinations,
         })
     }
 

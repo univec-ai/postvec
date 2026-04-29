@@ -24,6 +24,7 @@ use crate::facts::{DatabaseFacts, SettingsSnapshot};
 use crate::output::{CommandResult, Output};
 use crate::plan::{ApplyJournal, DatabasePlan, Plan, PlanStep, Prompt};
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Bound on how long the removal transaction waits for locks. A blocked user
@@ -36,9 +37,15 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     let started_at = checks::timestamp_now();
     let explicit = args.validated()?;
 
-    if args.drop_columns && !args.acknowledge_data_loss {
+    // The two flags answer different questions. `--acknowledge-data-loss`
+    // accepts the destructive class of action; `--yes` accepts this concrete
+    // plan without a prompt. Interactively, typing the database names stands
+    // in for the first; non-interactively both are required, and `--yes`
+    // alone must never authorize data loss.
+    if args.drop_columns && args.yes && !args.acknowledge_data_loss {
         return Err(CliError::usage(
-            "--drop-columns destroys stored embeddings and needs --acknowledge-data-loss",
+            "--drop-columns destroys stored embeddings; with --yes it also needs \
+             --acknowledge-data-loss (interactively, you can type the database names instead)",
         ));
     }
 
@@ -84,7 +91,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     // to serve — from the live setting, the owned file and the CLI's memory —
     // plus any other database in the cluster that has the extension installed
     // (a `CREATE EXTENSION` by hand, or a database `setup` never saw).
-    let (targets, facts) = if args.all {
+    let (targets, facts, uninspectable) = if args.all {
         discover_all(&mut context, &snapshot, &ownership, output).await?
     } else {
         let mut facts = Vec::new();
@@ -92,8 +99,21 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
             let mut db = context.read_only();
             facts.push(db.inspect_database(name).await?);
         }
-        (explicit, facts)
+        (explicit, facts, Vec::new())
     };
+    if args.purge && !uninspectable.is_empty() {
+        // Deleting the extension files while a database may still record the
+        // extension is exactly the broken state purge exists to avoid.
+        return Err(CliError::precondition(format!(
+            "--purge refused: {} could not be inspected, so postvec may still be installed \
+             there",
+            uninspectable.join(", ")
+        ))
+        .with_fix(
+            "allow connections to that database (ALTER DATABASE ... ALLOW_CONNECTIONS true) or \
+             fix the connection problem, remove the extension from it, then rerun",
+        ));
+    }
     if args.all {
         output.note(&if targets.is_empty() {
             "--all: no database is configured for postvec and none has the extension installed"
@@ -155,8 +175,21 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
 
     // The host sweep, planned now so the operator confirms every path, and
     // applied last — after the restart, when nothing runs from those files.
-    let purge_plan = match (&args.purge, &paths) {
+    let mut purge_plan = match (&args.purge, &paths) {
         (true, Some(paths)) => {
+            if context.cluster.restart.is_none() {
+                // An explicit/pg_config cluster has no invented restart
+                // command; purge must follow a restart it performed itself.
+                return Err(CliError::precondition(
+                    "--purge needs a cluster this CLI can restart, and no restart command is \
+                     known for this one",
+                )
+                .with_fix(
+                    "run `uninstall --all` (without --purge), restart the cluster yourself, \
+                     then rerun `uninstall --all --purge` — it will find nothing left to \
+                     remove from the databases and only sweep the files",
+                ));
+            }
             if !host_will_be_clear(&config_change, &ownership, &snapshot.settings) {
                 return Err(CliError::precondition(
                     "--purge refused: postvec would still be configured for this cluster after \
@@ -173,13 +206,10 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
             for step in purge_plan.steps() {
                 plan.push(step);
             }
-            for note in &purge_plan.notes {
-                output.note(note);
-            }
-            if let Some(note) = purge_plan.package_note() {
+            for note in purge_plan.all_notes() {
                 output.note(&note);
             }
-            Some(purge_plan)
+            Some((roots, purge_plan))
         }
         // clap: --purge requires --all and conflicts with --keep-config, and
         // without --keep-config a missing host configuration errored above.
@@ -209,9 +239,10 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         context.close().await;
         return Ok(exit);
     }
-    // A typed database name is required for data loss; `--yes` alone is
-    // deliberately not enough for it.
-    let acknowledgement = (args.drop_columns && !targets.is_empty()).then(|| targets.join(","));
+    // Data loss needs either the typed database names (interactive) or
+    // `--acknowledge-data-loss`; `--yes` alone is deliberately not enough.
+    let acknowledgement = (args.drop_columns && !args.acknowledge_data_loss && !targets.is_empty())
+        .then(|| targets.join(","));
     crate::plan::confirm(
         &plan,
         args.yes,
@@ -222,6 +253,11 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     // --- apply ------------------------------------------------------------
     let mut journal = ApplyJournal::default();
     let mut messages = Vec::new();
+    for name in &uninspectable {
+        journal.incomplete(format!(
+            "{name} could not be inspected; postvec may still be installed there"
+        ));
+    }
     for database in &plan.databases {
         if !database.exists {
             journal.record(format!("database {} does not exist", database.name));
@@ -244,13 +280,27 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                     database.name,
                     outcome.cleaned_entries,
                     match (args.drop_columns, args.drop_destinations()) {
-                        (true, true) => ", shadow vector columns and chunk destinations dropped",
+                        (true, true) if outcome.retained_destinations.is_empty() => {
+                            ", shadow vector columns and chunk destinations dropped"
+                        }
+                        (true, true) => ", shadow vector columns dropped",
                         (true, false) => ", shadow vector columns dropped, chunk destinations kept",
                         (false, _) => ", shadow vector columns kept",
                     }
                 );
                 output.progress(&format!("postvec: {message}"));
                 journal.record(message);
+                // Asked to go, kept by the server's ownership proof: the
+                // extension is gone, so this is a partial outcome the
+                // operator must see in the result, not only in a WARNING.
+                for destination in &outcome.retained_destinations {
+                    journal.incomplete(format!(
+                        "{}: chunk destination {destination} was retained (its ownership marker \
+                         or structure no longer proves postvec created it); it is now an \
+                         ordinary table — inspect and DROP it yourself if it should go",
+                        database.name
+                    ));
+                }
                 journal.succeeded(&database.name);
             }
             // Already absent: an idempotent no-op, not a failure.
@@ -364,26 +414,41 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         );
     }
 
-    if let Some(purge_plan) = &purge_plan {
-        if host_clear {
-            output.progress("postvec: deleting postvec's files on this host");
-            purge::apply(purge_plan, &mut journal);
-            if let Some(note) = purge_plan.package_note() {
-                messages.push(format!("postvec: {note}"));
-            }
-            for note in &purge_plan.notes {
-                messages.push(format!("postvec: {note}"));
-            }
-        } else {
-            // Planned against a prediction that did not hold (a database
-            // failed to clean up, so its configuration stayed). Deleting the
-            // files under a still-configured extension is the one thing this
-            // must never do.
-            journal.incomplete(
-                "--purge was skipped: postvec is still configured for this cluster after the \
-                 partial removal; fix the failure above and rerun"
+    if let Some((roots, confirmed)) = purge_plan.as_mut() {
+        // Purge follows a *completed* restart and a fresh reading of the
+        // effective configuration — never the pre-apply prediction. A
+        // deferred restart, a database that failed to clean up, or any
+        // configuration source still naming postvec stops it here.
+        let mut blocker = None;
+        if !host_clear {
+            blocker = Some(
+                "postvec is still configured for this cluster after the partial removal; fix \
+                 the failure above and rerun"
                     .to_string(),
             );
+        } else if journal.restart_deferred {
+            blocker = Some(
+                "the cluster was not restarted, so the extension may still be loaded".to_string(),
+            );
+        } else {
+            context.db.reconnect().await?;
+            let fresh = collect::cluster_snapshot(&mut context).await?;
+            if let Some(source) = still_configured(&fresh.settings) {
+                blocker = Some(format!(
+                    "after the restart, {source} still configures postvec; remove it there, \
+                     restart, and rerun"
+                ));
+            }
+        }
+        match blocker {
+            Some(reason) => journal.incomplete(format!("--purge was skipped: {reason}")),
+            None => {
+                output.progress("postvec: deleting postvec's files on this host");
+                purge::apply(confirmed, roots, cli.timeout, &mut journal).await;
+                for note in confirmed.all_notes() {
+                    messages.push(format!("postvec: {note}"));
+                }
+            }
         }
     }
 
@@ -394,19 +459,23 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     Ok(exit)
 }
 
-/// `--all`: the databases to remove postvec from, with their facts.
+/// `--all`: the databases to remove postvec from, with their facts, plus the
+/// databases that could not be inspected.
 ///
 /// Configured databases are targets whether or not they exist (a dropped
 /// database must still leave the launcher configuration). Every other
-/// database in the cluster is inspected and joins only when the extension is
-/// installed; one that cannot be connected to is reported and skipped rather
-/// than failing the whole command.
+/// database in the cluster — templates included; `template1` is a standard
+/// place to install an extension — is inspected and joins only when the
+/// extension is installed. One that cannot be inspected (connections
+/// disallowed, or unreachable) is returned separately: the caller reports it
+/// as incomplete, and refuses a purge over it. `template0` is exempt — it
+/// never allows connections and is not modifiable without changing that.
 async fn discover_all(
     context: &mut Context,
     snapshot: &collect::ClusterSnapshot,
     ownership: &Ownership,
     output: &Output,
-) -> Result<(Vec<String>, Vec<DatabaseFacts>)> {
+) -> Result<(Vec<String>, Vec<DatabaseFacts>, Vec<String>)> {
     let mut configured: BTreeSet<String> = snapshot
         .settings
         .configured_databases()
@@ -420,16 +489,33 @@ async fn discover_all(
 
     let mut candidates: Vec<(String, bool)> =
         configured.iter().map(|name| (name.clone(), true)).collect();
+    let mut uninspectable = Vec::new();
     match context.db.list_databases().await {
-        Ok(all) => candidates.extend(
-            all.into_iter()
-                .filter(|name| !configured.contains(name))
-                .map(|name| (name, false)),
-        ),
-        Err(error) => output.note(&format!(
-            "could not list the cluster's databases ({error}); only the configured ones are \
-             considered"
-        )),
+        Ok(all) => {
+            for listing in all {
+                if configured.contains(&listing.name) {
+                    continue;
+                }
+                if !listing.allow_conn {
+                    if listing.name != "template0" {
+                        output.note(&format!(
+                            "{}: connections are disallowed, so it cannot be inspected",
+                            listing.name
+                        ));
+                        uninspectable.push(listing.name);
+                    }
+                    continue;
+                }
+                candidates.push((listing.name, false));
+            }
+        }
+        Err(error) => {
+            output.note(&format!(
+                "could not list the cluster's databases ({error}); only the configured ones \
+                 are considered"
+            ));
+            uninspectable.push("(the database list)".to_string());
+        }
     }
 
     let mut targets = Vec::new();
@@ -441,7 +527,8 @@ async fn discover_all(
         };
         if !is_configured {
             if let Some(reason) = &database.unreachable {
-                output.note(&format!("{name}: skipped, cannot connect: {reason}"));
+                output.note(&format!("{name}: cannot connect: {reason}"));
+                uninspectable.push(name);
                 continue;
             }
             if database.postvec.is_none() {
@@ -451,7 +538,63 @@ async fn discover_all(
         targets.push(name);
         facts.push(database);
     }
-    Ok((targets, facts))
+    Ok((targets, facts, uninspectable))
+}
+
+/// After the restart: does anything still configure postvec? Returns what
+/// does, for the operator. Reads the live values *and* every file row, so a
+/// setting that lost to a later source is caught too (it would win once the
+/// winning file goes away).
+fn still_configured(settings: &SettingsSnapshot) -> Option<String> {
+    let names_postvec = |value: &str| {
+        crate::config::guc::parse_library_list(value)
+            .iter()
+            .any(|item| item == "postvec")
+    };
+    if settings
+        .preload_items()
+        .iter()
+        .any(|item| item == "postvec")
+    {
+        return Some(match settings.get("shared_preload_libraries") {
+            Some(row) => format!(
+                "shared_preload_libraries ({})",
+                row.sourcefile.clone().unwrap_or_else(|| row.source.clone())
+            ),
+            None => "shared_preload_libraries".to_string(),
+        });
+    }
+    if !settings.configured_databases().is_empty() {
+        return Some(match settings.get("postvec.database") {
+            Some(row) => format!(
+                "postvec.database ({})",
+                row.sourcefile.clone().unwrap_or_else(|| row.source.clone())
+            ),
+            None => "postvec.database".to_string(),
+        });
+    }
+    settings.file_rows.iter().find_map(|row| {
+        let value = row.setting.trim().trim_matches('\'');
+        let hit = (row.name == "shared_preload_libraries" && names_postvec(value))
+            || (row.name == "postvec.database" && !value.trim().is_empty());
+        hit.then(|| format!("{}:{} ({})", row.sourcefile, row.sourceline, row.name))
+    })
+}
+
+/// Is the effective value of `guc` one this CLI may act on — the built-in
+/// default, or set by the CLI-owned snippet? A value from any other source
+/// (postgresql.auto.conf, a hand-written include, `ALTER SYSTEM`) is not
+/// evidence the CLI created what the path names.
+fn setting_is_ours(settings: &SettingsSnapshot, guc: &str, owned_config: &Path) -> bool {
+    match settings.get(guc) {
+        None => true,
+        Some(row) if row.source == "default" => true,
+        Some(row) => row
+            .sourcefile
+            .as_deref()
+            .map(Path::new)
+            .is_some_and(|file| file == owned_config),
+    }
 }
 
 /// Whether, after `change` is applied, nothing on this host configures
@@ -493,28 +636,78 @@ fn purge_roots(
             .iter()
             .any(|item| item == "postvec"),
     };
-    purge::PurgeRoots {
-        engine_root: settings
+    // A root is swept only when the GUC naming it is the CLI's (owned
+    // snippet or built-in default) AND the directory passes the safety
+    // rules; otherwise it is excluded with the reason in the plan.
+    let mut excluded = Vec::new();
+    let mut admit =
+        |guc: &str, path: std::path::PathBuf, what: &str| -> Option<std::path::PathBuf> {
+            if !setting_is_ours(settings, guc, &paths.config) {
+                let source = settings
+                    .get(guc)
+                    .and_then(|row| row.sourcefile.clone())
+                    .unwrap_or_else(|| "another configuration source".to_string());
+                excluded.push(format!(
+                    "{what} {} was left alone: {guc} is set by {source}, not by this CLI",
+                    path.display()
+                ));
+                return None;
+            }
+            if !path.exists() {
+                return None;
+            }
+            match purge::safe_root(&path, what) {
+                Ok(()) => Some(path),
+                Err(reason) => {
+                    excluded.push(format!("{what} was left alone: {reason}"));
+                    None
+                }
+            }
+        };
+    let engine_root = admit(
+        "postvec.path",
+        settings
             .engine_path()
             .unwrap_or_else(|| std::path::PathBuf::from(config::DEFAULT_ENGINE_ROOT)),
+        "engine root",
+    );
+    let providers_dir = admit(
+        "postvec.providers_path",
+        settings.providers_path(),
+        "providers directory",
+    )
+    .filter(|dir| {
+        // Must be a providers.d, and not inside the engine root (that one is
+        // a postvec-server node's and is reported by the engine-root sweep).
+        let ok = dir.file_name().is_some_and(|n| n == "providers.d")
+            && !engine_root
+                .as_ref()
+                .is_some_and(|root| dir.starts_with(root));
+        if !ok {
+            excluded.push(format!(
+                "providers directory {} was left alone: not a providers.d outside the engine \
+                 root",
+                dir.display()
+            ));
+        }
+        ok
+    });
+    purge::PurgeRoots {
+        engine_root,
         engine_root_in_use: purge::server_process_running(),
-        providers_dir: settings.providers_path(),
+        providers_dir,
         state_dir: paths
             .state
             .parent()
             .and_then(|clusters| clusters.parent())
             .map(|dir| dir.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/postvec")),
-        lock_dir: paths
-            .lock
-            .parent()
-            .map(|dir| dir.to_path_buf())
-            .unwrap_or_else(|| std::path::PathBuf::from("/run/lock/postvec")),
         cluster_key: context.cluster.identity.key(),
         pkglibdir: context.cluster.pkglibdir.clone(),
         sharedir: context.cluster.sharedir.clone(),
         extension_files_removable: !foreign_preload,
         cli_binary: std::env::current_exe().ok(),
+        excluded,
     }
 }
 
@@ -943,6 +1136,60 @@ postvec.http_endpoints = 'https://192.0.2.2:22222'
             dropped.contains("TABLE AND VIEW WILL BE DROPPED"),
             "{dropped}"
         );
+    }
+
+    #[test]
+    fn a_setting_is_ours_only_from_the_owned_snippet_or_the_default() {
+        let owned = Path::new("/etc/postgresql/18/main/conf.d/99-postvec.conf");
+        let mut snapshot = settings(&[("postvec.path", "/opt/postvec")]);
+        snapshot.rows[0].source = "default".into();
+        assert!(setting_is_ours(&snapshot, "postvec.path", owned));
+        snapshot.rows[0].source = "configuration file".into();
+        snapshot.rows[0].sourcefile = Some(owned.display().to_string());
+        assert!(setting_is_ours(&snapshot, "postvec.path", owned));
+        snapshot.rows[0].sourcefile =
+            Some("/var/lib/postgresql/18/main/postgresql.auto.conf".into());
+        assert!(!setting_is_ours(&snapshot, "postvec.path", owned));
+        snapshot.rows[0].sourcefile = None;
+        assert!(!setting_is_ours(&snapshot, "postvec.path", owned));
+        // Unset entirely: the default applies.
+        assert!(setting_is_ours(&settings(&[]), "postvec.path", owned));
+    }
+
+    #[test]
+    fn still_configured_reads_live_values_and_losing_file_rows() {
+        assert!(still_configured(&settings(&[])).is_none());
+        let live = settings(&[("shared_preload_libraries", "pg_stat_statements,postvec")]);
+        assert!(still_configured(&live)
+            .unwrap()
+            .contains("shared_preload_libraries"));
+        let dbs = settings(&[("postvec.database", "app")]);
+        assert!(still_configured(&dbs).unwrap().contains("postvec.database"));
+        // A file row that lost to a later source still counts: it wins the
+        // moment the winner is removed.
+        let mut lost = settings(&[]);
+        lost.file_rows.push(crate::facts::FileSettingRow {
+            name: "postvec.database".into(),
+            setting: "'app'".into(),
+            sourcefile: "/etc/postgresql/18/main/postgresql.conf".into(),
+            sourceline: 7,
+            applied: false,
+            error: None,
+        });
+        assert_eq!(
+            still_configured(&lost).as_deref(),
+            Some("/etc/postgresql/18/main/postgresql.conf:7 (postvec.database)")
+        );
+        let mut empty_row = settings(&[]);
+        empty_row.file_rows.push(crate::facts::FileSettingRow {
+            name: "postvec.database".into(),
+            setting: "''".into(),
+            sourcefile: "/x".into(),
+            sourceline: 1,
+            applied: true,
+            error: None,
+        });
+        assert!(still_configured(&empty_row).is_none());
     }
 
     #[test]
