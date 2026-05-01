@@ -36,6 +36,11 @@ pub enum PlanStep {
     RestartCluster {
         unit: String,
     },
+    /// `uninstall --purge`: the cluster is stopped for the file sweep and
+    /// started again afterwards.
+    StopCluster {
+        unit: String,
+    },
     /// Only SIGHUP-context settings changed, so the worker picks them up
     /// without an outage.
     ReloadConfig {
@@ -190,6 +195,9 @@ impl PlanStep {
             ),
             PlanStep::RemoveConfig { path } => format!("remove {}", path.display()),
             PlanStep::RestartCluster { unit } => format!("restart {unit}"),
+            PlanStep::StopCluster { unit } => {
+                format!("stop {unit} for the file sweep, then start it again")
+            }
             PlanStep::ReloadConfig { database } => format!(
                 "reload the configuration (via {database:?}) so the worker picks up the new \
                  endpoints; no restart needed"

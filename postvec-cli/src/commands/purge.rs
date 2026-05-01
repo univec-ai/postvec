@@ -1,5 +1,6 @@
-//! `postvec uninstall --all --purge` — the host-side sweep that follows the
-//! SQL and configuration removal and a completed restart.
+//! `postvec uninstall --all --purge` — the host-side sweep. **Experimental**:
+//! destructive cleanup for disposable release-test hosts, not yet a
+//! production promise (see `docs/postvec-uninstall.md`).
 //!
 //! The contract is narrow on purpose. The sweep deletes only paths for which
 //! it holds **positive evidence** that postvec put them there, and only under
@@ -16,44 +17,49 @@
 //! - the cluster state file and the extension files are exact names under
 //!   trusted roots (`/var/lib/postvec`, `pg_config`'s directories).
 //!
-//! A root is used only if it passes [`safe_root`]: absolute, no symlinked
-//! ancestor, not a system directory, at least two components deep, owned by a
-//! trusted account and not group/world-writable. The caller additionally
+//! A root is used only if it passes [`safe_root`]: absolute, canonical, not a
+//! system directory, at least two components deep, and — for the leaf **and
+//! every ancestor** — owned by root, the effective user or the cluster's own
+//! account, with no group/world write (`setup` creates `/etc/postvec` and
+//! `providers.d` owned by the cluster account). The caller additionally
 //! proves the GUC naming it comes from the CLI-owned snippet or is the
-//! built-in default (see `uninstall::purge_roots`), so a later override in
-//! another configuration file cannot redirect the sweep.
+//! built-in default (`uninstall::purge_roots`).
 //!
-//! Package-owned files are **never** deleted, and ownership is decided
-//! **fail-closed**: on a host with a dpkg/rpm database, a lookup that cannot
-//! establish an answer — tool failure, timeout, unparseable output — retains
-//! the path and makes the result partial. Every file below a directory is
-//! looked up, not just the directory.
+//! **Every leaf is classified, and only classified leaves are deleted.** A
+//! candidate is enumerated down to its leaves at planning time, each leaf with
+//! its device/inode and a package-ownership verdict (from *every* installed
+//! package database, fail-closed). At apply time the candidate is enumerated
+//! again; the sweep proceeds only if the leaf set is identical, deletes files
+//! one by one against their recorded identity, and removes directories with
+//! `rmdir` — never recursively — so a child that appeared in between retains
+//! its directory and the result is partial. A traversal that cannot read an
+//! entry makes the whole candidate *uncertain*: retained, reported, exit 3.
 //!
-//! The plan is built before confirmation and **rebuilt at apply time**: a
-//! path is deleted only if it is still in the freshly computed plan with the
-//! same identity (device and inode) it had when the operator confirmed it.
-//! Deletion happens under the engine root's model-store lock, so a concurrent
-//! `model pull`/`rm` cannot interleave.
+//! Concurrency: the caller holds the host-wide postvec lock exclusively and
+//! has **stopped the cluster** before calling [`apply`]; `apply` then takes the
+//! engine root's model-store lock and the providers directory's lock, and
+//! only then re-checks processes and other clusters, rebuilds the plan and
+//! deletes. Lock files are unlinked while their locks are still held.
 
-use crate::config::owned;
+use crate::commands::provider::FileOwner;
 use crate::error::{CliError, Result};
 use crate::plan::{ApplyJournal, PlanStep};
-use crate::proc::{self, Cmd};
+use crate::proc::{self, Cmd, OsAccount};
 use crate::registry::receipt::Receipt;
 use crate::registry::root::ModelRoot;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The CLI's transient state beside the models, in the engine root. The
-/// model-store lock file is deliberately absent: it is held during apply and
-/// unlinked only after release (see [`apply`]).
+/// The CLI's transient state beside the models, in the engine root.
 const MODELS_STATE: &[&str] = &[".staging", ".trash", ".swap"];
 const DESCRIPTOR_FILE: &str = "ninference.hub.json";
 /// Root login state; never purged (see `PurgePlan::notes`).
 const AUTH_FILE: &str = "auth.json";
+/// The providers directory's lock file (`provider::lock_provider_dir`).
+const PROVIDER_LOCK_FILE: &str = ".lock";
 
 /// Directories a purge root may never be. Anything directly under `/` is a
 /// system directory; a postvec root lives at least one level deeper
@@ -97,11 +103,17 @@ const SYSTEM_DIRS: &[&str] = &[
 /// safe, with the reason in `excluded`.
 #[derive(Debug, Clone)]
 pub struct PurgeRoots {
+    /// The cluster being torn down (`18/main`), so every *other* cluster on
+    /// the host can be checked.
+    pub cluster_id: String,
     pub engine_root: Option<PathBuf>,
     /// A `postvec-server` process runs on this host: leave the engine root
     /// alone, it may be serving from it.
     pub engine_root_in_use: bool,
     pub providers_dir: Option<PathBuf>,
+    /// Who owns the providers directory (the cluster account): the provider
+    /// lock is taken on their behalf.
+    pub provider_owner: Option<FileOwner>,
     /// `/var/lib/postvec` — holds `clusters/<key>.json` and `auth.json`.
     pub state_dir: PathBuf,
     pub cluster_key: String,
@@ -148,29 +160,47 @@ impl PackageManager {
             .map(PathBuf::from)
             .find(|path| path.is_file())
     }
+
+    fn all_installed() -> Vec<(PackageManager, PathBuf)> {
+        [PackageManager::Dpkg, PackageManager::Rpm]
+            .into_iter()
+            .filter_map(|manager| manager.installed().map(|binary| (manager, binary)))
+            .collect()
+    }
 }
 
 /// The answer to "does a package own this path?".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Owner {
     Package(PackageManager, String),
-    /// The package database was consulted and does not list the path.
+    /// Every package database was consulted and none lists the path.
     Unowned,
     /// No answer could be established; the path must be retained.
     Unknown(String),
 }
 
-/// One path the sweep considers.
+/// One filesystem object below (or at) a candidate, with the identity it
+/// had when it was classified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leaf {
+    pub path: PathBuf,
+    pub identity: (u64, u64),
+    pub is_dir: bool,
+}
+
+/// One path the sweep considers, enumerated down to its leaves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub path: PathBuf,
     pub what: String,
-    /// Whether the package manager may own it. Receipt-backed models and
-    /// the CLI's own state never do; everything else is asked.
-    pub check_package: bool,
     /// `(device, inode)` at planning time; a deletion happens only against
     /// the same object.
     pub identity: (u64, u64),
+    /// Every object below `path`, and `path` itself, in enumeration order.
+    pub leaves: Vec<Leaf>,
+    /// False when some entry below `path` could not be read or stat'ed; such
+    /// a candidate is never deleted.
+    pub complete: bool,
 }
 
 /// The resolved sweep.
@@ -181,14 +211,18 @@ pub struct PurgePlan {
     /// Package-owned paths, grouped by package: reported, never deleted.
     pub packaged: BTreeMap<String, Vec<PathBuf>>,
     pub package_manager: Option<PackageManager>,
-    /// Paths whose ownership could not be established: retained, and the
-    /// result is partial.
+    /// Paths whose ownership could not be established or whose contents
+    /// could not be fully inspected: retained, and the result is partial.
     pub unresolved: Vec<(PathBuf, String)>,
+    /// Locations that could not be inspected at all (an unreadable
+    /// directory): retained, and the result is partial.
+    pub uncertain: Vec<String>,
     /// Directories to remove afterwards if they are empty, deepest first.
     pub prune_dirs: Vec<PathBuf>,
-    /// The model-store lock file, unlinked last, after the lock is released.
+    /// Lock files, unlinked while their locks are still held.
     pub model_lock: Option<PathBuf>,
-    /// Things the operator should know: what was skipped or retained and why.
+    pub provider_lock: Option<PathBuf>,
+    /// Informational: what was left alone by design and why.
     pub notes: Vec<String>,
 }
 
@@ -219,28 +253,41 @@ impl PurgePlan {
         ))
     }
 
+    /// Everything that makes the outcome *partial* — safety uncertainty, as
+    /// opposed to designed retention. The caller journals each as incomplete
+    /// (exit 3), in a dry run as much as in an apply.
+    pub fn incomplete(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .unresolved
+            .iter()
+            .map(|(path, reason)| format!("{} was retained: {reason}", path.display()))
+            .collect();
+        out.extend(self.uncertain.iter().cloned());
+        out
+    }
+
     /// Everything the operator should read beside the steps.
     pub fn all_notes(&self) -> Vec<String> {
         let mut notes = self.notes.clone();
-        for (path, reason) in &self.unresolved {
-            notes.push(format!(
-                "{} was retained: package ownership could not be established ({reason})",
-                path.display()
-            ));
-        }
+        notes.extend(self.incomplete());
         notes.extend(self.package_note());
         notes
     }
 }
 
+/// One owner policy for a root and every ancestor: root, the effective user,
+/// or the cluster account; no group/world write, except a sticky directory
+/// whose chain entry below it is protected (the `/tmp` shape).
+fn trusted_uid(uid: u32, euid: u32, trusted_owner: Option<u32>) -> bool {
+    uid == 0 || uid == euid || Some(uid) == trusted_owner
+}
+
 /// Is `root` a directory the sweep may operate in?
-///
-/// Absolute, canonical (no symlinked ancestor — a replaceable link lets
-/// another account swap the whole tree between plan and apply), at least two
-/// components below `/`, not one of the system directories, and owned by a
-/// trusted account without group/world write (the same rule the model store
-/// and providers loader apply to their own roots).
-pub fn safe_root(root: &Path, what: &str) -> std::result::Result<(), String> {
+pub fn safe_root(
+    root: &Path,
+    what: &str,
+    trusted_owner: Option<u32>,
+) -> std::result::Result<(), String> {
     if !root.is_absolute() {
         return Err(format!("{what} {} is not absolute", root.display()));
     }
@@ -274,13 +321,67 @@ pub fn safe_root(root: &Path, what: &str) -> std::result::Result<(), String> {
             canonical.display()
         ));
     }
-    owned::check_trusted_dir(root, what).map_err(|e| e.to_string())?;
-    owned::check_trusted_ancestry(root).map_err(|e| e.to_string())?;
+    let euid = unsafe { libc::geteuid() };
+    let meta = fs::symlink_metadata(root).map_err(|e| format!("cannot stat {what}: {e}"))?;
+    if !meta.is_dir() {
+        return Err(format!("{what} {} is not a directory", root.display()));
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o022 != 0 {
+        return Err(format!(
+            "{what} {} is group- or world-writable (mode {:o}); refusing to sweep it",
+            root.display(),
+            mode & 0o7777
+        ));
+    }
+    if !trusted_uid(meta.uid(), euid, trusted_owner) {
+        return Err(format!(
+            "{what} {} is owned by uid {}, not root, the effective user or the cluster \
+             account; refusing to sweep it",
+            root.display(),
+            meta.uid()
+        ));
+    }
+    // Ancestors: the same owner rule (the cluster account included — `setup`
+    // creates `/etc/postvec` for it), and a writable ancestor is tolerated
+    // only when it is sticky and the entry below it is protected.
+    let mut child_uid = meta.uid();
+    let mut current = root.parent();
+    while let Some(dir) = current {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        let meta = fs::symlink_metadata(dir)
+            .map_err(|e| format!("cannot stat ancestor {}: {e}", dir.display()))?;
+        let mode = meta.permissions().mode();
+        if !trusted_uid(meta.uid(), euid, trusted_owner) {
+            return Err(format!(
+                "ancestor {} of {what} is owned by uid {}, not root, the effective user or \
+                 the cluster account — its owner can replace the tree",
+                dir.display(),
+                meta.uid()
+            ));
+        }
+        if mode & 0o022 != 0 {
+            let sticky = mode & 0o1000 != 0;
+            if !(sticky && trusted_uid(child_uid, euid, trusted_owner)) {
+                return Err(format!(
+                    "ancestor {} of {what} is writable by other accounts (mode {:o}); a writer \
+                     there could replace the tree between check and use",
+                    dir.display(),
+                    mode & 0o7777
+                ));
+            }
+        }
+        child_uid = meta.uid();
+        current = dir.parent();
+    }
     Ok(())
 }
 
-/// Refuse when another cluster on this host is still set up: the engine root
-/// and the package files are shared, and that cluster would lose them.
+/// Refuse when another cluster on this host is still set up by this CLI: the
+/// engine root and the package files are shared, and that cluster would lose
+/// them.
 pub fn other_clusters_configured(state_dir: &Path, cluster_key: &str) -> Vec<String> {
     let clusters = state_dir.join("clusters");
     let Ok(entries) = fs::read_dir(&clusters) else {
@@ -295,6 +396,66 @@ pub fn other_clusters_configured(state_dir: &Path, cluster_key: &str) -> Vec<Str
         .collect();
     others.sort();
     others
+}
+
+/// What the other clusters on this host look like, from `pg_lsclusters`.
+pub struct OtherClusters {
+    /// Every other cluster's id, whether or not it uses postvec.
+    pub all: Vec<String>,
+    /// Those whose effective `shared_preload_libraries` names postvec — or
+    /// whose configuration could not be read, which counts the same way.
+    pub preloading: Vec<String>,
+}
+
+/// Every *other* cluster `pg_lsclusters` knows. A malformed listing is an
+/// error: the purge cannot prove it examined every cluster.
+pub async fn other_clusters(own_id: &str, timeout: Duration) -> Result<OtherClusters> {
+    let listings = crate::cluster::debian::list_clusters(timeout).await?;
+    let mut all = Vec::new();
+    let mut preloading = Vec::new();
+    for listing in listings.iter().filter(|l| l.id() != own_id) {
+        all.push(listing.id());
+        let binary = PathBuf::from(format!(
+            "/usr/lib/postgresql/{}/bin/postgres",
+            listing.major
+        ));
+        let config = format!(
+            "/etc/postgresql/{}/{}/postgresql.conf",
+            listing.major, listing.name
+        );
+        let account = OsAccount::lookup(&listing.owner).ok();
+        let cmd = Cmd::new(binary)
+            .arg("-D")
+            .arg(listing.data_dir.display().to_string())
+            .arg("-C")
+            .arg("shared_preload_libraries")
+            .arg("-c")
+            .arg(format!("config_file={config}"))
+            .run_as(account.as_ref());
+        match proc::run(&cmd, timeout).await {
+            Ok(output) if output.ok() => {
+                let value = output.first_line().to_string();
+                if crate::config::guc::list_contains_postvec(
+                    &crate::config::guc::parse_library_list(&value),
+                ) {
+                    preloading.push(format!(
+                        "{} (shared_preload_libraries = {value})",
+                        listing.id()
+                    ));
+                }
+            }
+            Ok(output) => preloading.push(format!(
+                "{} (its configuration could not be read: {})",
+                listing.id(),
+                output.failure_detail()
+            )),
+            Err(error) => preloading.push(format!(
+                "{} (its configuration could not be read: {error})",
+                listing.id()
+            )),
+        }
+    }
+    Ok(OtherClusters { all, preloading })
 }
 
 /// Is a `postvec-server` running on this host? It serves from the same
@@ -321,19 +482,69 @@ pub fn server_process_running() -> bool {
         })
 }
 
-fn identity_of(path: &Path) -> Option<(u64, u64)> {
-    fs::symlink_metadata(path)
-        .ok()
-        .map(|metadata| (metadata.dev(), metadata.ino()))
+fn identity_of(meta: &fs::Metadata) -> (u64, u64) {
+    (meta.dev(), meta.ino())
 }
 
-fn candidate(path: PathBuf, what: String, check_package: bool) -> Option<Candidate> {
-    let identity = identity_of(&path)?;
+/// Enumerate `path` and everything below it, each with its identity. Symlinks
+/// are leaves (never followed). `complete` is false when any entry could not
+/// be read or stat'ed — the candidate is then never deleted.
+fn enumerate_leaves(path: &Path) -> (Vec<Leaf>, bool) {
+    let mut leaves = Vec::new();
+    let mut complete = true;
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return (leaves, false);
+    };
+    leaves.push(Leaf {
+        path: path.to_path_buf(),
+        identity: identity_of(&meta),
+        is_dir: meta.is_dir(),
+    });
+    let mut stack = if meta.is_dir() {
+        vec![path.to_path_buf()]
+    } else {
+        Vec::new()
+    };
+    while let Some(dir) = stack.pop() {
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => {
+                complete = false;
+                continue;
+            }
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                complete = false;
+                continue;
+            };
+            let child = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&child) else {
+                complete = false;
+                continue;
+            };
+            leaves.push(Leaf {
+                path: child.clone(),
+                identity: identity_of(&meta),
+                is_dir: meta.is_dir(),
+            });
+            if meta.is_dir() {
+                stack.push(child);
+            }
+        }
+    }
+    (leaves, complete)
+}
+
+fn candidate(path: PathBuf, what: String) -> Option<Candidate> {
+    let (leaves, complete) = enumerate_leaves(&path);
+    let identity = leaves.first()?.identity;
     Some(Candidate {
         path,
         what,
-        check_package,
         identity,
+        leaves,
+        complete,
     })
 }
 
@@ -370,24 +581,28 @@ fn holds_onnxruntime(libs: &Path) -> bool {
     walk(libs, 0)
 }
 
-/// What `gather` found: deletion candidates, directories to prune when
-/// empty, the model-store lock file, and notes.
+/// What `gather` found.
 pub struct Gathered {
     pub candidates: Vec<Candidate>,
     pub prune: Vec<PathBuf>,
     pub model_lock: Option<PathBuf>,
+    pub provider_lock: Option<PathBuf>,
+    /// Designed retention: informational.
     pub notes: Vec<String>,
+    /// Safety uncertainty (an unreadable directory): the result is partial.
+    pub uncertain: Vec<String>,
 }
 
 /// Everything the sweep would touch, before asking the package manager.
-/// Pure filesystem reading; unreadable locations become notes, never errors,
-/// because a purge that stops at the first odd directory leaves more behind
-/// than one that reports it.
+/// Pure filesystem reading. An unreadable location is *uncertain*: retained,
+/// reported, and the whole result partial.
 pub fn gather(roots: &PurgeRoots) -> Gathered {
     let mut candidates = Vec::new();
     let mut prune = Vec::new();
     let mut model_lock = None;
+    let mut provider_lock = None;
     let mut notes = roots.excluded.clone();
+    let mut uncertain = Vec::new();
 
     // --- engine root -------------------------------------------------------
     match (&roots.engine_root, roots.engine_root_in_use) {
@@ -401,10 +616,22 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
             if models.is_dir() {
                 match fs::read_dir(&models) {
                     Ok(entries) => {
-                        for entry in entries.filter_map(|e| e.ok()) {
+                        for entry in entries {
+                            let Ok(entry) = entry else {
+                                uncertain.push(format!(
+                                    "an entry of {} could not be read; the directory was left \
+                                     alone",
+                                    models.display()
+                                ));
+                                continue;
+                            };
                             let path = entry.path();
                             let name = entry.file_name().to_string_lossy().to_string();
                             let Ok(metadata) = fs::symlink_metadata(&path) else {
+                                uncertain.push(format!(
+                                    "{} could not be inspected and was left alone",
+                                    path.display()
+                                ));
                                 continue;
                             };
                             if name == crate::registry::root::LOCK_FILE {
@@ -413,7 +640,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                                 candidates.extend(candidate(
                                     path,
                                     "postvec-cli model-store state".to_string(),
-                                    false,
                                 ));
                             } else if metadata.is_dir() {
                                 gather_backend(
@@ -422,6 +648,7 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                                     &mut candidates,
                                     &mut prune,
                                     &mut notes,
+                                    &mut uncertain,
                                 );
                             } else {
                                 notes.push(format!(
@@ -432,14 +659,17 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                             }
                         }
                     }
-                    Err(error) => notes.push(format!("cannot read {}: {error}", models.display())),
+                    Err(error) => uncertain.push(format!(
+                        "cannot read {}: {error}; the engine root was left alone",
+                        models.display()
+                    )),
                 }
                 prune.push(models);
             }
             let libs = root.join("libs");
             if let Ok(metadata) = fs::symlink_metadata(&libs) {
                 if metadata.is_dir() && holds_onnxruntime(&libs) {
-                    candidates.extend(candidate(libs, "ONNX Runtime libraries".to_string(), true));
+                    candidates.extend(candidate(libs, "ONNX Runtime libraries".to_string()));
                 } else {
                     notes.push(format!(
                         "{} does not hold ONNX Runtime and was left alone",
@@ -447,23 +677,26 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                     ));
                 }
             }
-            if let Ok(entries) = fs::read_dir(root) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name == "models" || name == "libs" {
-                        continue;
-                    }
-                    notes.push(format!(
-                        "{} is not part of the engine-root layout and was left alone{}",
-                        entry.path().display(),
-                        if name == "providers.d" {
-                            " (a postvec-server providers directory holds that node's \
-                             credentials)"
-                        } else {
-                            ""
+            match fs::read_dir(root) {
+                Ok(entries) => {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name == "models" || name == "libs" {
+                            continue;
                         }
-                    ));
+                        notes.push(format!(
+                            "{} is not part of the engine-root layout and was left alone{}",
+                            entry.path().display(),
+                            if name == "providers.d" {
+                                " (a postvec-server providers directory holds that node's \
+                                 credentials)"
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
                 }
+                Err(error) => uncertain.push(format!("cannot read {}: {error}", root.display())),
             }
             prune.push(root.clone());
         }
@@ -485,7 +718,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                                 path,
                                 "external-provider connector file (holds API credentials)"
                                     .to_string(),
-                                false,
                             )),
                             _ => notes.push(format!(
                                 "{} is not a regular file and was left alone",
@@ -493,20 +725,29 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                             )),
                         }
                     }
-                    if let Ok(entries) = fs::read_dir(dir) {
-                        for entry in entries.filter_map(|e| e.ok()) {
-                            let path = entry.path();
-                            if !connectors.contains(&path) {
-                                notes.push(format!(
-                                    "{} is not a connector file this CLI writes and was left \
-                                     alone",
-                                    path.display()
-                                ));
+                    match fs::read_dir(dir) {
+                        Ok(entries) => {
+                            for entry in entries.filter_map(|e| e.ok()) {
+                                let path = entry.path();
+                                if path.file_name().is_some_and(|n| n == PROVIDER_LOCK_FILE) {
+                                    provider_lock = Some(path);
+                                } else if !connectors.contains(&path) {
+                                    notes.push(format!(
+                                        "{} is not a connector file this CLI writes and was \
+                                         left alone",
+                                        path.display()
+                                    ));
+                                }
                             }
+                        }
+                        Err(error) => {
+                            uncertain.push(format!("cannot read {}: {error}", dir.display()))
                         }
                     }
                 }
-                Err(problem) => notes.push(format!("{problem}; provider files may remain")),
+                Err(problem) => {
+                    uncertain.push(format!("{problem}; the providers directory was left alone"))
+                }
             }
             prune.push(dir.clone());
             if let Some(parent) = dir.parent() {
@@ -524,11 +765,7 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         .join("clusters")
         .join(format!("{}.json", roots.cluster_key));
     if state.exists() {
-        candidates.extend(candidate(
-            state,
-            "postvec-cli cluster state".to_string(),
-            false,
-        ));
+        candidates.extend(candidate(state, "postvec-cli cluster state".to_string()));
     }
     if roots.state_dir.exists() {
         prune.push(roots.state_dir.join("clusters"));
@@ -577,8 +814,9 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         .collect();
     if !present.is_empty() && !roots.extension_files_removable {
         notes.push(format!(
-            "shared_preload_libraries still names postvec from configuration this CLI does not \
-             own, so the extension files were left in place: {}",
+            "the extension files were left in place (postvec is still preloaded from \
+             configuration this CLI does not own, or another PostgreSQL cluster exists on this \
+             host and may use them): {}",
             present
                 .iter()
                 .map(|(path, _)| path.display().to_string())
@@ -587,7 +825,7 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         ));
     } else {
         for (path, what) in present {
-            candidates.extend(candidate(path, what, true));
+            candidates.extend(candidate(path, what));
         }
     }
 
@@ -595,7 +833,9 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         candidates,
         prune,
         model_lock,
+        provider_lock,
         notes,
+        uncertain,
     }
 }
 
@@ -605,11 +845,20 @@ fn gather_backend(
     candidates: &mut Vec<Candidate>,
     prune: &mut Vec<PathBuf>,
     notes: &mut Vec<String>,
+    uncertain: &mut Vec<String>,
 ) {
     match fs::read_dir(backend_dir) {
         Ok(entries) => {
-            let mut models: Vec<PathBuf> =
-                entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+            let mut models = Vec::new();
+            for entry in entries {
+                match entry {
+                    Ok(entry) => models.push(entry.path()),
+                    Err(_) => uncertain.push(format!(
+                        "an entry of {} could not be read; it was left alone",
+                        backend_dir.display()
+                    )),
+                }
+            }
             models.sort();
             for path in models {
                 let name = path
@@ -635,44 +884,22 @@ fn gather_backend(
                     } else {
                         format!("model {backend}/{name}")
                     },
-                    // A receipt proves the CLI installed it; anything else
-                    // may be a package's.
-                    !receipt,
                 ));
             }
         }
-        Err(error) => notes.push(format!("cannot read {}: {error}", backend_dir.display())),
+        Err(error) => uncertain.push(format!(
+            "cannot read {}: {error}; it was left alone",
+            backend_dir.display()
+        )),
     }
     prune.push(backend_dir.to_path_buf());
 }
 
-/// Every entry below `path` (and `path` itself), so package ownership is
-/// established for what `remove_dir_all` would actually remove.
-fn files_below(path: &Path) -> Vec<PathBuf> {
-    let mut out = vec![path.to_path_buf()];
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let child = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&child) else {
-                continue;
-            };
-            out.push(child.clone());
-            if metadata.is_dir() {
-                stack.push(child);
-            }
-        }
-    }
-    out
-}
-
 /// Split the gathered candidates by package ownership. `owners` answers
-/// "which package claims this path?" for every path below a candidate — the
-/// real one shells out to dpkg/rpm, tests use a table. A path with no answer
-/// is unknown, never unowned.
+/// "which package claims this path?" for every leaf of every candidate — the
+/// real one shells out to dpkg/rpm, tests use a table. A leaf with no answer
+/// is unknown, never unowned; an incompletely enumerated candidate is
+/// unresolved whatever the answers.
 pub fn resolve(
     gathered: Gathered,
     cli_binary: Option<&Path>,
@@ -681,7 +908,9 @@ pub fn resolve(
     let mut plan = PurgePlan {
         prune_dirs: gathered.prune,
         model_lock: gathered.model_lock,
+        provider_lock: gathered.provider_lock,
         notes: gathered.notes,
+        uncertain: gathered.uncertain,
         ..PurgePlan::default()
     };
     let lookup = |path: &Path| -> Owner {
@@ -691,17 +920,20 @@ pub fn resolve(
             .unwrap_or_else(|| Owner::Unknown("no ownership answer was recorded".to_string()))
     };
     for candidate in gathered.candidates {
-        if !candidate.check_package {
-            plan.remove.push(candidate);
+        if !candidate.complete {
+            plan.unresolved.push((
+                candidate.path,
+                "its contents could not be fully inspected".to_string(),
+            ));
             continue;
         }
-        // The verdict for a tree: any packaged file makes it packaged (every
+        // The verdict for a tree: any packaged leaf makes it packaged (every
         // owning package is named); otherwise any unknown makes it retained;
         // only an all-unowned tree is deleted.
         let mut packages: BTreeSet<(PackageManager, String)> = BTreeSet::new();
         let mut unknown: Option<String> = None;
-        for path in files_below(&candidate.path) {
-            match lookup(&path) {
+        for leaf in &candidate.leaves {
+            match lookup(&leaf.path) {
                 Owner::Package(manager, package) => {
                     packages.insert((manager, package));
                 }
@@ -720,7 +952,10 @@ pub fn resolve(
                     .push(candidate.path.clone());
             }
         } else if let Some(reason) = unknown {
-            plan.unresolved.push((candidate.path, reason));
+            plan.unresolved.push((
+                candidate.path,
+                format!("package ownership could not be established ({reason})"),
+            ));
         } else {
             plan.remove.push(candidate);
         }
@@ -752,46 +987,56 @@ pub fn resolve(
     plan
 }
 
-/// Ask the package manager who owns each path. One answer per input path.
-///
-/// Fail-closed: with a dpkg or rpm database on the host, anything short of an
-/// authoritative answer is `Unknown`. Without either tool at its fixed
-/// location the host has no package database and every path is `Unowned`.
+/// Ask **every** installed package database who owns each path. One answer
+/// per input path: a package if any database claims it; unknown if any
+/// database could not answer and none claimed it; unowned only when every
+/// database answered "no". Without dpkg or rpm at their fixed locations the
+/// host has no package database and every path is unowned.
 pub async fn package_owners(paths: &[PathBuf], timeout: Duration) -> BTreeMap<PathBuf, Owner> {
-    let mut answers = BTreeMap::new();
-    let manager = [PackageManager::Dpkg, PackageManager::Rpm]
-        .into_iter()
-        .find_map(|manager| manager.installed().map(|binary| (manager, binary)));
-    let Some((manager, binary)) = manager else {
+    let managers = PackageManager::all_installed();
+    let mut answers: BTreeMap<PathBuf, Owner> = BTreeMap::new();
+    if managers.is_empty() {
         for path in paths {
             answers.insert(path.clone(), Owner::Unowned);
         }
         return answers;
-    };
-    // Bounded argument lists; a model tree is a handful of files, libs a few
-    // dozen, so this is one or two invocations in practice.
-    for chunk in paths.chunks(200) {
-        let flag = match manager {
-            PackageManager::Dpkg => "-S",
-            PackageManager::Rpm => "-qf",
-        };
-        let mut cmd = Cmd::new(binary.clone()).arg(flag);
-        for path in chunk {
-            cmd = cmd.arg(path.display().to_string());
+    }
+    for (manager, binary) in managers {
+        let mut this: BTreeMap<PathBuf, Owner> = BTreeMap::new();
+        for chunk in paths.chunks(200) {
+            let flag = match manager {
+                PackageManager::Dpkg => "-S",
+                PackageManager::Rpm => "-qf",
+            };
+            let mut cmd = Cmd::new(binary.clone()).arg(flag);
+            for path in chunk {
+                cmd = cmd.arg(path.display().to_string());
+            }
+            let outcome = match proc::run(&cmd, timeout).await {
+                Ok(output) => parse_owners(manager, chunk, &output.stdout, &output.stderr),
+                Err(error) => chunk
+                    .iter()
+                    .map(|path| {
+                        (
+                            path.clone(),
+                            Owner::Unknown(format!("{} did not answer: {error}", binary.display())),
+                        )
+                    })
+                    .collect(),
+            };
+            this.extend(outcome);
         }
-        let outcome = match proc::run(&cmd, timeout).await {
-            Ok(output) => parse_owners(manager, chunk, &output.stdout, &output.stderr),
-            Err(error) => chunk
-                .iter()
-                .map(|path| {
-                    (
-                        path.clone(),
-                        Owner::Unknown(format!("{} did not answer: {error}", binary.display())),
-                    )
-                })
-                .collect(),
-        };
-        answers.extend(outcome);
+        for path in paths {
+            let verdict = this
+                .remove(path)
+                .unwrap_or_else(|| Owner::Unknown("no verdict".to_string()));
+            let merged = match (answers.remove(path), verdict) {
+                (Some(Owner::Package(m, p)), _) | (_, Owner::Package(m, p)) => Owner::Package(m, p),
+                (Some(Owner::Unknown(r)), _) | (_, Owner::Unknown(r)) => Owner::Unknown(r),
+                _ => Owner::Unowned,
+            };
+            answers.insert(path.clone(), merged);
+        }
     }
     answers
 }
@@ -877,25 +1122,45 @@ pub fn parse_owners(
 
 /// Build the sweep for a cluster: refuse for a shared host, gather, resolve.
 pub async fn plan(roots: &PurgeRoots, timeout: Duration) -> Result<PurgePlan> {
-    let others = other_clusters_configured(&roots.state_dir, &roots.cluster_key);
-    if !others.is_empty() {
+    let mut roots = roots.clone();
+    let mut blockers = other_clusters_configured(&roots.state_dir, &roots.cluster_key)
+        .into_iter()
+        .map(|id| format!("{id} (set up by this CLI)"))
+        .collect::<Vec<_>>();
+    // Unit tests build fake hosts under a tempdir and have no cluster of
+    // their own; a release build always asks.
+    if !cfg!(test) {
+        let others = other_clusters(&roots.cluster_id, timeout).await?;
+        blockers.extend(others.preloading);
+        if !others.all.is_empty() && roots.extension_files_removable {
+            // Another cluster may hold the extension in a database without
+            // preloading it (a manual install): the shared extension files
+            // are not this cluster's alone to delete.
+            roots.extension_files_removable = false;
+            roots.excluded.push(format!(
+                "other PostgreSQL clusters exist on this host ({}) and may use the extension \
+                 files; those were left in place",
+                others.all.join(", ")
+            ));
+        }
+    }
+    if !blockers.is_empty() {
         return Err(CliError::precondition(format!(
-            "--purge refused: {} on this host still {} set up by this CLI, and the engine root \
-             and extension files are shared",
-            others.join(", "),
-            if others.len() == 1 { "is" } else { "are" }
+            "--purge refused: another cluster on this host still uses postvec, or could not be \
+             proven not to — {} — and the engine root and extension files are shared",
+            blockers.join("; ")
         ))
         .with_fix(
-            "run `postvec --cluster <that cluster> uninstall --all` for each of them first, \
-             then purge from the last one",
+            "remove postvec from that cluster first (`postvec --cluster <id> uninstall --all`, \
+             or drop it from its shared_preload_libraries and restart), then purge from the \
+             last one",
         ));
     }
-    let gathered = gather(roots);
+    let gathered = gather(&roots);
     let mut to_query: Vec<PathBuf> = gathered
         .candidates
         .iter()
-        .filter(|c| c.check_package)
-        .flat_map(|c| files_below(&c.path))
+        .flat_map(|c| c.leaves.iter().map(|leaf| leaf.path.clone()))
         .collect();
     to_query.extend(roots.cli_binary.iter().cloned());
     to_query.sort();
@@ -904,22 +1169,101 @@ pub async fn plan(roots: &PurgeRoots, timeout: Duration) -> Result<PurgePlan> {
     Ok(resolve(gathered, roots.cli_binary.as_deref(), &owners))
 }
 
-/// Apply a confirmed plan: rebuild it now, delete only what is still in it
-/// with the identity the operator confirmed, under the engine root's
-/// model-store lock, then prune the directories that emptied out.
-///
-/// A path that cannot be removed is recorded as incomplete and the sweep
-/// continues: stopping would leave *more* behind, not less. A path that is no
-/// longer in the fresh plan, or whose device/inode changed, is skipped as
-/// changed-since-confirmation. New candidates in the fresh plan are not
-/// deleted: nobody confirmed them.
+/// Delete one candidate leaf by leaf: files against their recorded identity,
+/// directories with `rmdir` deepest-first — never recursively. Anything that
+/// does not match, or a directory that is not empty (a child appeared after
+/// classification), is left and reported.
+pub fn delete_candidate(candidate: &Candidate) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut dirs: Vec<&Leaf> = Vec::new();
+    for leaf in &candidate.leaves {
+        if leaf.is_dir {
+            dirs.push(leaf);
+            continue;
+        }
+        match fs::symlink_metadata(&leaf.path) {
+            Ok(meta) if identity_of(&meta) == leaf.identity => {
+                if let Err(error) = fs::remove_file(&leaf.path) {
+                    problems.push(format!("{}: {error}", leaf.path.display()));
+                }
+            }
+            Ok(_) => problems.push(format!(
+                "{}: changed since it was classified; not deleted",
+                leaf.path.display()
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => problems.push(format!("{}: {error}", leaf.path.display())),
+        }
+    }
+    dirs.sort_by_key(|leaf| std::cmp::Reverse(leaf.path.components().count()));
+    for leaf in dirs {
+        match fs::symlink_metadata(&leaf.path) {
+            Ok(meta) if identity_of(&meta) == leaf.identity => {
+                if let Err(error) = fs::remove_dir(&leaf.path) {
+                    problems.push(format!(
+                        "{}: {error} (a child appeared after it was classified, or it could not \
+                         be removed)",
+                        leaf.path.display()
+                    ));
+                }
+            }
+            Ok(_) => problems.push(format!(
+                "{}: changed since it was classified; not deleted",
+                leaf.path.display()
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => problems.push(format!("{}: {error}", leaf.path.display())),
+        }
+    }
+    problems
+}
+
+/// Apply a confirmed plan under the engine-root and providers locks: rebuild
+/// it now, and for each confirmed candidate still present with an identical
+/// leaf set, delete leaf by leaf; then prune the directories that emptied
+/// out. New candidates are never deleted.
 pub async fn apply(
     confirmed: &PurgePlan,
     roots: &mut PurgeRoots,
     timeout: Duration,
     journal: &mut ApplyJournal,
 ) {
-    // The guards that ran at planning time run again now.
+    // Locks first, then every check: nothing observed here can change under
+    // the deletion. Without a lock, the corresponding root is not touched.
+    let model_lock = match &roots.engine_root {
+        Some(root) if root.join("models").is_dir() => {
+            match ModelRoot::new(root.clone()).lock_exclusive() {
+                Ok(lock) => Some(lock),
+                Err(error) => {
+                    journal.incomplete(format!(
+                        "the engine root {} was left alone: {error}",
+                        root.display()
+                    ));
+                    roots.engine_root = None;
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let provider_lock = match &roots.providers_dir {
+        Some(dir) if dir.is_dir() => {
+            match crate::commands::provider::lock_provider_dir(dir, roots.provider_owner) {
+                Ok(lock) => Some(lock),
+                Err(error) => {
+                    journal.incomplete(format!(
+                        "the providers directory {} was left alone: {error}",
+                        dir.display()
+                    ));
+                    roots.providers_dir = None;
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+
+    // The guards that ran at planning time run again now, under the locks.
     roots.engine_root_in_use = server_process_running();
     let fresh = match plan(roots, timeout).await {
         Ok(fresh) => fresh,
@@ -928,43 +1272,18 @@ pub async fn apply(
             return;
         }
     };
-
-    // Serialize against model pull/rm/activate on this root for the whole
-    // deletion phase. Without the lock nothing under the root is touched.
-    let model_lock = match &roots.engine_root {
-        Some(root) if root.join("models").is_dir() && !roots.engine_root_in_use => {
-            match ModelRoot::new(root.clone()).lock_exclusive() {
-                Ok(lock) => Some(lock),
-                Err(error) => {
-                    journal.incomplete(format!(
-                        "the engine root {} was left alone: {error}",
-                        root.display()
-                    ));
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
-    let engine_root = roots.engine_root.clone();
-    let under_engine_root = |path: &Path| {
-        engine_root
-            .as_ref()
-            .is_some_and(|root| path.starts_with(root))
-    };
-    let engine_root_locked = model_lock.is_some();
     let still_planned: BTreeMap<&Path, &Candidate> =
         fresh.remove.iter().map(|c| (c.path.as_path(), c)).collect();
 
     for candidate in &confirmed.remove {
-        if under_engine_root(&candidate.path) && !engine_root_locked {
-            continue;
-        }
         match still_planned.get(candidate.path.as_path()) {
-            Some(current) if current.identity == candidate.identity => {}
+            Some(current)
+                if current.identity == candidate.identity && current.leaves == candidate.leaves => {
+            }
             Some(_) => {
                 journal.incomplete(format!(
-                    "{} changed since the plan was confirmed (different file); not deleted",
+                    "{} changed since the plan was confirmed (a different object, or different \
+                     contents); not deleted",
                     candidate.path.display()
                 ));
                 continue;
@@ -979,32 +1298,43 @@ pub async fn apply(
                 continue;
             }
         }
-        match remove_path(&candidate.path, candidate.identity) {
-            Ok(()) => journal.record(format!(
+        let problems = delete_candidate(candidate);
+        if problems.is_empty() {
+            journal.record(format!(
                 "deleted {} ({})",
                 candidate.path.display(),
                 candidate.what
-            )),
-            Err(error) => journal.incomplete(format!(
-                "could not delete {} ({}): {error}",
-                candidate.path.display(),
-                candidate.what
-            )),
+            ));
+        } else {
+            for problem in problems {
+                journal.incomplete(format!(
+                    "could not fully delete {} ({}): {problem}",
+                    candidate.path.display(),
+                    candidate.what
+                ));
+            }
         }
     }
-    for (path, reason) in &fresh.unresolved {
-        journal.incomplete(format!(
-            "{} was retained: package ownership could not be established ({reason})",
-            path.display()
-        ));
+    for line in fresh.incomplete() {
+        journal.incomplete(line);
     }
 
-    // The model-store lock is released before its file goes: a held lock is
-    // never unlinked from under a concurrent waiter.
-    drop(model_lock);
-    if let Some(lock) = fresh.model_lock.as_ref().filter(|_| engine_root_locked) {
+    // Lock files go while their locks are still held: a waiter that acquires
+    // the old inode after our release finds no path to a root any more,
+    // rather than a second, independent lock domain at the same path.
+    for (lock, held, what) in [
+        (&fresh.model_lock, model_lock.is_some(), "model-store lock"),
+        (
+            &fresh.provider_lock,
+            provider_lock.is_some(),
+            "providers.d lock",
+        ),
+    ] {
+        let Some(lock) = lock.as_ref().filter(|_| held) else {
+            continue;
+        };
         match fs::remove_file(lock) {
-            Ok(()) => journal.record(format!("deleted {} (model-store lock)", lock.display())),
+            Ok(()) => journal.record(format!("deleted {} ({what})", lock.display())),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 journal.incomplete(format!("could not delete {}: {error}", lock.display()))
@@ -1012,9 +1342,6 @@ pub async fn apply(
         }
     }
     for dir in &fresh.prune_dirs {
-        if under_engine_root(dir) && !engine_root_locked {
-            continue;
-        }
         match fs::remove_dir(dir) {
             Ok(()) => journal.record(format!("removed empty directory {}", dir.display())),
             // Not empty, or already gone: both fine.
@@ -1029,35 +1356,21 @@ pub async fn apply(
             )),
         }
     }
-}
-
-/// Remove a file or a directory tree whose identity still matches. A
-/// symlink is never a candidate (`gather` requires regular files and real
-/// directories); `remove_dir_all` does not traverse symlinks below the root.
-fn remove_path(path: &Path, expected: (u64, u64)) -> std::io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if (metadata.dev(), metadata.ino()) != expected {
-        return Err(std::io::Error::other(
-            "the object at this path changed since it was planned",
-        ));
-    }
-    if metadata.file_type().is_dir() {
-        fs::remove_dir_all(path)
-    } else {
-        fs::remove_file(path)
-    }
+    drop(model_lock);
+    drop(provider_lock);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     fn roots(dir: &Path) -> PurgeRoots {
         PurgeRoots {
+            cluster_id: "18/main".to_string(),
             engine_root: Some(dir.join("opt/postvec")),
             engine_root_in_use: false,
             providers_dir: Some(dir.join("etc/postvec/providers.d")),
+            provider_owner: None,
             state_dir: dir.join("var/lib/postvec"),
             cluster_key: "18-main".to_string(),
             pkglibdir: dir.join("usr/lib/postgresql/18/lib"),
@@ -1083,6 +1396,7 @@ mod tests {
         touch(&root.join("models/onnx-runtime/bundled/ninference.hub.json"));
         touch(&root.join("models/onnx-runtime/bundled/model.onnx"));
         touch(&root.join("models/onnx-runtime/pulled/ninference.hub.json"));
+        touch(&root.join("models/onnx-runtime/pulled/weights/model.onnx"));
         touch(&root.join("models/onnx-runtime/manual/ninference.hub.json"));
         touch(&root.join("models/onnx-runtime/not-a-model/README"));
         touch(&root.join("models/.staging/part"));
@@ -1099,6 +1413,8 @@ mod tests {
         touch(&r.sharedir.join("extension/vector.control"));
         touch(&r.cli_binary.clone().unwrap());
         fs::set_permissions(&providers, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(root.join("models"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn owners_for(
@@ -1107,9 +1423,9 @@ mod tests {
         rule: impl Fn(&Path) -> Owner,
     ) -> BTreeMap<PathBuf, Owner> {
         let mut map = BTreeMap::new();
-        for candidate in gathered.candidates.iter().filter(|c| c.check_package) {
-            for path in files_below(&candidate.path) {
-                map.insert(path.clone(), rule(&path));
+        for candidate in &gathered.candidates {
+            for leaf in &candidate.leaves {
+                map.insert(leaf.path.clone(), rule(&leaf.path));
             }
         }
         map.insert(binary.to_path_buf(), rule(binary));
@@ -1156,6 +1472,7 @@ mod tests {
         populate(dir.path());
         let r = roots(dir.path());
         let gathered = gather(&r);
+        assert!(gathered.uncertain.is_empty(), "{:?}", gathered.uncertain);
         let owners = owners_for(
             &gathered,
             r.cli_binary.as_ref().unwrap(),
@@ -1208,7 +1525,7 @@ mod tests {
                 "postvec-onnxruntime"
             ]
         );
-        assert!(plan.unresolved.is_empty());
+        assert!(plan.incomplete().is_empty(), "{:?}", plan.incomplete());
         let note = plan.package_note().unwrap();
         assert!(
             note.ends_with(
@@ -1217,8 +1534,6 @@ mod tests {
             ),
             "{note}"
         );
-        // The operator's key file and the lookalike directory are reported,
-        // and the login is named as kept.
         let notes = plan.all_notes().join("\n");
         assert!(
             notes.contains("bedrock.key") && notes.contains("left alone"),
@@ -1233,16 +1548,54 @@ mod tests {
             "{notes}"
         );
         assert!(plan.model_lock.is_some());
+        // The pulled model was enumerated to its leaves, nested directory
+        // included.
+        let pulled = plan
+            .remove
+            .iter()
+            .find(|c| c.path.ends_with("pulled"))
+            .unwrap();
+        assert_eq!(pulled.leaves.len(), 4, "{:?}", pulled.leaves);
+        assert!(pulled.complete);
+    }
+
+    /// Origin never exempts a path from the package check: a receipt-bearing
+    /// model, a connector file and the CLI's own state are all asked about.
+    #[test]
+    fn every_candidate_is_asked_about_including_receipts_and_state() {
+        let dir = tempfile::tempdir().unwrap();
+        populate(dir.path());
+        let r = roots(dir.path());
+        let gathered = gather(&r);
+        let state = r.state_dir.join("clusters/18-main.json");
+        let toml = r.providers_dir.clone().unwrap().join("openai.toml");
+        let owners = owners_for(&gathered, r.cli_binary.as_ref().unwrap(), |path| {
+            if path == state || path == toml {
+                Owner::Package(PackageManager::Dpkg, "weird-pkg".into())
+            } else {
+                Owner::Unowned
+            }
+        });
+        let plan = resolve(gathered, None, &owners);
+        assert!(!plan
+            .remove
+            .iter()
+            .any(|c| c.path == state || c.path == toml));
+        assert_eq!(plan.packaged["weird-pkg"].len(), 2);
+        // And with no answers at all, nothing is deleted.
+        let plan = resolve(gather(&r), None, &BTreeMap::new());
+        assert!(plan.remove.is_empty(), "{:?}", plan.remove);
+        assert!(!plan.incomplete().is_empty());
     }
 
     #[test]
-    fn one_packaged_file_below_a_tree_retains_the_whole_tree() {
+    fn one_packaged_leaf_below_a_tree_retains_the_whole_tree() {
         let dir = tempfile::tempdir().unwrap();
         populate(dir.path());
         let r = roots(dir.path());
         let root = r.engine_root.clone().unwrap();
         let gathered = gather(&r);
-        let packaged_file = root.join("models/onnx-runtime/manual/ninference.hub.json");
+        let packaged_file = root.join("models/onnx-runtime/pulled/weights/model.onnx");
         let owners = owners_for(&gathered, r.cli_binary.as_ref().unwrap(), |path| {
             if path == packaged_file {
                 Owner::Package(PackageManager::Dpkg, "some-pkg".into())
@@ -1251,10 +1604,10 @@ mod tests {
             }
         });
         let plan = resolve(gathered, None, &owners);
-        assert!(!plan.remove.iter().any(|c| c.path.ends_with("manual")));
+        assert!(!plan.remove.iter().any(|c| c.path.ends_with("pulled")));
         assert_eq!(
             plan.packaged["some-pkg"],
-            [root.join("models/onnx-runtime/manual")]
+            [root.join("models/onnx-runtime/pulled")]
         );
     }
 
@@ -1275,19 +1628,97 @@ mod tests {
         assert!(!plan.remove.iter().any(|c| c.path.ends_with("postvec.so")));
         assert_eq!(plan.unresolved.len(), 1);
         assert!(plan
-            .all_notes()
+            .incomplete()
             .iter()
             .any(|n| n.contains("postvec.so") && n.contains("dpkg timed out")));
-        // A path with no recorded answer at all is unknown too — never
-        // silently unowned.
-        let plan = resolve(gather(&r), None, &BTreeMap::new());
-        assert!(plan.remove.iter().all(|c| !c.check_package));
-        assert!(!plan.unresolved.is_empty());
     }
 
-    /// Drives the real `apply` (re-plan, lock, identity check, prune) on a
-    /// host without a package database, which is the one configuration
-    /// where the shell-out cannot influence the verdict.
+    /// Leaf-wise deletion: a child that appears after classification keeps
+    /// its directory (rmdir refuses), the classified leaves still go, and
+    /// the outcome is reported — never a recursive delete of the unknown.
+    #[test]
+    fn a_child_added_after_classification_survives_and_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        populate(dir.path());
+        let r = roots(dir.path());
+        let pulled = r
+            .engine_root
+            .clone()
+            .unwrap()
+            .join("models/onnx-runtime/pulled");
+        let planned = candidate(pulled.clone(), "model".into()).unwrap();
+        touch(&pulled.join("weights/late-arrival.bin"));
+        let problems = delete_candidate(&planned);
+        assert!(!problems.is_empty(), "the late child must be reported");
+        assert!(pulled.join("weights/late-arrival.bin").exists());
+        assert!(pulled.join("weights").exists());
+        assert!(!pulled.join("weights/model.onnx").exists());
+        assert!(!pulled.join("ninference.hub.json").exists());
+        assert!(
+            pulled.exists(),
+            "the directory holding the unknown child stays"
+        );
+        assert!(
+            problems.iter().any(|p| p.contains("weights")),
+            "{problems:?}"
+        );
+    }
+
+    /// A leaf replaced after classification (new inode) is not deleted.
+    #[test]
+    fn a_replaced_leaf_is_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("m");
+        touch(&root.join("a"));
+        let planned = candidate(root.clone(), "model".into()).unwrap();
+        let other = dir.path().join("b");
+        touch(&other);
+        fs::rename(&other, root.join("a")).unwrap();
+        let problems = delete_candidate(&planned);
+        assert!(root.join("a").exists());
+        assert!(
+            problems.iter().any(|p| p.contains("changed")),
+            "{problems:?}"
+        );
+    }
+
+    /// An unreadable directory below a candidate makes it uncertain: never
+    /// deleted, and the plan is partial.
+    #[test]
+    fn an_unreadable_subdirectory_retains_the_candidate() {
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root reads everything
+        }
+        let dir = tempfile::tempdir().unwrap();
+        populate(dir.path());
+        let r = roots(dir.path());
+        let sealed = r
+            .engine_root
+            .clone()
+            .unwrap()
+            .join("models/onnx-runtime/pulled/weights");
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o000)).unwrap();
+        let gathered = gather(&r);
+        let pulled = gathered
+            .candidates
+            .iter()
+            .find(|c| c.path.ends_with("pulled"))
+            .unwrap();
+        assert!(!pulled.complete);
+        let owners = owners_for(&gathered, r.cli_binary.as_ref().unwrap(), |_| {
+            Owner::Unowned
+        });
+        let plan = resolve(gathered, None, &owners);
+        assert!(!plan.remove.iter().any(|c| c.path.ends_with("pulled")));
+        assert!(plan
+            .incomplete()
+            .iter()
+            .any(|n| n.contains("pulled") && n.contains("fully inspected")));
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Drives the real `apply` (locks, re-plan, leaf-wise delete, prune) on
+    /// a host without a package database.
     #[tokio::test]
     async fn a_manual_install_is_swept_completely_and_the_running_binary_is_reported() {
         let dir = tempfile::tempdir().unwrap();
@@ -1306,11 +1737,10 @@ mod tests {
         assert!(removed.contains(&r.engine_root.clone().unwrap().join("libs").as_path()));
         assert!(plan.notes.iter().any(|n| n.contains("running program")));
 
-        if PackageManager::Dpkg.installed().is_some() || PackageManager::Rpm.installed().is_some() {
+        if !PackageManager::all_installed().is_empty() {
             // With a real package database the re-plan asks it about the
-            // temp files; the answer is "unowned" but the lock/permission
-            // shape of a tempdir differs per host. The apply path is covered
-            // by the identity and prune tests instead.
+            // temp files; the lock/permission shape of a tempdir differs per
+            // host. The deletion path is covered by the leaf-wise tests.
             return;
         }
         let mut journal = ApplyJournal::default();
@@ -1348,7 +1778,7 @@ mod tests {
         assert!(gathered
             .notes
             .iter()
-            .any(|n| n.contains("shared_preload_libraries")));
+            .any(|n| n.contains("extension files were left in place")));
     }
 
     #[test]
@@ -1403,6 +1833,22 @@ mod tests {
     }
 
     #[test]
+    fn the_provider_lock_file_is_neither_a_candidate_nor_a_stranger() {
+        let dir = tempfile::tempdir().unwrap();
+        populate(dir.path());
+        let r = roots(dir.path());
+        let providers = r.providers_dir.clone().unwrap();
+        touch(&providers.join(".lock"));
+        let gathered = gather(&r);
+        assert_eq!(gathered.provider_lock, Some(providers.join(".lock")));
+        assert!(!gathered
+            .candidates
+            .iter()
+            .any(|c| c.path.ends_with(".lock")));
+        assert!(!gathered.notes.iter().any(|n| n.contains("/.lock")));
+    }
+
+    #[test]
     fn another_configured_cluster_refuses_the_purge() {
         let dir = tempfile::tempdir().unwrap();
         populate(dir.path());
@@ -1443,23 +1889,6 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_inode_is_not_deleted() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("f");
-        touch(&file);
-        let planned = identity_of(&file).unwrap();
-        // Two live files cannot share an inode; renaming one over the other
-        // is a guaranteed identity change (delete+recreate may reuse it).
-        let other = dir.path().join("g");
-        touch(&other);
-        fs::rename(&other, &file).unwrap();
-        assert_ne!(identity_of(&file).unwrap(), planned);
-        let error = remove_path(&file, planned).unwrap_err();
-        assert!(error.to_string().contains("changed"), "{error}");
-        assert!(file.exists());
-    }
-
-    #[test]
     fn system_and_shallow_and_symlinked_roots_are_refused() {
         for bad in [
             "/",
@@ -1470,7 +1899,10 @@ mod tests {
             "/postvec",
             "relative/x",
         ] {
-            assert!(safe_root(Path::new(bad), "root").is_err(), "{bad} accepted");
+            assert!(
+                safe_root(Path::new(bad), "root", None).is_err(),
+                "{bad} accepted"
+            );
         }
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join("a/postvec");
@@ -1478,11 +1910,41 @@ mod tests {
         fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
         let link = dir.path().join("a/link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let error = safe_root(&link, "root").unwrap_err();
+        let error = safe_root(&link, "root", None).unwrap_err();
         assert!(error.contains("symlink"), "{error}");
-        // A group-writable root is refused by the trusted-dir rule.
+        // A group-writable root is refused.
         fs::set_permissions(&real, fs::Permissions::from_mode(0o775)).unwrap();
-        assert!(safe_root(&real.canonicalize().unwrap(), "root").is_err());
+        assert!(safe_root(&real.canonicalize().unwrap(), "root", None).is_err());
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        // A group-writable *ancestor* is refused too (no sticky bit).
+        let parent = dir.path().join("a");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o775)).unwrap();
+        let error = safe_root(&real.canonicalize().unwrap(), "root", None).unwrap_err();
+        assert!(error.contains("ancestor"), "{error}");
+    }
+
+    /// One owner policy for the leaf and every ancestor: root, the effective
+    /// user, or the cluster account.
+    #[test]
+    fn the_owner_policy_admits_root_the_caller_and_the_cluster_account_only() {
+        let me = unsafe { libc::geteuid() };
+        assert!(trusted_uid(0, me, None));
+        assert!(trusted_uid(me, me, None));
+        assert!(!trusted_uid(me + 1, me, None));
+        assert!(trusted_uid(me + 1, me, Some(me + 1)));
+        assert!(!trusted_uid(me + 2, me, Some(me + 1)));
+        // A real chain owned by the effective user passes end to end (the
+        // tempdir's own ancestors are root-owned and sticky, or ours).
+        let dir = tempfile::tempdir().unwrap();
+        // The tempdir follows the host umask (0775 on some boxes) and would
+        // rightly be refused as a group-writable ancestor: pin it.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let real = dir.path().join("etc-postvec/providers.d");
+        fs::create_dir_all(&real).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(real.parent().unwrap(), fs::Permissions::from_mode(0o755)).unwrap();
+        let verdict = safe_root(&real.canonicalize().unwrap(), "providers directory", None);
+        assert!(verdict.is_ok(), "{verdict:?}");
     }
 
     #[test]
@@ -1509,7 +1971,6 @@ mod tests {
             answers[&c],
             Owner::Package(PackageManager::Dpkg, "postvec-cli".into())
         );
-        // Silence about a path is unknown, not unowned.
         let answers = parse_owners(PackageManager::Dpkg, &queried, "", "");
         assert!(queried
             .iter()
@@ -1531,7 +1992,6 @@ mod tests {
             )
         );
         assert_eq!(answers[&b], Owner::Unowned);
-        // A short answer makes the batch unknown.
         let answers = parse_owners(PackageManager::Rpm, &queried, "one\n", "");
         assert!(queried
             .iter()

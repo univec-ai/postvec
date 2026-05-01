@@ -63,6 +63,13 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
     } else {
         None
     };
+    // Shared host lock before the engine-root lock: a `--purge` in progress
+    // refuses us, and we hold it off for the duration.
+    let _host_lock = if args.dry_run {
+        None
+    } else {
+        crate::config::owned::host_lock_shared()?
+    };
     let lock = if args.dry_run {
         None
     } else {

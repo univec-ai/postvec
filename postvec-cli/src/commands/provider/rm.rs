@@ -25,6 +25,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     let mut target = resolve_target(cli, args.path.as_deref(), output, true).await?;
     // Same read-modify-write, same lock: a concurrent `add` must not have its
     // append removed by this command's rewrite, or vice versa.
+    let _host_lock = if args.dry_run {
+        None
+    } else {
+        crate::config::owned::host_lock_shared()?
+    };
     let _lock = (!args.dry_run)
         .then(|| super::lock_provider_dir(target.dir(), target.owner()))
         .transpose()?;

@@ -769,6 +769,69 @@ impl HostLock {
     }
 }
 
+/// The host-wide lock. `uninstall --purge` holds it **exclusively** for its
+/// whole run; every other mutating command (`setup`, `uninstall`, `model`,
+/// `provider`) holds it **shared** — so no configuration, model or provider
+/// change on *any* cluster of this host can overlap a sweep. Lock order is
+/// host → cluster → engine root / providers directory.
+pub const HOST_LOCK_FILE: &str = "/run/lock/postvec/host.lock";
+
+pub fn host_lock_exclusive() -> Result<HostLock> {
+    HostLock::acquire_labeled(
+        Path::new(HOST_LOCK_FILE),
+        "this host's postvec installation (a purge)",
+    )
+}
+
+/// The shared side of the host lock. Creates the file when it can; a caller
+/// that cannot — a non-root `model` command on a user-owned engine root —
+/// gets `None`, which only means it cannot hold a purge off (the purge, root
+/// itself, still re-plans under its own locks). Refuses while a purge holds
+/// the lock exclusively.
+pub fn host_lock_shared() -> Result<Option<HostLock>> {
+    let path = Path::new(HOST_LOCK_FILE);
+    // A shared flock needs only a readable descriptor, and the file is
+    // world-readable: an unprivileged caller can hold a purge off without
+    // being able to create or write the file.
+    let existing = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path);
+    let file = match existing {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                if create_dir_all_checked(parent, 0o755).is_err() {
+                    return Ok(None);
+                }
+            }
+            match fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o644)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(path)
+            {
+                Ok(file) => file,
+                // Nobody has set this host up with privileges yet: there is
+                // no installation a purge could be sweeping.
+                Err(_) => return Ok(None),
+            }
+        }
+        Err(_) => return Ok(None),
+    };
+    match flock(&file, libc::LOCK_SH | libc::LOCK_NB) {
+        Ok(()) => Ok(Some(HostLock { _file: file })),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Err(CliError::precondition(
+            "a `postvec uninstall --purge` is in progress on this host (its lock is held)",
+        )
+        .with_fix("wait for it to finish, then rerun")),
+        Err(_) => Ok(None),
+    }
+}
+
 fn flock(file: &fs::File, operation: libc::c_int) -> std::io::Result<()> {
     use std::os::unix::io::AsRawFd;
     if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {

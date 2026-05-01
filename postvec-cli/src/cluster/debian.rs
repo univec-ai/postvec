@@ -200,6 +200,37 @@ pub fn select<'a>(
 
 const SUPPORTED_MAJORS_TEXT: &str = "16, 17 or 18";
 
+/// Every cluster `pg_lsclusters` reports; empty when postgresql-common is
+/// not installed (there is nothing to enumerate). **Strict**: a row that
+/// does not parse is an error, because a caller deciding what is safe to
+/// delete cannot claim to have examined every cluster otherwise.
+pub async fn list_clusters(timeout: Duration) -> Result<Vec<ClusterListing>> {
+    if !Path::new(PG_LSCLUSTERS).is_file() {
+        return Ok(Vec::new());
+    }
+    let output = proc::run_ok(&Cmd::new(PG_LSCLUSTERS).arg("--no-header"), timeout).await?;
+    parse_lsclusters_strict(&output.stdout)
+}
+
+/// [`parse_lsclusters`] that refuses instead of skipping a malformed row.
+pub fn parse_lsclusters_strict(stdout: &str) -> Result<Vec<ClusterListing>> {
+    let rows: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("Ver"))
+        .collect();
+    let parsed = parse_lsclusters(stdout);
+    if parsed.len() != rows.len() {
+        return Err(CliError::precondition(format!(
+            "pg_lsclusters reported {} row(s) but only {} could be parsed",
+            rows.len(),
+            parsed.len()
+        ))
+        .with_fix("inspect `pg_lsclusters` by hand; a malformed row hides a cluster"));
+    }
+    Ok(parsed)
+}
+
 pub async fn discover(
     requested: Option<&str>,
     timeout: Duration,

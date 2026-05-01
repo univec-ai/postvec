@@ -116,7 +116,10 @@ sudo postvec uninstall --all --drop-columns --acknowledge-data-loss --purge --ye
 
 `DROP EXTENSION` is never issued with `CASCADE`. Only databases whose SQL
 removal actually succeeded are removed from the launcher configuration.
-`--purge` deletes only what it can positively attribute to postvec (the
+`--purge` is **experimental** (destructive cleanup for disposable hosts; see
+`docs/postvec-uninstall.md` for what still separates it from a production
+designation). It stops the cluster for the sweep and starts it again, and
+deletes only what it can positively attribute to postvec (the
 descriptor-bearing model directories, the CLI's model-store state, the
 connector files it writes, its own state file, an unpackaged extension set),
 under roots it has proven safe and that the CLI's own configuration names. It

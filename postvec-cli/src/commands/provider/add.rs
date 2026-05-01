@@ -108,6 +108,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // Held for the whole read-modify-write. Two concurrent `provider add`
     // runs would otherwise both load the file, both append, and the second
     // rename would silently discard the first one's model.
+    let _host_lock = if args.dry_run {
+        None
+    } else {
+        crate::config::owned::host_lock_shared()?
+    };
     let _lock = (!args.dry_run)
         .then(|| super::lock_provider_dir(target.dir(), target.owner()))
         .transpose()?;

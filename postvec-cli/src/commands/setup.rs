@@ -48,6 +48,13 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
 
     // The lock is held across plan revalidation and apply, and state is
     // re-read after acquiring it: a plan built before the lock could be stale.
+    // Host-wide (shared) before cluster (exclusive): a purge in progress on
+    // this host refuses us, and we hold it off while we run.
+    let _host_lock = if args.dry_run {
+        None
+    } else {
+        crate::config::owned::host_lock_shared()?
+    };
     let _lock = if args.dry_run {
         HostLock::acquire_shared_if_present(&paths.lock)?
     } else {

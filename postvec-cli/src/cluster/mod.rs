@@ -56,6 +56,19 @@ impl RestartCommand {
         Cmd::new(&self.program).args(self.args.clone())
     }
 
+    /// The same service command with `restart` replaced by `action`
+    /// (`stop`/`start`) — both `systemctl` and `pg_ctlcluster` take it in
+    /// that position.
+    fn action(&self, action: &str) -> Cmd {
+        Cmd::new(&self.program).args(self.args.iter().map(|arg| {
+            if arg == "restart" {
+                action.to_string()
+            } else {
+                arg.clone()
+            }
+        }))
+    }
+
     pub fn display(&self) -> String {
         self.cmd().display()
     }
@@ -228,6 +241,61 @@ impl Cluster {
             CliError::apply(format!("restarting {} failed: {e}", restart.label))
                 .with_fix("inspect the service's status and the PostgreSQL log")
         })?;
+        self.wait_for_new_postmaster(db, previous, deadline).await
+    }
+
+    /// Stop the cluster and prove it is down: the server stops answering
+    /// and, when the data directory is known, `postmaster.pid` is gone.
+    pub async fn stop_and_verify(&self, db: &mut Db, deadline: Duration) -> Result<()> {
+        let restart = self.restart.as_ref().ok_or_else(|| {
+            CliError::precondition(format!(
+                "no service command is known for cluster {}",
+                self.identity.id
+            ))
+        })?;
+        proc::run_ok(&restart.action("stop"), deadline)
+            .await
+            .map_err(|e| CliError::apply(format!("stopping {} failed: {e}", restart.label)))?;
+        let started = Instant::now();
+        let mut backoff = Duration::from_millis(200);
+        while started.elapsed() < deadline {
+            let _ = db.reconnect().await;
+            let answering = db.server_facts().await.is_ok();
+            let pid_file = self
+                .data_dir
+                .as_ref()
+                .map(|dir| dir.join("postmaster.pid").exists())
+                .unwrap_or(false);
+            if !answering && !pid_file {
+                return Ok(());
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(2));
+        }
+        Err(CliError::apply(format!(
+            "cluster {} did not stop within {}",
+            self.identity.id,
+            humantime::format_duration(deadline)
+        ))
+        .with_fix("check the service status and the PostgreSQL log"))
+    }
+
+    /// Start the cluster and prove a new postmaster is serving.
+    pub async fn start_and_verify(
+        &self,
+        db: &mut Db,
+        previous: &ServerFacts,
+        deadline: Duration,
+    ) -> Result<ServerFacts> {
+        let restart = self.restart.as_ref().ok_or_else(|| {
+            CliError::precondition(format!(
+                "no service command is known for cluster {}",
+                self.identity.id
+            ))
+        })?;
+        proc::run_ok(&restart.action("start"), deadline)
+            .await
+            .map_err(|e| CliError::apply(format!("starting {} failed: {e}", restart.label)))?;
         self.wait_for_new_postmaster(db, previous, deadline).await
     }
 
