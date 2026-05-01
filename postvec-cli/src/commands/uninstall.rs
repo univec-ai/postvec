@@ -281,6 +281,9 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     // --- apply ------------------------------------------------------------
     let mut journal = ApplyJournal::default();
     let mut messages = Vec::new();
+    // A host-level fatal condition (the cluster may be down) outranks any
+    // amount of successful database work: it turns the whole run into exit 1.
+    let mut host_fatal: Option<CliError> = None;
     for name in &uninspectable {
         journal.incomplete(format!(
             "{name} could not be inspected; postvec may still be installed there"
@@ -580,32 +583,50 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         }
         if stop_issued {
             output.progress("postvec: starting the cluster again");
-            let outcome = match context.cluster.start_cluster(Duration::from_secs(45)).await {
-                Ok(()) => context
-                    .cluster
-                    .ensure_running(&mut context.db, Duration::from_secs(60))
-                    .await
-                    .map(Some),
-                Err(error) => Err(error),
-            };
-            match outcome {
-                Ok(server) => {
-                    if let Some(server) = server {
-                        context.server = server;
-                    }
+            // The start command's own outcome is advisory: a stop that never
+            // took effect makes `start` a no-op that some service managers
+            // report as an error, and the postcondition that matters is
+            // "PostgreSQL answers". So the answering proof runs after EVERY
+            // start attempt, failed command included.
+            let start_command = context.cluster.start_cluster(Duration::from_secs(45)).await;
+            let answering = context
+                .cluster
+                .ensure_running(&mut context.db, Duration::from_secs(60))
+                .await;
+            match (start_command, answering) {
+                (Ok(()), Ok(server)) => {
+                    context.server = server;
                     journal.record("started the cluster again");
                 }
-                Err(error) => {
+                (Err(command_error), Ok(server)) => {
+                    // The desired postcondition holds; the command failure is
+                    // still worth a line — something about the service setup
+                    // is off.
+                    context.server = server;
+                    journal.record("the cluster is running again");
+                    messages.push(format!(
+                        "postvec: the start command reported an error ({command_error}) but \
+                         PostgreSQL answers; check the service configuration"
+                    ));
+                }
+                (start_command, Err(probe_error)) => {
                     // The one outcome this command must never be quiet
-                    // about: the cluster may be down. Report the primary
-                    // failure AND the exact manual recovery command, and
-                    // fail the run.
+                    // about: the cluster may be down. Report every failure
+                    // AND the exact manual recovery command, and fail the
+                    // whole run (exit 1) regardless of prior successes.
                     let hint = context
                         .cluster
                         .manual_start_command()
                         .unwrap_or_else(|| "start the PostgreSQL service yourself".to_string());
+                    let detail = match start_command {
+                        Ok(()) => format!("it does not answer: {probe_error}"),
+                        Err(command_error) => format!(
+                            "the start command failed ({command_error}) and it does not \
+                             answer: {probe_error}"
+                        ),
+                    };
                     let failure = CliError::apply(format!(
-                        "the cluster was not started again after the file sweep: {error}"
+                        "the cluster was not started again after the file sweep — {detail}"
                     ))
                     .with_fix(format!(
                         "start it now: {hint}; then check the PostgreSQL log"
@@ -614,6 +635,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                         "postvec: THE CLUSTER MAY BE STOPPED — start it now: {hint}"
                     ));
                     journal.failed("(cluster start)", &failure);
+                    host_fatal = Some(failure);
                 }
             }
         }
@@ -624,8 +646,13 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
 
     let result = result_for(&context, plan, journal, started, started_at, messages, None);
     output.show_result(&result)?;
-    let exit = Exit::from_code(result.exit_code);
     context.close().await;
+    // The journal grades a failed recovery beside successful databases as
+    // partial (exit 3); a possibly-stopped cluster must be exit 1.
+    if let Some(failure) = host_fatal {
+        return Err(failure);
+    }
+    let exit = Exit::from_code(result.exit_code);
     Ok(exit)
 }
 

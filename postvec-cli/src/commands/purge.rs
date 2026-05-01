@@ -42,6 +42,7 @@
 //! deletes. Lock files are unlinked while their locks are still held.
 
 use crate::commands::provider::FileOwner;
+use crate::config::owned;
 use crate::error::{CliError, Result};
 use crate::plan::{ApplyJournal, PlanStep};
 use crate::proc::{self, Cmd, OsAccount};
@@ -60,6 +61,20 @@ const DESCRIPTOR_FILE: &str = "ninference.hub.json";
 const AUTH_FILE: &str = "auth.json";
 /// The providers directory's lock file (`provider::lock_provider_dir`).
 const PROVIDER_LOCK_FILE: &str = ".lock";
+/// The engine-root serving lease. `postvec-server` holds the shared side for
+/// its whole serving lifetime; the purge sweep holds the exclusive side, so
+/// a server starting after the process scan blocks the sweep (or is blocked
+/// by it) instead of racing it.
+pub const SERVING_LEASE_FILE: &str = ".serving.lease";
+
+/// The exclusive side of the serving lease. Refused while any
+/// `postvec-server` (new enough to take the lease) is serving this root.
+pub fn acquire_serving_lease(root: &Path) -> Result<owned::HostLock> {
+    owned::HostLock::acquire_labeled(
+        &root.join(SERVING_LEASE_FILE),
+        "this engine root (a postvec-server serving lease)",
+    )
+}
 
 /// Directories a purge root may never be. Anything directly under `/` is a
 /// system directory; a postvec root lives at least one level deeper
@@ -208,11 +223,10 @@ pub struct Candidate {
 pub struct PurgePlan {
     /// Paths to delete, in order.
     pub remove: Vec<Candidate>,
-    /// Package-owned paths, grouped by package: reported, never deleted.
-    pub packaged: BTreeMap<String, Vec<PathBuf>>,
-    /// Which manager claimed each package — a hybrid host gets one removal
-    /// command per manager.
-    pub managers: BTreeMap<String, PackageManager>,
+    /// Package-owned paths, grouped by `(manager, package)` — a hybrid host
+    /// gets one removal command per manager, and an identically named dpkg
+    /// and RPM package cannot collapse into one entry.
+    pub packaged: BTreeMap<(PackageManager, String), Vec<PathBuf>>,
     /// Paths whose ownership could not be established or whose contents
     /// could not be fully inspected: retained, and the result is partial.
     pub unresolved: Vec<(PathBuf, String)>,
@@ -221,9 +235,10 @@ pub struct PurgePlan {
     pub uncertain: Vec<String>,
     /// Directories to remove afterwards if they are empty, deepest first.
     pub prune_dirs: Vec<PathBuf>,
-    /// Lock files, unlinked while their locks are still held.
+    /// Lock and lease files, unlinked while their locks are still held.
     pub model_lock: Option<PathBuf>,
     pub provider_lock: Option<PathBuf>,
+    pub serving_lease: Option<PathBuf>,
     /// Informational: what was left alone by design and why.
     pub notes: Vec<String>,
 }
@@ -244,28 +259,23 @@ impl PurgePlan {
         if self.packaged.is_empty() {
             return None;
         }
-        let packages: Vec<String> = self.packaged.keys().cloned().collect();
+        let names: Vec<&str> = self
+            .packaged
+            .keys()
+            .map(|(_, name)| name.as_str())
+            .collect();
         let mut by_manager: BTreeMap<PackageManager, Vec<String>> = BTreeMap::new();
-        for package in &packages {
-            if let Some(manager) = self.managers.get(package) {
-                by_manager
-                    .entry(*manager)
-                    .or_default()
-                    .push(package.clone());
-            }
+        for (manager, name) in self.packaged.keys() {
+            by_manager.entry(*manager).or_default().push(name.clone());
         }
-        let commands: Vec<String> = by_manager
+        let command = by_manager
             .into_iter()
             .map(|(manager, names)| manager.remove_command(&names))
-            .collect();
-        let command = if commands.is_empty() {
-            "remove them with the package manager".to_string()
-        } else {
-            commands.join(" && ")
-        };
+            .collect::<Vec<_>>()
+            .join(" && ");
         Some(format!(
             "package-owned files were left in place ({}); remove the packages with: {command}",
-            packages.join(", ")
+            names.join(", ")
         ))
     }
 
@@ -624,6 +634,7 @@ pub struct Gathered {
     pub prune: Vec<PathBuf>,
     pub model_lock: Option<PathBuf>,
     pub provider_lock: Option<PathBuf>,
+    pub serving_lease: Option<PathBuf>,
     /// Designed retention: informational.
     pub notes: Vec<String>,
     /// Safety uncertainty (an unreadable directory): the result is partial.
@@ -638,6 +649,7 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
     let mut prune = Vec::new();
     let mut model_lock = None;
     let mut provider_lock = None;
+    let mut serving_lease = None;
     let mut notes = roots.excluded.clone();
     let mut uncertain = Vec::new();
 
@@ -736,6 +748,12 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                         };
                         let name = entry.file_name().to_string_lossy().to_string();
                         if name == "models" || name == "libs" {
+                            continue;
+                        }
+                        if name == SERVING_LEASE_FILE {
+                            // postvec-server's lifetime lease; held
+                            // exclusively by apply, unlinked while held.
+                            serving_lease = Some(entry.path());
                             continue;
                         }
                         notes.push(format!(
@@ -911,6 +929,7 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         prune,
         model_lock,
         provider_lock,
+        serving_lease,
         notes,
         uncertain,
     }
@@ -986,6 +1005,7 @@ pub fn resolve(
         prune_dirs: gathered.prune,
         model_lock: gathered.model_lock,
         provider_lock: gathered.provider_lock,
+        serving_lease: gathered.serving_lease,
         notes: gathered.notes,
         uncertain: gathered.uncertain,
         ..PurgePlan::default()
@@ -1022,9 +1042,8 @@ pub fn resolve(
         }
         if !packages.is_empty() {
             for (manager, package) in packages {
-                plan.managers.insert(package.clone(), manager);
                 plan.packaged
-                    .entry(package)
+                    .entry((manager, package))
                     .or_default()
                     .push(candidate.path.clone());
             }
@@ -1040,9 +1059,8 @@ pub fn resolve(
     if let Some(binary) = cli_binary {
         match lookup(binary) {
             Owner::Package(manager, package) => {
-                plan.managers.insert(package.clone(), manager);
                 plan.packaged
-                    .entry(package)
+                    .entry((manager, package))
                     .or_default()
                     .push(binary.to_path_buf());
             }
@@ -1357,37 +1375,29 @@ pub fn delete_candidate(candidate: &Candidate) -> Vec<String> {
         Err(error) => return vec![format!("cannot open {}: {error}", parent_path.display())],
     };
     // Open every directory of the tree top-down, verifying each opened
-    // descriptor against the identity recorded at classification.
+    // descriptor against the identity recorded at classification. `dir_fds`
+    // maps a directory's path to its held descriptor; lookups borrow the map
+    // only until the child descriptor is obtained, so no entry is borrowed
+    // across an insertion or removal.
     let mut dir_fds: BTreeMap<&Path, std::os::fd::OwnedFd> = BTreeMap::new();
     let mut dirs: Vec<&Leaf> = candidate.leaves.iter().filter(|l| l.is_dir).collect();
     dirs.sort_by_key(|l| l.path.components().count());
-    let fd_for = |dir_fds: &BTreeMap<&Path, std::os::fd::OwnedFd>,
-                  parent_fd: &std::os::fd::OwnedFd,
-                  leaf_path: &Path|
-     -> Option<*const std::os::fd::OwnedFd> {
-        if leaf_path == candidate.path {
-            return Some(parent_fd as *const _);
-        }
-        leaf_path
-            .parent()
-            .and_then(|p| dir_fds.get(p))
-            .map(|fd| fd as *const _)
-    };
     for leaf in &dirs {
-        let Some(fd_ptr) = fd_for(&dir_fds, &parent_fd, &leaf.path) else {
-            problems.push(format!(
-                "{}: its parent directory could not be opened; not deleted",
-                leaf.path.display()
-            ));
-            continue;
+        let opened = if leaf.path == candidate.path {
+            at::open_dir_at(&parent_fd, leaf.path.file_name().unwrap_or_default())
+        } else {
+            match leaf.path.parent().and_then(|p| dir_fds.get(p)) {
+                Some(base) => at::open_dir_at(base, leaf.path.file_name().unwrap_or_default()),
+                None => {
+                    problems.push(format!(
+                        "{}: its parent directory could not be opened; not deleted",
+                        leaf.path.display()
+                    ));
+                    continue;
+                }
+            }
         };
-        // SAFETY: the pointer targets either `parent_fd` or an entry of
-        // `dir_fds`; both live for the whole function and `dir_fds` is
-        // append-only (BTreeMap values are stable under insertion of other
-        // keys? they are not — so read through it immediately).
-        let base = unsafe { &*fd_ptr };
-        let name = leaf.path.file_name().unwrap_or_default();
-        match at::open_dir_at(base, name) {
+        match opened {
             Ok(fd) => match at::identity_of_fd(&fd) {
                 Ok(identity) if identity == leaf.identity => {
                     dir_fds.insert(leaf.path.as_path(), fd);
@@ -1405,14 +1415,18 @@ pub fn delete_candidate(candidate: &Candidate) -> Vec<String> {
     // Files: verify identity below the held parent descriptor, then unlink
     // through the same descriptor.
     for leaf in candidate.leaves.iter().filter(|l| !l.is_dir) {
-        let Some(fd_ptr) = fd_for(&dir_fds, &parent_fd, &leaf.path) else {
+        let base = if leaf.path == candidate.path {
+            Some(&parent_fd)
+        } else {
+            leaf.path.parent().and_then(|p| dir_fds.get(p))
+        };
+        let Some(base) = base else {
             problems.push(format!(
                 "{}: its parent directory was not opened; not deleted",
                 leaf.path.display()
             ));
             continue;
         };
-        let base = unsafe { &*fd_ptr };
         let name = leaf.path.file_name().unwrap_or_default();
         match at::identity_at(base, name) {
             Ok((identity, false)) if identity == leaf.identity => {
@@ -1429,19 +1443,21 @@ pub fn delete_candidate(candidate: &Candidate) -> Vec<String> {
         }
     }
     // Directories deepest-first, through their parent's descriptor. `rmdir`
-    // refuses a directory holding anything unclassified.
-    let mut deepest = dirs.clone();
-    deepest.sort_by_key(|l| std::cmp::Reverse(l.path.components().count()));
-    for leaf in deepest {
-        let Some(fd_ptr) = fd_for(&dir_fds, &parent_fd, &leaf.path) else {
+    // refuses a directory holding anything unclassified. The directory's own
+    // descriptor is dropped before its parent is borrowed, so the map never
+    // hands out two entries at once.
+    dirs.sort_by_key(|l| std::cmp::Reverse(l.path.components().count()));
+    for leaf in dirs {
+        drop(dir_fds.remove(leaf.path.as_path()));
+        let base = if leaf.path == candidate.path {
+            Some(&parent_fd)
+        } else {
+            leaf.path.parent().and_then(|p| dir_fds.get(p))
+        };
+        let Some(base) = base else {
             continue; // already reported on the way down
         };
-        let base = unsafe { &*fd_ptr };
         let name = leaf.path.file_name().unwrap_or_default();
-        // The open descriptor for this directory must not pin it: drop it
-        // before the rmdir (Linux allows removing an open directory, but
-        // being tidy costs nothing).
-        dir_fds.remove(leaf.path.as_path());
         match at::identity_at(base, name) {
             Ok((identity, true)) if identity == leaf.identity => {
                 if let Err(error) = at::unlink_at(base, name, true) {
@@ -1473,8 +1489,31 @@ pub async fn apply(
     timeout: Duration,
     journal: &mut ApplyJournal,
 ) {
+    // A plan with nothing to delete performs no filesystem mutation at all:
+    // no lock unlink, no directory prune. The documented stop/sweep/start
+    // sequence applies only when something is actually swept.
+    if confirmed.remove.is_empty() {
+        return;
+    }
     // Locks first, then every check: nothing observed here can change under
     // the deletion. Without a lock, the corresponding root is not touched.
+    // The serving lease outranks the model-store lock: a postvec-server
+    // holds its shared side for its whole serving lifetime, so a server
+    // starting after the /proc scan blocks here instead of racing the sweep.
+    let serving_lease = match &roots.engine_root {
+        Some(root) if root.is_dir() => match acquire_serving_lease(root) {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                journal.incomplete(format!(
+                    "the engine root {} was left alone: {error}",
+                    root.display()
+                ));
+                roots.engine_root = None;
+                None
+            }
+        },
+        _ => None,
+    };
     let model_lock = match &roots.engine_root {
         Some(root) if root.join("models").is_dir() => {
             match ModelRoot::new(root.clone()).lock_exclusive() {
@@ -1574,6 +1613,11 @@ pub async fn apply(
             provider_lock.is_some(),
             "providers.d lock",
         ),
+        (
+            &fresh.serving_lease,
+            serving_lease.is_some(),
+            "engine-root serving lease",
+        ),
     ] {
         let Some(lock) = lock.as_ref().filter(|_| held) else {
             continue;
@@ -1603,6 +1647,7 @@ pub async fn apply(
     }
     drop(model_lock);
     drop(provider_lock);
+    drop(serving_lease);
 }
 
 #[cfg(test)]
@@ -1760,7 +1805,11 @@ mod tests {
                 "{kept} must not be deleted"
             );
         }
-        let packages: Vec<&String> = plan.packaged.keys().collect();
+        let packages: Vec<&str> = plan
+            .packaged
+            .keys()
+            .map(|(_, name)| name.as_str())
+            .collect();
         assert_eq!(
             packages,
             [
@@ -1826,7 +1875,10 @@ mod tests {
             .remove
             .iter()
             .any(|c| c.path == state || c.path == toml));
-        assert_eq!(plan.packaged["weird-pkg"].len(), 2);
+        assert_eq!(
+            plan.packaged[&(PackageManager::Dpkg, "weird-pkg".to_string())].len(),
+            2
+        );
         // And with no answers at all, nothing is deleted.
         let plan = resolve(gather(&r), None, &BTreeMap::new());
         assert!(plan.remove.is_empty(), "{:?}", plan.remove);
@@ -1851,7 +1903,7 @@ mod tests {
         let plan = resolve(gathered, None, &owners);
         assert!(!plan.remove.iter().any(|c| c.path.ends_with("pulled")));
         assert_eq!(
-            plan.packaged["some-pkg"],
+            plan.packaged[&(PackageManager::Dpkg, "some-pkg".to_string())],
             [root.join("models/onnx-runtime/pulled")]
         );
     }
@@ -2093,6 +2145,46 @@ mod tests {
             .notes
             .iter()
             .any(|n| n.contains("providers.d") && n.contains("left alone")));
+    }
+
+    /// A held serving lease (postvec-server's shared side) refuses the
+    /// exclusive acquisition; the file itself is recognized, never a
+    /// candidate.
+    #[test]
+    fn a_served_engine_root_refuses_the_lease_and_the_file_is_recognized() {
+        let dir = tempfile::tempdir().unwrap();
+        populate(dir.path());
+        let r = roots(dir.path());
+        let root = r.engine_root.clone().unwrap();
+        touch(&root.join(SERVING_LEASE_FILE));
+        let gathered = gather(&r);
+        assert_eq!(gathered.serving_lease, Some(root.join(SERVING_LEASE_FILE)));
+        assert!(!gathered
+            .candidates
+            .iter()
+            .any(|c| c.path.ends_with(SERVING_LEASE_FILE)));
+
+        // Hold the shared side the way a serving postvec-server does; the
+        // sweep's exclusive side must be refused (flock domains are per open
+        // file description, so one process can prove the conflict).
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .open(root.join(SERVING_LEASE_FILE))
+            .unwrap();
+        assert_eq!(
+            unsafe {
+                libc::flock(
+                    std::os::fd::AsRawFd::as_raw_fd(&held),
+                    libc::LOCK_SH | libc::LOCK_NB,
+                )
+            },
+            0
+        );
+        let refused = acquire_serving_lease(&root);
+        assert!(refused.is_err(), "the exclusive lease must be refused");
+        assert!(refused.unwrap_err().to_string().contains("serving lease"));
+        drop(held);
+        assert!(acquire_serving_lease(&root).is_ok());
     }
 
     #[test]

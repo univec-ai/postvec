@@ -31,6 +31,10 @@ name = "postvec-server"
 path = "src/main.rs"
 
 [dependencies]
+# The engine-root serving lease (flock): held shared for the serving
+# lifetime so a postvec-cli purge cannot sweep the root from under a
+# running or starting server.
+libc = "0.2"
 # The trimmed inference engine, exactly as postvec's embedded mode links it.
 # `onnx` is not optional here: a node with no backend is not a node.
 engine = { path = "../engine", features = ["onnx"] }

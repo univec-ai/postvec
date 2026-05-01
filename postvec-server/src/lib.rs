@@ -145,6 +145,47 @@ fn run_serve(args: ServeArgs) -> ExitCode {
     }
 }
 
+/// Outcome of taking the engine-root serving lease.
+enum LeaseOutcome {
+    Held(std::fs::File),
+    /// The exclusive side is held: a postvec purge is deleting this root.
+    PurgeInProgress,
+    Unavailable(String),
+}
+
+/// Open (creating if needed) `<root>/.serving.lease` and take the shared
+/// side of its flock. The file name is a contract with postvec-cli's purge,
+/// which takes the exclusive side before sweeping the root.
+fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
+    use std::os::fd::AsRawFd;
+    let path = root.join(".serving.lease");
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+    {
+        Ok(file) => file,
+        // Read-only root: try the read side of an existing file.
+        Err(_) => match std::fs::OpenOptions::new().read(true).open(&path) {
+            Ok(file) => file,
+            Err(e) => return LeaseOutcome::Unavailable(e.to_string()),
+        },
+    };
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    if rc == 0 {
+        LeaseOutcome::Held(file)
+    } else {
+        let e = std::io::Error::last_os_error();
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            LeaseOutcome::PurgeInProgress
+        } else {
+            LeaseOutcome::Unavailable(e.to_string())
+        }
+    }
+}
+
 fn init_logging(default_filter: &str) {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .format_timestamp_millis()
@@ -170,6 +211,30 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         metrics::features()
     );
     log::info!("engine root: {}", settings.root.display());
+    // The serving lease: held (shared) for the whole serving lifetime. A
+    // `postvec uninstall --purge` takes the exclusive side before deleting
+    // anything under an engine root, so a server that is starting or serving
+    // blocks the sweep instead of racing its process scan. Best-effort on
+    // roots the server cannot write (read-only mounts): serving must not
+    // depend on it, but a held purge lock is always respected.
+    let _serving_lease = match serving_lease(&settings.root) {
+        LeaseOutcome::Held(file) => Some(file),
+        LeaseOutcome::PurgeInProgress => {
+            return Err(format!(
+                "a `postvec uninstall --purge` holds the serving lease of {}; refusing to \
+                 serve from a root that is being deleted",
+                settings.root.display()
+            ))
+        }
+        LeaseOutcome::Unavailable(reason) => {
+            log::warn!(
+                "cannot hold the serving lease of {} ({reason}); a concurrent postvec purge \
+                 on this host would not see this server through the lease",
+                settings.root.display()
+            );
+            None
+        }
+    };
     match &settings.config_path {
         Some(path) => log::info!("configuration file: {}", path.display()),
         None => log::info!("configuration file: none found; using flags, environment and defaults"),
