@@ -214,12 +214,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
             }
             let roots = purge_roots(&context, &snapshot.settings, &ownership, paths);
             let purge_plan = purge::plan(&roots, cli.timeout).await?;
-            for step in purge_plan.steps() {
-                plan.push(step);
-            }
-            for note in purge_plan.all_notes() {
-                output.note(&note);
-            }
+            // Execution order: the cluster is stopped before any file goes.
             if !purge_plan.remove.is_empty() {
                 plan.push(PlanStep::StopCluster {
                     unit: context
@@ -229,6 +224,12 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                         .map(|r| r.label.clone())
                         .unwrap_or_default(),
                 });
+            }
+            for step in purge_plan.steps() {
+                plan.push(step);
+            }
+            for note in purge_plan.all_notes() {
+                output.note(&note);
             }
             Some((roots, purge_plan))
         }
@@ -485,50 +486,80 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         // backend can load the library, while the files go. The offline
         // configuration is re-read once the postmaster is down, then the
         // cluster is started again and proven to serve.
-        let mut stopped = false;
-        let previous = context.server.clone();
+        // From the moment the stop command is issued until the recovery
+        // start below, NOTHING may early-return (`?`) out of this scope: a
+        // failure after the stop must still reach the start attempt, or a
+        // production database stays down. Every fallible step in between
+        // converts its error into `blocker`.
+        let mut stop_issued = false;
         let _interrupt = crate::proc::InterruptGuard::hold(
             "the cluster is stopped for the file sweep; finishing this step — press Ctrl-C \
              again to abort and leave it stopped",
         )?;
         if blocker.is_none() && !confirmed.remove.is_empty() {
             output.progress("postvec: stopping the cluster for the file sweep");
-            match context
-                .cluster
-                .stop_and_verify(&mut context.db, Duration::from_secs(45))
-                .await
-            {
-                Ok(()) => {
-                    stopped = true;
-                    journal.record("stopped the cluster for the file sweep");
-                    for guc in ["shared_preload_libraries", "postvec.database"] {
-                        let verdict = context
-                            .cluster
-                            .query_setting_offline(guc, cli.timeout)
-                            .await?;
-                        let problem = match verdict {
-                            crate::cluster::OfflineSetting::Unset => None,
-                            crate::cluster::OfflineSetting::Value(value) => {
-                                let hit = if guc == "postvec.database" {
-                                    !config::guc::parse_extension_list(&value).is_empty()
-                                } else {
-                                    config::guc::list_contains_postvec(
-                                        &config::guc::parse_library_list(&value),
-                                    )
-                                };
-                                hit.then(|| format!("{guc} = {value} in the offline configuration"))
+            // Issued from here on, whatever the command reports: even a
+            // spawn error cannot prove the service was untouched, and a
+            // start attempt on a running cluster is harmless.
+            stop_issued = true;
+            match context.cluster.stop_cluster(Duration::from_secs(45)).await {
+                Ok(()) => match context
+                    .cluster
+                    .verify_stopped(&mut context.db, Duration::from_secs(45))
+                    .await
+                {
+                    Ok(()) => {
+                        journal.record("stopped the cluster for the file sweep");
+                        for guc in ["shared_preload_libraries", "postvec.database"] {
+                            let verdict = match context
+                                .cluster
+                                .query_setting_offline(guc, cli.timeout)
+                                .await
+                            {
+                                Ok(verdict) => verdict,
+                                Err(error) => {
+                                    blocker = Some(format!(
+                                        "the offline configuration could not be read \
+                                         ({guc}): {error}"
+                                    ));
+                                    break;
+                                }
+                            };
+                            let problem = match verdict {
+                                crate::cluster::OfflineSetting::Unset => None,
+                                crate::cluster::OfflineSetting::Value(value) => {
+                                    let hit = if guc == "postvec.database" {
+                                        !config::guc::parse_extension_list(&value).is_empty()
+                                    } else {
+                                        config::guc::list_contains_postvec(
+                                            &config::guc::parse_library_list(&value),
+                                        )
+                                    };
+                                    hit.then(|| {
+                                        format!("{guc} = {value} in the offline configuration")
+                                    })
+                                }
+                                crate::cluster::OfflineSetting::Error(e)
+                                | crate::cluster::OfflineSetting::NotObservable(e) => {
+                                    Some(format!(
+                                        "the offline configuration could not be verified \
+                                         ({guc}): {e}"
+                                    ))
+                                }
+                            };
+                            if let Some(problem) = problem {
+                                blocker = Some(problem);
+                                break;
                             }
-                            crate::cluster::OfflineSetting::Error(e)
-                            | crate::cluster::OfflineSetting::NotObservable(e) => Some(format!(
-                                "the offline configuration could not be verified ({guc}): {e}"
-                            )),
-                        };
-                        if let Some(problem) = problem {
-                            blocker = Some(problem);
-                            break;
                         }
                     }
-                }
+                    Err(error) => {
+                        blocker = Some(format!(
+                            "the cluster did not provably stop (a stale postmaster.pid, or a \
+                             slow shutdown): {error}"
+                        ))
+                    }
+                },
                 Err(error) => {
                     blocker = Some(format!(
                         "the cluster could not be stopped for the sweep: {error}"
@@ -536,28 +567,58 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                 }
             }
         }
-        match blocker {
-            Some(reason) => journal.incomplete(format!("--purge was skipped: {reason}")),
-            None => {
-                output.progress("postvec: deleting postvec's files on this host");
-                purge::apply(confirmed, roots, cli.timeout, &mut journal).await;
-                for note in confirmed
-                    .notes
-                    .iter()
-                    .chain(confirmed.package_note().iter())
-                {
-                    messages.push(format!("postvec: {note}"));
+        if blocker.is_none() {
+            output.progress("postvec: deleting postvec's files on this host");
+            purge::apply(confirmed, roots, cli.timeout, &mut journal).await;
+            for note in confirmed
+                .notes
+                .iter()
+                .chain(confirmed.package_note().iter())
+            {
+                messages.push(format!("postvec: {note}"));
+            }
+        }
+        if stop_issued {
+            output.progress("postvec: starting the cluster again");
+            let outcome = match context.cluster.start_cluster(Duration::from_secs(45)).await {
+                Ok(()) => context
+                    .cluster
+                    .ensure_running(&mut context.db, Duration::from_secs(60))
+                    .await
+                    .map(Some),
+                Err(error) => Err(error),
+            };
+            match outcome {
+                Ok(server) => {
+                    if let Some(server) = server {
+                        context.server = server;
+                    }
+                    journal.record("started the cluster again");
+                }
+                Err(error) => {
+                    // The one outcome this command must never be quiet
+                    // about: the cluster may be down. Report the primary
+                    // failure AND the exact manual recovery command, and
+                    // fail the run.
+                    let hint = context
+                        .cluster
+                        .manual_start_command()
+                        .unwrap_or_else(|| "start the PostgreSQL service yourself".to_string());
+                    let failure = CliError::apply(format!(
+                        "the cluster was not started again after the file sweep: {error}"
+                    ))
+                    .with_fix(format!(
+                        "start it now: {hint}; then check the PostgreSQL log"
+                    ));
+                    messages.push(format!(
+                        "postvec: THE CLUSTER MAY BE STOPPED — start it now: {hint}"
+                    ));
+                    journal.failed("(cluster start)", &failure);
                 }
             }
         }
-        if stopped {
-            output.progress("postvec: starting the cluster again");
-            let server = context
-                .cluster
-                .start_and_verify(&mut context.db, &previous, Duration::from_secs(45))
-                .await?;
-            context.server = server;
-            journal.record("started the cluster again");
+        if let Some(reason) = blocker {
+            journal.incomplete(format!("--purge was skipped: {reason}"));
         }
     }
 

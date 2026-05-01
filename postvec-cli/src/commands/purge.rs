@@ -210,7 +210,9 @@ pub struct PurgePlan {
     pub remove: Vec<Candidate>,
     /// Package-owned paths, grouped by package: reported, never deleted.
     pub packaged: BTreeMap<String, Vec<PathBuf>>,
-    pub package_manager: Option<PackageManager>,
+    /// Which manager claimed each package — a hybrid host gets one removal
+    /// command per manager.
+    pub managers: BTreeMap<String, PackageManager>,
     /// Paths whose ownership could not be established or whose contents
     /// could not be fully inspected: retained, and the result is partial.
     pub unresolved: Vec<(PathBuf, String)>,
@@ -243,10 +245,24 @@ impl PurgePlan {
             return None;
         }
         let packages: Vec<String> = self.packaged.keys().cloned().collect();
-        let command = self
-            .package_manager
-            .map(|manager| manager.remove_command(&packages))
-            .unwrap_or_else(|| "remove them with the package manager".to_string());
+        let mut by_manager: BTreeMap<PackageManager, Vec<String>> = BTreeMap::new();
+        for package in &packages {
+            if let Some(manager) = self.managers.get(package) {
+                by_manager
+                    .entry(*manager)
+                    .or_default()
+                    .push(package.clone());
+            }
+        }
+        let commands: Vec<String> = by_manager
+            .into_iter()
+            .map(|(manager, names)| manager.remove_command(&names))
+            .collect();
+        let command = if commands.is_empty() {
+            "remove them with the package manager".to_string()
+        } else {
+            commands.join(" && ")
+        };
         Some(format!(
             "package-owned files were left in place ({}); remove the packages with: {command}",
             packages.join(", ")
@@ -382,20 +398,34 @@ pub fn safe_root(
 /// Refuse when another cluster on this host is still set up by this CLI: the
 /// engine root and the package files are shared, and that cluster would lose
 /// them.
-pub fn other_clusters_configured(state_dir: &Path, cluster_key: &str) -> Vec<String> {
+pub fn other_clusters_configured(
+    state_dir: &Path,
+    cluster_key: &str,
+) -> std::result::Result<Vec<String>, String> {
     let clusters = state_dir.join("clusters");
-    let Ok(entries) = fs::read_dir(&clusters) else {
-        return Vec::new();
+    let entries = match fs::read_dir(&clusters) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        // Fail closed: an unreadable state directory is not an empty one.
+        Err(e) => return Err(format!("cannot read {}: {e}", clusters.display())),
     };
     let own = format!("{cluster_key}.json");
-    let mut others: Vec<String> = entries
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.ends_with(".json") && *name != own)
-        .map(|name| name.trim_end_matches(".json").to_string())
-        .collect();
+    let mut others = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| format!("cannot read an entry of {}: {e}", clusters.display()))?;
+        let Ok(name) = entry.file_name().into_string() else {
+            return Err(format!(
+                "{} holds an entry with a non-UTF-8 name; cannot prove what it belongs to",
+                clusters.display()
+            ));
+        };
+        if name.ends_with(".json") && name != own {
+            others.push(name.trim_end_matches(".json").to_string());
+        }
+    }
     others.sort();
-    others
+    Ok(others)
 }
 
 /// What the other clusters on this host look like, from `pg_lsclusters`.
@@ -464,7 +494,9 @@ pub async fn other_clusters(own_id: &str, timeout: Duration) -> Result<OtherClus
 /// direction.
 pub fn server_process_running() -> bool {
     let Ok(entries) = fs::read_dir("/proc") else {
-        return false;
+        // Fail closed: if the process table cannot be read, assume a server
+        // may be running and leave the engine root alone.
+        return true;
     };
     entries
         .filter_map(|entry| entry.ok())
@@ -537,8 +569,11 @@ fn enumerate_leaves(path: &Path) -> (Vec<Leaf>, bool) {
 }
 
 fn candidate(path: PathBuf, what: String) -> Option<Candidate> {
-    let (leaves, complete) = enumerate_leaves(&path);
+    let (mut leaves, complete) = enumerate_leaves(&path);
     let identity = leaves.first()?.identity;
+    // Enumeration order is not a stable filesystem API; the plan comparison
+    // at apply time must not read reordering as change.
+    leaves.sort_by(|a, b| a.path.cmp(&b.path));
     Some(Candidate {
         path,
         what,
@@ -549,23 +584,25 @@ fn candidate(path: PathBuf, what: String) -> Option<Candidate> {
 }
 
 /// Does this directory hold ONNX Runtime? Any regular file whose name starts
-/// with `libonnxruntime`, at any depth (bounded).
-fn holds_onnxruntime(libs: &Path) -> bool {
-    fn walk(dir: &Path, depth: usize) -> bool {
+/// with `libonnxruntime`, at any depth (bounded). Tri-state: an entry that
+/// cannot be read makes the answer `Err` — the caller retains the directory
+/// as uncertain rather than guessing.
+fn onnxruntime_evidence(libs: &Path) -> std::result::Result<bool, String> {
+    fn walk(dir: &Path, depth: usize) -> std::result::Result<bool, String> {
         if depth > 6 {
-            return false;
+            return Ok(false);
         }
-        let Ok(entries) = fs::read_dir(dir) else {
-            return false;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
+        let entries =
+            fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| format!("cannot read an entry of {}: {e}", dir.display()))?;
             let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|e| format!("cannot inspect {}: {e}", path.display()))?;
             if metadata.is_dir() {
-                if walk(&path, depth + 1) {
-                    return true;
+                if walk(&path, depth + 1)? {
+                    return Ok(true);
                 }
             } else if metadata.is_file()
                 && path
@@ -573,10 +610,10 @@ fn holds_onnxruntime(libs: &Path) -> bool {
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.starts_with("libonnxruntime"))
             {
-                return true;
+                return Ok(true);
             }
         }
-        false
+        Ok(false)
     }
     walk(libs, 0)
 }
@@ -668,18 +705,35 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
             }
             let libs = root.join("libs");
             if let Ok(metadata) = fs::symlink_metadata(&libs) {
-                if metadata.is_dir() && holds_onnxruntime(&libs) {
-                    candidates.extend(candidate(libs, "ONNX Runtime libraries".to_string()));
-                } else {
+                if !metadata.is_dir() {
                     notes.push(format!(
-                        "{} does not hold ONNX Runtime and was left alone",
+                        "{} is not a directory and was left alone",
                         libs.display()
                     ));
+                } else {
+                    match onnxruntime_evidence(&libs) {
+                        Ok(true) => {
+                            candidates.extend(candidate(libs, "ONNX Runtime libraries".to_string()))
+                        }
+                        Ok(false) => notes.push(format!(
+                            "{} does not hold ONNX Runtime and was left alone",
+                            libs.display()
+                        )),
+                        Err(problem) => uncertain.push(format!(
+                            "{} could not be fully inspected ({problem}) and was left alone",
+                            libs.display()
+                        )),
+                    }
                 }
             }
             match fs::read_dir(root) {
                 Ok(entries) => {
-                    for entry in entries.filter_map(|e| e.ok()) {
+                    for entry in entries {
+                        let Ok(entry) = entry else {
+                            uncertain
+                                .push(format!("an entry of {} could not be read", root.display()));
+                            continue;
+                        };
                         let name = entry.file_name().to_string_lossy().to_string();
                         if name == "models" || name == "libs" {
                             continue;
@@ -727,7 +781,14 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                     }
                     match fs::read_dir(dir) {
                         Ok(entries) => {
-                            for entry in entries.filter_map(|e| e.ok()) {
+                            for entry in entries {
+                                let Ok(entry) = entry else {
+                                    uncertain.push(format!(
+                                        "an entry of {} could not be read",
+                                        dir.display()
+                                    ));
+                                    continue;
+                                };
                                 let path = entry.path();
                                 if path.file_name().is_some_and(|n| n == PROVIDER_LOCK_FILE) {
                                     provider_lock = Some(path);
@@ -791,22 +852,38 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
             "extension control file".to_string(),
         ),
     ];
-    if let Ok(entries) = fs::read_dir(roots.sharedir.join("extension")) {
-        let mut scripts: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.file_name()
+    let extension_dir = roots.sharedir.join("extension");
+    match fs::read_dir(&extension_dir) {
+        Ok(entries) => {
+            let mut scripts: Vec<PathBuf> = Vec::new();
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    uncertain.push(format!(
+                        "an entry of {} could not be read; extension SQL scripts may be missed",
+                        extension_dir.display()
+                    ));
+                    continue;
+                };
+                let p = entry.path();
+                if p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.starts_with("postvec--") && n.ends_with(".sql"))
-            })
-            .collect();
-        scripts.sort();
-        extension_files.extend(
-            scripts
-                .into_iter()
-                .map(|p| (p, "extension SQL script".to_string())),
-        );
+                {
+                    scripts.push(p);
+                }
+            }
+            scripts.sort();
+            extension_files.extend(
+                scripts
+                    .into_iter()
+                    .map(|p| (p, "extension SQL script".to_string())),
+            );
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => uncertain.push(format!(
+            "cannot read {}: {e}; extension SQL scripts may be missed",
+            extension_dir.display()
+        )),
     }
     let present: Vec<(PathBuf, String)> = extension_files
         .into_iter()
@@ -945,7 +1022,7 @@ pub fn resolve(
         }
         if !packages.is_empty() {
             for (manager, package) in packages {
-                plan.package_manager.get_or_insert(manager);
+                plan.managers.insert(package.clone(), manager);
                 plan.packaged
                     .entry(package)
                     .or_default()
@@ -963,7 +1040,7 @@ pub fn resolve(
     if let Some(binary) = cli_binary {
         match lookup(binary) {
             Owner::Package(manager, package) => {
-                plan.package_manager.get_or_insert(manager);
+                plan.managers.insert(package.clone(), manager);
                 plan.packaged
                     .entry(package)
                     .or_default()
@@ -1124,6 +1201,11 @@ pub fn parse_owners(
 pub async fn plan(roots: &PurgeRoots, timeout: Duration) -> Result<PurgePlan> {
     let mut roots = roots.clone();
     let mut blockers = other_clusters_configured(&roots.state_dir, &roots.cluster_key)
+        .map_err(|problem| {
+            CliError::precondition(format!(
+                "--purge refused: the CLI state directory could not be examined ({problem})"
+            ))
+        })?
         .into_iter()
         .map(|id| format!("{id} (set up by this CLI)"))
         .collect::<Vec<_>>();
@@ -1169,21 +1251,172 @@ pub async fn plan(roots: &PurgeRoots, timeout: Duration) -> Result<PurgePlan> {
     Ok(resolve(gathered, roots.cli_binary.as_deref(), &owners))
 }
 
-/// Delete one candidate leaf by leaf: files against their recorded identity,
-/// directories with `rmdir` deepest-first — never recursively. Anything that
-/// does not match, or a directory that is not empty (a child appeared after
-/// classification), is left and reported.
+/// Descriptor-relative filesystem primitives: after one absolute
+/// `O_NOFOLLOW` open of the candidate's parent, every descent, stat and
+/// unlink is `*at()` against a held directory descriptor — a symlink swapped
+/// in anywhere along the path cannot redirect the operation. The residual
+/// window is a same-directory rename between `fstatat` and `unlinkat`, an
+/// act only a writer of that (ownership-verified) directory can perform.
+mod at {
+    use std::ffi::{CString, OsStr};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    fn cstr(name: &OsStr) -> std::io::Result<CString> {
+        CString::new(name.as_bytes()).map_err(|_| std::io::Error::other("NUL in name"))
+    }
+
+    pub fn open_dir(path: &Path) -> std::io::Result<OwnedFd> {
+        let c = cstr(path.as_os_str())?;
+        let fd = unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    pub fn open_dir_at(parent: &OwnedFd, name: &OsStr) -> std::io::Result<OwnedFd> {
+        let c = cstr(name)?;
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    /// `(dev, ino, is_dir)` of `name` below `parent`, never following a
+    /// symlink.
+    pub fn identity_at(parent: &OwnedFd, name: &OsStr) -> std::io::Result<((u64, u64), bool)> {
+        let c = cstr(name)?;
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                c.as_ptr(),
+                &mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((
+            (st.st_dev, st.st_ino),
+            (st.st_mode & libc::S_IFMT) == libc::S_IFDIR,
+        ))
+    }
+
+    pub fn identity_of_fd(fd: &OwnedFd) -> std::io::Result<(u64, u64)> {
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::fstat(fd.as_raw_fd(), &mut st) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((st.st_dev, st.st_ino))
+    }
+
+    pub fn unlink_at(parent: &OwnedFd, name: &OsStr, dir: bool) -> std::io::Result<()> {
+        let c = cstr(name)?;
+        let flags = if dir { libc::AT_REMOVEDIR } else { 0 };
+        let rc = unsafe { libc::unlinkat(parent.as_raw_fd(), c.as_ptr(), flags) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+/// Delete one candidate leaf by leaf, descriptor-relative: one absolute
+/// `O_NOFOLLOW` open of the candidate's parent, then `openat`/`fstatat`/
+/// `unlinkat` all the way down. Files go only when their recorded identity
+/// still matches; directories go with `rmdir` deepest-first — never
+/// recursively — so a child that appeared after classification keeps its
+/// directory. Anything that does not match is left and reported.
 pub fn delete_candidate(candidate: &Candidate) -> Vec<String> {
     let mut problems = Vec::new();
-    let mut dirs: Vec<&Leaf> = Vec::new();
-    for leaf in &candidate.leaves {
-        if leaf.is_dir {
-            dirs.push(leaf);
-            continue;
+    let (Some(parent_path), Some(_)) = (candidate.path.parent(), candidate.path.file_name()) else {
+        return vec![format!(
+            "{}: has no parent directory",
+            candidate.path.display()
+        )];
+    };
+    let parent_fd = match at::open_dir(parent_path) {
+        Ok(fd) => fd,
+        Err(error) => return vec![format!("cannot open {}: {error}", parent_path.display())],
+    };
+    // Open every directory of the tree top-down, verifying each opened
+    // descriptor against the identity recorded at classification.
+    let mut dir_fds: BTreeMap<&Path, std::os::fd::OwnedFd> = BTreeMap::new();
+    let mut dirs: Vec<&Leaf> = candidate.leaves.iter().filter(|l| l.is_dir).collect();
+    dirs.sort_by_key(|l| l.path.components().count());
+    let fd_for = |dir_fds: &BTreeMap<&Path, std::os::fd::OwnedFd>,
+                  parent_fd: &std::os::fd::OwnedFd,
+                  leaf_path: &Path|
+     -> Option<*const std::os::fd::OwnedFd> {
+        if leaf_path == candidate.path {
+            return Some(parent_fd as *const _);
         }
-        match fs::symlink_metadata(&leaf.path) {
-            Ok(meta) if identity_of(&meta) == leaf.identity => {
-                if let Err(error) = fs::remove_file(&leaf.path) {
+        leaf_path
+            .parent()
+            .and_then(|p| dir_fds.get(p))
+            .map(|fd| fd as *const _)
+    };
+    for leaf in &dirs {
+        let Some(fd_ptr) = fd_for(&dir_fds, &parent_fd, &leaf.path) else {
+            problems.push(format!(
+                "{}: its parent directory could not be opened; not deleted",
+                leaf.path.display()
+            ));
+            continue;
+        };
+        // SAFETY: the pointer targets either `parent_fd` or an entry of
+        // `dir_fds`; both live for the whole function and `dir_fds` is
+        // append-only (BTreeMap values are stable under insertion of other
+        // keys? they are not — so read through it immediately).
+        let base = unsafe { &*fd_ptr };
+        let name = leaf.path.file_name().unwrap_or_default();
+        match at::open_dir_at(base, name) {
+            Ok(fd) => match at::identity_of_fd(&fd) {
+                Ok(identity) if identity == leaf.identity => {
+                    dir_fds.insert(leaf.path.as_path(), fd);
+                }
+                Ok(_) => problems.push(format!(
+                    "{}: changed since it was classified; not deleted",
+                    leaf.path.display()
+                )),
+                Err(error) => problems.push(format!("{}: {error}", leaf.path.display())),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => problems.push(format!("{}: {error}", leaf.path.display())),
+        }
+    }
+    // Files: verify identity below the held parent descriptor, then unlink
+    // through the same descriptor.
+    for leaf in candidate.leaves.iter().filter(|l| !l.is_dir) {
+        let Some(fd_ptr) = fd_for(&dir_fds, &parent_fd, &leaf.path) else {
+            problems.push(format!(
+                "{}: its parent directory was not opened; not deleted",
+                leaf.path.display()
+            ));
+            continue;
+        };
+        let base = unsafe { &*fd_ptr };
+        let name = leaf.path.file_name().unwrap_or_default();
+        match at::identity_at(base, name) {
+            Ok((identity, false)) if identity == leaf.identity => {
+                if let Err(error) = at::unlink_at(base, name, false) {
                     problems.push(format!("{}: {error}", leaf.path.display()));
                 }
             }
@@ -1195,14 +1428,26 @@ pub fn delete_candidate(candidate: &Candidate) -> Vec<String> {
             Err(error) => problems.push(format!("{}: {error}", leaf.path.display())),
         }
     }
-    dirs.sort_by_key(|leaf| std::cmp::Reverse(leaf.path.components().count()));
-    for leaf in dirs {
-        match fs::symlink_metadata(&leaf.path) {
-            Ok(meta) if identity_of(&meta) == leaf.identity => {
-                if let Err(error) = fs::remove_dir(&leaf.path) {
+    // Directories deepest-first, through their parent's descriptor. `rmdir`
+    // refuses a directory holding anything unclassified.
+    let mut deepest = dirs.clone();
+    deepest.sort_by_key(|l| std::cmp::Reverse(l.path.components().count()));
+    for leaf in deepest {
+        let Some(fd_ptr) = fd_for(&dir_fds, &parent_fd, &leaf.path) else {
+            continue; // already reported on the way down
+        };
+        let base = unsafe { &*fd_ptr };
+        let name = leaf.path.file_name().unwrap_or_default();
+        // The open descriptor for this directory must not pin it: drop it
+        // before the rmdir (Linux allows removing an open directory, but
+        // being tidy costs nothing).
+        dir_fds.remove(leaf.path.as_path());
+        match at::identity_at(base, name) {
+            Ok((identity, true)) if identity == leaf.identity => {
+                if let Err(error) = at::unlink_at(base, name, true) {
                     problems.push(format!(
-                        "{}: {error} (a child appeared after it was classified, or it could not \
-                         be removed)",
+                        "{}: {error} (a child appeared after it was classified, or it could \
+                         not be removed)",
                         leaf.path.display()
                     ));
                 }
@@ -1665,6 +1910,24 @@ mod tests {
     }
 
     /// A leaf replaced after classification (new inode) is not deleted.
+    /// A directory component swapped for a symlink after classification is
+    /// refused by the `O_NOFOLLOW` descent; the link target survives.
+    #[test]
+    fn a_symlinked_component_is_never_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("m");
+        touch(&root.join("sub/f"));
+        let planned = candidate(root.clone(), "model".into()).unwrap();
+        let outside = dir.path().join("outside");
+        touch(&outside.join("f"));
+        fs::remove_file(root.join("sub/f")).unwrap();
+        fs::remove_dir(root.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("sub")).unwrap();
+        let problems = delete_candidate(&planned);
+        assert!(outside.join("f").exists(), "the link target was followed");
+        assert!(!problems.is_empty(), "the swap must be reported");
+    }
+
     #[test]
     fn a_replaced_leaf_is_not_deleted() {
         let dir = tempfile::tempdir().unwrap();
@@ -1855,7 +2118,7 @@ mod tests {
         let r = roots(dir.path());
         touch(&r.state_dir.join("clusters/17-main.json"));
         assert_eq!(
-            other_clusters_configured(&r.state_dir, "18-main"),
+            other_clusters_configured(&r.state_dir, "18-main").unwrap(),
             ["17-main".to_string()]
         );
         let error = tokio::runtime::Runtime::new()

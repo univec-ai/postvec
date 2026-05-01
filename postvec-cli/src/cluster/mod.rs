@@ -244,9 +244,11 @@ impl Cluster {
         self.wait_for_new_postmaster(db, previous, deadline).await
     }
 
-    /// Stop the cluster and prove it is down: the server stops answering
-    /// and, when the data directory is known, `postmaster.pid` is gone.
-    pub async fn stop_and_verify(&self, db: &mut Db, deadline: Duration) -> Result<()> {
+    /// Issue the service stop command. Verification is separate
+    /// ([`Cluster::verify_stopped`]) so a caller can tell "the command was
+    /// issued and may have taken effect" from "the down state is proven" —
+    /// once issued, a start attempt is mandatory on every path.
+    pub async fn stop_cluster(&self, deadline: Duration) -> Result<()> {
         let restart = self.restart.as_ref().ok_or_else(|| {
             CliError::precondition(format!(
                 "no service command is known for cluster {}",
@@ -256,6 +258,12 @@ impl Cluster {
         proc::run_ok(&restart.action("stop"), deadline)
             .await
             .map_err(|e| CliError::apply(format!("stopping {} failed: {e}", restart.label)))?;
+        Ok(())
+    }
+
+    /// Prove the cluster is down: the server stops answering and, when the
+    /// data directory is known, `postmaster.pid` is gone.
+    pub async fn verify_stopped(&self, db: &mut Db, deadline: Duration) -> Result<()> {
         let started = Instant::now();
         let mut backoff = Duration::from_millis(200);
         while started.elapsed() < deadline {
@@ -280,13 +288,8 @@ impl Cluster {
         .with_fix("check the service status and the PostgreSQL log"))
     }
 
-    /// Start the cluster and prove a new postmaster is serving.
-    pub async fn start_and_verify(
-        &self,
-        db: &mut Db,
-        previous: &ServerFacts,
-        deadline: Duration,
-    ) -> Result<ServerFacts> {
+    /// Issue the service start command.
+    pub async fn start_cluster(&self, deadline: Duration) -> Result<()> {
         let restart = self.restart.as_ref().ok_or_else(|| {
             CliError::precondition(format!(
                 "no service command is known for cluster {}",
@@ -296,7 +299,49 @@ impl Cluster {
         proc::run_ok(&restart.action("start"), deadline)
             .await
             .map_err(|e| CliError::apply(format!("starting {} failed: {e}", restart.label)))?;
-        self.wait_for_new_postmaster(db, previous, deadline).await
+        Ok(())
+    }
+
+    /// Prove the cluster answers. Used after a recovery start, where "a new
+    /// postmaster" would be the wrong question: if the stop never took
+    /// effect, the old postmaster answering is exactly the desired state.
+    pub async fn ensure_running(&self, db: &mut Db, deadline: Duration) -> Result<ServerFacts> {
+        let started = Instant::now();
+        let mut backoff = Duration::from_millis(200);
+        let mut last_error = None;
+        while started.elapsed() < deadline {
+            let _ = db.reconnect().await;
+            match db.server_facts().await {
+                Ok(facts) => return Ok(facts),
+                Err(e) => last_error = Some(e.to_string()),
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(Duration::from_secs(2));
+        }
+        Err(CliError::apply(format!(
+            "cluster {} is not answering after {}: {}",
+            self.identity.id,
+            humantime::format_duration(deadline),
+            last_error.unwrap_or_else(|| "no further detail".to_string())
+        )))
+    }
+
+    /// The exact command an operator runs to start this cluster by hand.
+    pub fn manual_start_command(&self) -> Option<String> {
+        self.restart.as_ref().map(|restart| {
+            let args: Vec<String> = restart
+                .args
+                .iter()
+                .map(|arg| {
+                    if arg == "restart" {
+                        "start".to_string()
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect();
+            format!("sudo {} {}", restart.program.display(), args.join(" "))
+        })
     }
 
     /// Poll until a postmaster started after `previous` answers.
