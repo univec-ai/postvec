@@ -179,6 +179,7 @@ fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
 /// `/run/lock/postvec`.
 fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
     use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
     let canonical = match root.canonicalize() {
         Ok(canonical) => canonical,
         Err(e) => {
@@ -196,15 +197,37 @@ fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
             }
         }
     }
-    let file = match std::fs::OpenOptions::new()
+    // A shared flock needs only a readable descriptor. The usual case after
+    // a `postvec uninstall --purge` (or any root-driven CLI use) is a lease
+    // file that already exists as root:root 0644: this unprivileged process
+    // cannot open it for writing and MUST NOT need to — it falls back to
+    // read-only. Creation is attempted only when the file does not exist
+    // yet; failure to create a missing file stays fail-closed. O_NOFOLLOW
+    // on both opens: a planted symlink at the lease path is never followed.
+    let read_write = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&path)
-    {
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path);
+    let file = match read_write {
         Ok(file) => file,
-        Err(e) => return LeaseOutcome::Unavailable(format!("cannot open {}: {e}", path.display())),
+        Err(create_error) => {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(read_error) => {
+                    return LeaseOutcome::Unavailable(format!(
+                        "cannot open {} (read-write: {create_error}; read-only: {read_error})",
+                        path.display()
+                    ))
+                }
+            }
+        }
     };
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
     if rc == 0 {
@@ -543,6 +566,53 @@ async fn wait_for_signal() -> String {
 #[cfg(test)]
 mod serving_lease_tests {
     use super::*;
+
+    /// The lease of a root the CLI (running as root) touched first is a
+    /// root-owned 0644 file this service account cannot write. The shared
+    /// side must fall back to a read-only descriptor — flock does not need
+    /// write — or the shipped unit bricks itself in a 5-second restart loop
+    /// after every purge or reboot-then-purge. Simulated single-uid: an
+    /// existing lease file with no write permission.
+    #[test]
+    fn the_shared_side_falls_back_to_read_only_on_an_unwritable_lease() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root writes anything; the fallback path is unreachable
+        }
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        let root = dir.path().canonicalize().unwrap();
+        let path = serving_lease_path(&root);
+        if std::fs::create_dir_all(path.parent().unwrap()).is_err() {
+            return; // no /run/lock on this host; nothing to prove
+        }
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        match serving_lease(&root) {
+            LeaseOutcome::Held(_) => {}
+            other => panic!(
+                "an unwritable existing lease must be held read-only, got {}",
+                match other {
+                    LeaseOutcome::Held(_) => unreachable!(),
+                    LeaseOutcome::PurgeInProgress => "PurgeInProgress".to_string(),
+                    LeaseOutcome::Unavailable(reason) => format!("Unavailable({reason})"),
+                }
+            ),
+        }
+        // And a purge holding the exclusive side still refuses us.
+        use std::os::fd::AsRawFd;
+        let purge_side = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(purge_side.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        assert!(matches!(
+            serving_lease(&root),
+            LeaseOutcome::PurgeInProgress
+        ));
+    }
 
     /// The cross-crate contract with postvec-cli
     /// (`commands/purge.rs::serving_lease_path`): both pin this literal.

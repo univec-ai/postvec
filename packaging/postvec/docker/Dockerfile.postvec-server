@@ -126,7 +126,7 @@ RUN set -eux; \
     # The serving-lease directory (see postvec-server.service): the server
     # fails closed without it. If your runtime mounts a fresh tmpfs over
     # /run, recreate it writable by the service user.
-    install -d -m 0775 -o root -g postvec-server /run/lock/postvec
+    install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 USER postvec-server
 
 # 22222 discovery (HTTPS), 33333 gRPC (plaintext), 11111 gossip. The admin port

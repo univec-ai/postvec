@@ -2204,6 +2204,15 @@ mod tests {
         drop(held);
         assert!(acquire_serving_lease(&root).is_ok());
         assert!(lease_path.exists(), "the lease inode is never unlinked");
+
+        // The exclusive side needs a writable open (HostLock): a lease this
+        // account cannot write — root-owned on a real host, chmod-simulated
+        // here — is a refusal, never a bypass.
+        if unsafe { libc::geteuid() } != 0 {
+            fs::set_permissions(&lease_path, fs::Permissions::from_mode(0o444)).unwrap();
+            assert!(acquire_serving_lease(&root).is_err());
+            fs::set_permissions(&lease_path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
     }
 
     #[test]
