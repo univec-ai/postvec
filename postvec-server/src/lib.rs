@@ -147,6 +147,7 @@ fn run_serve(args: ServeArgs) -> ExitCode {
 
 /// Outcome of taking the engine-root serving lease.
 enum LeaseOutcome {
+    /// Shared flock held; keep the file open for the serving lifetime.
     Held(std::fs::File),
     /// The exclusive side is held: a postvec purge is deleting this root.
     PurgeInProgress,
@@ -156,9 +157,45 @@ enum LeaseOutcome {
 /// Open (creating if needed) `<root>/.serving.lease` and take the shared
 /// side of its flock. The file name is a contract with postvec-cli's purge,
 /// which takes the exclusive side before sweeping the root.
+/// The lease pathname: a stable inode under `/run/lock/postvec`, named by
+/// the hex of the canonical engine-root path, never unlinked. This is a
+/// contract with postvec-cli's purge (`commands/purge.rs::serving_lease_path`);
+/// both crates pin the same example literal in their tests.
+fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
+    let hex: String = canonical_root
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    std::path::PathBuf::from(format!("/run/lock/postvec/engine-{hex}.lease"))
+}
+
+/// Take the shared side of the engine-root serving lease. **Fail-closed**:
+/// any failure — the directory missing or unwritable, the flock refused —
+/// prevents serving, because a server without the lease is invisible to a
+/// concurrent `postvec uninstall --purge` on the same host. The shipped
+/// systemd unit and the container image both provide a writable
+/// `/run/lock/postvec`.
 fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
     use std::os::fd::AsRawFd;
-    let path = root.join(".serving.lease");
+    let canonical = match root.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(e) => {
+            return LeaseOutcome::Unavailable(format!("cannot canonicalize the engine root: {e}"))
+        }
+    };
+    let path = serving_lease_path(&canonical);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            if e.kind() != std::io::ErrorKind::AlreadyExists && !parent.is_dir() {
+                return LeaseOutcome::Unavailable(format!(
+                    "cannot create {}: {e}",
+                    parent.display()
+                ));
+            }
+        }
+    }
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -167,11 +204,7 @@ fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
         .open(&path)
     {
         Ok(file) => file,
-        // Read-only root: try the read side of an existing file.
-        Err(_) => match std::fs::OpenOptions::new().read(true).open(&path) {
-            Ok(file) => file,
-            Err(e) => return LeaseOutcome::Unavailable(e.to_string()),
-        },
+        Err(e) => return LeaseOutcome::Unavailable(format!("cannot open {}: {e}", path.display())),
     };
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
     if rc == 0 {
@@ -181,7 +214,7 @@ fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
         if e.kind() == std::io::ErrorKind::WouldBlock {
             LeaseOutcome::PurgeInProgress
         } else {
-            LeaseOutcome::Unavailable(e.to_string())
+            LeaseOutcome::Unavailable(format!("cannot lock {}: {e}", path.display()))
         }
     }
 }
@@ -217,8 +250,10 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // blocks the sweep instead of racing its process scan. Best-effort on
     // roots the server cannot write (read-only mounts): serving must not
     // depend on it, but a held purge lock is always respected.
+    // Fail-closed: a server that cannot hold the lease is invisible to a
+    // concurrent `postvec uninstall --purge` and must not serve.
     let _serving_lease = match serving_lease(&settings.root) {
-        LeaseOutcome::Held(file) => Some(file),
+        LeaseOutcome::Held(file) => file,
         LeaseOutcome::PurgeInProgress => {
             return Err(format!(
                 "a `postvec uninstall --purge` holds the serving lease of {}; refusing to \
@@ -227,12 +262,13 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
             ))
         }
         LeaseOutcome::Unavailable(reason) => {
-            log::warn!(
-                "cannot hold the serving lease of {} ({reason}); a concurrent postvec purge \
-                 on this host would not see this server through the lease",
+            return Err(format!(
+                "cannot hold the serving lease of {}: {reason}. /run/lock/postvec must exist \
+                 and be writable by this process (the shipped systemd unit and container \
+                 image provide it); without the lease a concurrent postvec purge cannot see \
+                 this server",
                 settings.root.display()
-            );
-            None
+            ))
         }
     };
     match &settings.config_path {
@@ -501,5 +537,20 @@ async fn wait_for_signal() -> String {
     {
         let _ = tokio::signal::ctrl_c().await;
         "interrupt".to_string()
+    }
+}
+
+#[cfg(test)]
+mod serving_lease_tests {
+    use super::*;
+
+    /// The cross-crate contract with postvec-cli
+    /// (`commands/purge.rs::serving_lease_path`): both pin this literal.
+    #[test]
+    fn the_lease_path_derivation_matches_the_cli() {
+        assert_eq!(
+            serving_lease_path(std::path::Path::new("/opt/postvec")),
+            std::path::PathBuf::from("/run/lock/postvec/engine-2f6f70742f706f7374766563.lease")
+        );
     }
 }

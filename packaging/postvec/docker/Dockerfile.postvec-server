@@ -122,7 +122,11 @@ COPY payload/ /opt/postvec/
 RUN set -eux; \
     useradd --system --create-home --home-dir /var/lib/postvec-server \
         --shell /usr/sbin/nologin postvec-server; \
-    chown -R postvec-server:postvec-server /opt/postvec
+    chown -R postvec-server:postvec-server /opt/postvec; \
+    # The serving-lease directory (see postvec-server.service): the server
+    # fails closed without it. If your runtime mounts a fresh tmpfs over
+    # /run, recreate it writable by the service user.
+    install -d -m 0775 -o root -g postvec-server /run/lock/postvec
 USER postvec-server
 
 # 22222 discovery (HTTPS), 33333 gRPC (plaintext), 11111 gossip. The admin port

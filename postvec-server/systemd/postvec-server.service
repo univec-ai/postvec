@@ -55,6 +55,15 @@ SystemCallErrorNumber=EPERM
 # the root to ReadWritePaths) only if you have a reason.
 ReadOnlyPaths=/var/lib/postvec-server /etc/postvec-server
 
+# The serving lease: a stable flock inode under /run/lock/postvec, held shared
+# for the serving lifetime so `postvec uninstall --purge` (which takes the
+# exclusive side) can never sweep an engine root from under a running or
+# starting server. The privileged pre-start creates the directory writable by
+# this service's group; ReadWritePaths lifts ProtectSystem=strict for it. The
+# server FAILS TO START without the lease — that is deliberate.
+ExecStartPre=+/usr/bin/install -d -m 0775 -o root -g postvec-server /run/lock/postvec
+ReadWritePaths=/run/lock/postvec
+
 # An ONNX session maps model weights and runs a thread pool per session; the
 # ceiling that matters is --max-inflight and --max-resident-models, not a
 # cgroup. Set MemoryMax here if you would rather the kernel enforce it, but

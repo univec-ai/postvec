@@ -282,8 +282,9 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     let mut journal = ApplyJournal::default();
     let mut messages = Vec::new();
     // A host-level fatal condition (the cluster may be down) outranks any
-    // amount of successful database work: it turns the whole run into exit 1.
-    let mut host_fatal: Option<CliError> = None;
+    // amount of successful database work: it forces the run's ONE result
+    // envelope to exit 1.
+    let mut host_fatal = false;
     for name in &uninspectable {
         journal.incomplete(format!(
             "{name} could not be inspected; postvec may still be installed there"
@@ -635,7 +636,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                         "postvec: THE CLUSTER MAY BE STOPPED — start it now: {hint}"
                     ));
                     journal.failed("(cluster start)", &failure);
-                    host_fatal = Some(failure);
+                    host_fatal = true;
                 }
             }
         }
@@ -644,16 +645,17 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         }
     }
 
-    let result = result_for(&context, plan, journal, started, started_at, messages, None);
+    let mut result = result_for(&context, plan, journal, started, started_at, messages, None);
+    // The journal grades a failed recovery beside successful databases as
+    // partial (exit 3); a possibly-stopped cluster must be exit 1 — decided
+    // BEFORE the one result envelope is emitted, so human and JSON output
+    // carry the same exit_code and nothing prints twice.
+    if host_fatal {
+        result.exit_code = Exit::Failure.code();
+    }
     output.show_result(&result)?;
     context.close().await;
-    // The journal grades a failed recovery beside successful databases as
-    // partial (exit 3); a possibly-stopped cluster must be exit 1.
-    if let Some(failure) = host_fatal {
-        return Err(failure);
-    }
-    let exit = Exit::from_code(result.exit_code);
-    Ok(exit)
+    Ok(Exit::from_code(result.exit_code))
 }
 
 /// `--all`: the databases to remove postvec from, with their facts, plus the

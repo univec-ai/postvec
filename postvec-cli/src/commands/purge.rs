@@ -61,17 +61,33 @@ const DESCRIPTOR_FILE: &str = "ninference.hub.json";
 const AUTH_FILE: &str = "auth.json";
 /// The providers directory's lock file (`provider::lock_provider_dir`).
 const PROVIDER_LOCK_FILE: &str = ".lock";
-/// The engine-root serving lease. `postvec-server` holds the shared side for
-/// its whole serving lifetime; the purge sweep holds the exclusive side, so
-/// a server starting after the process scan blocks the sweep (or is blocked
-/// by it) instead of racing it.
-pub const SERVING_LEASE_FILE: &str = ".serving.lease";
+/// The engine-root serving lease: a **stable inode** under
+/// `/run/lock/postvec`, named by the hex of the canonical root path, and
+/// **never unlinked** — a lock file inside a tree the sweep is about to
+/// `rmdir`, or one that gets unlinked, silently forks the lock domain the
+/// moment someone else creates a new inode at the pathname. `postvec-server`
+/// holds the shared side for its whole serving lifetime (fail-closed at its
+/// startup); the sweep holds the exclusive side, so a server starting after
+/// the process scan blocks the sweep, or is blocked by it, never races it.
+/// The derivation is a cross-crate contract with
+/// `postvec-server/src/lib.rs::serving_lease_path` — both carry a literal
+/// test pinning the same example.
+pub fn serving_lease_path(canonical_root: &Path) -> PathBuf {
+    let hex: String = canonical_root
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    PathBuf::from(format!("/run/lock/postvec/engine-{hex}.lease"))
+}
 
 /// The exclusive side of the serving lease. Refused while any
 /// `postvec-server` (new enough to take the lease) is serving this root.
-pub fn acquire_serving_lease(root: &Path) -> Result<owned::HostLock> {
+/// The root must already be canonical (`safe_root` proved it).
+pub fn acquire_serving_lease(canonical_root: &Path) -> Result<owned::HostLock> {
     owned::HostLock::acquire_labeled(
-        &root.join(SERVING_LEASE_FILE),
+        &serving_lease_path(canonical_root),
         "this engine root (a postvec-server serving lease)",
     )
 }
@@ -235,10 +251,11 @@ pub struct PurgePlan {
     pub uncertain: Vec<String>,
     /// Directories to remove afterwards if they are empty, deepest first.
     pub prune_dirs: Vec<PathBuf>,
-    /// Lock and lease files, unlinked while their locks are still held.
+    /// Lock files, unlinked while their locks are still held. The serving
+    /// lease is NOT here: it is a stable inode under /run/lock/postvec and
+    /// is never unlinked.
     pub model_lock: Option<PathBuf>,
     pub provider_lock: Option<PathBuf>,
-    pub serving_lease: Option<PathBuf>,
     /// Informational: what was left alone by design and why.
     pub notes: Vec<String>,
 }
@@ -634,7 +651,6 @@ pub struct Gathered {
     pub prune: Vec<PathBuf>,
     pub model_lock: Option<PathBuf>,
     pub provider_lock: Option<PathBuf>,
-    pub serving_lease: Option<PathBuf>,
     /// Designed retention: informational.
     pub notes: Vec<String>,
     /// Safety uncertainty (an unreadable directory): the result is partial.
@@ -649,7 +665,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
     let mut prune = Vec::new();
     let mut model_lock = None;
     let mut provider_lock = None;
-    let mut serving_lease = None;
     let mut notes = roots.excluded.clone();
     let mut uncertain = Vec::new();
 
@@ -748,12 +763,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                         };
                         let name = entry.file_name().to_string_lossy().to_string();
                         if name == "models" || name == "libs" {
-                            continue;
-                        }
-                        if name == SERVING_LEASE_FILE {
-                            // postvec-server's lifetime lease; held
-                            // exclusively by apply, unlinked while held.
-                            serving_lease = Some(entry.path());
                             continue;
                         }
                         notes.push(format!(
@@ -929,7 +938,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         prune,
         model_lock,
         provider_lock,
-        serving_lease,
         notes,
         uncertain,
     }
@@ -1005,7 +1013,6 @@ pub fn resolve(
         prune_dirs: gathered.prune,
         model_lock: gathered.model_lock,
         provider_lock: gathered.provider_lock,
-        serving_lease: gathered.serving_lease,
         notes: gathered.notes,
         uncertain: gathered.uncertain,
         ..PurgePlan::default()
@@ -1501,17 +1508,25 @@ pub async fn apply(
     // holds its shared side for its whole serving lifetime, so a server
     // starting after the /proc scan blocks here instead of racing the sweep.
     let serving_lease = match &roots.engine_root {
-        Some(root) if root.is_dir() => match acquire_serving_lease(root) {
-            Ok(lease) => Some(lease),
-            Err(error) => {
-                journal.incomplete(format!(
-                    "the engine root {} was left alone: {error}",
-                    root.display()
-                ));
-                roots.engine_root = None;
-                None
+        Some(root) if root.is_dir() => {
+            // safe_root proved the root canonical; re-canonicalize anyway so
+            // the lease name can never be derived from a symlinked spelling.
+            match root
+                .canonicalize()
+                .map_err(|e| CliError::precondition(format!("cannot canonicalize: {e}")))
+                .and_then(|canonical| acquire_serving_lease(&canonical))
+            {
+                Ok(lease) => Some(lease),
+                Err(error) => {
+                    journal.incomplete(format!(
+                        "the engine root {} was left alone: {error}",
+                        root.display()
+                    ));
+                    roots.engine_root = None;
+                    None
+                }
             }
-        },
+        }
         _ => None,
     };
     let model_lock = match &roots.engine_root {
@@ -1612,11 +1627,6 @@ pub async fn apply(
             &fresh.provider_lock,
             provider_lock.is_some(),
             "providers.d lock",
-        ),
-        (
-            &fresh.serving_lease,
-            serving_lease.is_some(),
-            "engine-root serving lease",
         ),
     ] {
         let Some(lock) = lock.as_ref().filter(|_| held) else {
@@ -2151,25 +2161,33 @@ mod tests {
     /// exclusive acquisition; the file itself is recognized, never a
     /// candidate.
     #[test]
-    fn a_served_engine_root_refuses_the_lease_and_the_file_is_recognized() {
+    fn a_served_engine_root_refuses_the_lease() {
+        // The stable-inode contract with postvec-server: same derivation on
+        // both sides, pinned by the same literal in each crate's tests.
+        assert_eq!(
+            serving_lease_path(Path::new("/opt/postvec")),
+            PathBuf::from("/run/lock/postvec/engine-2f6f70742f706f7374766563.lease")
+        );
+
+        // /run/lock is world-writable+sticky on Linux, so an unprivileged
+        // test can exercise the real path with a tempdir-derived name. The
+        // file is deliberately never unlinked (tmpfs; gone at reboot).
         let dir = tempfile::tempdir().unwrap();
-        populate(dir.path());
-        let r = roots(dir.path());
-        let root = r.engine_root.clone().unwrap();
-        touch(&root.join(SERVING_LEASE_FILE));
-        let gathered = gather(&r);
-        assert_eq!(gathered.serving_lease, Some(root.join(SERVING_LEASE_FILE)));
-        assert!(!gathered
-            .candidates
-            .iter()
-            .any(|c| c.path.ends_with(SERVING_LEASE_FILE)));
+        let root = dir.path().canonicalize().unwrap();
+        let lease_path = serving_lease_path(&root);
+        if fs::create_dir_all(lease_path.parent().unwrap()).is_err() {
+            return; // no /run/lock on this host (exotic CI); nothing to prove
+        }
 
         // Hold the shared side the way a serving postvec-server does; the
         // sweep's exclusive side must be refused (flock domains are per open
         // file description, so one process can prove the conflict).
         let held = fs::OpenOptions::new()
             .read(true)
-            .open(root.join(SERVING_LEASE_FILE))
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lease_path)
             .unwrap();
         assert_eq!(
             unsafe {
@@ -2185,6 +2203,7 @@ mod tests {
         assert!(refused.unwrap_err().to_string().contains("serving lease"));
         drop(held);
         assert!(acquire_serving_lease(&root).is_ok());
+        assert!(lease_path.exists(), "the lease inode is never unlinked");
     }
 
     #[test]
