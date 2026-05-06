@@ -127,7 +127,12 @@ RUN set -eux; \
     # fails closed without it. If your runtime mounts a fresh tmpfs over
     # /run, recreate it exactly like this — 1775 root:postvec-server (group
     # write for the lease, sticky so the service account cannot unlink and
-    # re-create locks it does not own).
+    # re-create locks it does not own). The lease coordinates only processes
+    # that see the SAME inode: if this container shares its engine root with
+    # the host or other containers (a bind-mounted /opt/postvec), bind-mount
+    # the lease directory too (-v /run/lock/postvec:/run/lock/postvec) — or
+    # stop the container before running `postvec uninstall --purge` on the
+    # host, as the release-testing guide does.
     install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 USER postvec-server
 

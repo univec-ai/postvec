@@ -3107,6 +3107,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "shared",
  "tempfile",
  "thiserror 1.0.69",

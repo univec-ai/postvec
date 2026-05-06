@@ -154,20 +154,18 @@ enum LeaseOutcome {
     Unavailable(String),
 }
 
-/// Open (creating if needed) `<root>/.serving.lease` and take the shared
-/// side of its flock. The file name is a contract with postvec-cli's purge,
-/// which takes the exclusive side before sweeping the root.
 /// The lease pathname: a stable inode under `/run/lock/postvec`, named by
-/// the hex of the canonical engine-root path, never unlinked. This is a
-/// contract with postvec-cli's purge (`commands/purge.rs::serving_lease_path`);
-/// both crates pin the same example literal in their tests.
+/// the **SHA-256 of the canonical engine-root path bytes** (fixed 64-hex; a
+/// raw-path encoding hit `NAME_MAX` for roots over 121 bytes), never
+/// unlinked. This is a contract with postvec-cli's purge
+/// (`commands/purge.rs::serving_lease_path`); both crates pin the same
+/// example literal in their tests. It coordinates only processes that see
+/// the same inode: a container sharing an engine root with other mount
+/// namespaces must bind-mount `/run/lock/postvec` too.
 fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
-    let hex: String = canonical_root
-        .as_os_str()
-        .as_encoded_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(canonical_root.as_os_str().as_encoded_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     std::path::PathBuf::from(format!("/run/lock/postvec/engine-{hex}.lease"))
 }
 
@@ -619,7 +617,19 @@ mod serving_lease_tests {
     fn the_lease_path_derivation_matches_the_cli() {
         assert_eq!(
             serving_lease_path(std::path::Path::new("/opt/postvec")),
-            std::path::PathBuf::from("/run/lock/postvec/engine-2f6f70742f706f7374766563.lease")
+            std::path::PathBuf::from(
+                "/run/lock/postvec/engine-616ab489616db613212540e426e1245d5dd61ba6bbed138f9cb9ae20c03b6166.lease"
+            )
+        );
+        // Fixed-length whatever the root: a near-PATH_MAX root must not hit
+        // NAME_MAX.
+        let long = format!("/srv/{}", "x".repeat(3900));
+        assert_eq!(
+            serving_lease_path(std::path::Path::new(&long))
+                .file_name()
+                .unwrap()
+                .len(),
+            "engine-".len() + 64 + ".lease".len()
         );
     }
 }

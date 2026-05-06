@@ -35,6 +35,9 @@ path = "src/main.rs"
 # lifetime so a postvec-cli purge cannot sweep the root from under a
 # running or starting server.
 libc = "0.2"
+# The lease name is the SHA-256 of the canonical engine-root path (a
+# cross-crate contract with postvec-cli's purge).
+sha2 = "0.10"
 # The trimmed inference engine, exactly as postvec's embedded mode links it.
 # `onnx` is not optional here: a node with no backend is not a node.
 engine = { path = "../engine", features = ["onnx"] }

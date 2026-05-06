@@ -57,28 +57,30 @@ use std::time::Duration;
 /// The CLI's transient state beside the models, in the engine root.
 const MODELS_STATE: &[&str] = &[".staging", ".trash", ".swap"];
 const DESCRIPTOR_FILE: &str = "ninference.hub.json";
-/// Root login state; never purged (see `PurgePlan::notes`).
+/// Root login state; swept with the purge (`postvec login` restores it in
+/// seconds; per-user XDG stores are never touched).
 const AUTH_FILE: &str = "auth.json";
 /// The providers directory's lock file (`provider::lock_provider_dir`).
 const PROVIDER_LOCK_FILE: &str = ".lock";
 /// The engine-root serving lease: a **stable inode** under
-/// `/run/lock/postvec`, named by the hex of the canonical root path, and
-/// **never unlinked** — a lock file inside a tree the sweep is about to
-/// `rmdir`, or one that gets unlinked, silently forks the lock domain the
-/// moment someone else creates a new inode at the pathname. `postvec-server`
-/// holds the shared side for its whole serving lifetime (fail-closed at its
-/// startup); the sweep holds the exclusive side, so a server starting after
-/// the process scan blocks the sweep, or is blocked by it, never races it.
-/// The derivation is a cross-crate contract with
+/// `/run/lock/postvec`, named by the **SHA-256 of the canonical root path
+/// bytes** (fixed 64-hex — a raw-path encoding hit `NAME_MAX` at 121 root
+/// bytes), and **never unlinked** — a lock file inside a tree the sweep is
+/// about to `rmdir`, or one that gets unlinked, silently forks the lock
+/// domain the moment someone else creates a new inode at the pathname.
+/// `postvec-server` holds the shared side for its whole serving lifetime
+/// (fail-closed at its startup); the sweep holds the exclusive side, so a
+/// server starting after the process scan blocks the sweep, or is blocked
+/// by it, never races it — **provided both see the same inode**: across
+/// container mount namespaces the participants must share
+/// `/run/lock/postvec` as a bind mount, or the container must be stopped
+/// first. The derivation is a cross-crate contract with
 /// `postvec-server/src/lib.rs::serving_lease_path` — both carry a literal
 /// test pinning the same example.
 pub fn serving_lease_path(canonical_root: &Path) -> PathBuf {
-    let hex: String = canonical_root
-        .as_os_str()
-        .as_encoded_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(canonical_root.as_os_str().as_encoded_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     PathBuf::from(format!("/run/lock/postvec/engine-{hex}.lease"))
 }
 
@@ -2186,13 +2188,46 @@ mod tests {
         // both sides, pinned by the same literal in each crate's tests.
         assert_eq!(
             serving_lease_path(Path::new("/opt/postvec")),
-            PathBuf::from("/run/lock/postvec/engine-2f6f70742f706f7374766563.lease")
+            PathBuf::from(
+                "/run/lock/postvec/engine-616ab489616db613212540e426e1245d5dd61ba6bbed138f9cb9ae20c03b6166.lease"
+            )
+        );
+        // Fixed-length whatever the root: a near-PATH_MAX root must not hit
+        // NAME_MAX (the raw-path encoding did, at 121 bytes).
+        let long = format!("/srv/{}", "x".repeat(3900));
+        let name = serving_lease_path(Path::new(&long));
+        assert_eq!(
+            name.file_name().unwrap().len(),
+            "engine-".len() + 64 + ".lease".len()
+        );
+        // Non-UTF-8 path bytes hash like any others.
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"/srv/pv-\xff\xfe");
+        let _ = serving_lease_path(Path::new(raw));
+        // Distinct roots get distinct keys; equal roots the same one.
+        assert_ne!(
+            serving_lease_path(Path::new("/opt/postvec")),
+            serving_lease_path(Path::new("/opt/postvec2"))
+        );
+        assert_eq!(
+            serving_lease_path(Path::new("/opt/postvec")),
+            serving_lease_path(Path::new("/opt/postvec"))
+        );
+        // A canonical alias (symlink spelling) maps to the same key because
+        // every caller canonicalizes before deriving.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = dir.path().join("alias");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(
+            serving_lease_path(&link.canonicalize().unwrap()),
+            serving_lease_path(&real.canonicalize().unwrap())
         );
 
         // /run/lock is world-writable+sticky on Linux, so an unprivileged
         // test can exercise the real path with a tempdir-derived name. The
         // file is deliberately never unlinked (tmpfs; gone at reboot).
-        let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let lease_path = serving_lease_path(&root);
         if fs::create_dir_all(lease_path.parent().unwrap()).is_err() {

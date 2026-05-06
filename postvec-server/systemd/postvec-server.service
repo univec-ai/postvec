@@ -61,10 +61,12 @@ ReadOnlyPaths=/var/lib/postvec-server /etc/postvec-server
 # starting server. The privileged pre-start creates the directory writable by
 # this service's group; ReadWritePaths lifts ProtectSystem=strict for it. The
 # server FAILS TO START without the lease — that is deliberate.
-# 1775: group-writable so this service can create its lease, sticky so the
-# service account can never unlink host.lock or a root-owned lease and
-# re-create it — unlink-then-create is exactly the split-brain the stable
-# inode exists to prevent.
+# 1775: group-writable so this service can create its lease; sticky so the
+# service account cannot unlink files it does not own (host.lock, a lease a
+# root-driven purge created first). A lease this service created itself
+# remains its own — the lease is a cooperative advisory interlock between
+# well-behaved participants, not protection against a compromised service
+# account.
 ExecStartPre=+/usr/bin/install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 ReadWritePaths=/run/lock/postvec
 
