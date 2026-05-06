@@ -2208,7 +2208,9 @@ mod tests {
         // The exclusive side needs a writable open (HostLock): a lease this
         // account cannot write — root-owned on a real host, chmod-simulated
         // here — is a refusal, never a bypass.
-        if unsafe { libc::geteuid() } != 0 {
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped (unwritable-lease refusal): root bypasses file modes");
+        } else {
             fs::set_permissions(&lease_path, fs::Permissions::from_mode(0o444)).unwrap();
             assert!(acquire_serving_lease(&root).is_err());
             fs::set_permissions(&lease_path, fs::Permissions::from_mode(0o644)).unwrap();

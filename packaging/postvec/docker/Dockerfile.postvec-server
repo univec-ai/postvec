@@ -125,7 +125,9 @@ RUN set -eux; \
     chown -R postvec-server:postvec-server /opt/postvec; \
     # The serving-lease directory (see postvec-server.service): the server
     # fails closed without it. If your runtime mounts a fresh tmpfs over
-    # /run, recreate it writable by the service user.
+    # /run, recreate it exactly like this — 1775 root:postvec-server (group
+    # write for the lease, sticky so the service account cannot unlink and
+    # re-create locks it does not own).
     install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 USER postvec-server
 

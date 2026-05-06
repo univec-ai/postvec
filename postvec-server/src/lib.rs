@@ -270,11 +270,9 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // The serving lease: held (shared) for the whole serving lifetime. A
     // `postvec uninstall --purge` takes the exclusive side before deleting
     // anything under an engine root, so a server that is starting or serving
-    // blocks the sweep instead of racing its process scan. Best-effort on
-    // roots the server cannot write (read-only mounts): serving must not
-    // depend on it, but a held purge lock is always respected.
-    // Fail-closed: a server that cannot hold the lease is invisible to a
-    // concurrent `postvec uninstall --purge` and must not serve.
+    // blocks the sweep instead of racing its process scan. Fail-closed: a
+    // server that cannot hold the lease is invisible to a concurrent purge
+    // and must not serve.
     let _serving_lease = match serving_lease(&settings.root) {
         LeaseOutcome::Held(file) => file,
         LeaseOutcome::PurgeInProgress => {
@@ -577,7 +575,8 @@ mod serving_lease_tests {
     fn the_shared_side_falls_back_to_read_only_on_an_unwritable_lease() {
         use std::os::unix::fs::PermissionsExt;
         if unsafe { libc::geteuid() } == 0 {
-            return; // root writes anything; the fallback path is unreachable
+            eprintln!("skipped: running as root, the read-only fallback path is unreachable");
+            return;
         }
         let dir = match tempfile::tempdir() {
             Ok(dir) => dir,
