@@ -769,10 +769,11 @@ pub struct UninstallArgs {
     /// production promise. With --all: after the SQL and configuration
     /// removal, stop the cluster, delete the files postvec can positively
     /// attribute to itself on this host (pulled/manual models and CLI state
-    /// under the engine root, provider connector files, the CLI's state file,
-    /// an unpackaged extension library), and start the cluster again.
-    /// Package-owned files are never deleted; the packages to purge are
-    /// printed instead. Anything in doubt is retained and the exit code is 3.
+    /// under the engine root, provider connector files, the CLI's state file
+    /// and registry login, an unpackaged extension library), and start the
+    /// cluster again. Package-owned files are never deleted; the packages to
+    /// purge are printed instead. Anything in doubt is retained and the exit
+    /// code is 3.
     #[arg(
         long,
         requires = "all",

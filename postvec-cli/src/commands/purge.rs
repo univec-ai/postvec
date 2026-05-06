@@ -858,12 +858,15 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
     if roots.state_dir.exists() {
         prune.push(roots.state_dir.join("clusters"));
         prune.push(roots.state_dir.clone());
+        // The root registry login goes with the sweep — a purge is the "this
+        // host is done with postvec" verb, and a stale credential is worse
+        // than re-running the cheap `postvec login`. Per-user XDG stores are
+        // not the system sweep's to touch.
         let auth = roots.state_dir.join(AUTH_FILE);
         if auth.exists() {
-            notes.push(format!(
-                "{} (the registry login) was kept — it may serve other hosts or workflows; \
-                 `postvec logout` removes it",
-                auth.display()
+            candidates.extend(candidate(
+                auth,
+                "registry login; `postvec login` restores it".to_string(),
             ));
         }
     }
@@ -1791,6 +1794,7 @@ mod tests {
             "opt/postvec/models/.staging",
             "etc/postvec/providers.d/openai.toml",
             "var/lib/postvec/clusters/18-main.json",
+            "var/lib/postvec/auth.json",
         ] {
             assert!(
                 removed.contains(&expected.to_string()),
@@ -1803,7 +1807,6 @@ mod tests {
             "opt/postvec/models/.postvec.lock",
             "opt/postvec/libs",
             "etc/postvec/providers.d/bedrock.key",
-            "var/lib/postvec/auth.json",
             "usr/lib/postgresql/18/lib/postvec.so",
             "usr/share/postgresql/18/extension/postvec.control",
             "usr/share/postgresql/18/extension/postvec--0.1.0.sql",
@@ -1847,10 +1850,6 @@ mod tests {
             notes.contains("not-a-model") && notes.contains("no ninference.hub.json"),
             "{notes}"
         );
-        assert!(
-            notes.contains("auth.json") && notes.contains("postvec logout"),
-            "{notes}"
-        );
         assert!(plan.model_lock.is_some());
         // The pulled model was enumerated to its leaves, nested directory
         // included.
@@ -1861,6 +1860,24 @@ mod tests {
             .unwrap();
         assert_eq!(pulled.leaves.len(), 4, "{:?}", pulled.leaves);
         assert!(pulled.complete);
+    }
+
+    /// The root registry login is an ordinary candidate of every purge:
+    /// planned, package-checked, deleted — never silently retained.
+    #[test]
+    fn the_registry_login_is_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        populate(dir.path());
+        let r = roots(dir.path());
+        let auth = r.state_dir.join("auth.json");
+        let gathered = gather(&r);
+        let login = gathered
+            .candidates
+            .iter()
+            .find(|c| c.path == auth)
+            .expect("the login is a candidate");
+        assert!(login.what.contains("registry login"), "{}", login.what);
+        assert!(!gathered.notes.iter().any(|n| n.contains("auth.json")));
     }
 
     /// Origin never exempts a path from the package check: a receipt-bearing
@@ -2078,7 +2095,10 @@ mod tests {
         ] {
             assert!(!gone.exists(), "{} was left behind", gone.display());
         }
-        assert!(r.state_dir.join("auth.json").exists());
+        assert!(
+            !r.state_dir.join("auth.json").exists(),
+            "the registry login is swept with the purge"
+        );
         assert!(r
             .providers_dir
             .clone()
