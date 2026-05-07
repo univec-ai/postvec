@@ -97,7 +97,7 @@ pub enum Command {
     /// line-delimited JSON protocol on stdin/stdout and is not a stable
     /// interface.
     #[command(name = "__db-agent", hide = true)]
-    DbAgent,
+    DbAgent(DbAgentArgs),
     /// Internal: merge postvec into a shared_preload_libraries value and print
     /// the result. Used by the container entrypoint, which must apply exactly
     /// the same list grammar the server does; not a stable interface.
@@ -638,6 +638,15 @@ pub struct WhoamiArgs {
     /// Also consider this key file, the way model commands would.
     #[arg(long, value_name = "FILE")]
     pub api_key_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct DbAgentArgs {
+    /// Account to become before any input is read or connection opened. The
+    /// agent is exec'd as root (so the binary can be loaded from a path the
+    /// account cannot traverse) and drops to this account itself, first thing.
+    #[arg(long, value_name = "ACCOUNT")]
+    pub drop_to: Option<String>,
 }
 
 #[derive(Debug, Args, Clone)]

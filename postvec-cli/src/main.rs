@@ -55,8 +55,8 @@ fn main() -> std::process::ExitCode {
     // The privilege-dropped database agent is a plain synchronous stdin/stdout
     // loop; it must not inherit the parent's signal handling or output
     // conventions, so it is dispatched before anything else is set up.
-    if matches!(cli.command, Command::DbAgent) {
-        return db::agent::serve();
+    if let Command::DbAgent(args) = &cli.command {
+        return db::agent::serve(args.drop_to.as_deref());
     }
 
     // Pure string work for the container entrypoint: no cluster, no database,

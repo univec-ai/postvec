@@ -363,28 +363,44 @@ impl Cmd {
 /// longer privileged enough to change them.
 fn apply_privilege_drop(cmd: &mut tokio::process::Command, account: OsAccount) {
     unsafe {
-        cmd.pre_exec(move || {
-            let groups: Vec<libc::gid_t> =
-                account.groups.iter().map(|g| *g as libc::gid_t).collect();
-            if libc::setgroups(groups.len(), groups.as_ptr()) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::setgid(account.gid as libc::gid_t) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            if libc::setuid(account.uid as libc::uid_t) != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            // Paranoia: a successful setuid(0)-style regression would be a
-            // silent privilege-retention bug, so assert the drop took.
-            if libc::getuid() != account.uid as libc::uid_t
-                || libc::geteuid() != account.uid as libc::uid_t
-            {
-                return Err(std::io::Error::other("privilege drop did not take effect"));
-            }
-            Ok(())
-        });
+        cmd.pre_exec(move || become_account(&account));
     }
+}
+
+/// Irreversibly become `account`: supplementary groups, then gid, then uid,
+/// then assert the drop took — a `setuid` that silently failed to shed root
+/// would be a privilege-retention bug, not an inconvenience.
+fn become_account(account: &OsAccount) -> std::io::Result<()> {
+    let groups: Vec<libc::gid_t> = account.groups.iter().map(|g| *g as libc::gid_t).collect();
+    unsafe {
+        if libc::setgroups(groups.len(), groups.as_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setgid(account.gid as libc::gid_t) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::setuid(account.uid as libc::uid_t) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::getuid() != account.uid as libc::uid_t
+            || libc::geteuid() != account.uid as libc::uid_t
+        {
+            return Err(std::io::Error::other("privilege drop did not take effect"));
+        }
+    }
+    Ok(())
+}
+
+/// Process-wide, irreversible privilege drop for a child that should live out
+/// its whole remaining life as `account`. The database agent execs as root —
+/// so the kernel can load the binary from a path the target account cannot
+/// traverse, such as a build under a home directory — and calls this before
+/// reading any input or opening any connection.
+pub fn drop_privileges(account: &OsAccount) -> Result<()> {
+    become_account(account).map_err(|e| {
+        CliError::precondition(format!("cannot become {:?}: {e}", account.name))
+            .with_fix("the privilege drop needs root; run the CLI with sudo")
+    })
 }
 
 #[derive(Debug)]

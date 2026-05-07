@@ -150,8 +150,12 @@ async fn offline_report(
         return Err(connection_error);
     };
 
+    // Named neutrally: "not accepting connections" would be a diagnosis, and
+    // the error may be on our side of the socket (a privilege drop that could
+    // not exec, say) while the server is up and answering `psql` fine.
     output.note(&format!(
-        "cluster {} is not accepting connections — reporting what can be read without one",
+        "no connection to cluster {} ({connection_error}) — reporting what can be read \
+         without one",
         cluster.identity.id
     ));
 

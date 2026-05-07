@@ -77,7 +77,7 @@ pub async fn dispatch(cli: Cli) -> Exit {
         Command::Logout => ("logout", account::logout(&output).await),
         Command::Whoami(args) => ("whoami", account::whoami(&cli, args.clone(), &output).await),
         // Both handled before the runtime starts.
-        Command::DbAgent => ("agent", Ok(Exit::Success)),
+        Command::DbAgent(_) => ("agent", Ok(Exit::Success)),
         Command::PreloadMerge(_) => ("preload-merge", Ok(Exit::Success)),
     };
     match result {

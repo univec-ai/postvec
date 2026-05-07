@@ -10,10 +10,19 @@
 //! argv and parsing its text output is both a quoting hazard and a redaction
 //! hazard.
 //!
+//! The exec runs as root and the child drops to the cluster owner itself,
+//! first thing (`--drop-to`), rather than dropping pre-exec: the kernel must
+//! load the binary with *root's* access, because the cluster owner often
+//! cannot reach it — a development build under a 0750 home directory being the
+//! canonical case. The privilege window is the child's own first lines of
+//! code; it becomes the target account before reading any input or opening
+//! any connection.
+//!
 //! The hidden `__db-agent` subcommand grants no privilege of its own — a user
-//! running it directly gets exactly the database access they already had — so
-//! it needs no capability token. It does refuse an interactive stdin, which is
-//! the only way it could be invoked by accident.
+//! running it directly gets exactly the database access they already had, and
+//! `--drop-to` for anyone but themselves fails without root — so it needs no
+//! capability token. It does refuse an interactive stdin, which is the only
+//! way it could be invoked by accident.
 
 use super::local::Direct;
 use super::{DbReply, DbRequest, DbTarget};
@@ -56,8 +65,15 @@ impl AgentClient {
         statement_timeout: Duration,
         request_timeout: Duration,
     ) -> Result<Self> {
+        // Exec'd as root on purpose — no `run_as` — so the kernel loads the
+        // binary with the parent's own access, and a build sitting under a
+        // directory the cluster owner cannot traverse still works. The child
+        // sheds root itself, before its first read; see [`serve`].
         let exe = proc::self_exe()?;
-        let cmd = Cmd::new(exe).arg("__db-agent").run_as(Some(account));
+        let cmd = Cmd::new(exe)
+            .arg("__db-agent")
+            .arg("--drop-to")
+            .arg(&account.name);
         let mut child = proc::spawn_piped(&cmd)?;
         let stdin = child
             .stdin
@@ -145,17 +161,34 @@ impl AgentClient {
     }
 }
 
-/// Child entry point: read `AgentInit`, then serve requests until stdin closes.
+/// Child entry point: drop privileges, read `AgentInit`, then serve requests
+/// until stdin closes.
 ///
 /// Synchronous signature (it builds its own runtime) because it is dispatched
 /// before the parent's runtime exists.
-pub fn serve() -> ExitCode {
+pub fn serve(drop_to: Option<&str>) -> ExitCode {
     if proc::is_stdin_tty() {
         eprintln!(
             "postvec __db-agent is an internal subcommand driven over a pipe; \
              use `postvec setup`, `postvec uninstall` or `postvec doctor`."
         );
         return ExitCode::from(Exit::Usage.code() as u8);
+    }
+    // First thing, before any input is read or socket touched: shed root. The
+    // exec deliberately happened *without* a pre-exec drop so the kernel could
+    // load this binary as root — the target account may be unable to traverse
+    // to it (a build under a 0750 home directory, say). Nothing else here may
+    // run with that privilege. Failure goes to inherited stderr; the parent
+    // sees EOF and points the operator at it.
+    if let Some(name) = drop_to {
+        let dropped = OsAccount::lookup(name).and_then(|account| match account.is_current() {
+            true => Ok(()),
+            false => proc::drop_privileges(&account),
+        });
+        if let Err(e) = dropped {
+            eprintln!("postvec agent: {e}");
+            return ExitCode::from(Exit::Failure.code() as u8);
+        }
     }
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -288,6 +321,25 @@ async fn write_reply(stdout: &mut tokio::io::Stdout, reply: &DbReply) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The load-bearing property of the exec-as-root design: without root, a
+    /// requested drop to somebody else must fail loudly, never fall through
+    /// to serving with the caller's own identity under the wrong label.
+    #[test]
+    fn dropping_to_another_account_without_root_is_refused() {
+        if crate::proc::is_root() {
+            return; // under root this would genuinely drop; the point is moot
+        }
+        let account = OsAccount {
+            name: "nobody".into(),
+            uid: 65534,
+            gid: 65534,
+            groups: vec![65534],
+        };
+        assert!(!account.is_current());
+        let err = proc::drop_privileges(&account).unwrap_err();
+        assert!(err.to_string().contains("nobody"), "{err}");
+    }
 
     #[test]
     fn init_carries_the_target_off_the_command_line() {

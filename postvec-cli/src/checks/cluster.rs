@@ -71,10 +71,16 @@ pub struct OfflineClusterInput<'a> {
 ///    similar as ordinary findings — indistinguishable from a cluster that is
 ///    genuinely misconfigured. Those checks are not run at all.
 pub fn offline_checks(input: &OfflineClusterInput<'_>) -> Vec<CheckResult> {
+    // The message carries the underlying error verbatim: "cannot connect" on
+    // its own reads as "the server is down", which is a guess — the failure
+    // may equally be authentication, a privilege drop, or a socket path.
     let mut unreachable = CheckResult::fail(
         "cluster.reachable",
         SCOPE,
-        format!("cannot connect to {}", input.identity.id),
+        format!(
+            "no connection to {}: {}",
+            input.identity.id, input.connection_error
+        ),
     )
     .required()
     .with_evidence(json!({ "error": input.connection_error }));
@@ -100,7 +106,10 @@ pub fn offline_checks(input: &OfflineClusterInput<'_>) -> Vec<CheckResult> {
              per-database check and the inference probe all need a connection",
         )
         .required()
-        .with_fix("start the cluster and rerun `postvec doctor` for the full report"),
+        .with_fix(
+            "clear the connection failure above (start the cluster if it is down) and rerun \
+             `postvec doctor` for the full report",
+        ),
     ))
     .collect()
 }
@@ -1352,6 +1361,13 @@ mod tests {
             .find(|c| c.id == "cluster.reachable")
             .expect("cluster.reachable is always emitted");
         assert!(reachable.required, "it must be able to fail the run");
+        // In the rendered line itself, not only in JSON evidence: the operator
+        // reading the text report must see the cause without --json.
+        assert!(
+            reachable.summary.contains("template1"),
+            "{}",
+            reachable.summary
+        );
         assert!(reachable
             .evidence
             .as_ref()
