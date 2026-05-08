@@ -56,8 +56,8 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     let paths = context.owned_paths().ok();
     if paths.is_none() && !args.keep_config {
         return Err(CliError::precondition(
-            "there is no local configuration for this cluster, so the database cannot be \
-             removed from the launcher configuration",
+            "this cluster has no local configuration; the database cannot be removed from \
+             the launcher configuration",
         )
         .with_fix(
             "pass --keep-config for an SQL-only removal (the worker will keep connecting to \
@@ -115,7 +115,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         // Deleting the extension files while a database may still record the
         // extension is exactly the broken state purge exists to avoid.
         return Err(CliError::precondition(format!(
-            "--purge refused: {} could not be inspected, so postvec may still be installed \
+            "--purge refused: {} could not be inspected, and postvec may still be installed \
              there",
             uninspectable.join(", ")
         ))
@@ -401,13 +401,14 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                     }
                 }
             }
-            // Nothing was changed, and the command was asked to change
-            // something: the worker keeps connecting to a database the operator
-            // believes is gone, so this is a partial result, not a success.
-            ConfigChange::None { note } => {
-                let note = note
-                    .unwrap_or_else(|| "the launcher configuration was not changed".to_string());
-                messages.push(format!("postvec: {note}"));
+            // The launcher side needed no change: nothing in the running
+            // configuration serves a database being removed.
+            ConfigChange::None { note: None } => {}
+            // Something still configures a removed database and the CLI could
+            // not change it: a partial result, not a success. The journal line
+            // is the one report; a second copy in `messages` would print the
+            // same sentence twice.
+            ConfigChange::None { note: Some(note) } => {
                 journal.incomplete(note);
             }
         }
@@ -440,8 +441,8 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         }
     } else if args.keep_config {
         messages.push(
-            "postvec: --keep-config was given, so the launcher configuration was not changed; \
-             the worker will keep connecting to this database and idling"
+            "postvec: --keep-config: the launcher configuration was left unchanged; the \
+             worker will keep connecting to this database and idling"
                 .to_string(),
         );
     }
@@ -460,7 +461,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
             );
         } else if journal.restart_deferred {
             blocker = Some(
-                "the cluster was not restarted, so the extension may still be loaded".to_string(),
+                "the cluster was not restarted; the extension may still be loaded".to_string(),
             );
         } else {
             context.db.reconnect().await?;
@@ -496,10 +497,21 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         // production database stays down. Every fallible step in between
         // converts its error into `blocker`.
         let mut stop_issued = false;
-        let _interrupt = crate::proc::InterruptGuard::hold(
+        // A guard that cannot be armed blocks the sweep rather than aborting
+        // the command: at this point the databases are already clean and the
+        // envelope below still has to report that.
+        let _interrupt = match crate::proc::InterruptGuard::hold(
             "the cluster is stopped for the file sweep; finishing this step — press Ctrl-C \
              again to abort and leave it stopped",
-        )?;
+        ) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                if blocker.is_none() {
+                    blocker = Some(format!("Ctrl-C protection could not be armed: {error}"));
+                }
+                None
+            }
+        };
         if blocker.is_none() && !confirmed.remove.is_empty() {
             output.progress("postvec: stopping the cluster for the file sweep");
             // Issued from here on, whatever the command reports: even a
@@ -642,6 +654,24 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         }
         if let Some(reason) = blocker {
             journal.incomplete(format!("--purge was skipped: {reason}"));
+            // The operator confirmed these deletions and did not get them;
+            // hand over the exact commands instead of leaving them to guess
+            // what survived.
+            if !confirmed.remove.is_empty() {
+                messages.push("postvec: no file was deleted; to remove them yourself:".to_string());
+                for candidate in &confirmed.remove {
+                    let path = candidate.path.display().to_string();
+                    let path = if path.contains(char::is_whitespace) {
+                        format!("'{path}'")
+                    } else {
+                        path
+                    };
+                    messages.push(format!("postvec:   sudo rm -r -- {path}"));
+                }
+            }
+            if let Some(note) = confirmed.package_note() {
+                messages.push(format!("postvec: {note}"));
+            }
         }
     }
 
@@ -697,7 +727,7 @@ async fn discover_all(
                     // cannot be proven clean.
                     if listing.name != "template0" {
                         output.note(&format!(
-                            "{}: connections are disallowed, so it cannot be inspected",
+                            "{}: cannot be inspected (connections are disallowed)",
                             listing.name
                         ));
                         uninspectable.push(listing.name);
@@ -983,8 +1013,13 @@ fn plan_config_change(
     }
     let Some(state) = ownership.state() else {
         // With no ownership record the CLI cannot promise to remove the
-        // setting, and it will not guess. Name the file that still configures
-        // it so the operator can finish by hand.
+        // setting, and it will not guess — but only when the setting actually
+        // names a database being removed is there anything to warn about.
+        let configured = snapshot.settings.configured_databases();
+        if !configured.iter().any(|name| removing.contains(name)) {
+            return Ok(ConfigChange::None { note: None });
+        }
+        // Name the file so the operator can finish by hand.
         let source = snapshot
             .settings
             .get("postvec.database")
@@ -994,12 +1029,16 @@ fn plan_config_change(
                     None => file.clone(),
                 })
             })
-            .unwrap_or_else(|| "an unknown configuration file".to_string());
+            .unwrap_or_else(|| {
+                "a source this CLI could not identify — check postgresql.conf, its conf.d \
+                 includes, postgresql.auto.conf (ALTER SYSTEM) and the server command line"
+                    .to_string()
+            });
         return Ok(ConfigChange::None {
             note: Some(format!(
-                "the launcher configuration was not written by this CLI, so it was left \
-                 untouched; {source} still names this database. Pass --keep-config to \
-                 acknowledge an SQL-only removal"
+                "postvec.database is still set by {source}; this CLI did not write that \
+                 file and left it untouched. Remove the setting there yourself, or pass \
+                 --keep-config to acknowledge an SQL-only removal"
             )),
         });
     };

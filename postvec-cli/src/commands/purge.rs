@@ -673,7 +673,7 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
     // --- engine root -------------------------------------------------------
     match (&roots.engine_root, roots.engine_root_in_use) {
         (Some(root), true) => notes.push(format!(
-            "a postvec-server process is running on this host, so the engine root {} was \
+            "a postvec-server process is running on this host; the engine root {} was \
              left alone (it may be serving from it)",
             root.display()
         )),

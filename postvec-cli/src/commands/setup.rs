@@ -718,9 +718,9 @@ async fn preflight(
             // it must be an informed choice rather than a surprise.
             if probe.descriptors.iter().all(|model| !model.enabled) {
                 output.progress(
-                    "warning: no enabled model was found under the engine root, so nothing \
-                     will be embeddable until one is added (the model set is fixed at engine \
-                     start, so that needs a restart)",
+                    "warning: no model under the engine root is enabled; embedding will not work \
+                     until one is added (the model set is fixed at engine start — adding \
+                     one needs a restart)",
                 );
             }
             let settings = EmbeddedSettings::new(

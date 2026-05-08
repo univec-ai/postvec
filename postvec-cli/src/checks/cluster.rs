@@ -362,7 +362,7 @@ fn offline_config_parse(offline_preload: Option<&OfflineSetting>) -> CheckResult
         None => CheckResult::skip(
             "cluster.config.parse",
             SCOPE,
-            "the configuration was not parsed offline, so nothing is known about it",
+            "the configuration was not parsed offline",
         )
         .with_fix("rerun as root or as the cluster owner for a complete report"),
     }
@@ -425,7 +425,7 @@ fn config_ownership(ownership: Option<&Ownership>) -> Option<CheckResult> {
         Ownership::Unmanaged => CheckResult::pass(
             "cluster.config.ownership",
             SCOPE,
-            "no CLI-owned configuration snippet (this cluster is configured by hand)",
+            "no CLI-owned configuration snippet (this cluster is manually configured)",
         ),
         Ownership::Managed { state } => CheckResult::pass(
             "cluster.config.ownership",
@@ -474,7 +474,7 @@ fn preload(input: &ClusterInput<'_>) -> CheckResult {
         )
         .with_evidence(json!({"shared_preload_libraries": items}))
         .with_fix(
-            "without the preload there is no background worker, so nothing fills vectors; \
+            "without the preload there is no background worker (vectors won't be populated); \
              run `postvec setup` (it merges the list) and restart",
         )
     }
@@ -495,14 +495,14 @@ fn preload_pending(input: &ClusterInput<'_>) -> Option<CheckResult> {
                 Some(CheckResult::pass(
                     "cluster.preload.pending",
                     SCOPE,
-                    "the configured preload list is the one in effect",
+                    "shared_preload_libraries: the configuration files and the running server agree",
                 ))
             } else {
                 Some(
                     CheckResult::fail(
                         "cluster.preload.pending",
                         SCOPE,
-                        "the configured preload list differs from the one in effect",
+                        "shared_preload_libraries has changed on disk; the running server still uses the old value",
                     )
                     .with_evidence(json!({
                         "active": active,
@@ -537,7 +537,7 @@ fn preload_pending(input: &ClusterInput<'_>) -> Option<CheckResult> {
                 Some(CheckResult::skip(
                     "cluster.preload.pending",
                     SCOPE,
-                    "the configured preload list could not be read offline for comparison",
+                    "the on-disk shared_preload_libraries could not be read for comparison",
                 ))
             }
         }
@@ -634,12 +634,9 @@ fn database_list(input: &ClusterInput<'_>) -> CheckResult {
         return CheckResult::fail(
             "cluster.database-list",
             SCOPE,
-            "postvec.database is empty, so the launcher serves no database",
+            "postvec.database is empty — the launcher serves no database",
         )
-        .with_fix(
-            "set postvec.database to the database(s) to serve and restart; the launcher \
-             otherwise idles forever",
-        );
+        .with_fix("set postvec.database to the database(s) to serve, then restart");
     }
     let missing: Vec<&String> = input
         .inspected_databases

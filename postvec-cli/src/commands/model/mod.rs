@@ -337,8 +337,8 @@ pub async fn quiesce(
     };
     let outcomes = admin::unload(listen, names, timeout).await.map_err(|e| {
         CliError::precondition(format!(
-            "the embedded engine at {listen} could not be asked to unload {} ({e}); it may hold \
-             any of them, so nothing was moved on disk",
+            "the embedded engine at {listen} could not be asked to unload {} ({e}); it may \
+             still hold any of them, and nothing was moved on disk",
             names.join(", ")
         ))
         .with_fix(
@@ -558,8 +558,8 @@ pub async fn require_cli_owned(
             model.dir_name
         ))
         .with_fix(
-            "a package upgrade would rewrite the descriptor, so the change could not be kept; \
-             manage it with apt/dnf instead",
+            "a package upgrade would overwrite the change; manage this model with apt/dnf \
+             instead",
         )),
         Ownership::Manual => {
             let detail = model

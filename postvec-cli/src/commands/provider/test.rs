@@ -52,7 +52,7 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
         Ok(true) => {}
         Ok(false) => {
             return Err(CliError::precondition(format!(
-                "{} is `enabled = false`, so the host serves nothing from it",
+                "{} is `enabled = false`; the host does not serve it",
                 file_path.display()
             ))
             .with_fix("set enabled = true to serve it, then rerun"))

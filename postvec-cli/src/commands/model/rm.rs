@@ -193,7 +193,7 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
              to this change"
         } else {
             "--acknowledge-in-use acknowledged nothing: with --path there is no cluster to \
-             check, so no column was inspected"
+             check, and no column was inspected"
         });
     }
     // The in-use gate runs before the ordinary confirmation, and before any

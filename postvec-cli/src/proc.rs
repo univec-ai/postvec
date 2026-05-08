@@ -617,62 +617,101 @@ fn group_exists(pid: u32) -> bool {
 ///
 /// Abandoning the process between writing a configuration file and verifying
 /// the restart leaves the cluster in a state nobody has looked at. While this
-/// guard is held the first `SIGINT` only prints guidance; the second restores
-/// default handling, so an operator who really wants out can still get out.
-pub struct InterruptGuard {
-    task: tokio::task::JoinHandle<()>,
+/// guard is held the first `SIGINT` only prints guidance; the second
+/// terminates, so an operator who really wants out can still get out.
+///
+/// A command may hold several critical sections one after another (`uninstall
+/// --purge` restarts the cluster, then later stops it for the file sweep), so
+/// guards are sequential-safe. The mechanism: tokio's process-wide `SIGINT`
+/// handler is installed once and never removed — tokio will not re-install a
+/// handler it believes is already registered, so handing the signal back to
+/// the kernel between guards would leave every later guard inert. Instead one
+/// listener task runs for the life of the process and consults [`GUARD`]:
+/// armed means "warn once, terminate on the next", disarmed means "behave as
+/// if unhandled" (restore the default disposition and re-raise).
+pub struct InterruptGuard(());
+
+struct GuardState {
+    /// The guidance to print on the first Ctrl-C, while a guard is held.
+    message: Option<String>,
+    /// A warning was already printed for the current guard; the next Ctrl-C
+    /// terminates.
+    warned: bool,
 }
 
-/// One guard per process, ever.
-///
-/// Releasing a guard hands `SIGINT` back to the kernel, and tokio will not
-/// re-install its handler for a signal it believes it already registered — so a
-/// second guard would look armed and quietly protect nothing. A command holds
-/// exactly one critical section, so this costs nothing; making it an error
-/// keeps a future second one from being silently unprotected.
-static GUARD_USED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static GUARD: std::sync::Mutex<GuardState> = std::sync::Mutex::new(GuardState {
+    message: None,
+    warned: false,
+});
+static LISTENER_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl InterruptGuard {
     /// Fails rather than returning an inert guard: a caller that believes it is
     /// protected, and is not, would enter the critical section on a false
-    /// premise.
+    /// premise. The only failure cases are a second guard held while one is
+    /// still active (a bug) and a handler that cannot be installed.
     pub fn hold(message: impl Into<String>) -> Result<Self> {
-        let message = message.into();
-        if GUARD_USED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            return Err(CliError::internal(
-                "an interrupt guard has already been used in this process; a second one could \
-                 not re-arm and would protect nothing",
-            ));
-        }
-        // Registered here, synchronously, *before* returning: registering
-        // inside the spawned task would leave a window between `hold()`
-        // returning and the task first being polled, during which a SIGINT
-        // still has default handling and would terminate mid-change.
-        let mut interrupts = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::interrupt(),
-        )
-        .map_err(|e| CliError::internal(format!("cannot install an interrupt handler: {e}")))?;
-        let task = tokio::spawn(async move {
-            if interrupts.recv().await.is_some() {
-                // Restored *before* the message is written: a second Ctrl-C
-                // arriving during that write would otherwise still be caught by
-                // tokio's handler and swallowed, and the escape hatch has to
-                // work on the first try.
-                restore_default_interrupt();
-                eprintln!("\npostvec: {message}");
+        {
+            let mut state = GUARD.lock().expect("interrupt guard state");
+            if state.message.is_some() {
+                return Err(CliError::internal(
+                    "a Ctrl-C guard is already active; overlapping critical sections are a bug",
+                ));
             }
-        });
-        Ok(Self { task })
+            state.message = Some(message.into());
+            state.warned = false;
+        }
+        if !LISTENER_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            // Registered here, synchronously, *before* returning: registering
+            // inside the spawned task would leave a window between `hold()`
+            // returning and the task first being polled, during which a SIGINT
+            // still has default handling and would terminate mid-change.
+            let mut interrupts = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::interrupt(),
+            )
+            .map_err(|e| {
+                GUARD.lock().expect("interrupt guard state").message = None;
+                LISTENER_STARTED.store(false, std::sync::atomic::Ordering::SeqCst);
+                CliError::internal(format!("cannot install an interrupt handler: {e}"))
+            })?;
+            tokio::spawn(async move {
+                while interrupts.recv().await.is_some() {
+                    let guidance = {
+                        let mut state = GUARD.lock().expect("interrupt guard state");
+                        match state.message.clone() {
+                            Some(message) if !state.warned => {
+                                state.warned = true;
+                                Some(message)
+                            }
+                            _ => None,
+                        }
+                    };
+                    match guidance {
+                        Some(message) => eprintln!("\npostvec: {message}"),
+                        // No guard held, or already warned: die the way an
+                        // unhandled SIGINT would, with the right exit status.
+                        None => {
+                            restore_default_interrupt();
+                            unsafe {
+                                libc::raise(libc::SIGINT);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        Ok(Self(()))
     }
 }
 
 impl Drop for InterruptGuard {
     fn drop(&mut self) {
-        self.task.abort();
-        // Aborting the receiver does not undo tokio's process-wide handler, so
-        // the disposition is restored explicitly: outside the critical section
-        // Ctrl-C must terminate the way it normally would.
-        restore_default_interrupt();
+        // Disarm only. The listener and tokio's handler stay for the life of
+        // the process (see the type-level comment); an unguarded Ctrl-C is
+        // re-raised with default handling by the listener itself.
+        let mut state = GUARD.lock().expect("interrupt guard state");
+        state.message = None;
+        state.warned = false;
     }
 }
 
@@ -938,41 +977,46 @@ mod tests {
         ok && current.sa_sigaction == libc::SIG_DFL
     }
 
-    /// The whole guard lifecycle, with a real signal.
+    /// The whole guard lifecycle, with real signals.
     ///
-    /// The property that matters: after the guard reacts to one interrupt, the
-    /// default disposition is already back, so a second Ctrl-C — including one
-    /// arriving while the message is still being written — terminates rather
-    /// than being swallowed. Only one signal is sent, because a second would
-    /// (correctly) kill the test binary; the restored disposition is what
-    /// proves it would.
+    /// The properties that matter: an armed guard survives one interrupt and
+    /// prints guidance instead of dying; a guard held while another is active
+    /// is refused; and a *second, later* guard genuinely protects again — the
+    /// regression behind this design was `uninstall --purge`, whose sweep is
+    /// the command's second critical section after the restart.
     ///
-    /// One test rather than several, because a guard is single-use per process.
+    /// One test rather than several, because the listener is process-wide and
+    /// the steps only make sense in order. No interrupt is raised while
+    /// disarmed: the listener would re-raise it with default handling and
+    /// (correctly) kill the test binary.
     #[tokio::test]
-    async fn an_interrupt_guard_arms_reacts_and_hands_back_control() {
+    async fn interrupt_guards_warn_survive_and_rearm() {
+        fn warned() -> bool {
+            GUARD.lock().unwrap().warned
+        }
+        async fn wait_for_warning() {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !warned() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(warned(), "the listener never consumed the interrupt");
+        }
+
         assert!(
             interrupt_is_default(),
-            "nothing should be handling SIGINT before the guard"
+            "nothing should be handling SIGINT before the first guard"
         );
         let guard = InterruptGuard::hold("a change is in progress").unwrap();
         assert!(
             !interrupt_is_default(),
             "while held, the guard must be the one handling SIGINT"
         );
-
-        // A second guard cannot re-arm, so it must say so rather than pretend.
+        // Overlapping guards are refused: the second would share one warning
+        // budget with the first and mislead both callers.
         assert!(InterruptGuard::hold("another").is_err());
 
         unsafe { libc::raise(libc::SIGINT) };
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !interrupt_is_default() && std::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(
-            interrupt_is_default(),
-            "after the first interrupt the default disposition must be restored, so the \
-             second one is not swallowed"
-        );
+        wait_for_warning().await; // still alive: the interrupt only warned
 
         // And ordinary work still runs normally inside the critical section.
         let out = run(&Cmd::new("/bin/true"), Duration::from_secs(5))
@@ -980,7 +1024,18 @@ mod tests {
             .unwrap();
         assert!(out.ok());
         drop(guard);
-        assert!(interrupt_is_default());
+
+        // A later guard must arm for real, warning budget reset.
+        let guard = InterruptGuard::hold("a sweep is in progress").unwrap();
+        assert!(!warned());
+        unsafe { libc::raise(libc::SIGINT) };
+        wait_for_warning().await;
+        drop(guard);
+
+        // The handler deliberately stays installed for the life of the
+        // process; a disarmed interrupt is re-raised with default handling by
+        // the listener itself (not exercised here — it would kill the test).
+        assert!(!interrupt_is_default());
     }
 
     #[test]

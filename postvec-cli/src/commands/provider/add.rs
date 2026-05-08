@@ -499,8 +499,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         output.note(if scanned {
             "--acknowledge-in-use was not needed: no existing column is bound to these names"
         } else {
-            "--acknowledge-in-use acknowledged nothing: with --path there is no cluster to \
-             check, so no column was inspected"
+            "--acknowledge-in-use had no effect: with --path there is no cluster to check, \
+             and no column was inspected"
         });
     }
     plan::confirm_in_use_with(
@@ -993,7 +993,7 @@ fn probe_secret(key: &KeySpec, existing: Option<&ProviderFileDoc>) -> Result<Str
         KeySpec::File(path) => read_secret_file(path),
         KeySpec::Env(var) => std::env::var(var).map_err(|_| {
             CliError::precondition(format!(
-                "--api-key-env {var} is not set in this shell, so the key cannot be verified"
+                "--api-key-env {var} is not set in this shell; the key cannot be verified"
             ))
             .with_fix("export it here for the probe, or pass --no-verify")
         }),

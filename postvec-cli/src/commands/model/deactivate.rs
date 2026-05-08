@@ -187,8 +187,8 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
             "--acknowledge-in-use was not needed: no managed column loses its embedding route \
              to this change"
         } else {
-            "--acknowledge-in-use acknowledged nothing: with --path there is no cluster to \
-             check, so no column was inspected"
+            "--acknowledge-in-use had no effect: with --path there is no cluster to check, \
+             and no column was inspected"
         });
     }
     // The in-use gate runs before the ordinary confirmation, and before any
@@ -214,8 +214,8 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
             .await
             .map_err(|e| {
                 CliError::precondition(format!(
-                    "the embedded engine at {listen} is unreachable for unload ({e}); nothing \
-                     was changed, so the models are still active"
+                    "the embedded engine at {listen} is unreachable for unload ({e}); the \
+                     models were left active and nothing was changed"
                 ))
                 .with_fix(
                     "wait for the engine to finish starting and rerun; or stop the cluster and \
