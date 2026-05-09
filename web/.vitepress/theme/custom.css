@@ -1,0 +1,450 @@
+:root {
+  --pv-ink: #1a2330;
+  --pv-ink-soft: #3d4a58;
+  --pv-mute: #66707c;
+  --pv-paper: #f0f2ee;
+  --pv-paper-deep: #e4e8e2;
+  --pv-card: #f7f8f5;
+  --pv-rule: #c8cdc4;
+  --pv-mark: #228165;
+  --pv-field: #2c4a42;
+
+  --vp-c-brand-1: #228165;
+  --vp-c-brand-2: #1b6852;
+  --vp-c-brand-3: #145242;
+  --vp-c-brand-soft: rgb(34 129 101 / 12%);
+
+  --vp-c-bg: #f0f2ee;
+  --vp-c-bg-alt: #e4e8e2;
+  --vp-c-bg-elv: #f7f8f5;
+  --vp-c-bg-soft: #e8ebe6;
+
+  --vp-c-text-1: #1a2330;
+  --vp-c-text-2: #3d4a58;
+  --vp-c-text-3: #66707c;
+
+  --vp-c-divider: #c8cdc4;
+  --vp-c-gutter: #e4e8e2;
+  --vp-c-border: #c8cdc4;
+  --vp-c-border-soft: rgb(26 35 48 / 8%);
+
+  --vp-c-tip-1: #2c4a42;
+  --vp-c-tip-2: #233b35;
+  --vp-c-tip-3: #1b2e29;
+  --vp-c-tip-soft: rgb(44 74 66 / 8%);
+
+  --vp-c-warning-1: #8a4b12;
+  --vp-c-warning-2: #6e3c0e;
+  --vp-c-warning-soft: rgb(180 35 24 / 8%);
+
+  --vp-c-danger-1: #b42318;
+  --vp-c-danger-2: #8f1c13;
+  --vp-c-danger-soft: rgb(180 35 24 / 8%);
+
+  --vp-c-default-soft: rgb(34 129 101 / 10%);
+
+  --vp-sidebar-bg-color: #e8ebe4;
+  --vp-nav-bg-color: rgb(240 242 238 / 90%);
+  --vp-code-bg: rgb(34 129 101 / 12%);
+  --vp-code-color: #1a2330;
+  --vp-code-block-bg: #e8ebe6;
+  --vp-code-block-color: #1a2330;
+  --vp-code-copy-code-bg: #f0f2ee;
+  --vp-code-copy-code-hover-bg: #dde2da;
+  --pv-code-fg: #1a2330;
+  --pv-code-btn-border: rgb(26 35 48 / 14%);
+  --pv-code-btn-bg: #f0f2ee;
+  --pv-code-btn-fg: #3d4a58;
+  --vp-button-brand-bg: #2c4a42;
+  --vp-button-brand-hover-bg: #233b35;
+  --vp-button-brand-active-bg: #1b2e29;
+  --vp-button-brand-text: #f4f6f2;
+  --vp-button-brand-hover-text: #f4f6f2;
+
+  --vp-font-family-base: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --vp-font-family-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --pv-font-display: "IBM Plex Serif", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+
+  --vp-home-hero-name-color: #1a2330;
+  --vp-home-hero-name-background: none;
+}
+
+.dark {
+  --pv-ink: #e6eadf;
+  --pv-mark: #49d4a1;
+  --pv-field: #8fb3a6;
+
+  --vp-c-brand-1: #49d4a1;
+  --vp-c-brand-2: #6ee0b4;
+  --vp-c-brand-3: #34b88a;
+  --vp-c-brand-soft: rgb(73 212 161 / 16%);
+
+  --vp-c-bg: #12161c;
+  --vp-c-bg-alt: #0d1015;
+  --vp-c-bg-elv: #1a2028;
+  --vp-c-bg-soft: #1a2028;
+
+  --vp-c-text-1: #e6eadf;
+  --vp-c-text-2: #b4bdc8;
+  --vp-c-text-3: #7d8793;
+
+  --vp-c-divider: #2a323c;
+  --vp-c-gutter: #0d1015;
+  --vp-c-border: #2a323c;
+
+  --vp-sidebar-bg-color: #0e1217;
+  --vp-nav-bg-color: rgb(18 22 28 / 88%);
+  --vp-code-block-bg: #0d1116;
+  --vp-code-block-color: #d5dcd2;
+  --pv-code-fg: #dce3d6;
+  --pv-code-btn-border: rgb(255 255 255 / 14%);
+  --pv-code-btn-bg: rgb(255 255 255 / 6%);
+  --pv-code-btn-fg: #cdd6cc;
+  --vp-button-brand-bg: #8fb3a6;
+  --vp-button-brand-hover-bg: #a3c2b6;
+  --vp-button-brand-text: #12161c;
+  --vp-button-brand-hover-text: #12161c;
+  --vp-c-default-soft: rgb(73 212 161 / 20%);
+  --vp-code-bg: rgb(73 212 161 / 22%);
+  --vp-code-color: #e6eadf;
+}
+
+html,
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+html {
+  scroll-padding-top: calc(var(--vp-nav-height) + 1.5rem);
+}
+
+.VPNavBarTitle .title {
+  font-family: var(--pv-font-display);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.VPDoc h1,
+.VPDoc h2,
+.VPDoc h3 {
+  font-family: var(--pv-font-display);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--vp-c-text-1);
+}
+
+.VPDoc h1 {
+  font-size: 2.15rem;
+  line-height: 1.18;
+}
+
+.VPDoc h1::after {
+  content: "";
+  display: block;
+  width: 2.4rem;
+  height: 2px;
+  margin-top: 0.85rem;
+  background: var(--pv-mark);
+}
+
+.VPDoc h2 {
+  font-size: 1.38rem;
+  border-top: 1px solid var(--vp-c-divider);
+  padding-top: 1.5rem;
+}
+
+.VPDoc h3 {
+  font-size: 1.12rem;
+}
+
+.VPDoc .vp-doc p,
+.VPDoc .vp-doc li {
+  line-height: 1.68;
+}
+
+.VPDoc aside.VPDocAside {
+  font-size: 0.86rem;
+}
+
+.custom-block.tip,
+.custom-block.info,
+.custom-block.warning,
+.custom-block.danger,
+.custom-block.details {
+  border-radius: 0;
+  border: 1px solid var(--vp-c-divider);
+  border-left-width: 2px;
+  box-shadow: none;
+}
+
+.custom-block.tip {
+  border-left-color: var(--vp-c-tip-1);
+}
+
+.custom-block.warning {
+  border-left-color: var(--vp-c-warning-1);
+}
+
+.custom-block.danger {
+  border-left-color: var(--vp-c-danger-1);
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+  font-size: 0.92rem;
+}
+
+.vp-doc th,
+.vp-doc td {
+  border-color: var(--vp-c-divider);
+}
+
+.vp-doc th {
+  background: var(--vp-c-bg-soft);
+  font-weight: 600;
+}
+
+.vp-doc :not(pre) > code {
+  border-radius: 0;
+  background: var(--vp-code-bg);
+  color: var(--vp-code-color);
+  padding: 0.12em 0.32em;
+  border: 1px solid rgb(34 129 101 / 18%);
+}
+
+.dark .vp-doc :not(pre) > code {
+  border-color: rgb(73 212 161 / 28%);
+}
+
+.vp-doc .copy-cmd pre,
+.vp-doc .copy-cmd__text {
+  background: transparent;
+}
+
+html:not(.dark) .vp-doc div[class*="language-"] {
+  border: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc div[class*="language-"] {
+  border-radius: 0;
+}
+
+.vp-code-group {
+  margin: 1rem 0 1.25rem;
+}
+
+.vp-code-group .tabs {
+  border-radius: 0;
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  border-bottom: 0;
+  padding: 0 0.2rem;
+}
+
+.vp-code-group .tabs label {
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.vp-code-group .tabs label.active {
+  color: var(--vp-c-brand-1);
+  border-bottom-color: var(--vp-c-brand-1);
+}
+
+.vp-code-group div[class*="language-"] {
+  margin-top: 0;
+}
+
+html:not(.dark) .vp-doc div[class*="language-"] code {
+  color: var(--vp-code-block-color);
+}
+
+.VPNavBarTitle .title {
+  color: var(--vp-c-text-1);
+}
+
+.VPNavBarTitle .logo {
+  color: var(--vp-c-text-1);
+}
+
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .text {
+  font-size: 0.88rem;
+}
+
+.VPNavBarMenuLink.active {
+  color: var(--vp-c-brand-1) !important;
+  font-weight: 600;
+}
+
+.VPNavBarMenuLink.active::after {
+  background-color: var(--vp-c-brand-1) !important;
+  height: 2px;
+}
+
+.VPSidebarItem.is-active > .item .text {
+  color: var(--vp-c-brand-1) !important;
+  font-weight: 600;
+}
+
+.VPSidebarItem .indicator {
+  display: none;
+}
+
+.VPSidebarItem.level-0 > .item .text {
+  font-family: var(--pv-font-display);
+  font-weight: 500;
+}
+
+.Layout:has(.home-page) .VPContent {
+  padding-top: var(--vp-nav-height) !important;
+}
+
+.Layout:has(.home-page) .container,
+.Layout:has(.home-page) .content-container,
+.Layout:has(.home-page) .content {
+  max-width: none;
+}
+
+.Layout:has(.home-page) .aside {
+  display: none;
+}
+
+.Layout:has(.home-page) .VPFooter {
+  background: var(--vp-c-bg);
+}
+
+.expected {
+  margin: 1rem 0;
+  padding: 0.75rem 0.9rem;
+  border-left: 2px solid var(--vp-c-tip-1);
+  background: var(--vp-c-tip-soft);
+}
+
+.expected .label {
+  display: block;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vp-c-text-3);
+  margin-bottom: 0.3rem;
+}
+
+.dont {
+  margin: 1rem 0;
+  padding: 0.75rem 0.9rem;
+  border-left: 2px solid var(--vp-c-danger-1);
+  background: var(--vp-c-danger-soft);
+}
+
+.dont .label {
+  display: block;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vp-c-danger-1);
+  margin-bottom: 0.3rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Diagrams
+   ---------------------------------------------------------------------------
+   Inline SVG figures. Colours come from the VitePress semantic variables, all
+   of which already flip with the light/dark toggle, so one drawing serves both
+   themes — no second asset, no image swap, and the label text stays selectable
+   and searchable.
+   
+   Only `--pvd-link` and the low-opacity washes are stated per theme: the site
+   names no link colour, and an ink wash cannot be derived from a variable
+   whose own value changes.
+--------------------------------------------------------------------------- */
+
+:root {
+  --pvd-paper: var(--vp-c-bg);
+  --pvd-ink: var(--vp-c-text-1);
+  --pvd-muted: var(--vp-c-text-2);
+  --pvd-soft: var(--vp-c-text-3);
+  --pvd-rule: var(--vp-c-divider);
+  --pvd-accent: var(--vp-c-brand-1);
+  --pvd-accent-tint: var(--vp-c-brand-soft);
+
+  --pvd-link: #2f6690;
+  --pvd-wash: rgb(26 35 48 / 4%);
+  --pvd-store: rgb(26 35 48 / 6%);
+  --pvd-zone: rgb(26 35 48 / 2.5%);
+  --pvd-zone-rule: rgb(26 35 48 / 14%);
+}
+
+.dark {
+  --pvd-link: #79aed4;
+  --pvd-wash: rgb(230 234 223 / 5%);
+  --pvd-store: rgb(230 234 223 / 8%);
+  --pvd-zone: rgb(230 234 223 / 3.5%);
+  --pvd-zone-rule: rgb(230 234 223 / 16%);
+}
+
+.pvd {
+  margin: 1.75rem 0;
+}
+
+.pvd svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Surfaces. `s-mask` is the opaque underlay that keeps connectors from
+   bleeding through a translucent fill, and the backing for arrow labels. */
+.pvd .s-mask { fill: var(--pvd-paper); }
+.pvd .s-node { fill: var(--pvd-paper); stroke: var(--pvd-ink); stroke-width: 1; }
+.pvd .s-store { fill: var(--pvd-store); stroke: var(--pvd-muted); stroke-width: 1; }
+.pvd .s-ext { fill: var(--pvd-wash); stroke: var(--pvd-rule); stroke-width: 1; }
+.pvd .s-focal { fill: var(--pvd-accent-tint); stroke: var(--pvd-accent); stroke-width: 1; }
+.pvd .s-async {
+  fill: var(--pvd-wash);
+  stroke: var(--pvd-rule);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+.pvd .s-zone { fill: var(--pvd-zone); stroke: var(--pvd-zone-rule); stroke-width: 0.8; }
+.pvd .s-tag { fill: none; stroke-width: 0.8; }
+.pvd .s-tag-muted { stroke: var(--pvd-muted); opacity: 0.5; }
+.pvd .s-tag-ink { stroke: var(--pvd-ink); opacity: 0.4; }
+.pvd .s-tag-accent { stroke: var(--pvd-accent); opacity: 0.6; }
+
+/* Type. Sans for names a human reads, mono for anything technical. */
+.pvd text { font-family: var(--vp-font-family-base); }
+.pvd .t-name { font-size: 12px; font-weight: 600; fill: var(--pvd-ink); }
+.pvd .t-sub,
+.pvd .t-tag,
+.pvd .t-arrow,
+.pvd .t-zone { font-family: var(--vp-font-family-mono); }
+.pvd .t-sub { font-size: 9px; fill: var(--pvd-muted); }
+.pvd .t-tag { font-size: 7px; letter-spacing: 0.08em; fill: var(--pvd-muted); }
+.pvd .t-arrow { font-size: 8px; letter-spacing: 0.06em; fill: var(--pvd-soft); }
+.pvd .t-zone { font-size: 7px; letter-spacing: 0.14em; fill: var(--pvd-soft); }
+.pvd .t-accent { fill: var(--pvd-accent); }
+.pvd .t-ink { fill: var(--pvd-ink); }
+
+/* Connectors. Drawn before nodes so z-order puts them behind. */
+.pvd .c { fill: none; stroke: var(--pvd-muted); stroke-width: 1.2; }
+.pvd .c-accent { stroke: var(--pvd-accent); }
+.pvd .c-link { stroke: var(--pvd-link); }
+.pvd .c-dash { stroke-dasharray: 4 3; stroke-width: 1; }
+.pvd .c-rule { stroke: var(--pvd-zone-rule); stroke-width: 0.8; }
+.pvd .head { fill: var(--pvd-muted); }
+.pvd .head-accent { fill: var(--pvd-accent); }
+.pvd .head-link { fill: var(--pvd-link); }
