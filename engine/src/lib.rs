@@ -414,7 +414,7 @@ impl InferenceEngine {
             let mut paths_map = self.model_paths.write().unwrap();
             for (mut config, config_path) in configs_to_process {
                 let model_name = config.name.clone();
-                match (|| -> Result<(), EngineError> {
+                if let Err(e) = (|| -> Result<(), EngineError> {
                     let template_model = self.instantiate_model(&mut config, &config_path)?;
                     if !template_model.valid() {
                         log::warn!("  Model '{}' is invalid and will be skipped.", model_name);
@@ -458,10 +458,7 @@ impl InferenceEngine {
                     loaded_model_configs.push(config);
                     Ok(())
                 })() {
-                    Err(e) => {
-                        log::error!("  Failed to instantiate model '{}': {}", model_name, e)
-                    }
-                    Ok(_) => {}
+                    log::error!("  Failed to instantiate model '{}': {}", model_name, e);
                 }
             }
         }
