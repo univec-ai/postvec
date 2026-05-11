@@ -531,6 +531,10 @@ impl NinferenceService for EmbeddedService {
     }
 }
 
+// These helpers carry the tonic trait signature (`Result<_, Status>`) one
+// level down so the trait methods stay thin; newer clippy flags the error
+// variant as large, and the type is fixed by the wire contract.
+#[allow(clippy::result_large_err)]
 impl EmbeddedService {
     /// Provider path of `EmbedTexts`: the gateway, bounded by the
     /// per-provider semaphore and the caller's deadline, never by
