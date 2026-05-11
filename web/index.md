@@ -3,7 +3,7 @@ layout: page
 sidebar: false
 title: postvec
 titleTemplate: postvec
-description: A PostgreSQL extension for in-database embeddings, hybrid search and converting stored vectors between models.
+description: Full-text and semantic search in one call. Embedding and vector conversion inside the database with local models or via external providers.
 ---
 
 <HomePage>

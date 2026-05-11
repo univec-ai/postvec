@@ -2,7 +2,7 @@ export const SITE = {
   name: "postvec",
   title: "postvec",
   description:
-    "A PostgreSQL extension for in-database embeddings, hybrid search and converting stored vectors between models.",
+    "Full-text and semantic search in one call. Embedding and vector conversion inside the database with local models or via external providers.",
   url: "https://postvec.dev",
   github: "https://github.com/univec-ai/postvec",
   githubRepo: "univec-ai/postvec",
