@@ -49,6 +49,9 @@ pub mod models;
 pub mod net;
 pub mod state;
 
+// Generated code returns `Result<_, tonic::Status>`; newer clippy flags the
+// error variant as large, and that signature is tonic's to choose.
+#[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("ninference");
 }
