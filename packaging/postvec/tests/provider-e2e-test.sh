@@ -134,8 +134,8 @@ reload_providers() {
 # would be about an unknown process.
 serving_pid() {
     local mode needle
-    if (( EMBEDDED )); then mode=cmdline; needle="postvec launcher"
-    else mode=comm; needle="postvec-server"; fi
+    if (( EMBEDDED )); then mode="cmdline"; needle="postvec launcher"
+    else mode="comm"; needle="postvec-server"; fi
     docker exec -i "${SRV}" python3 - "${mode}" "${needle}" <<'PY'
 import os, sys
 mode, needle = sys.argv[1], sys.argv[2]

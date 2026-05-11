@@ -190,30 +190,19 @@ onBeforeUnmount(() => {
     <header class="hero">
       <div class="wrap hero__grid">
         <div class="hero__copy">
-          <p class="pill">PostgreSQL extension · pg 16 / 17 / 18</p>
-          <h1>
-            <em>Evergreen</em> hybrid search for PostgreSQL
-          </h1>
+          <h1>Evergreen hybrid search for PostgreSQL</h1>
           <p class="subhead">
-            Full-text and semantic search in one call. Embedding runs
-            inside the database with local models, or through hosted
-            providers. Stored vectors convert between model spaces in
-            place, OpenAI to Gemini, Cohere to Snowflake, with no
-            re-embedding.
-          </p>
-          <p class="lede">
-            postvec makes a text column semantic. It keeps a shadow
-            <code>pgvector</code> column in sync with the text, fuses
-            full-text and semantic search in one call and converts stored
-            vectors from one model space into another directly, without
-            re-embedding the source text.
+            Full-text and semantic search in one call. Embedding and
+            vector conversion inside the database with local models or
+            via external providers.
           </p>
           <div class="hero__cta">
             <a class="btn btn--go" :href="withBase('/docs/quickstart')">Quick start</a>
             <a class="btn" :href="withBase('/docs/')">Documentation</a>
           </div>
           <p class="hero__fine">
-            Local inference by default. No API key. PostgreSQL License.
+            Local inference by default. No API key. Compatible with
+            PostgreSQL 16, 17 and 18.
           </p>
         </div>
 
@@ -437,23 +426,98 @@ onBeforeUnmount(() => {
     </header>
 
     <!-- ============================================================ -->
+    <!-- Lock-in and what postvec does                                 -->
+    <!-- ============================================================ -->
+    <section class="band band--story" aria-labelledby="story-heading">
+      <div class="wrap">
+        <h2 id="story-heading" class="visually-hidden">
+          Vector lock-in and embedding debt
+        </h2>
+        <p class="story">
+          A knowledge base held as vectors is tied to the model that
+          produced them. Providers retire a model generation every year
+          or two, and each time that means re-embedding the corpus and
+          rebuilding the index. Semantic retrieval brings real hidden
+          costs, easy to miss initially.
+        </p>
+
+        <dl class="defs">
+          <div>
+            <dt>Vector lock-in</dt>
+            <dd>
+              The dependency between stored vectors and the model that
+              produced them. postvec can translate a search query into an
+              older model's space, so a deprecated index keeps answering
+              with no migration.
+            </dd>
+          </div>
+          <div>
+            <dt>Embedding debt</dt>
+            <dd>
+              The cost of changing that dependency later. postvec migrates
+              a vector store straight into a newer model's space, using
+              {{ SITE.conversionPairs }} conversion pairs from the UniVec
+              catalogue.
+            </dd>
+          </div>
+        </dl>
+
+        <p class="product">
+          postvec makes a text column semantic. It keeps a shadow
+          <code>pgvector</code> column in sync with the text, fuses
+          full-text and semantic search in one call and converts stored
+          vectors from one model space into another directly, without
+          re-embedding the source text.
+        </p>
+
+        <div class="pledges">
+          <article class="pledge">
+            <h3>Zero API keys</h3>
+            <p>
+              Swappable embedding models run locally, inside PostgreSQL or
+              on inference nodes you operate. Raw text stays on hosts you
+              control. Hosted providers are opt-in per column, and their
+              keys never enter the database.
+            </p>
+            <a :href="withBase('/docs/models/providers')">External providers</a>
+          </article>
+          <article class="pledge">
+            <h3>Evergreen knowledge bases</h3>
+            <p>
+              Convert existing vectors between embedding spaces through the
+              UniVec catalogue of {{ SITE.conversionPairs }} pairs. No
+              re-embedding, no shadow pipeline and search stays up while
+              the migration runs.
+            </p>
+            <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
+          </article>
+          <article class="pledge">
+            <h3>Deprecated spaces keep working</h3>
+            <p>
+              Bridge search embeds the query with a local model, then
+              converts that one vector into the stored space. An
+              <code>ada-002</code> index answers as if nothing changed.
+            </p>
+            <a :href="withBase('/docs/guides/bridge')">Search a retired space</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
     <!-- The SQL surface                                               -->
     <!-- ============================================================ -->
     <section class="band" aria-labelledby="sql-heading">
       <div class="wrap">
-        <p class="eyebrow">SQL</p>
         <h2 id="sql-heading">Enable, search, adopt, migrate.</h2>
-        <p class="prose">
-          Dedicated SQL functions per usage scenario. Each tab shows the
-          call, what it does and the expected result.
-        </p>
+        <p class="prose">Dedicated SQL functions per usage scenario.</p>
 
         <div class="try">
           <div class="try__head">
             <p class="try__label">Try it</p>
             <p class="try__hint">
-              One disposable container with PostgreSQL, pgvector, postvec
-              and the bundled MiniLM model. Tabs pick the major.
+              One container with PostgreSQL, pgvector, postvec and the
+              bundled MiniLM model.
             </p>
           </div>
           <PgSnippet id="docker-quickstart" />
@@ -512,84 +576,11 @@ onBeforeUnmount(() => {
     </section>
 
     <!-- ============================================================ -->
-    <!-- Why migrate matters                                          -->
-    <!-- ============================================================ -->
-    <section class="band" aria-labelledby="why-heading">
-      <div class="wrap">
-        <p class="eyebrow">Why the migrate tab matters</p>
-        <h2 id="why-heading">A vector store should not expire with its model.</h2>
-        <div class="prose">
-          <p>
-            A knowledge base held as vectors is tied to the model that
-            produced them. Providers retire a model generation every year
-            or two, and each time that means re-embedding the corpus and
-            rebuilding the index. Semantic retrieval brings two costs with
-            it that are easy to miss at the start.
-          </p>
-        </div>
-
-        <dl class="defs">
-          <div>
-            <dt>Vector lock-in</dt>
-            <dd>
-              The dependency between stored vectors and the model that
-              produced them. postvec can translate a search query into an
-              older model's space, so a deprecated index keeps answering
-              with no migration.
-            </dd>
-          </div>
-          <div>
-            <dt>Embedding debt</dt>
-            <dd>
-              The cost of changing that dependency later. postvec migrates a
-              vector store straight into a newer model's space, using
-              {{ SITE.conversionPairs }} conversion pairs from the UniVec
-              catalogue.
-            </dd>
-          </div>
-        </dl>
-
-        <div class="pledges">
-          <article class="pledge">
-            <h3>Zero API keys</h3>
-            <p>
-              Swappable embedding models run locally, inside PostgreSQL or
-              on inference nodes you operate. Raw text stays on hosts you
-              control. Hosted providers are opt-in per column, and their
-              keys never enter the database.
-            </p>
-            <a :href="withBase('/docs/models/providers')">External providers</a>
-          </article>
-          <article class="pledge">
-            <h3>Evergreen knowledge bases</h3>
-            <p>
-              Convert existing vectors between embedding spaces through the
-              UniVec catalogue of {{ SITE.conversionPairs }} pairs. No
-              re-embedding, no shadow pipeline, and search stays up while
-              the migration runs.
-            </p>
-            <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
-          </article>
-          <article class="pledge">
-            <h3>Deprecated spaces keep working</h3>
-            <p>
-              Bridge search embeds the query with a local model, then
-              converts that one vector into the stored space. An
-              <code>ada-002</code> index answers as if nothing changed.
-            </p>
-            <a :href="withBase('/docs/guides/bridge')">Search a retired space</a>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============================================================ -->
-    <!-- Documentation map                                             -->
+    <!-- Documentation                                                 -->
     <!-- ============================================================ -->
     <section class="band" aria-labelledby="map-heading">
       <div class="wrap">
-        <p class="eyebrow">Find your page</p>
-        <h2 id="map-heading">The documentation map.</h2>
+        <h2 id="map-heading">Documentation</h2>
         <div class="dir">
           <div class="dir__card">
             <h3>Get running</h3>
@@ -645,15 +636,13 @@ onBeforeUnmount(() => {
     <!-- ============================================================ -->
     <section class="band band--last" aria-labelledby="know-heading">
       <div class="wrap">
-        <p class="eyebrow">Worth knowing before you start</p>
-        <h2 id="know-heading" class="visually-hidden">Requirements and licensing</h2>
-        <div class="prose prose--wide">
+        <h2 id="know-heading">Requirements</h2>
+        <div class="know">
           <p>
             You need PostgreSQL 16, 17 or 18 on a host where you can set
             <code>shared_preload_libraries</code>. A restart is part of
-            first-time setup. Managed services that forbid the setting (RDS,
-            Aurora) cannot run the worker. Vectors fill after commit, not
-            inside the inserting transaction.
+            first-time setup. Vectors fill after commit, not inside the
+            inserting transaction.
           </p>
           <p>
             Inference runs embedded in PostgreSQL or on remote
@@ -747,29 +736,6 @@ dd code {
   align-items: center;
 }
 
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin: 0 0 1.35rem;
-  padding: 0.3rem 0.8rem;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: var(--home-radius);
-  background: var(--vp-c-bg-elv);
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.02em;
-  color: var(--pv-field);
-}
-
-.pill::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--pv-mark);
-}
-
 h1 {
   margin: 0;
   font-family: var(--pv-font-display);
@@ -780,25 +746,11 @@ h1 {
   text-wrap: balance;
 }
 
-h1 em {
-  font-style: italic;
-  font-weight: 400;
-  color: var(--pv-mark);
-}
-
 .subhead {
   max-width: 34em;
   margin: 1.25rem 0 0;
   font-size: 1.08rem;
   line-height: 1.55;
-  color: var(--vp-c-text-2);
-}
-
-.lede {
-  max-width: 34em;
-  margin: 1rem 0 0;
-  font-size: 0.98rem;
-  line-height: 1.65;
   color: var(--vp-c-text-2);
 }
 
@@ -1036,15 +988,7 @@ h1 em {
 
 .band--last { border-bottom: 0; padding-bottom: 4.5rem; }
 
-.eyebrow {
-  margin: 0 0 0.6rem;
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.7rem;
-  font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--pv-mark);
-}
+.band--story { padding: 4.25rem 0; }
 
 .home-page h2 {
   margin: 0;
@@ -1072,9 +1016,38 @@ h1 em {
   color: var(--vp-c-text-2);
 }
 
-.prose--wide { max-width: 48em; margin-top: 0.4rem; }
 .prose p { margin: 0; }
 .prose p + p { margin-top: 0.75rem; }
+
+.story {
+  max-width: none;
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.7;
+  color: var(--vp-c-text-1);
+}
+
+.product {
+  max-width: none;
+  margin: 2.5rem 0 0;
+  font-size: 1.05rem;
+  line-height: 1.7;
+  color: var(--vp-c-text-1);
+}
+
+.know {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.5rem 2.25rem;
+  margin-top: 1.25rem;
+}
+
+.know p {
+  margin: 0;
+  color: var(--vp-c-text-2);
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
 
 .note {
   margin: 1.25rem 0 0;
@@ -1130,18 +1103,18 @@ h1 em {
 .tabs__bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0;
+  border-bottom: 1px solid var(--vp-c-divider);
 }
 
 .tabs__tab {
   appearance: none;
-  position: relative;
-  top: 1.5px;
-  padding: 0.55rem 1.05rem;
-  border: 1.5px solid var(--vp-c-divider);
-  border-bottom: 0;
-  border-radius: 4px 4px 0 0;
-  background: var(--vp-c-bg-elv);
+  padding: 0.7rem 1.15rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  border-radius: 0;
+  background: transparent;
   color: var(--vp-c-text-2);
   font-family: var(--vp-font-family-mono);
   font-size: 0.84rem;
@@ -1153,17 +1126,14 @@ h1 em {
 .tabs__tab:focus-visible { color: var(--vp-c-text-1); }
 
 .tabs__tab.is-active {
-  border-color: var(--home-ink-line);
-  background: var(--vp-code-block-bg);
   color: var(--vp-c-text-1);
+  border-bottom-color: var(--vp-c-text-1);
 }
 
 .tabs__panel {
   display: grid;
   grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
   min-height: 17rem;
-  border: 1.5px solid var(--home-ink-line);
-  border-radius: 0 var(--home-radius) var(--home-radius) var(--home-radius);
   background: var(--vp-code-block-bg);
   overflow: hidden;
 }
@@ -1193,7 +1163,7 @@ h1 em {
 
 .tabs__why {
   padding: 1.5rem 1.6rem;
-  border-left: 1.5px solid var(--home-ink-line);
+  border-left: 1px solid var(--vp-c-divider);
   background: var(--vp-c-bg-elv);
   font-size: 0.92rem;
   line-height: 1.6;
@@ -1229,8 +1199,8 @@ h1 em {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1.5rem 2.5rem;
-  max-width: 56rem;
-  margin: 1.6rem 0 0;
+  max-width: none;
+  margin: 2rem 0 0;
 }
 
 .defs > div {
@@ -1259,7 +1229,7 @@ h1 em {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1.75rem;
-  margin-top: 2.5rem;
+  margin-top: 3rem;
 }
 
 .pledge {
@@ -1336,8 +1306,8 @@ h1 em {
   .hero { padding-top: 2.75rem; }
   .hero__grid { grid-template-columns: minmax(0, 1fr); gap: 2.25rem; }
   .tabs__panel { grid-template-columns: minmax(0, 1fr); min-height: 0; }
-  .tabs__why { border-left: 0; border-top: 1.5px solid var(--home-ink-line); }
-  .pledges, .dir { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .tabs__why { border-left: 0; border-top: 1px solid var(--vp-c-divider); }
+  .pledges, .dir, .know { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
   .defs { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 }
 
@@ -1346,8 +1316,7 @@ h1 em {
   .band { padding: 2.75rem 0; }
   .topo { padding: 1rem 0.75rem 0.75rem; }
   .topo__cap p { font-size: 0.82rem; }
-  .tabs__bar { gap: 0.25rem; }
-  .tabs__tab { padding: 0.5rem 0.8rem; font-size: 0.78rem; }
+  .tabs__tab { padding: 0.55rem 0.85rem; font-size: 0.78rem; }
   .tabs__code { padding: 0.35rem 0.25rem; }
   .tabs__code :deep(pre) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .tabs__why { padding: 1.15rem 1rem; }

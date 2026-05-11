@@ -299,6 +299,10 @@ impl NinferenceService for InferenceService {
     }
 }
 
+// These helpers carry the tonic trait signature (`Result<_, Status>`) one
+// level down so the trait methods stay thin; newer clippy flags the error
+// variant as large, and the type is fixed by the wire contract.
+#[allow(clippy::result_large_err)]
 impl InferenceService {
     async fn embed_texts_inner(
         &self,
