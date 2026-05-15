@@ -13,10 +13,9 @@ loads it and keeps it enabled across restarts.
 
 <PgSnippet id="model-pull" />
 
-:::: warning `pull` does not load the model
-The installed descriptor is written `enabled: false`. Until
-`model activate`, it is neither loaded now nor at the next PostgreSQL
-restart.
+:::: warning `pull` installs the model deactivated
+The installed descriptor is written `enabled: false`. `model activate`
+loads it and keeps it enabled across restarts.
 ::::
 
 :::: tip Expected
@@ -75,12 +74,11 @@ the engine reads at **every** start, so neither is undone by a PostgreSQL
 restart. No GUC and no catalogue is involved.
 
 - `activate NAME` enables the model's **deactivated dependency closure** with
-  it. The engine refuses to load a closure containing a deactivated model, and
-  a restart would not make one resident either, so enabling only the named root
-  would activate nothing usable.
+  it. The engine loads a closure only when every member is enabled, so
+  enabling only the named root would activate nothing usable.
 - A bare `activate` (or `--all`) means every eligible CLI-installed model.
-- `deactivate` has **no `--all`**: turning every model off in one flag is how
-  search goes down by accident.
+- `deactivate` has no `--all`. Turning every model off in one flag would
+  take search down in a single step.
 - `deactivate` unloads first, then flips, so "deactivate returned an error"
   means "still on". `activate` flips first, then loads.
 - `--path DIR` flips descriptors only: no engine, no database. That is the
@@ -89,8 +87,8 @@ restart. No GUC and no catalogue is involved.
   named in an explicit `postvec.embedded_models` (a listed model that is
   disabled fails engine **startup**, so change the list first).
 - `deactivate` and `rm` refuse a model another **enabled** model depends on,
-  unless `--force`. Deactivating does **not** cascade to a model's own
-  dependencies: they stay active, and turning them off too is your call.
+  unless `--force`. Dependencies of the deactivated model stay active;
+  turn them off separately if you want that.
 
 ### Columns that would lose their embedding route
 
@@ -112,7 +110,8 @@ converter into that space plus `embed-bridge`, neither of which carries
 the target's name. The resolver matches a direct embed model for the
 space, or a converter into it whose source space is embeddable, through
 `embed-bridge`. Deactivating any leg of that route requires
-acknowledgement; a surviving second route into the same space does not.
+acknowledgement. A surviving second route into the same space needs
+none.
 
 Interactively, type the model names back exactly as the prompt prints them
 (separators and quotes are normalized). Non-interactively, pass
@@ -145,7 +144,8 @@ sudo postvec model rm baai-bge-m3 --dry-run
   the same in-use acknowledgement as `deactivate`. The model unloads before
   deletion.
 
-`rm` does not modify stored database vectors, and neither does `deactivate`.
+`rm` and `deactivate` change files and engine state. Stored vectors stay
+in the database.
 
 ## Terms
 
@@ -155,7 +155,8 @@ sudo postvec model rm baai-bge-m3 --dry-run
 | `notice` | Confirm interactively, or `--accept-license ID@VERSION` |
 | `organization` | Cannot be accepted locally |
 
-`--yes` confirms the mutation but does not accept licence terms.
+`--yes` confirms the mutation. Licence terms still need `--accept-license`
+(or an interactive confirm) when the policy requires it.
 
 ## Remote mode
 
@@ -165,15 +166,14 @@ sudo postvec --cluster 18/main model pull baai-bge-m3 --dry-run
 ```
 
 :::: tip Expected
-The second command returns an error because files on the database host
-would not change the remote fleet. Model changes must occur through
-a `postvec-server` node, or through `--path` on a standalone root.
+The second command returns an error. In remote mode, model files belong
+on each `postvec-server` node (or on a standalone root via `--path`).
 ::::
 
 ## Credential scope
 
 :::: danger Credentials are scoped to the effective user
 After a non-root `login`, a command run through `sudo` requires a
-separate `sudo postvec login` or `--api-key-file`. Invalid credentials
-do not fall back to public access.
+separate `sudo postvec login` or `--api-key-file`. An invalid credential
+returns an error.
 ::::

@@ -14,7 +14,7 @@ unchanged. `search()` embeds the query with an available open model,
 converts that one vector to ada-002 space, then runs pgvector and
 full-text search against the existing table.
 
-`search()` selects the bridge route. There is no extra function.
+`search()` selects the bridge route.
 
 ## Route resolution
 
@@ -37,7 +37,6 @@ Resolution is deterministic:
 
 If a direct embed route becomes available later, it takes precedence
 after the next model refresh. The resolved route is inventory state.
-postvec does not persist it in the table registry.
 
 :::: warning A provider key ends the bridge
 Configuring an [external provider](/docs/models/providers) for the stored
@@ -47,11 +46,10 @@ provider add` lists the affected columns and requires an acknowledgement
 before it writes the file.
 ::::
 
-:::: info Hosted converters do not supply a bridge
-A [UniVec hosted converter](/docs/models/univec) can serve a direct
-`migrate()` or `convert()` route. It cannot back writes or query embedding,
-and it cannot act as the converter in an `embed-bridge` route. Embed-bridge
-resolution runs inside the local engine.
+:::: info Hosted converters are direct routes
+A [UniVec hosted converter](/docs/models/univec) serves `migrate()` or
+`convert()`. Embed-bridge resolution runs inside the local engine and
+uses local models.
 ::::
 
 ## 1. Verify the stored space
@@ -72,10 +70,9 @@ SELECT name, model_type, source_model, target_model, target_dim
  ORDER BY model_type, name;
 ```
 
-:::: warning Provenance cannot be inferred from the bytes
+:::: warning Provenance is an operator assertion
 Matching `vector(1536)` only rules out models with another dimension.
-It does not prove that ada-002 produced the vectors. An incorrect
-model assertion yields plausible but invalid ranks.
+An incorrect model assertion yields plausible but invalid ranks.
 ::::
 
 ## 2. Adopt without rewriting
@@ -109,8 +106,9 @@ SELECT postvec.adopt(
 );
 ```
 
-Observed mode can search but does not synchronize future rows. See
-[`adopt()`](/docs/guides/adopt) before migrating an observed entry.
+Observed mode can search. Future writes stay the application's
+responsibility. See [`adopt()`](/docs/guides/adopt) before migrating an
+observed entry.
 
 ## 3. Search the adopted column
 
@@ -129,8 +127,8 @@ SELECT d.id, d.body,
 ```
 
 :::: tip Expected
-The adopted column is not rewritten and `owns_vector_column` remains
-false. Semantic ranks are present, and the query vector has the stored
+Stored bytes stay as they are and `owns_vector_column` remains false.
+Semantic ranks are present, and the query vector has the stored
 target dimension (1536 for classic ada-002).
 ::::
 
@@ -173,9 +171,8 @@ sudo postvec doctor --database app --deep
 
 `pull` installs the closure deactivated. `activate` on the converter
 enables its deactivated dependencies with it (the embed model and the
-`embed-bridge` executor). The engine refuses to load a chain that
-contains a deactivated member, and a restart would not make one
-resident either.
+`embed-bridge` executor). The engine loads a chain only when every
+member is enabled.
 
 Not every source/target pair is present in the public subset. The
 private catalogue holds the broader conversion inventory.
@@ -183,8 +180,8 @@ private catalogue holds the broader conversion inventory.
 On **remote**, models are administered on the `postvec-server` nodes;
 local `postvec model pull` is refused. At least one node must host the
 complete embed model, converter and bridge chain. Pieces discovered on
-different nodes do not form an executable route. Missing-chain errors
-are failover-eligible, so postvec can try another configured endpoint.
+different nodes stay separate. Missing-chain errors are
+failover-eligible, so postvec can try another configured endpoint.
 
 After any inventory change:
 
@@ -196,8 +193,8 @@ SELECT name, model_type, source_model, target_model, target_dim
  ORDER BY model_type, name;
 ```
 
-`refresh_models()` is administrative and is not executable by PUBLIC
-without an explicit grant.
+`refresh_models()` is administrative. Grant it explicitly if an
+application role must call it.
 
 ## Latency and timeouts
 

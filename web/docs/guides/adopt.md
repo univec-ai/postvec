@@ -47,8 +47,7 @@ invalid vectors without an explicit error.
 | `backfill_mode` | `queue` | `cursor` refused with `all` |
 | others | same as `enable()` | distance, FTS, format, index_mode |
 
-`sync` and `backfill` are independent. Neither is derived from the
-other.
+`sync` and `backfill` are independent options.
 
 ## Observed (read-only) adoption
 
@@ -90,9 +89,8 @@ A `halfvec` refusal includes an
 
 ## Teardown
 
-Because postvec did not create the column,
 `disable(drop_column => true)` and `uninstall(drop_columns => true)`
-leave it in place.
+leave an adopted column in place.
 
 :::: danger The source model must be known
 An incorrect model assertion produces plausible but invalid ranks.

@@ -6,8 +6,7 @@ description: Dead-letter inspection and re-drive with retry_dead().
 # Retry dead jobs
 
 Permanent failures and exhausted retries land in `postvec.jobs_dead`.
-They do not retry on their own. Read `last_error`, fix the cause, then
-re-drive.
+Read `last_error`, fix the cause, then re-drive with `retry_dead()`.
 
 <figure class="pvd">
 <svg viewBox="0 0 656 300" role="img" aria-labelledby="pvd-jobs-title pvd-jobs-desc">
@@ -85,20 +84,20 @@ SELECT postvec.retry_dead(
 ```
 
 :::: tip Expected
-The return value is **dead rows consumed**, not queue rows inserted.
-Several dead rows can share a PK; an already-pending job coalesces.
-Those rows leave `jobs_dead`.
+The return value is the number of **dead rows consumed**. Several dead
+rows can share a PK; an already-pending job coalesces. Those rows leave
+`jobs_dead`.
 ::::
 
 `retry_dead()` takes `regclass` (the one exception), so the invoking role's `search_path` resolves the table before the definer body runs. `'public.docs'` is unambiguous.
 
 ## Refusals
 
-`retry_dead()` will not:
+Refusals:
 
-- Touch another entry's dead rows. A mixed `dead_ids` list is validated atomically before locking; no locks are acquired if any identifier is invalid.
-- Run on a missing, disabled or migrating entry.
-- Copy error / attempt state onto the new job. The new job is clean.
+- A mixed `dead_ids` list is validated atomically before locking; no locks are acquired if any identifier is invalid or belongs to another entry.
+- The entry must be present, enabled and idle (no live migration).
+- The new job starts clean: previous error and attempt state stay on the dead row that was consumed.
 
 Authorization uses the invoking role (`SET ROLE` counts). `jobs_dead` is PUBLIC-SELECT; the re-drive function is the gated write.
 

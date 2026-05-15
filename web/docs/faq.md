@@ -5,12 +5,10 @@ description: Short answers to common postvec questions.
 
 # FAQ
 
-Short answers. Longer treatment lives in the linked pages.
+## Are managed PostgreSQL services supported?
 
-## Are RDS, Aurora, Cloud SQL and Azure Database supported?
-
-No, when the service will not load `shared_preload_libraries = 'postvec'`.
-A self-managed host or the [Docker image](/docs/install/docker) is required.
+postvec needs `shared_preload_libraries = 'postvec'`. A self-managed host
+or the [Docker image](/docs/install/docker) is required.
 
 ## What are embedding debt and vector lock-in?
 
@@ -39,9 +37,9 @@ inference side; PostgreSQL holds neither.
 ## Can UniVec convert stored vectors without a local converter?
 
 Yes. A `kind = "convert"` entry in `univec.toml` supplies a direct hosted
-route to `migrate()`. Stored vectors leave the inference host for conversion;
-source text is not re-embedded. Hosted converters do not participate in
-`embed-bridge` routes. See [UniVec hosted models](/docs/models/univec).
+route to `migrate()`. Stored vectors leave the inference host for conversion.
+Hosted converters are for `migrate()` / `convert()` only; embed-bridge
+uses local models. See [UniVec hosted models](/docs/models/univec).
 
 ## How do I add OpenAI to an existing cluster?
 
@@ -108,7 +106,8 @@ again.
 
 ## Does `model upgrade` rewrite stored vector columns?
 
-No. Only [`migrate()`](/docs/guides/migrate) or a re-embed does that.
+No. [`migrate()`](/docs/guides/migrate) or a re-embed changes stored
+vectors. `model upgrade` replaces model files.
 
 ## Is the extension AGPL?
 
@@ -118,8 +117,7 @@ will be stated before the first release.
 
 ## Which PostgreSQL versions are supported?
 
-16, 17 and 18. Install snippets on this site have tabs for each major.
-The selected major is remembered in the browser.
+16, 17 and 18.
 
 ## How do I find a function or topic?
 
@@ -129,7 +127,7 @@ service). Try `enable`, `migrate`, `shared_preload_libraries` or
 
 ## Does `apt remove` drop database data?
 
-No. Packages do not run `DROP EXTENSION` or delete user data. The
+No. Package removal deletes files. The
 [uninstall procedure](/docs/install/uninstall) removes the worker from a
 database.
 

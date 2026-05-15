@@ -1,18 +1,14 @@
 ---
 title: Quick start
-description: Hybrid search in a disposable postvec container. Pick PostgreSQL 16, 17 or 18.
+description: Hybrid search in a postvec container. Pick PostgreSQL 16, 17 or 18.
 ---
 
 # Quick start
 
-A disposable container with PostgreSQL, postvec and the bundled MiniLM
-model. The host cluster is not modified. No API key.
+A container with PostgreSQL, postvec and the bundled MiniLM model.
 
 Steps: start the image, confirm inference, enable a column, wait for
-vectors, index, search, remove the container.
-
-Tabs select the PostgreSQL major. The same choice is remembered on the
-installation pages.
+vectors, index, search, then remove the container.
 
 :::: info Release status
 Commands use the planned `0.1.0-1` image. Publication status is listed
@@ -142,11 +138,8 @@ source table without a dynamic record type.
 docker rm -f postvec
 ```
 
-That removes the disposable container. No host files or PostgreSQL
-cluster configuration were created.
-
 ## Next
 
-- [Install on a real cluster](/docs/install/)
-- [Which SQL call](/docs/guides/starting) - enable, adopt, bridge or migrate
+- [Install on a cluster](/docs/install/)
+- [SQL functions](/docs/guides/starting) - enable, adopt, bridge or migrate
 - [How the worker fills vectors](/docs/concepts/consistency)

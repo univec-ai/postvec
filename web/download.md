@@ -50,10 +50,8 @@ terms for the node will be stated before the first release.
 
 ## After the files are on disk
 
-Configure the cluster next. Packages leave PostgreSQL configuration,
-databases and the model inventory for that step.
+[Configure the cluster](/docs/install/setup) next.
 
-- [Configure the cluster](/docs/install/setup)
 - [Docker runtime notes](/docs/install/docker)
 - [Uninstall](/docs/install/uninstall)
 

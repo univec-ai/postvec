@@ -11,7 +11,7 @@ postvec [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
 A package install places files on disk. Cluster and database configuration
-happen only when the `postvec` CLI is invoked.
+happen through the `postvec` CLI.
 
 | Goal | Command |
 |---|---|
@@ -57,9 +57,8 @@ fallback: without a login
 they would write files as you and then be unable to refresh
 `postvec.models`. Use `--path DIR` for files only.
 
-`--database-url` alone does not authorize local configuration writes. Add
-`--cluster` only after both connections prove they are the same
-instance.
+`--database-url` selects a session. Local configuration writes still need
+`--cluster` after both connections prove they are the same instance.
 
 ## `setup`
 
@@ -86,7 +85,7 @@ sudo postvec setup --database app \
 | `--dry-run`, `--yes` | Preview / non-interactive |
 
 Owned file: `conf.d/99-postvec.conf`. Foreign or modified files are
-refused; `--yes` does not override.
+refused, including with `--yes`.
 
 ## `doctor`
 
@@ -103,8 +102,7 @@ sudo postvec doctor --format json --strict
 | `--path DIR` | Diagnose an engine root the cluster settings do not reveal, without writing it |
 | `--tls extension-compatible\|strict` | Self-signed tolerance vs a trusted chain |
 
-`doctor` is read-only. It does not run inference and does not call
-`refresh_models()`.
+`doctor` is read-only: host files, cluster settings and the heartbeat.
 
 ## `uninstall`
 
@@ -198,7 +196,7 @@ a remote-mode cluster; without it, such a cluster is refused with a message
 naming the server root. `POSTVEC_PROVIDERS_PATH` has the same meaning as
 `--path`. The postvec-server image sets it to the server root. An embed change through `--path` requires
 `--acknowledge-in-use` because there is no cluster to scan. Adding a converter
-does not send source text and does not require that acknowledgement. Removing
+leaves source text on the host, so that acknowledgement is skipped. Removing
 one can break an active migration, so `provider rm` requires it.
 
 `--acknowledge-in-use` is required (with `--yes`) when the change affects

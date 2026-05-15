@@ -22,7 +22,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `CREATE EXTENSION` cannot find pgvector | Install pgvector ≥ 0.8 for the **same** major |
 | `CREATE EXTENSION` is denied | Superuser; postvec is untrusted |
 | No advancing `worker_last_beat` | Preload, `postvec.database`, restart finished, worker slots, server log |
-| Jobs pile up with endpoint errors | Restore the inference nodes; an empty endpoint list does not burn attempts |
+| Jobs pile up with endpoint errors | Restore the inference nodes; an empty endpoint list leaves jobs pending |
 | Embedded engine will not start | Engine path, unversioned `libonnxruntime.so`, readable descriptors, loopback ports |
 | Search returns FTS only | Query embedding failed while degradation was enabled; restore inference or disable degradation |
 | Search is slow | No usable ANN index for the entry's distance |
@@ -31,7 +31,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | Migration is `awaiting_index` | Run `suggested_index_sql`, finalize again |
 | Rows in `jobs_dead` | Fix `last_error`, then `retry_dead()` |
 | Worker log wants `ALTER EXTENSION` | Library / SQL skew. Finish [upgrade](/docs/install/upgrade) |
-| `setup` refuses `99-postvec.conf` | Foreign or modified; `--yes` will not override |
+| `setup` refuses `99-postvec.conf` | Foreign or modified; `--yes` still refuses |
 | Container `doctor` finds no cluster | Expected. Healthcheck or a socket URL. |
 | Worker FATALs for a missing database | Name still in the **running** launcher list. `uninstall` or edit **and restart** |
 | `DROP DATABASE` is blocked | Worker holds a connection. `uninstall` then `dropdb --force` |
@@ -42,7 +42,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `provider ls` says `NOT served` | The host has not reloaded the connector file. Rerun a `provider` command or restart. `doctor` names which |
 | `provider ls` says the host **REFUSES** a file | The file will not load however often you reload. Fix what the line names. `ls` and `doctor` apply the loader's own rules |
 | A connector file is refused | Its mode, or a referenced key file's mode, grants group or other bits. `chmod 600`, then rotate the key |
-| `provider add` demands `--acknowledge-in-use` | Existing columns start sending source text to the provider, or `--path` has no cluster to scan. `--yes` never answers this |
+| `provider add` demands `--acknowledge-in-use` | Existing columns start sending source text to the provider, or `--path` has no cluster to scan. Pass that flag with `--yes` |
 | Provider jobs retry with a 401 | Bad or revoked key. Fix it, then `retry_dead()` for rows that already gave up |
 | UniVec provider jobs retry with a 402 | No available credit, or the key's spending limit is exhausted. Fix the account limit, then `retry_dead()` for dead rows |
 | A hosted converter exists but bridge search has no route | Provider converters are direct `migrate()` / `convert()` routes. Load the embed model, local converter and bridge executor on one engine |
@@ -61,10 +61,10 @@ is unavailable. Jobs remain pending without consuming retry attempts.
 
 ## Version skew
 
-Replacing `postvec.so` does not upgrade a database. Until
-`ALTER EXTENSION postvec UPDATE` the worker pauses and writes **no**
-heartbeat. Application backends are not gated. Application traffic
-should stay paused for that window.
+Replacing `postvec.so` parks the worker until
+`ALTER EXTENSION postvec UPDATE`. During that window the worker writes
+no heartbeat. Application backends still load the new library, so keep
+application traffic paused until every database is updated.
 
 ## Further diagnostics
 

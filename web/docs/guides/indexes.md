@@ -14,13 +14,12 @@ SELECT postvec.create_vector_index('public.docs', 'body');
 
 :::: tip Expected
 `status().has_vector_index` becomes true. If a usable index already
-exists (including one you built), the function does nothing and does
-not claim it.
+exists (including one you built), the function leaves it as-is and
+leaves ownership with you.
 ::::
 
 Only indexes **created by postvec** carry the extension-dependency stamp
-and are dropped at teardown. A name you chose yourself does not transfer
-ownership.
+and are dropped at teardown. A name you chose yourself stays yours.
 
 ## Modes (`index_mode` on `enable` / `adopt`)
 
@@ -71,7 +70,7 @@ The worker will `CREATE INDEX` (not concurrently) and stop embedding for
 the duration.
 ::::
 
-:::: danger Index ownership is based on creation, not naming
+:::: danger Index ownership follows who created the index
 User-created indexes remain user-owned. Dropping a postvec-created index
 from an `auto` entry causes the worker to rebuild it.
 ::::

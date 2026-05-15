@@ -11,7 +11,7 @@ triggers dump as ordinary database objects. A chunked destination, its
 identity sequence, join view, ownership-marker comments, RLS policy
 and triggers dump normally.
 
-It does **not** dump:
+Caches rebuilt after restore:
 
 - `postvec.models` (discovery cache)
 - the worker heartbeat
@@ -30,7 +30,7 @@ The restored cluster must load a version-compatible `postvec.so`. Triggers canno
 
 ## Logical replication
 
-Statement triggers do not fire for subscriber-applied changes. Run postvec on the **publisher**, or use `trigger_mode => 'row'` and understand that the subscriber still needs its own worker and models if independent embedding is required on the subscriber.
+Statement triggers fire on the publisher. Subscriber-applied changes skip them. Run postvec on the **publisher**, or use `trigger_mode => 'row'` and give the subscriber its own worker and models if it should embed independently.
 
 ## Configuration constraint
 

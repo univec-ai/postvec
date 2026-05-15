@@ -5,9 +5,8 @@ description: Asynchronous vector updates and readiness checks.
 
 # Eventual consistency
 
-Application writes commit first. The vector is filled later, by a worker
-that does not hold the application transaction's row lock while calling
-the engine.
+Application writes commit first. A background worker then fills the
+vector in its own session.
 
 `SELECT body_semantic` inside the inserting transaction is still NULL.
 Poll in a later transaction, or watch `status().pending_jobs`.
@@ -47,7 +46,7 @@ sudo postvec doctor --database app --deep
 ```
 
 `--deep` samples the heartbeat twice and checks that it advanced.
-`doctor` does not run inference or call `refresh_models()`.
+`doctor` is read-only: host files, cluster settings and the heartbeat.
 
 ## Failure handling
 

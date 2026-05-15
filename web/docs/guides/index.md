@@ -6,11 +6,11 @@ description: SQL operations from column registration through search and migratio
 # Usage overview
 
 Registration, search, filters and migration are SQL. The CLI configures
-the cluster and, in embedded mode, the model inventory. A
-[hosted embedding API](/docs/models/providers) is configured with
+the cluster and, in embedded mode, the model inventory. Configure a
+[hosted embedding API](/docs/models/providers) with
 `postvec provider add` first; the SQL after that is the same.
 
-Existing tables: [Which SQL call](/docs/guides/starting). New table: the
+Existing tables: [SQL functions](/docs/guides/starting). New table: the
 sequence below.
 
 SQL functions:
@@ -18,7 +18,7 @@ SQL functions:
 | Call | Does |
 |---|---|
 | `enable()` | Adds a shadow vector column and starts syncing |
-| `adopt()` | Takes over an existing vector column; does not rewrite it |
+| `adopt()` | Takes over an existing vector column; stored bytes stay |
 | `search()` | Hybrid full-text + vector ranking, one query |
 | `create_vector_index()` | Builds the ANN index `search()` wants |
 | `set_format()` | Changes the embedding template and refreshes every row |

@@ -87,7 +87,8 @@ and group/world-writable parent directories. Every write uses a same-directory t
 + `rename()` + `fsync`. A half-written `shared_preload_libraries` line
 is a cluster that will not start.
 
-`--yes` does not override a `Foreign` or `Modified` `99-postvec.conf`.
+A `Foreign` or `Modified` `99-postvec.conf` is refused, including with
+`--yes`.
 
 ## Untrusted extension
 

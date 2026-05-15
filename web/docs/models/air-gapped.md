@@ -38,6 +38,5 @@ replaced via `--path`.
 
 ## Withdrawn names
 
-A withdrawn model cannot be pulled again. Installed copies remain
-functional, but removal prevents subsequent restoration from the
-catalogue.
+A withdrawn model stays on disk if it is already installed. A later
+`pull` of that name fails.

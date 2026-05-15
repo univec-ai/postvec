@@ -47,9 +47,9 @@ includes `postvec`.
 there. CLI `--path` and `POSTVEC_PATH` name the same directory. The CLI
 merges `shared_preload_libraries` and owns `99-postvec.conf`.
 
-`pg_reload_conf()` does not apply POSTMASTER settings. A restart is required
-after a change to `database`, `mode`, `path`, `embedded_*`,
-`providers_path` or preload.
+POSTMASTER settings take effect on restart: `database`, `mode`, `path`,
+`embedded_*`, `providers_path` and preload. `pg_reload_conf()` covers the
+SIGHUP settings.
 
 `providers_path` names the directory of
 [external provider](/docs/models/providers) connector files. It holds a path.
@@ -57,5 +57,5 @@ The keys stay in the `0600` files under it, and no API key is ever stored in
 a GUC, a catalog table or a SQL argument. An absent directory means no
 provider-backed models, which is the default.
 
-Add databases through `setup`. A name that does not exist makes the worker
-fail and respawn about every 15 seconds.
+Add databases through `setup`. A missing name makes the worker fail and
+respawn about every 15 seconds.

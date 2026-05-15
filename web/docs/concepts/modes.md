@@ -124,29 +124,20 @@ others fails intermittently. `postvec-server status --fleet` is the
 check.
 
 `postvec-server` is a CPU or GPU inference node on the deployment
-network, shipped in the postvec repository. Every node in a fleet runs
-the same command and binds the same ports; models are files on disk that
-each node loads. Running one, and running several, is
-[Remote inference](/docs/server/). Remote mode gives you:
-
-- engine faults outside the PostgreSQL process
-- inference memory and compute off the database host
-- GPU inference, which embedded mode does not do
-- one engine serving several databases or services
+network. Every node in a fleet runs the same command and binds the same
+ports; models are files on disk that each node loads. Running one, and
+running several, is [Remote inference](/docs/server/).
 
 The gRPC port is plaintext and unauthenticated by design, so the nodes
 belong on a trusted private network. [External provider](/docs/models/providers)
-credentials, when required, stay on that side; they are never stored in
-PostgreSQL. Every node must carry the same connector files, for the same
-reason it must carry the same models. A UniVec hosted converter sends stored
-vectors from the node to UniVec. `--allow-unreachable` is only for staging
-configuration before the nodes exist.
+credentials, when required, stay on that side. Every node must carry the
+same connector files and the same models. A UniVec hosted converter sends
+stored vectors from the node to UniVec. `--allow-unreachable` is only for
+staging configuration before the nodes exist.
 
 If the remote engine is unavailable, jobs remain **pending** without
 consuming retry attempts. Lexical search can still run while
 `postvec.search_degrade_to_fts` is on (the default).
-
-Accounts and support: [univec.ai](https://univec.ai).
 
 ## Switching
 
@@ -158,8 +149,7 @@ sudo postvec setup --database app \
   --embedded --switch-mode
 ```
 
-Engine files already on the database host stay in place in remote mode
-and are unused.
+Engine files already on the database host stay in place in remote mode.
 
 ## Selection
 

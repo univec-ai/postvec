@@ -79,8 +79,8 @@ work) **inside the writer's transaction**. Bulk updates multiply the
 cost. Splitting and re-embedding stay asynchronous.
 
 Until refresh and embed jobs drain, the document is **missing from
-search**. The gap is a temporary false negative, never stale chunk
-text.
+search**. The gap is a temporary false negative: search will not rank
+stale chunk text.
 
 ```sql
 UPDATE public.articles SET body = 'a completely new short body' WHERE id = 1;

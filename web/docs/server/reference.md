@@ -11,14 +11,14 @@ setting does and where it can be set.
 
 ## Configuration precedence
 
-**Defaults < config file < environment < flags.** A flag that is absent does
-not clear a file value; a flag that is present always wins. No file is
+**Defaults < config file < environment < flags.** A present flag always wins.
+An omitted flag leaves the file or environment value in place. No file is
 required.
 
 The file is searched at `$root/postvec-server.json`,
 `/etc/postvec-server/config.json`, `/etc/postvec-server.json`, then
 `./postvec-server.json`, unless `--config` names one. In that case a missing
-file is an error rather than a fallback.
+file is an error.
 
 Unknown keys are a hard error, and the message names the key. Keys beginning
 with `//` are comments.
@@ -64,7 +64,7 @@ fine and throughput is not. Lower it when the box is shared.
 **`--max-resident-models`** bounds how many models the engine holds, counting
 whole dependency closures: a bridge model pulls its converters in with it.
 Resident models are the dominant memory cost on a node. Exceeding the ceiling
-is refused at boot rather than discovered halfway through loading.
+is refused at boot, before any model loads.
 
 ### `frontend`
 
@@ -75,8 +75,9 @@ overrides what `/config` and `postvec-server status` display and what peers
 learn.
 
 gRPC uses the advertised IP, membership uses the gossip socket, and
-postvec's discovery never reads `frontend`. The process does not discover
-its own public address.
+postvec's discovery ignores `frontend`. Set `--advertise` (and
+`--frontend` when the printed URL should differ) to the address peers
+and clients actually use.
 
 ## Health routes
 

@@ -5,8 +5,7 @@ description: providers.d format, key sources, loading rules, model names and doc
 
 # Connector files
 
-One TOML file per provider. The host serves what the file declares. It
-does not consult a catalogue at serve time.
+One TOML file per provider. The host serves what the file declares.
 
 Walkthrough: [external providers](/docs/models/providers).
 
@@ -177,7 +176,7 @@ not take part in `embed-bridge` execution.
   implausible `dim` or an unusable `base_url` skips the entire file,
   including its other models.
 - The schema is per connector. A field the chosen connector does not
-  read is refused rather than ignored.
+  read is refused.
 - `enabled = false` parses and serves nothing.
 - A public name may appear once. Two entries in one file: the file is
   refused. Two files claiming the same name: neither serves until one
@@ -291,7 +290,7 @@ Target resolution:
 
 | Target | Behaviour |
 |---|---|
-| `--path DIR` | Filesystem management of `DIR/providers.d`, or of `DIR` itself when it already is one. `DIR` must already exist. New files inherit its owner. An embed entry requires `--acknowledge-in-use`; a new converter does not |
+| `--path DIR` | Filesystem management of `DIR/providers.d`, or of `DIR` itself when it already is one. `DIR` must already exist. New files inherit its owner. An embed entry requires `--acknowledge-in-use`; a new converter skips that flag |
 | Embedded cluster | Manage `postvec.providers_path`, scan the databases for affected columns, reload the running host |
 | Remote cluster | Refused by name. The message points at `--path` |
 

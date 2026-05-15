@@ -1,25 +1,18 @@
 ---
 title: Choose an installation method
-description: Docker, package and source installation for PostgreSQL 16, 17 and 18. Files first, then setup.
+description: Docker, package and source installation for PostgreSQL 16, 17 and 18.
 ---
 
 # Choose an installation method
 
-Installation has two stages:
+Installation stages:
 
-1. **Deliver files** - an image, packages or a manual copy.
-2. **Configure the cluster** - `postvec setup`.
-
-Packages and images copy binaries and libraries. `postvec setup` then
-writes cluster configuration, creates the extension and starts the
-worker.
-
-After a package install, `postvec --version` confirms the files. Worker
-health is checked after `setup`.
+1. **Local install** - Docker image, packages or manual install.
+2. **Cluster configuration** - `postvec setup`.
 
 **Embedded mode** (`setup --embedded`) runs inference on the host.
-Remote mode talks to `postvec-server` nodes. The postvec repository
-ships one. See [embedded vs remote](/docs/concepts/modes) and
+**Remote mode** talks to `postvec-server` nodes. See
+[embedded vs remote](/docs/concepts/modes) and
 [remote inference](/docs/server/).
 
 :::: info Release status
@@ -33,16 +26,13 @@ artifacts.
 
 | Use case | Method |
 |---|---|
-| Test without modifying the host cluster | [Docker](/docs/install/docker) |
-| Persistent install on Debian / Ubuntu / EL9 | [Packages](/docs/install/packages) |
-| Iterate on extension code | [Source](/docs/install/source) |
+| Container | [Docker](/docs/install/docker) |
+| Debian / Ubuntu / EL9 | [Packages](/docs/install/packages) |
+| Manual | [Source](/docs/install/source) |
 
-Package-owned files and manually copied files must not share a path.
-`command -v postvec` should resolve to the intended binary
+Keep package-owned files and manually copied files on separate paths.
+`command -v postvec` should resolve to the binary you intend
 (`/usr/bin` or `/usr/local/bin`).
-
-Commands that mention a PostgreSQL major have tabs for **16, 17 and
-18**. The selected major is remembered across these pages.
 
 ## Requirements
 
@@ -52,11 +42,23 @@ Commands that mention a PostgreSQL major have tabs for **16, 17 and
 - Permission to **restart** PostgreSQL.
 - One background-worker slot for the launcher, plus one per configured
   database.
+- A host that can set `shared_preload_libraries = 'postvec'`.
 
-Not supported: **RDS, Aurora** and any host that forbids
-`shared_preload_libraries = 'postvec'`.
+## Confirm the files, then configure
 
-## After the files are in place
+```bash
+postvec --version
+```
 
-[Configure the cluster](/docs/install/setup). Later lifecycle:
-[Upgrade](/docs/install/upgrade) / [Uninstall](/docs/install/uninstall).
+Expected: the installed CLI version, for example `postvec 0.1.0`.
+
+Then [configure the cluster](/docs/install/setup). After setup:
+
+```bash
+sudo postvec doctor --database app --deep
+```
+
+Exit 0 means library and SQL versions match, the heartbeat advances and
+the on-disk, engine and SQL inventories agree.
+
+Later: [Upgrade](/docs/install/upgrade) / [Uninstall](/docs/install/uninstall).

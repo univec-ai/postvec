@@ -68,7 +68,7 @@ export default defineConfig({
           items: [
             { text: "Overview", link: "/docs/" },
             { text: "Quick start", link: "/docs/quickstart" },
-            { text: "Which SQL call", link: "/docs/guides/starting" },
+            { text: "SQL functions", link: "/docs/guides/starting" },
           ],
         },
         {
@@ -144,7 +144,7 @@ export default defineConfig({
             { text: "Eventual consistency", link: "/docs/concepts/consistency" },
             { text: "Embedded vs remote", link: "/docs/concepts/modes" },
             { text: "Vector lock-in", link: "/docs/concepts/lock-in" },
-            { text: "SQL functions", link: "/docs/reference/sql" },
+            { text: "SQL reference", link: "/docs/reference/sql" },
             { text: "CLI", link: "/docs/reference/cli" },
             { text: "GUCs", link: "/docs/reference/gucs" },
             { text: "Limits", link: "/docs/limits" },

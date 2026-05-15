@@ -14,7 +14,7 @@ with `--dry-run`. `DROP EXTENSION postvec CASCADE` is unsupported.
 | Remove postvec from one database, keep data | `sudo postvec uninstall --database app` |
 | Also drop postvec-created shadow columns | add `--drop-columns --acknowledge-data-loss --yes` |
 | Drop a chunk destination | SQL `disable(..., drop_destination => true)` **first** |
-| Reset a disposable DB and retry `setup` | [development reset](#development-reset) |
+| Reset a development database and retry `setup` | [development reset](#development-reset) |
 | Remove packages after SQL cleanup | [package removal](#package-removal) below |
 
 ## Default retention behavior
@@ -78,7 +78,7 @@ sudo postvec doctor --database app --deep
 restart. If `dropdb` ran first, rerun `uninstall` or edit
 `postvec.database` **and restart**. Reload is not enough: the list is
 POSTMASTER. Until the name is removed, the worker fails and respawns
-approximately every 15 seconds.
+about every 15 seconds.
 
 ## SQL-only teardown
 
@@ -105,8 +105,8 @@ sudo postvec uninstall --database app \
 
 ## Package removal
 
-After database teardown, packages may also be removed. This does not
-drop user data.
+After database teardown, packages may also be removed. User data stays
+in the database.
 
 <PgSnippet id="uninstall-packages" />
 

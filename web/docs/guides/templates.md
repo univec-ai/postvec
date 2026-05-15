@@ -36,13 +36,13 @@ new-template vectors.
 | `$$` | A literal `$` |
 | anything else | Literal |
 
-There is **no backslash processing**. `\n` is two characters. Newlines
-come from SQL string syntax (`E'\n'` or dollar-quoting).
+`\n` is two characters unless the SQL string itself interprets it.
+Newlines come from SQL string syntax (`E'\n'` or dollar-quoting).
 
 Limits: non-empty, <= 16 KiB, <= 64 distinct columns. Must reference
-the source column. Must **not** reference the vector column (that is a
-feedback loop). A chunked template must reference `$chunk` and must not
-reference the source column.
+the source column. Referencing the vector column is a feedback loop and
+is refused. A chunked template must reference `$chunk` and omit the
+source column.
 
 NULL context columns render as `''`. A NULL **source** renders SQL
 NULL, costs no inference and converges the vector to NULL.
@@ -73,7 +73,6 @@ Use `E'$title\n\n$body'` or dollar-quoting. In a plain SQL string, `\n`
 is a backslash and an `n`.
 ::::
 
-:::: danger Templates cannot reference the vector column
-The function rejects this because it would create a continuous
-re-enqueue loop.
+:::: danger The template cannot name the vector column
+That would create a continuous re-enqueue loop.
 ::::

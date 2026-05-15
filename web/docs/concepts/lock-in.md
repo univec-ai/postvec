@@ -17,7 +17,7 @@ invalid.
 
 Once the stored corpus, its ANN index and every query caller assume
 space A, the model is part of the data contract. That binding is
-**vector lock-in**.
+vector lock-in.
 
 ## Embedding debt
 

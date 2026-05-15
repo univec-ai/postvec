@@ -10,7 +10,7 @@ two with Reciprocal Rank Fusion. Matching primary keys come back as
 text, so the join works on any table shape.
 
 Wait until `pending_jobs = 0` before judging ranks. A row whose vector
-is still NULL can only match on the lexical leg.
+is still NULL matches on the lexical leg only.
 
 :::: code-group
 

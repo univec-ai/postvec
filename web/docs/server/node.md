@@ -96,7 +96,7 @@ for publication status.
 
 ### As a service
 
-The repository ships a systemd unit under `postvec-server/systemd/`. It runs
+A systemd unit lives under `postvec-server/systemd/`. It runs
 the process unprivileged, with a strict sandbox and a read-only model root.
 
 ## 5. Read the boot log

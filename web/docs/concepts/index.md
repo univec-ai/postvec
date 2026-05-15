@@ -5,8 +5,6 @@ description: Runtime shape, write path and common operational constraints.
 
 # How it works
 
-## Implementation details
-
 Vectors fill after commit. Automatic sync needs
 `shared_preload_libraries = 'postvec'` and a restart. Search without an
 ANN index is a sequential scan.
@@ -87,9 +85,8 @@ ANN index is a sequential scan.
 </figure>
 
 `CREATE EXTENSION` exposes the SQL surface immediately. Automatic sync
-still needs the preloaded launcher and a worker for that database. If
-`shared_preload_libraries` does not include `postvec`, there is no
-worker.
+needs `shared_preload_libraries = 'postvec'`, a restart and a worker
+for that database.
 
 ## Write path
 
