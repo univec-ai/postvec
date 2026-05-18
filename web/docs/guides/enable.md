@@ -117,7 +117,7 @@ Jobs are keyed by primary key. Tables without one are refused.
 The worker uses a separate session and cannot see temporary tables.
 ::::
 
-:::: danger Source text is visible to the bootstrap superuser
-The worker connects as the bootstrap superuser and bypasses RLS. A role
-that can read the table can also read the derived vector.
+:::: danger Source text is visible to the worker
+The worker connects as a superuser and bypasses RLS. A role that can
+read the table can also read the derived vector.
 ::::

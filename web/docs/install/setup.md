@@ -38,12 +38,12 @@ inventories.
 ::::
 
 `--model NAME` (repeatable) is an embedded preload allow-list. Omit it
-to scan-load every enabled descriptor.
+to load every enabled model.
 
 `--providers-path DIR` moves the [external provider](/docs/models/providers)
 connector directory. Omit it to keep `/etc/postvec/providers.d`. `setup
 --embedded` creates that directory empty (`0700`, cluster owner) if it is
-absent. An empty or missing directory is the zero-provider state.
+absent.
 
 ## Remote gRPC
 
@@ -161,8 +161,8 @@ adding the name to `postvec.database`, then restart.
 ## `doctor` summary
 
 `doctor` is read-only and runs about 40 checks, each with a
-remediation. `--deep` verifies that the heartbeat advanced and hashes
-CLI-installed model receipts. `--strict` fails on warnings.
-`--format json` is the automation surface. Exit 0 is clean.
+remediation. `--deep` verifies that the heartbeat advanced and that
+CLI-installed model files match their receipts. `--strict` fails on
+warnings. `--format json` is for scripts. Exit 0 is clean.
 
 Full flag list: [CLI reference](/docs/reference/cli).

@@ -92,8 +92,8 @@ Gate load balancers and compose healthchecks on `/ready`, and supervisors on
 `/health`. Confusing the two produces either a node that receives traffic
 before it can serve it, or a supervisor that restarts a node mid-drain.
 
-Boot warmup runs one throwaway prediction per embedding model, so `/ready`
-means the node answers at steady-state latency.
+Boot warmup runs one request per embedding model, so `/ready` means the
+node answers at normal latency.
 `--no-warmup` skips it, and `postvec_server_warmup_failures_total` counts what
 went wrong.
 

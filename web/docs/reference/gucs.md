@@ -18,7 +18,7 @@ includes `postvec`.
 | `http_endpoints` | - | SIGHUP |
 | `database` | - | **POSTMASTER** (comma-separated) |
 | `worker_enabled` | on | SIGHUP |
-| `poll_interval_ms` | 5000 | SIGHUP - empty-queue backstop; writers wake the worker at commit |
+| `poll_interval_ms` | 5000 | SIGHUP - idle poll; writers wake the worker at commit |
 | `batch_size` | 64 | SIGHUP (×4 = cursor chunk) |
 | `migrate_batch_size` | 256 | SIGHUP |
 | `embed_timeout_ms` | 30000 | SIGHUP |
@@ -37,7 +37,7 @@ includes `postvec`.
 | `heartbeat_interval_ms` | 30000 | SIGHUP - idle workers write no WAL between beats |
 | `mode` | `embedded` | **POSTMASTER** |
 | `path` | `/opt/postvec` | **POSTMASTER** |
-| `embedded_models` | - | **POSTMASTER** (empty = scan-load) |
+| `embedded_models` | - | **POSTMASTER** (empty = load every enabled model) |
 | `embedded_listen` | `127.0.0.1:33433` | **POSTMASTER** |
 | `embedded_http_listen` | `127.0.0.1:33434` | **POSTMASTER** |
 | `embedded_max_inflight` | 1 | **POSTMASTER** |

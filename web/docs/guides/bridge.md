@@ -31,12 +31,11 @@ Resolution is deterministic:
 2. Otherwise postvec chooses the lexicographically first local converter
    into that target whose source is directly embeddable, then uses an
    `embed-bridge` executor.
-3. If neither route exists, `search()` follows the configured
-   FTS-degradation policy. Administrative and write paths fail or retry
-   normally.
+3. If neither route exists, `search()` falls back to lexical results
+   (the default) or returns an error if `search_degrade_to_fts` is off.
 
 If a direct embed route becomes available later, it takes precedence
-after the next model refresh. The resolved route is inventory state.
+after the next model refresh.
 
 :::: warning A provider key ends the bridge
 Configuring an [external provider](/docs/models/providers) for the stored
@@ -180,8 +179,8 @@ private catalogue holds the broader conversion inventory.
 On **remote**, models are administered on the `postvec-server` nodes;
 local `postvec model pull` is refused. At least one node must host the
 complete embed model, converter and bridge chain. Pieces discovered on
-different nodes stay separate. Missing-chain errors are
-failover-eligible, so postvec can try another configured endpoint.
+different nodes stay separate. If one node is missing the chain, postvec
+tries the next configured endpoint.
 
 After any inventory change:
 

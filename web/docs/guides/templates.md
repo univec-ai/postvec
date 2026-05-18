@@ -5,8 +5,8 @@ description: Format strings for adding row context to embedded text.
 
 # Templates
 
-A template defines the text that is **embedded**. The source column
-stays the lifecycle anchor and the FTS input.
+A template defines the text that is **embedded**. The source column is
+still what full-text search uses.
 
 Use this when a short body needs title or other row context in the
 vector.
@@ -44,27 +44,26 @@ the source column. Referencing the vector column is a feedback loop and
 is refused. A chunked template must reference `$chunk` and omit the
 source column.
 
-NULL context columns render as `''`. A NULL **source** renders SQL
-NULL, costs no inference and converges the vector to NULL.
+NULL context columns render as `''`. A NULL **source** becomes a NULL
+vector, with no inference call.
 
-Triggers fire on a change to **any** referenced column. Text is
-rendered at claim time and is not stored on the job, so a re-driven job
-uses the current template.
+Triggers fire on a change to **any** referenced column. The template is
+applied when the worker embeds the row, so a retry uses the current
+template.
 
 ## `set_format()` is bulk maintenance
 
 The call takes `SHARE ROW EXCLUSIVE` (blocks writes) while it replaces
 triggers and enqueues every row. Treat it as a maintenance window.
-Comparison is **bytewise**: `$body` -> `${body}` is a real change.
+`$body` and `${body}` are different strings.
 
 Clear a template with `set_format(..., NULL)`.
 
 `migrate(strategy => 'reembed')` renders the template.
 `strategy => 'convert'` translates existing vectors.
 
-On `adopt(format => ...)` the template is also a provenance assertion
-about the vectors already stored. Use `backfill => 'all'` if that
-assertion is uncertain.
+On `adopt(format => ...)` the template describes how existing vectors
+were produced. Use `backfill => 'all'` if that is uncertain.
 
 ## Refused forms
 

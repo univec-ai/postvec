@@ -42,8 +42,8 @@ A model in `postvec.models` can also come from a connector file on the
 inference side. Those files declare embed models served by OpenAI, Gemini,
 Cohere, Mistral, AWS Bedrock, OpenRouter or UniVec. UniVec can also declare
 direct converters. They appear in the same cache with `model_type`, source
-and target names and dimensions. The connector file is the serving truth;
-there is no `pull` or `activate` step.
+and target names and dimensions. The connector file is what the host
+serves. There is no `pull` or `activate` step.
 
 The credential lives in that file, never in PostgreSQL.
 [External providers](/docs/models/providers) is the walkthrough;

@@ -248,10 +248,10 @@ A remote-mode cluster without `--path` is refused. The message names
 | What happened | Class | Effect |
 |---|---|---|
 | Network error, timeout, HTTP 408, 424, 429 or 5xx | Transient | Backoff and retry |
-| HTTP 401, 402 or 403 | Config | Retry. Failover-eligible across nodes. For UniVec, 402 means the account has no available credit |
-| Unknown model id at the provider | Config | Retry, failover-eligible |
-| Empty input, or a NUL | PoisonRow | Caught before the request. That row goes to `jobs_dead` |
-| Other HTTP 4xx, or a wrong count, dimension or index | Permanent | The batch is dead-lettered |
+| HTTP 401, 402 or 403 | Config | Retry. On remote, try another node. For UniVec, 402 means the account has no available credit |
+| Unknown model id at the provider | Config | Retry. On remote, try another node |
+| Empty input, or a NUL | Bad row | Caught before the request. That row goes to `jobs_dead` |
+| Other HTTP 4xx, or a wrong count, dimension or index | Permanent | The batch goes to `jobs_dead` |
 
 Config retries until `postvec.max_retries` (default 5), then
 dead-letters. Fix the key and re-drive with

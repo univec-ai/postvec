@@ -76,7 +76,7 @@ sudo postvec setup --database app \
 | `--grpc`, `--http` | Remote endpoints. gRPC order is round-robin |
 | `--embedded` | In-process inference |
 | `--path DIR` | Absolute engine root. Defaults to `/opt/postvec` |
-| `--model NAME` | Embedded preload allow-list; omit to scan-load |
+| `--model NAME` | Embedded preload allow-list; omit to load every enabled model |
 | `--providers-path DIR` | Move the [provider](/docs/models/providers) connector directory. Omit to keep `/etc/postvec/providers.d` |
 | `--embedded-grpc-listen`, `--embedded-http-listen` | Loopback only |
 | `--switch-mode` | Acknowledge remote <-> embedded; name every database |

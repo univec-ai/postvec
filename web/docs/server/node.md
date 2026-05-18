@@ -139,9 +139,8 @@ curl -sk https://127.0.0.1:22222/ready
 :::: tip Expected
 `status` prints the version, the engine root, the advertised addresses and one
 line per loaded model. `/ready` answers `200` once a model can serve a
-prediction, and `503` before that. Boot warmup runs one throwaway prediction
-per embedding model, so `/ready` means the node answers at steady-state
-latency.
+prediction, and `503` before that. Boot warmup runs one request per
+embedding model, so `/ready` means the node answers at normal latency.
 ::::
 
 Next: [connect PostgreSQL](/docs/server/connect).

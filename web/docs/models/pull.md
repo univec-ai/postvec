@@ -70,12 +70,12 @@ sudo postvec model deactivate baai-bge-m3 --yes    # off, and it stays off
 ```
 
 Both rewrite the `enabled` field of the installed descriptor, which
-the engine reads at **every** start, so neither is undone by a PostgreSQL
-restart. No GUC and no catalogue is involved.
+the engine reads at **every** start, so a restart keeps the same on/off
+state.
 
-- `activate NAME` enables the model's **deactivated dependency closure** with
-  it. The engine loads a closure only when every member is enabled, so
-  enabling only the named root would activate nothing usable.
+- `activate NAME` also enables the models it depends on. The engine loads
+  the whole set only when every member is enabled, so enabling only the
+  named model would load nothing usable.
 - A bare `activate` (or `--all`) means every eligible CLI-installed model.
 - `deactivate` has no `--all`. Turning every model off in one flag would
   take search down in a single step.

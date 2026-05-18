@@ -8,8 +8,7 @@ description: Source build and manual installation for PostgreSQL 16, 17 or 18.
 Build from source for a development tree. Persistent deployments should
 use [packages](/docs/install/packages).
 
-Keep package-owned files and manually copied files on separate paths.
-`command -v postvec` should resolve to the binary you intend.
+Don't overlay a source install on top of packages.
 
 ## Prerequisites
 

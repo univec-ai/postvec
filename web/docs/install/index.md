@@ -30,10 +30,6 @@ artifacts.
 | Debian / Ubuntu / EL9 | [Packages](/docs/install/packages) |
 | Manual | [Source](/docs/install/source) |
 
-Keep package-owned files and manually copied files on separate paths.
-`command -v postvec` should resolve to the binary you intend
-(`/usr/bin` or `/usr/local/bin`).
-
 ## Requirements
 
 - PostgreSQL **16, 17 or 18**, matching the artifact.

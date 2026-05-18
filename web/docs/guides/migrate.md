@@ -181,7 +181,7 @@ SELECT postvec.migration_abort(:migration_id);
 
 ## Observed entries
 
-An `adopt(sync => false)` entry has no write path. `migrate()` refuses it unless `observed_writes_quiesced => true`, with writes remaining stopped through finalization. Otherwise the watermark can miss updates.
+An `adopt(sync => false)` entry has no write path. `migrate()` refuses it unless `observed_writes_quiesced => true`, with writes remaining stopped through finalization. Otherwise later writes can be missed.
 
 ## Chunked entries
 

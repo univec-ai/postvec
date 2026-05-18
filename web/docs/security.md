@@ -73,9 +73,9 @@ destination and view.
 
 The column-scoped `PUBLIC INSERT (registry_id, pk_value)` on
 `postvec.jobs` is required for non-owner DML on enabled tables. The TRUNCATE
-purge and the shared chunk trigger
-functions are `SECURITY DEFINER` with a confused-deputy guard: the
-firing table must be the registry entry's source (or a partition).
+purge and the shared chunk trigger functions run as `SECURITY DEFINER`.
+They only accept a firing table that is the registry entry's source (or a
+partition).
 
 `embed` / `convert` / `refresh_models` are revoked from PUBLIC. `search`
 remains granted to PUBLIC.

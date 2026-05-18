@@ -43,8 +43,8 @@ keywords.
 ## A populated vector column
 
 `adopt()` registers the existing column and leaves stored bytes as they
-are. The `model` argument records provenance - a wrong name makes
-later search and conversion silently invalid.
+are. The `model` argument names the space those bytes came from. A
+wrong name makes later search and conversion silently invalid.
 
 ```sql
 SELECT postvec.adopt(
