@@ -98,6 +98,7 @@ load_versions() {
         BUILD_BASE_UBUNTU2404_DIGEST BUILD_BASE_EL9_DIGEST
         IMAGE_REPOSITORY IMAGE_STAGING_REPOSITORY SOURCE_REPOSITORY MAINTAINER VENDOR
         EXTRAS_METAPACKAGE
+        SERVER_IMAGE_REPOSITORY SERVER_LICENSE
     )
     local name
     for name in "${required[@]}"; do
@@ -167,7 +168,7 @@ token (lowercase alphanumerics, '.', '+' and '-', starting alphanumeric)
     # port), then one or more lowercase path components. No tag, no digest, no
     # whitespace, and nothing a shell would find interesting.
     local oci_ref='^([a-z0-9]+([.-][a-z0-9]+)*(:[0-9]{1,5})?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$'
-    for name in IMAGE_REPOSITORY IMAGE_STAGING_REPOSITORY; do
+    for name in IMAGE_REPOSITORY IMAGE_STAGING_REPOSITORY SERVER_IMAGE_REPOSITORY; do
         [[ "${!name}" =~ ${oci_ref} ]] \
             || die "versions.env: ${name} is not a plain container repository reference
 (got: ${!name})
@@ -177,6 +178,20 @@ the release interpolates it into registry commands that can write packages."
     [[ "${IMAGE_REPOSITORY}" != "${IMAGE_STAGING_REPOSITORY}" ]] \
         || die "versions.env: IMAGE_STAGING_REPOSITORY must differ from IMAGE_REPOSITORY.
 Staging exists so an untested image never appears where a user would find it."
+    # Three distinct names: the node's image is its own product, with its own
+    # tag scheme (`<release id>` and `latest`, no PostgreSQL major), and
+    # sharing either of the other two would put those tags where a user
+    # browsing the database image's tags would find them.
+    [[ "${SERVER_IMAGE_REPOSITORY}" != "${IMAGE_REPOSITORY}" \
+       && "${SERVER_IMAGE_REPOSITORY}" != "${IMAGE_STAGING_REPOSITORY}" ]] \
+        || die "versions.env: SERVER_IMAGE_REPOSITORY must differ from IMAGE_REPOSITORY and
+IMAGE_STAGING_REPOSITORY (got: ${SERVER_IMAGE_REPOSITORY})"
+    # An SPDX identifier, because it is written verbatim into package metadata
+    # that dpkg, rpm and lintian read, and compared verbatim with the crate's
+    # `license = "…"` by assert-versions.sh.
+    [[ "${SERVER_LICENSE}" =~ ^[A-Za-z0-9][A-Za-z0-9.+-]*$ ]] \
+        || die "versions.env: SERVER_LICENSE must be a single SPDX licence identifier
+(got: ${SERVER_LICENSE})"
     [[ "${SOURCE_REPOSITORY}" =~ ^https://[a-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$ ]] \
         || die "versions.env: SOURCE_REPOSITORY must be a plain https URL (got: ${SOURCE_REPOSITORY})"
     # `Name <address>` — the form Debian and RPM both expect, and the form that
@@ -223,6 +238,14 @@ add-on package is extras, not a one-shot install."
     COMPLETE_IMAGE_VARIANT=complete
     COMPLETE_IMAGE_SUFFIX=-complete
     export COMPLETE_IMAGE_VARIANT COMPLETE_IMAGE_SUFFIX
+
+    # The inference node's image: the `variant` the manifest records it under,
+    # and the one moving tag it has. `latest` is fine here and deliberately
+    # absent on the database images — see SERVER_IMAGE_REPOSITORY in
+    # versions.env for why.
+    SERVER_IMAGE_VARIANT=server
+    SERVER_IMAGE_MOVING_TAG=latest
+    export SERVER_IMAGE_VARIANT SERVER_IMAGE_MOVING_TAG
 
     NEXT_BREAKING_VERSION="$(next_breaking_version "${POSTVEC_VERSION}")"
     export NEXT_BREAKING_VERSION
@@ -611,6 +634,7 @@ NFPM_ENV=(
     MODEL_REGISTRY_REVISION MODEL_ARCHIVE_SHA256
     MAINTAINER VENDOR SOURCE_REPOSITORY
     EXTRAS_METAPACKAGE
+    SERVER_LICENSE SERVER_COPYRIGHT_SRC SERVER_UNIT_DIR
 )
 
 # Expand ${VAR} in an nfpm package description, from the allowlist above only.

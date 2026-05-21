@@ -3,10 +3,10 @@
 # services, needs a GPU, or must not share a crash domain with PostgreSQL.
 # (postvec.mode defaults to 'embedded'; this image pins 'grpc'.)
 #
-# The nodes are `postvec-server`, which this repository ships. Build an
-# image from a checkout with `packaging/postvec/scripts/build-server-image.sh`,
-# or run the binary on the inference hosts. There is no published server
-# image yet, so this file points at hosts you operate rather than pulling one.
+# The nodes are `postvec-server`, which this repository ships as a package
+# (`postvec-server` .deb/.rpm) and as an image
+# (ghcr.io/univec-ai/postvec-server:0.1.0-1). This file points at hosts you
+# operate; postvec-server.yml beside it runs one node as a container.
 #
 # Note the volume path: PostgreSQL 16 and 17 images store data in
 # /var/lib/postgresql/data, PostgreSQL 18 in /var/lib/postgresql. This file is

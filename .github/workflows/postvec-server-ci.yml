@@ -116,18 +116,22 @@ jobs:
       - name: check (ort-cuda)
         run: cargo check -p postvec-server --features ort-cuda
 
-      # This crate is BUSL-1.1 while the rest of the repository is
-      # PostgreSQL-licensed. The manifest and the directory LICENSE are what
+      # This crate is under its own licence while the rest of the repository
+      # is PostgreSQL-licensed. The manifest and the directory LICENSE are what
       # a downstream packager reads, and a copy-paste from a neighbouring
-      # crate would silently relicense it. The release gate
-      # (packaging/postvec/scripts/assert-versions.sh) asserts the same three
-      # facts; this repeats them in the cheap workflow so the failure is
-      # seconds away rather than a Docker matrix away.
+      # crate would silently relicense it. The identifier is pinned once, as
+      # SERVER_LICENSE in packaging/postvec/versions.env — it is what the
+      # postvec-server package and image declare — and the release gate
+      # (packaging/postvec/scripts/assert-versions.sh) asserts the same facts;
+      # this repeats them in the cheap workflow so the failure is seconds away
+      # rather than a Docker matrix away.
       - name: license metadata
         run: |
+          licence="$(sed -n 's/^SERVER_LICENSE=//p' packaging/postvec/versions.env)"
+          test -n "${licence}"
           test -f postvec-server/LICENSE
-          grep -q '^license = "BUSL-1.1"$' postvec-server/Cargo.toml
-          grep -q 'postvec-server/ *BUSL-1.1' LICENSE
+          grep -q "^license = \"${licence}\"$" postvec-server/Cargo.toml
+          grep -qE "^ +postvec-server/ +${licence} " LICENSE
 
       # The whole point of the two-listener design is that the socket
       # published to the network carries no route that can mutate the engine.

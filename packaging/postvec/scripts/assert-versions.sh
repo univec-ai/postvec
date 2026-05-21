@@ -60,16 +60,21 @@ done
 # separate program under a separate grant, sitting in a tree where every
 # neighbour is PostgreSQL-licensed. A copy-paste from one of them would
 # relicense it silently, and the root LICENSE index would then be wrong about
-# a file nobody re-read. All three statements of the fact have to agree.
+# a file nobody re-read. All four statements of the fact have to agree: the
+# reviewed pin (SERVER_LICENSE, which is what the postvec-server *package*
+# declares), the crate manifest, the licence text, and the root index.
 [[ -f "${REPO_ROOT}/postvec-server/LICENSE" ]] \
     || { echo "  FAIL  postvec-server/LICENSE is missing"; fail=1; }
-check "postvec-server license" "BUSL-1.1" \
+check "postvec-server license" "${SERVER_LICENSE}" \
     "$(grep -E '^license = ' "${REPO_ROOT}/postvec-server/Cargo.toml" | head -1 | cut -d'"' -f2)"
-if grep -qE '^ +postvec-server/ +BUSL-1\.1' "${REPO_ROOT}/LICENSE"; then
-    check "LICENSE index" "postvec-server: BUSL-1.1" "postvec-server: BUSL-1.1"
-else
-    check "LICENSE index" "postvec-server: BUSL-1.1" "<not listed in the root LICENSE>"
-fi
+# The index line is `  postvec-server/   <id>   postvec-server/LICENSE`; the id
+# is compared literally, dots and all.
+index_licence="$(sed -nE 's|^ +postvec-server/ +([^ ]+) .*$|\1|p' "${REPO_ROOT}/LICENSE" | head -1)"
+check "LICENSE index (postvec-server)" "${SERVER_LICENSE}" "${index_licence:-<not listed in the root LICENSE>}"
+# And the version: the node speaks exactly the wire contract this commit's
+# extension was compiled against, and its package carries POSTVEC_VERSION.
+check "postvec-server/Cargo.toml" "${POSTVEC_VERSION}" \
+    "$(crate_version "${REPO_ROOT}/postvec-server/Cargo.toml" postvec-server)"
 
 # Tag discipline, when running in a tag build. A local run has no tag and skips
 # this check rather than inventing one.

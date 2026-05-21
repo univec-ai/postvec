@@ -1,138 +1,93 @@
 # syntax=docker/dockerfile:1.7
 #
-# postvec-server: the inference node postvec's remote mode dials, with the
-# same ONNX Runtime and the same bundled model the complete image runs
-# in-process. A container of this and a container of the complete image load
-# byte-identical model assets, which is what makes a passing remote test and a
-# passing embedded test mean the same thing about the model.
+# postvec-server: the inference node postvec's remote mode dials, assembled
+# from the release's own Debian 12 packages — postvec-server, postvec-cli,
+# postvec-onnxruntime, the bundled model and the postvec-extras metapackage.
+# A container of this and a host that installed those packages run the same
+# binary against the same runtime and the same model bytes; a container of
+# this and a container of the complete database image load byte-identical
+# model assets, which is what makes a passing remote test and a passing
+# embedded test mean the same thing about the model.
 #
-# This replaces the test fixture that used to live at fixtures/inference-server.
-# It is a real node — the binary a fleet runs — rather than a stand-in, so the
-# remote-mode smoke test now exercises the artifact instead of an imitation of
-# it. It is not published today; the release manifest does not reference it.
+# Build it through scripts/build-server-image.sh, which stages the packages
+# into the context and pins the base. Published by the release workflow to
+# SERVER_IMAGE_REPOSITORY as `<release id>` (immutable) and `latest` (moving).
 #
-# LICENSE: the `postvec-server` binary inside this image is BUSL-1.1, not the
-# PostgreSQL License that covers the extension and its packages. See the
+# LICENSE: the `postvec-server` binary inside this image is under the licence
+# named by SERVER_LICENSE in packaging/postvec/versions.env (also the
+# org.opencontainers.image.licenses label below), not the PostgreSQL License
+# that covers the extension, the CLI and the engine assets. See the
 # repository's LICENSE index.
 
 ARG BUILD_BASE
-ARG RUST_VERSION
-ARG RUSTUP_VERSION
-ARG RUSTUP_INIT_SHA256
-ARG RUST_TRIPLE
-ARG PROTOC_VERSION
-ARG PROTOC_ARCH
-ARG PROTOC_SHA256
+FROM ${BUILD_BASE}
 
-FROM ${BUILD_BASE} AS builder
+ARG POSTVEC_VERSION
+ARG RELEASE_ID
+ARG SERVER_LICENSE
+ARG IMAGE_SOURCE
+ARG GIT_REVISION
+ARG BUILD_DATE
+ARG SOURCE_DATE_EPOCH
 
-ARG RUST_VERSION
-ARG RUSTUP_VERSION
-ARG RUSTUP_INIT_SHA256
-ARG RUST_TRIPLE
-ARG PROTOC_VERSION
-ARG PROTOC_ARCH
-ARG PROTOC_SHA256
+LABEL org.opencontainers.image.title="postvec-server" \
+      org.opencontainers.image.description="Standalone inference node for postvec's remote mode: gRPC embeddings and conversions plus /config discovery." \
+      org.opencontainers.image.version="${RELEASE_ID}" \
+      org.opencontainers.image.licenses="${SERVER_LICENSE}" \
+      org.opencontainers.image.source="${IMAGE_SOURCE}" \
+      org.opencontainers.image.revision="${GIT_REVISION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.vendor="UniVec"
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    CARGO_HOME=/usr/local/cargo \
-    RUSTUP_HOME=/usr/local/rustup \
-    CARGO_TERM_COLOR=never \
-    PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    rm -f /etc/apt/apt.conf.d/docker-clean && \
-    apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates clang libclang-dev pkg-config \
-        curl unzip git openssl libssl-dev
-
-# The same pinned protoc and toolchain the release builders use, so the server
-# is built from the same inputs as the thing it is tested against.
-RUN set -eux; \
-    curl --fail --silent --show-error --location --retry 3 -o /tmp/protoc.zip \
-        "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${PROTOC_ARCH}.zip"; \
-    echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum --check --strict -; \
-    mkdir -p /usr/local/protoc; \
-    unzip -q -o /tmp/protoc.zip -d /usr/local/protoc; \
-    ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc; \
-    rm -f /tmp/protoc.zip
-
-RUN set -eux; \
-    curl --fail --silent --show-error --location --retry 3 -o /tmp/rustup-init \
-        "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TRIPLE}/rustup-init"; \
-    echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum --check --strict -; \
-    chmod +x /tmp/rustup-init; \
-    /tmp/rustup-init -y --no-modify-path --profile minimal \
-        --default-toolchain "${RUST_VERSION}"; \
-    rm -f /tmp/rustup-init
-
-WORKDIR /src
-COPY . .
-RUN rm -rf /src/target /src/postvec/target
-
-# `--locked`: the server speaks exactly the protocol this commit's postvec was
-# compiled against, and the proto-drift test guarantees the vendored and
-# canonical copies agree. Building from the same tree keeps that true.
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/src/target,sharing=locked,id=postvec-server-target \
-    set -eux; \
-    cargo build --locked --release -p postvec-server -p postvec-cli; \
-    mkdir -p /out; \
-    cp /src/target/release/postvec-server /out/postvec-server; \
-    cp /src/target/release/postvec /out/postvec
-
-# ---------------------------------------------------------------------- serve
-
-FROM ${BUILD_BASE} AS server
-
-# The engine root uses the same path the host packages install theirs to —
-# and that the postvec CLI treats as its default — so `--path` values are
-# identical on a database host, in the complete image, and in this image.
-# POSTVEC_PATH / POSTVEC_PROVIDERS_PATH point the bundled CLI at
-# this root, so `docker exec <ctr> postvec model|provider …` needs no --path.
+# The engine root is the path the packages install to — and the one the
+# postvec CLI treats as its default — so `--path` values are identical on a
+# database host, in the complete image, and here. POSTVEC_PATH and
+# POSTVEC_PROVIDERS_PATH point the bundled CLI at the same root, so
+# `docker exec <ctr> postvec model|provider …` needs no flags.
 ENV DEBIAN_FRONTEND=noninteractive \
     POSTVEC_SERVER_ROOT=/opt/postvec \
     POSTVEC_PATH=/opt/postvec \
     POSTVEC_PROVIDERS_PATH=/opt/postvec \
     RUST_LOG=info
 
+# The packages, resolved by apt so their generated ELF dependencies (the
+# OpenSSL runtime the TLS listener links, libgomp for ONNX Runtime) come from
+# the distribution rather than from a hand-written list here. `openssl` is
+# for the entrypoint's self-signed certificate, `curl` for the healthcheck.
+# postvec-server's preinst creates the service account.
+COPY dist/ /tmp/dist/
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates openssl libgomp1 curl && \
-    rm -rf /var/lib/apt/lists/*
+    set -eux; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates openssl curl \
+        /tmp/dist/*.deb; \
+    rm -rf /tmp/dist; \
+    test -x /usr/bin/postvec-server; \
+    test -x /usr/bin/postvec; \
+    test -d /opt/postvec/libs; \
+    test -d /opt/postvec/models; \
+    getent passwd postvec-server >/dev/null
 
-COPY --from=builder /out/postvec-server /usr/local/bin/postvec-server
-# The postvec CLI, so operators can administer models and providers on the
-# node (`docker exec <ctr> postvec model|provider ...` — the ENV above points
-# it at this root) without copying a binary in. It is the same
-# PostgreSQL-licensed CLI the packages ship; only `postvec-server` itself
-# carries this image's server license.
-COPY --from=builder /out/postvec /usr/local/bin/postvec
 COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
 
-# The same ONNX Runtime and the same model bundle the complete image carries,
-# staged by the caller from the verified payloads. The engine root layout is
-# identical to embedded mode's, so this tree is portable between the two.
-COPY payload/ /opt/postvec/
-
-# Run unprivileged. The server reads model files and opens sockets; it needs
-# nothing a root process would have.
+# Run unprivileged. The packages leave /opt/postvec root-owned and read-only,
+# which is right for a host; in a container the service account owns the root
+# so that the entrypoint can generate a certificate under certs/ and so that
+# `docker exec <ctr> postvec model pull …` can add models without a second
+# account. The serving-lease directory is what the unit's ExecStartPre creates
+# on a host; the server FAILS TO START without it, deliberately. 1775
+# root:postvec-server — group write for the lease, sticky so the service
+# account cannot unlink locks it does not own. If your runtime mounts a fresh
+# tmpfs over /run, recreate it exactly like this; if this container shares its
+# engine root with the host (a bind-mounted /opt/postvec), bind-mount
+# /run/lock/postvec too, so `postvec uninstall --purge` on the host and this
+# node see the same lease inode.
 RUN set -eux; \
-    useradd --system --create-home --home-dir /var/lib/postvec-server \
-        --shell /usr/sbin/nologin postvec-server; \
     chown -R postvec-server:postvec-server /opt/postvec; \
-    # The serving-lease directory (see postvec-server.service): the server
-    # fails closed without it. If your runtime mounts a fresh tmpfs over
-    # /run, recreate it exactly like this — 1775 root:postvec-server (group
-    # write for the lease, sticky so the service account cannot unlink and
-    # re-create locks it does not own). The lease coordinates only processes
-    # that see the SAME inode: if this container shares its engine root with
-    # the host or other containers (a bind-mounted /opt/postvec), bind-mount
-    # the lease directory too (-v /run/lock/postvec:/run/lock/postvec) — or
-    # stop the container before running `postvec uninstall --purge` on the
-    # host, as the release-testing guide does.
+    install -d -m 0750 -o postvec-server -g postvec-server /opt/postvec/certs; \
     install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 USER postvec-server
 

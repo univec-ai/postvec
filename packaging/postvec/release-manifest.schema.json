@@ -15,6 +15,7 @@
     "pgvector_min",
     "onnxruntime",
     "extension_features",
+    "licenses",
     "postgresql_majors",
     "architectures",
     "bundled_model",
@@ -70,6 +71,24 @@
         "type": "string"
       },
       "description": "Cargo features the published library was compiled with, beyond the pgNN selector. 'embedded' must be present: every public package is the embedded-capable build."
+    },
+    "licenses": {
+      "type": "object",
+      "description": "The licence each artifact family carries. Everything is under `default` (the PostgreSQL License) except the postvec-server package and image, whose identifier is the reviewed SERVER_LICENSE pin.",
+      "required": [
+        "default",
+        "postvec-server"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "const": "PostgreSQL"
+        },
+        "postvec-server": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]*$"
+        }
+      }
     },
     "postgresql_majors": {
       "type": "array",
@@ -284,11 +303,16 @@
           "variant": {
             "enum": [
               "remote",
-              "complete"
-            ]
+              "complete",
+              "server"
+            ],
+            "description": "`remote` and `complete` are the PostgreSQL images, one per major. `server` is the postvec-server inference node: its own repository, no PostgreSQL major (pg_major is null), tagged with the bare release id and built on the pinned Debian 12 base."
           },
           "pg_major": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "base_digest": {
             "type": "string",

@@ -197,10 +197,12 @@ check_contents() {
     # debug package would be asked to contain /usr/bin/postvec.
     case "${name}" in
     postvec-cli-dbgsym[-_]*|postvec-cli-debuginfo[-_]*|\
+    postvec-server-dbgsym[-_]*|postvec-server-debuginfo[-_]*|\
     postgresql*postvec-dbgsym[-_]*|postgresql*postvec-debuginfo[-_]*)
-        # Detached symbols only. It must contain no library and no SQL, or it
-        # would conflict with the package it is supposed to accompany.
-        if grep -qE 'postvec\.so$|postvec--.*\.sql$|/usr/bin/postvec$' <<<"${files}"; then
+        # Detached symbols only. It must contain no library, no SQL and no
+        # binary, or it would conflict with the package it is supposed to
+        # accompany.
+        if grep -qE 'postvec\.so$|postvec--.*\.sql$|/usr/bin/postvec(-server)?$' <<<"${files}"; then
             problem "the debug package duplicates files from the package it accompanies"
         else
             pass "carries only detached debug information"
@@ -215,6 +217,48 @@ check_contents() {
         grep -qE '^\.?/usr/bin/postvec$' <<<"${files}" \
             || problem "the CLI package does not contain /usr/bin/postvec"
         pass "owns /usr/bin/postvec"
+        ;;
+    postvec-server_*|postvec-server-*)
+        # The inference node: one binary, the crate's unit, the packaged
+        # drop-in that points it at /opt/postvec, and a conffile. It must not
+        # carry the CLI (that is postvec-cli's file, and the two are
+        # co-installable) and must not carry engine assets (a node that
+        # bundled a model would put two owners on one path).
+        grep -qE '^\.?/usr/bin/postvec-server$' <<<"${files}" \
+            || problem "the node package does not contain /usr/bin/postvec-server"
+        if grep -qE '^\.?/usr/bin/postvec$' <<<"${files}"; then
+            problem "the node package contains /usr/bin/postvec — that is postvec-cli's file"
+        fi
+        grep -qE '/systemd/system/postvec-server\.service$' <<<"${files}" \
+            || problem "no systemd unit"
+        grep -qE '/systemd/system/postvec-server\.service\.d/packaged\.conf$' <<<"${files}" \
+            || problem "no packaged drop-in pointing the unit at /opt/postvec"
+        grep -qE '^\.?/etc/postvec-server/config\.json$' <<<"${files}" \
+            || problem "no /etc/postvec-server/config.json"
+        if grep -qE '/opt/postvec/(models|libs)/' <<<"${files}"; then
+            problem "the node package carries engine assets — those belong to postvec-onnxruntime and postvec-model-*"
+        fi
+        pass "owns /usr/bin/postvec-server, its unit, the drop-in and its configuration"
+
+        # The TLS listener links OpenSSL, which the ELF gate excused in the
+        # bare base image on the strength of this very dependency. If the
+        # generator did not produce it, the excuse was unearned.
+        if grep -qiE 'libssl|openssl' <<<"${depends}"; then
+            pass "declares the OpenSSL runtime its TLS listener links"
+        else
+            problem "does not declare an OpenSSL dependency (libssl3 / openssl-libs): ${depends:-<none>}"
+        fi
+
+        # The one package in the release under a different licence. The
+        # metadata must say so, and must say what versions.env pinned: a
+        # description that quietly inherited the neighbouring package's
+        # `license:` line would misstate the terms on every host.
+        [[ -n "${pkg_license:-}" ]] || problem "could not read the package's declared licence"
+        if [[ "${pkg_license:-}" == "${SERVER_LICENSE}" ]]; then
+            pass "declares licence ${SERVER_LICENSE} (SERVER_LICENSE)"
+        else
+            problem "declares licence '${pkg_license:-}', but SERVER_LICENSE is ${SERVER_LICENSE}"
+        fi
         ;;
     postgresql*postvec[-_]*)
         # The reason the CLI is a separate package at all: PG 16 and PG 18
@@ -326,6 +370,13 @@ verify_deb() {
     files="$(dpkg-deb --contents "${pkg}" | awk '{print $6}')"
     depends="$(sed -n 's/^ *Depends: //p' <<<"${info}")"
     owners="$(dpkg-deb --contents "${pkg}" | awk '{print $2}' | sort -u)"
+    # The licence a package declares. Debian has no control field for it —
+    # nfpm writes its `license:` into the copyright file — so it is read from
+    # /usr/share/doc/<pkg>/copyright, which for this project's packages is
+    # either the DEP-5 rendering (a `License:` line) or the verbatim text.
+    pkg_license="$(dpkg-deb --fsys-tarfile "${pkg}" \
+        | tar -xO --wildcards './usr/share/doc/*/copyright' 2>/dev/null \
+        | sed -n 's/^License: //p' | head -1 || true)"
 
     # `0/0` and `root/root` are the same owner: dpkg-deb prints the numeric form
     # when the tar entry carries no user name, which is how nfpm writes a file
@@ -407,6 +458,8 @@ verify_rpm() {
     files="$(rpm_query -qpl "${name}")"
     depends="$(rpm_query -qpR "${name}")"
     scripts="$(rpm_query -qp --scripts "${name}")"
+    # RPM records the licence as a header field.
+    pkg_license="$(rpm_query -qp --qf '%{LICENSE}' "${name}" 2>/dev/null || true)"
     [[ -n "${files}" ]] || problem "could not read the package contents"
 
     printf '%s\n' "${scripts}" > /tmp/postvec-rpm-scripts.$$

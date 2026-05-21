@@ -7,7 +7,7 @@
 #
 # Inputs (environment): PG_MAJORS, POSTVEC_VERSION, BUNDLED_MODEL_NAME,
 # BUNDLED_MODEL_BACKEND, BUNDLED_MODEL_TARGET_DIM, MODEL_PKG_NAME,
-# DIST_FAMILY, MINIMAL. Packages are at /packages.
+# SERVER_LICENSE, DIST_FAMILY, MINIMAL. Packages are at /packages.
 #
 # The four model facts are derived from the verified registry archive by
 # scripts/build-model-bundle.sh and passed in by the caller, so this test
@@ -37,6 +37,9 @@ deb)
     # What a package *declares* it installs, which is not the same as what a
     # minimal image kept: see the doc-policy note further down.
     PKG_FILES()    { dpkg -L "$1" 2>/dev/null || true; }
+    # The licence a package declares, from its copyright file (Debian has no
+    # control field for it; the DEP-5 rendering carries a `License:` line).
+    PKG_LICENSE()  { sed -n 's/^License: //p' "/usr/share/doc/$1/copyright" 2>/dev/null | head -1; }
     EXTENSION_PACKAGES() { PKG_LIST 'postgresql-*-postvec' | grep -E '^postgresql-[0-9]+-postvec$' || true; }
     PGVECTOR_PACKAGE()   { echo "postgresql-$1-pgvector"; }
     PG_SERVER_PACKAGE()  { echo "postgresql-$1"; }
@@ -51,6 +54,7 @@ rpm)
     PKG_OWNER()    { rpm -qf "$1" --qf '%{NAME}\n' 2>/dev/null; }
     PKG_LIST()     { rpm -qa --qf '%{NAME}\n' 2>/dev/null | grep -E "$1" || true; }
     PKG_FILES()    { rpm -ql "$1" 2>/dev/null || true; }
+    PKG_LICENSE()  { rpm -q --qf '%{LICENSE}' "$1" 2>/dev/null; }
     EXTENSION_PACKAGES() { PKG_LIST '^postgresql[0-9]+-postvec$'; }
     PGVECTOR_PACKAGE()   { echo "pgvector_$1"; }
     PG_SERVER_PACKAGE()  { echo "postgresql$1-server"; }
@@ -639,6 +643,128 @@ else
         || ok "provider rm removed the connector file"
 fi
 
+# ------------------------------------------------------------ the inference node
+#
+# The full install is also what a *node* host installs, so the packaged node
+# is started here against the packaged runtime and model — the one place
+# where this distribution's OpenSSL, libgomp and libc are proven to resolve for
+# the postvec-server binary, and where the packaged unit's engine root
+# (/opt/postvec, via the drop-in) is proven to hold what the node needs.
+#
+# No systemd in a container, so the unit is not started: the assertions are
+# that the package laid out what the unit needs (account, unit, drop-in,
+# configuration, lease directory contract), and then the binary is run the way
+# the unit would run it — as the service account, with the packaged config,
+# `--insecure` because the test provisions no certificate.
+
+if (( MINIMAL )); then
+    step "the inference node"
+    printf '  skip  --minimal: postvec-server was not installed\n'
+else
+    step "the inference node"
+
+    getent passwd postvec-server >/dev/null \
+        && ok "the postvec-server account exists" \
+        || bad "no postvec-server account was created"
+    shell="$(getent passwd postvec-server | cut -d: -f7)"
+    [[ "${shell}" == */nologin ]] \
+        && ok "the account cannot log in (${shell})" \
+        || bad "the account's shell is ${shell}"
+
+    [[ -f /usr/lib/systemd/system/postvec-server.service ]] \
+        && ok "the unit is installed" \
+        || bad "no /usr/lib/systemd/system/postvec-server.service"
+    dropin=/usr/lib/systemd/system/postvec-server.service.d/packaged.conf
+    if [[ -f "${dropin}" ]] && grep -q '^Environment=POSTVEC_SERVER_ROOT=/opt/postvec$' "${dropin}"; then
+        ok "the packaged drop-in points the unit at /opt/postvec"
+    else
+        bad "no drop-in setting POSTVEC_SERVER_ROOT=/opt/postvec"
+    fi
+    [[ -f /etc/postvec-server/config.json ]] \
+        && ok "/etc/postvec-server/config.json is installed" \
+        || bad "no /etc/postvec-server/config.json"
+    [[ -d /var/lib/postvec-server ]] \
+        && ok "/var/lib/postvec-server exists" \
+        || bad "no /var/lib/postvec-server"
+    owner="$(PKG_OWNER /usr/bin/postvec-server)"
+    [[ "${owner}" == postvec-server ]] \
+        && ok "/usr/bin/postvec-server is owned by postvec-server" \
+        || bad "/usr/bin/postvec-server is owned by: ${owner}"
+
+    # The one package under different terms says so in its own metadata.
+    licence="$(PKG_LICENSE postvec-server)"
+    [[ "${licence}" == "${SERVER_LICENSE}" ]] \
+        && ok "postvec-server declares licence ${SERVER_LICENSE}" \
+        || bad "postvec-server declares licence '${licence}', expected ${SERVER_LICENSE}"
+
+    # Installing the package started nothing.
+    if pgrep -x postvec-server >/dev/null 2>&1; then
+        bad "a postvec-server process is running after package installation"
+    else
+        ok "installing the package started no node"
+    fi
+
+    version="$(postvec-server --version 2>&1 || true)"
+    [[ "${version}" == *"${POSTVEC_VERSION}"* ]] \
+        && ok "postvec-server --version reports ${POSTVEC_VERSION}" \
+        || bad "postvec-server --version said: ${version}"
+
+    # What the unit's ExecStartPre does, and `setpriv` for its User=. Not
+    # `runuser`: that opens a PAM session that, on SIGTERM, kills the child
+    # after a grace period rather than letting it drain — the test would then
+    # be measuring runuser. setpriv just drops privileges and execs, so the
+    # PID below is the node itself. curl and openssl are test tools, like jq
+    # above; a node host needs neither.
+    install -d -m 1775 -o root -g postvec-server /run/lock/postvec
+    PKG_INSTALL curl openssl
+    # A certificate pair the way an operator supplies one — absolute paths on
+    # the command line override the packaged config's relative defaults — so
+    # the discovery listener is exercised over TLS, as it is in production.
+    install -d -m 0750 -o postvec-server -g postvec-server /tmp/node-certs
+    openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=postvec-server" \
+        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+        -keyout /tmp/node-certs/server.key -out /tmp/node-certs/server.crt >/dev/null 2>&1
+    chown postvec-server:postvec-server /tmp/node-certs/server.key /tmp/node-certs/server.crt
+    chmod 0600 /tmp/node-certs/server.key
+    # Loopback only: this is a test container, not a node on a network.
+    setpriv --reuid=postvec-server --regid=postvec-server --init-groups postvec-server \
+        --config /etc/postvec-server/config.json \
+        --root /opt/postvec --bind 127.0.0.1 \
+        --ssl-cert /tmp/node-certs/server.crt --ssl-cert-key /tmp/node-certs/server.key \
+        >/tmp/node.log 2>&1 &
+    node_pid=$!
+    deadline=$(( SECONDS + 240 ))
+    ready=""
+    while (( SECONDS < deadline )); do
+        ready="$(curl --silent --insecure --output /dev/null --write-out '%{http_code}' \
+                    https://127.0.0.1:22222/ready 2>/dev/null || true)"
+        [[ "${ready}" == 200 ]] && break
+        kill -0 "${node_pid}" 2>/dev/null || break
+        sleep 3
+    done
+    if [[ "${ready}" == 200 ]]; then
+        ok "the packaged node serves the packaged model as the service account, over TLS"
+        config="$(curl --silent --insecure https://127.0.0.1:22222/config 2>/dev/null || true)"
+        grep -q "${BUNDLED_MODEL_NAME}" <<<"${config}" \
+            && ok "/config advertises ${BUNDLED_MODEL_NAME} from /opt/postvec" \
+            || bad "/config does not advertise ${BUNDLED_MODEL_NAME}: ${config:0:200}"
+        if status_out="$(postvec-server status 2>&1)"; then
+            ok "postvec-server status reports healthy (exit 0)"
+        else
+            bad "postvec-server status failed: ${status_out:0:200}"
+        fi
+        kill -TERM "${node_pid}"
+        if wait "${node_pid}"; then
+            ok "the node drained and exited 0 on SIGTERM"
+        else
+            bad "the node exited non-zero on SIGTERM: $(tail -5 /tmp/node.log)"
+        fi
+    else
+        bad "the node never became ready (last /ready: ${ready:-none}): $(tail -10 /tmp/node.log)"
+        kill "${node_pid}" 2>/dev/null || true
+    fi
+fi
+
 # ------------------------------------------------------------ detached symbols
 #
 # The debug packages are mandatory in a release, so they are tested the way
@@ -701,6 +827,14 @@ if [[ -d /debug-packages ]] && compgen -G '/debug-packages/*' >/dev/null; then
         ok "the CLI's symbols are installed and match the binary"
     else
         bad "the CLI's detached symbols are missing or do not match"
+    fi
+
+    server_detached=/usr/lib/debug/usr/bin/postvec-server.debug
+    if [[ -f "${server_detached}" ]] \
+        && [[ "$(build_id_of /usr/bin/postvec-server)" == "$(build_id_of "${server_detached}")" ]]; then
+        ok "the node's symbols are installed and match the binary"
+    else
+        bad "the node's detached symbols are missing or do not match"
     fi
 fi
 

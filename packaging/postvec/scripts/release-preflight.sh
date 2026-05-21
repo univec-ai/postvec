@@ -56,6 +56,7 @@ ok "release id" "${RELEASE_ID}"
 ok "release tag" "${RELEASE_TAG}"
 ok "rehearsal tag" "${REHEARSAL_TAG}"
 ok "images" "${IMAGE_REPOSITORY} (staging ${IMAGE_STAGING_REPOSITORY})"
+ok "server image" "${SERVER_IMAGE_REPOSITORY} (${SERVER_LICENSE})"
 ok "maintainer" "${MAINTAINER}"
 ok "repository" "${SLUG}"
 
@@ -175,25 +176,31 @@ if [[ "${MODE}" == publish ]]; then
     printf '\nimages\n'
     if command -v docker >/dev/null 2>&1; then
         existing=(); unknown=0
+        # The six database images plus the inference node's — seven versioned
+        # tags, in two repositories.
+        images=()
         for major in 16 17 18; do
             for suffix in "" "-complete"; do
-                image="${IMAGE_REPOSITORY}:${RELEASE_ID}-pg${major}${suffix}"
-                if output="$(docker buildx imagetools inspect "${image}" \
-                              --format '{{.Manifest.Digest}}' 2>&1)"; then
-                    existing+=("${RELEASE_ID}-pg${major}${suffix}")
-                elif ! grep -qiE 'manifest unknown|not found|MANIFEST_UNKNOWN' <<<"${output}"; then
-                    # `denied` is an authorization failure. Absence has to be
-                    # observed, not inferred from a refusal to look.
-                    unknown=1
-                fi
+                images+=("${IMAGE_REPOSITORY}:${RELEASE_ID}-pg${major}${suffix}")
             done
         done
+        images+=("${SERVER_IMAGE_REPOSITORY}:${RELEASE_ID}")
+        for image in "${images[@]}"; do
+            if output="$(docker buildx imagetools inspect "${image}" \
+                          --format '{{.Manifest.Digest}}' 2>&1)"; then
+                existing+=("${image#*/}")
+            elif ! grep -qiE 'manifest unknown|not found|MANIFEST_UNKNOWN' <<<"${output}"; then
+                # `denied` is an authorization failure. Absence has to be
+                # observed, not inferred from a refusal to look.
+                unknown=1
+            fi
+        done
         if ((unknown)); then
-            skip "versioned tags" "could not read ${IMAGE_REPOSITORY} — docker login ghcr.io first"
+            skip "versioned tags" "could not read ${IMAGE_REPOSITORY} / ${SERVER_IMAGE_REPOSITORY} — docker login ghcr.io first"
         elif ((${#existing[@]})); then
             skip "versioned tags" "${#existing[@]} already exist (${existing[*]}) — this would be a resumption"
         else
-            ok "versioned tags" "none of the six exist yet"
+            ok "versioned tags" "none of the seven exist yet"
         fi
     else
         skip "versioned tags" "docker is not installed"

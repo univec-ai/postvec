@@ -1,10 +1,19 @@
 # postvec packaging
 
-Everything needed to turn a commit of [`postvec/`](../../postvec) and
-[`postvec-cli/`](../../postvec-cli) into published installation artifacts:
-`.deb` and `.rpm` packages per PostgreSQL major, and PostgreSQL container
-images with postvec preinstalled — including an all-in-one image that embeds
-text with no external service and no API key.
+Everything needed to turn a commit of [`postvec/`](../../postvec),
+[`postvec-cli/`](../../postvec-cli) and [`postvec-server/`](../../postvec-server)
+into published installation artifacts: `.deb` and `.rpm` packages per
+PostgreSQL major, PostgreSQL container images with postvec preinstalled —
+including an all-in-one image that embeds text with no external service and no
+API key — and, for remote mode, the `postvec-server` inference node as a
+package and as an image of its own.
+
+Two licences travel in one release. Everything is under the PostgreSQL
+License except `postvec-server`, whose identifier is the reviewed
+`SERVER_LICENSE` pin in `versions.env`: the package declares it, the image
+labels it, the manifest records it under `licenses`, and `assert-versions.sh`
+refuses a release where the crate, the licence text, the root `LICENSE` index
+and the pin disagree.
 
 This directory is deliberately separate from UniVec's internal application
 build pipeline. Public database packages have a different version, a
@@ -28,7 +37,9 @@ packaging/postvec/scripts/release.sh
 # Or one cell at a time:
 scripts/assert-versions.sh
 scripts/build-onnxruntime-bundle.sh --arch amd64
-scripts/build-extension-stage.sh --distro debian12 --pg 18 --arch amd64
+# `--with-server` makes this the shared-package cell: it also compiles the
+# postvec-server node (PostgreSQL-independent, like the CLI beside it).
+scripts/build-extension-stage.sh --distro debian12 --pg 18 --arch amd64 --with-server
 # The bundled model is pulled from the registry, so it needs a postvec binary;
 # the stage above just built one. `cargo build -p postvec-cli` also works.
 scripts/build-model-bundle.sh    --cli build/debian12-pg18-amd64/cli/postvec
@@ -38,6 +49,14 @@ scripts/verify-package.sh        dist/common/debian12-amd64/*.deb \
                                  dist/extension/debian12-pg18-amd64/*.deb
 scripts/build-image.sh --pg 18 --variant complete --load
 tests/image-smoke-test.sh ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
+# The node's image, composed from the packages above, and tested on its own —
+# then the remote database image is tested against it.
+scripts/build-server-image.sh --arch amd64 --load
+tests/server-image-test.sh ghcr.io/univec-ai/postvec-server:0.1.0-1
+scripts/build-image.sh --pg 18 --variant remote --load
+tests/image-smoke-test.sh --variant remote \
+    --server-image ghcr.io/univec-ai/postvec-server:0.1.0-1 \
+    ghcr.io/univec-ai/postvec:0.1.0-1-pg18
 scripts/write-release-manifest.sh --expect-distros debian12 \
                                  --expect-majors 18 --expect-arches amd64
 ```
@@ -157,20 +176,57 @@ metadata still says `example`. For a throwaway local build:
 |---|---|---|
 | `postvec-cli` | native | `/usr/bin/postvec`, docs, licence |
 | `postgresql-16-postvec` / `-17-` / `-18-` | native | `postvec.so`, control file, install + upgrade SQL |
+| `postvec-server` | native | `/usr/bin/postvec-server`, the crate's systemd unit plus a drop-in that points it at `/opt/postvec`, `/etc/postvec-server/config.json` (conffile), the `postvec-server` account. **Licence: `SERVER_LICENSE`**, not PostgreSQL |
 | `postvec-onnxruntime` | native | pinned CPU ONNX Runtime under `/opt/postvec/libs` |
 | `postvec-model-<suffix>` | `all` / `noarch` | one reviewed model from the registry's public channel, under `/opt/postvec/models`. `postvec-model-minilm-l6-v2` today; the name follows `BUNDLED_MODEL_PKG_SUFFIX` |
-| `postvec-extras` | `all` / `noarch` | metapackage: the two above, pinned exactly. Not a complete install — still needs the CLI and the extension |
+| `postvec-extras` | `all` / `noarch` | metapackage: the two above, pinned exactly. Not a complete install — still needs the CLI and the extension (or, on a node host, `postvec-server`) |
 | `postvec-cli-dbgsym` / `-debuginfo` | native | detached symbols for the CLI |
+| `postvec-server-dbgsym` / `-debuginfo` | native | detached symbols for the node |
 | `postgresql-NN-postvec-dbgsym` / `-debuginfo` | native | detached symbols for that major's library |
 
-Both builds emit line tables (`debug = "line-tables-only"` for the extension,
-`CARGO_PROFILE_RELEASE_DEBUG` for the CLI, because Cargo ignores a profile in a
-workspace member). The pipeline splits them into the detached packages above,
-attaches a GNU debug link, and strips the shipped binaries — so a crash inside
-the extension, which takes a PostgreSQL backend with it, produces a backtrace
-that names a file and a line for anyone who installs the matching `-dbgsym`.
-The CLI's symbols are their own package because `/usr/bin/postvec` is owned by
-one package regardless of how many majors are installed.
+All three builds emit line tables (`debug = "line-tables-only"` for the
+extension, `CARGO_PROFILE_RELEASE_DEBUG` for the CLI and the node, because
+Cargo ignores a profile in a workspace member). The pipeline splits them into
+the detached packages above, attaches a GNU debug link, and strips the shipped
+binaries — so a crash inside the extension, which takes a PostgreSQL backend
+with it, produces a backtrace that names a file and a line for anyone who
+installs the matching `-dbgsym`. The CLI's and the node's symbols are their own
+packages because `/usr/bin/postvec` and `/usr/bin/postvec-server` are each
+owned by one package regardless of how many majors are installed.
+
+### The inference node
+
+`postvec-server` is what `postvec.mode = 'grpc'` dials. It is
+PostgreSQL-independent, so it is compiled in the **shared-package cell** — the
+one `build-extension-stage.sh --with-server` produces, one per distribution and
+architecture — and lives in the `common` root beside the CLI. The 24 extension
+cells never build it.
+
+The package installs files and creates the service account; it enables and
+starts nothing, and its `postinst` only prints the commands. The unit is the
+crate's own `postvec-server/systemd/postvec-server.service`, verbatim; the one
+thing a package knows that the unit cannot — that *these* packages put the
+engine root at `/opt/postvec` — is a systemd drop-in beside it
+(`server/packaged.conf`), so `postvec-server postvec-extras` is a serving node
+and `postvec model pull` on the node writes where the node looks. The
+configuration file is a conffile (`noreplace` on RPM): the minimal
+`server/config.json`, with the fully commented example under
+`/usr/share/doc/postvec-server/`.
+
+ONNX Runtime and the model are `Recommends`, not `Depends`: a node that serves
+only external providers needs neither, and the engine dlopen()s the runtime
+rather than linking it — `inspect-elf.sh` asserts that for the node exactly as
+it does for the extension.
+
+The **image** is a composition of the same packages — `postvec-server`,
+`postvec-cli`, `postvec-onnxruntime`, the model and the metapackage — on the
+pinned Debian 12 base, published to `SERVER_IMAGE_REPOSITORY` as `<release id>`
+(immutable) and `latest` (moving). It is tested twice: on its own by
+`tests/server-image-test.sh` (composition, unprivileged, admin port unexposed,
+ready only once the model answers, licence label, clean drain) and as the
+engine behind the remote database image's smoke test. The full clean-host
+install test starts the packaged node as the service account against the
+packaged runtime and model, over TLS, on every distribution.
 
 RPM names follow the PGDG-RPM convention (`postgresql18-postvec`) and depend on
 `pgvector_18`; Debian names follow the Debian convention
@@ -180,10 +236,12 @@ RPM names follow the PGDG-RPM convention (`postgresql18-postvec`) and depend on
 |---|---|---|
 | `<repo>:0.1.0-1-pg18` | `grpc` (pinned — carries no engine assets) | extension, pgvector, CLI |
 | `<repo>:0.1.0-1-pg18-complete` | `embedded` (`grpc` still works) | + ONNX Runtime + the bundled model |
+| `<server repo>:0.1.0-1` | the inference node | `postvec-server`, CLI, ONNX Runtime, the bundled model — from the packages |
 
 Moving tags `pg18` / `pg18-complete` also exist. There is deliberately **no
-`latest`**: it hides the PostgreSQL major, and a major-version image change
-cannot upgrade a data directory in place.
+`latest`** on the database images: it hides the PostgreSQL major, and a
+major-version image change cannot upgrade a data directory in place. The node's
+image has no major and no data directory, so its moving tag *is* `latest`.
 
 Each published image is a multi-architecture index. Build provenance is attested
 against the index — the digest a tag resolves to — and the **SBOMs are attested
@@ -202,7 +260,7 @@ A release is `<version>-<packaging revision>` — `0.1.0-1` — everywhere:
 |---|---|
 | git tag | `postvec-v0.1.0-1` |
 | package version | `0.1.0-1+deb12`, `0.1.0-1.el9` |
-| image tag | `0.1.0-1-pg18`, `0.1.0-1-pg18-complete` |
+| image tag | `0.1.0-1-pg18`, `0.1.0-1-pg18-complete`; `postvec-server:0.1.0-1` |
 
 The packaging revision is part of the identity because `PACKAGE_RELEASE` exists
 to allow a rebuild that changes no source — a dependency-metadata fix, say. If
@@ -211,7 +269,7 @@ somebody is already running, and "immutable tag" would be a claim rather than a
 property. The release job refuses to start if a *published* GitHub release for
 this identity already exists.
 
-**Recovering an interrupted publication.** Six versioned image manifests are
+**Recovering an interrupted publication.** Seven versioned image manifests are
 created in parallel, so a failure part-way through leaves some already public.
 Preflight therefore does not treat an existing image tag as a reason to stop —
 it logs which tags exist, says plainly that the run is a resumption, and lets
@@ -239,7 +297,7 @@ directory as well as the checksums.
 If the run dies after the release is published but before the moving tags are
 advanced, the release itself is complete and correct. Run the
 `postvec-moving-tags` workflow (`dry_run` first) to finish the job: it is
-idempotent, and it verifies all six tags rather than assuming the writes took.
+idempotent, and it verifies all seven tags rather than assuming the writes took.
 It takes the **whole release tag**, in either namespace, so the same repair
 applies to a disposable rehearsal that failed at the same point — which is part
 of criterion 2, not an afterthought. Repository names and versioned digests come
@@ -254,15 +312,15 @@ what state the tags are in — needs no environment, no approval and no write
 permission. Only the job that actually moves a tag is protected.
 
 **Moving-tag writes are serialised across both workflows.** Three operations
-mutate the same six names — publishing release A, publishing release B, and this
-repair — and the release workflow's own concurrency key includes the ref, so two
+mutate the same seven names — publishing release A, publishing release B, and
+this repair — and the release workflow's own concurrency key includes the ref, so two
 releases can run at once. Whichever finished last would decide where `pg18`
 points, which is how a published release gets moved backwards by an unrelated
 run finishing late. The release workflow's `publish` job and this workflow's
 `advance` job therefore share one job-level concurrency group, keyed by **image
 repository** so a disposable rehearsal never serialises against production.
 
-**Both write by digest, and write all six.** The source is
+**Both write by digest, and write all seven.** The source is
 `<repository>@<digest>` taken from the verified manifest, never the versioned
 tag: an approval can take as long as it takes, and a tag is a mutable pointer.
 The recorded "current" digest is shown to the reader of a dry run and is *not* a
@@ -282,8 +340,8 @@ aborted on the first error, so the remaining tags were never attempted, the
 verification never ran and the recovery guidance never printed; an operator was
 left with a red step and no idea which tags had moved. `tests/unit-test.sh`
 drives the helper against a fake registry and asserts exactly that: one failed
-write, six writes still attempted, six tags still inspected, a non-zero exit, and
-the guidance on screen.
+write, every write still attempted, every tag still inspected, a non-zero exit,
+and the guidance on screen.
 
 Its preflight is the other half of the contract: every entry must be
 `<repository>@sha256:<64 lowercase hex>`, and the source's digest must *equal*
@@ -292,8 +350,8 @@ the expected one. A substring test for `@sha256:` is not that check — it accep
 otherwise be written first and diagnosed afterwards, leaving a moving tag at a
 digest nobody chose. Seven cases assert the refusal **and** that nothing was
 written.
-It reads which six images a release consists of from that release's own attested
-`postvec-release.json`, not from the default branch — the branch's
+It reads which seven images a release consists of from that release's own
+attested `postvec-release.json`, not from the default branch — the branch's
 `versions.env` may have moved on, and "what is 0.1.0-1" is a question the
 release already answered.
 
@@ -305,7 +363,7 @@ process rather than a release process.
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | One green `mode: rehearse` **full-matrix** run: 4 distributions × 3 majors × 2 architectures, both package families, both image variants | runnable, not yet run |
+| 1 | One green `mode: rehearse` **full-matrix** run: 4 distributions × 3 majors × 2 architectures, both package families, both image variants, the node package and image | runnable, not yet run |
 | 2 | One green `mode: disposable-publication` run into a throwaway registry namespace: draft assets, attestations, moving tags, and the resumption path | runnable, not yet run |
 | 3 | `MAINTAINER` is a real, monitored address | done |
 | 4 | Native **upgrade tests** before the second public release (see below) | not applicable to 0.1.0 |
@@ -328,9 +386,14 @@ What local evidence exists today, so nobody mistakes it for more:
 
 That is a fraction of the release matrix. It does **not** demonstrate a full
 install on Ubuntu 22.04 or 24.04, PostgreSQL 16 or 17, any arm64 installation or
-inference, the full 48-package/32-debug closure, six multi-architecture indexes
-with twelve child SBOMs, GitHub-hosted attestations, exact draft assets,
-publication resumption, or moving tags.
+inference, the full 56-package/40-debug closure, seven multi-architecture
+indexes with fourteen child SBOMs, GitHub-hosted attestations, exact draft
+assets, publication resumption, or moving tags. The node package and image
+have the same Debian 12 / amd64 / PostgreSQL 18 evidence and no more: package
+built, verified and lintian-clean (no errors), image composed from the
+packages and passing `tests/server-image-test.sh`, the full clean-host install
+starting the packaged node over TLS, and the remote database image embedding
+through the node image. No other distribution, no arm64, no CI run yet.
 
 The fixture suite (`tests/unit-test.sh`) gives real confidence that the closure
 logic *refuses* the right things, which is what synthetic tests are good for. It
@@ -466,7 +529,7 @@ architecture only.
 ### Where the packages land
 
 ```
-dist/common/<distro>-<arch>/                 postvec-cli, ONNX Runtime (+ debug)
+dist/common/<distro>-<arch>/                 postvec-cli, postvec-server, ONNX Runtime (+ debug)
 dist/noarch/<distro>/                        the model bundle and the metapackage
 dist/extension/<distro>-pg<major>-<arch>/    postgresql-<major>-postvec (+ debug)
 release/                                     the flat directory a user downloads
@@ -476,7 +539,7 @@ Three roots because the packages have three identities:
 
 | Root | Keyed by | Because |
 |---|---|---|
-| `common` | distribution, architecture | the CLI and ONNX Runtime are native code, identical for every PostgreSQL major |
+| `common` | distribution, architecture | the CLI, the node and ONNX Runtime are native code, identical for every PostgreSQL major |
 | `noarch` | distribution | the model bundle and the metapackage are `all`/`noarch` — one build per distribution, and nothing about them is architectural |
 | `extension` | distribution, major, architecture | `postvec.so` is compiled against one major's headers |
 
@@ -551,6 +614,15 @@ the defect), and fails on any forbidden command. `tests/package-install-test.sh`
 then proves it on a live system: no PostgreSQL process started, no
 configuration written, no CLI state created.
 
+`postvec-server` is held to the same rule with one addition a daemon package
+cannot avoid: its `preinst` creates the `postvec-server` system account. It
+still enables nothing, starts nothing and calls `systemctl` nowhere — the
+`postinst` prints `systemctl enable --now postvec-server` for the operator to
+run, from inside a here-document, which is exactly the distinction the scanner
+makes. The install test asserts no node process exists after installation, and
+the `postrm` deletes neither the engine root, nor the configuration, nor the
+account.
+
 ### The lintian policy
 
 The same script runs **lintian** on every `.deb` and fails on any error that
@@ -609,6 +681,10 @@ nfpm/                          one package description per package
 builders/                      hermetic compile environments (deb, rpm families)
 docker/                        image, entrypoint, healthcheck, init, compose
                                examples, and the postvec-server image
+server/                        what the postvec-server package adds to the
+                               crate's own files: the systemd drop-in that
+                               points the unit at /opt/postvec, and the
+                               minimal conffile
 scripts/                       the pipeline
 tests/                         entrypoint unit tests, live package and image tests
 ```
@@ -624,7 +700,7 @@ a user downloads) are generated and git-ignored.
 | `build-onnxruntime-bundle.sh` | downloads, verifies, prunes ONNX Runtime into a payload |
 | `build-model-bundle.sh` | pulls the bundled model from the registry's public channel with `postvec model pull`, verifies it against the pinned archive digest, and lays out the payload and its provenance |
 | `check-model-bundle.py` | the network-free trust gate: pins, channel, licence policy, closure and descriptor facts, then emits `model-facts.env`, `SOURCE.json` and the rendered DEP-5 copyright |
-| `build-extension-stage.sh` | compiles one cell in a builder image; splits debug info; runs the ELF gate |
+| `build-extension-stage.sh` | compiles one cell in a builder image; splits debug info; runs the ELF gate. `--with-server` also compiles the node, for the shared-package cell |
 | `inspect-elf.sh` | proves the real dynamic dependencies of the produced binaries |
 | `elf-depends.sh` | runs the target distribution's own dependency generator (`dpkg-shlibdeps` / `rpmdeps`) and prints the package relations |
 | `build-packages.sh` | renders the nfpm descriptions and emits `.deb`/`.rpm` |
@@ -633,7 +709,7 @@ a user downloads) are generated and git-ignored.
 | `write-release-manifest.sh` | computes `postvec-release.json` and `SHA256SUMS` from the artifacts |
 | `lint-nfpm-configs.sh` | renders every package description with stubs and parses the result |
 | `audit.sh` | blocking `cargo audit` over both lockfiles, with dated exceptions |
-| `build-server-image.sh` | builds a postvec-server image from this commit, for the remote-image test |
+| `build-server-image.sh` | assembles the postvec-server image from the Debian 12 packages — published, and the engine the remote-image test runs against |
 | `verify-release-metadata.sh` | reads each package's own metadata and requires the release directory to agree with it |
 | `release-mode.sh` | decides what a release run may do — mode, tag namespace, overrides, dispatch ref — and refuses the rest |
 | `advance-moving-tags.sh` | points the moving tags at recorded digests, attempts every write, verifies every tag, and reports what actually landed |
@@ -657,8 +733,8 @@ And the workflows that drive them:
 |---|---|---|
 | `postvec-release.yml` | **dispatch only** | the whole release: build, verify, install-test, image, manifest, publish. There is deliberately no tag-push trigger — see "Rehearsing a release" |
 | `postvec-packaging-ci.yml` | pull request, nightly | one reference cell per PR; the full matrix nightly |
-| `postvec-moving-tags.yml` | dispatch only | points the six moving image tags at a published release — production or disposable rehearsal — and verifies them |
-| `postvec-ci.yml`, `postvec-cli-ci.yml` | pull request | extension and CLI test suites |
+| `postvec-moving-tags.yml` | dispatch only | points the seven moving image tags at a published release — production or disposable rehearsal — and verifies them |
+| `postvec-ci.yml`, `postvec-cli-ci.yml`, `postvec-server-ci.yml` | pull request | extension, CLI and node test suites (the release's `validate` job runs the CLI's and the node's again on the released commit) |
 
 Two tools rather than four: **nfpm** emits both `.deb` and `.rpm` from one
 package description, so a dependency rule or a file placement is stated once
@@ -955,22 +1031,24 @@ project will not pretend otherwise.
 | `tests/bootstrap-test.sh` | Docker | the published bootstrap, run twice in a clean container of each of the five distributions it will execute on: fingerprint verified, repository RPM signature checked (EL), PostgreSQL and pgvector resolve afterwards, second run idempotent |
 | `tests/healthcheck-test.sh` | nothing | the container health verdict, against stubbed `pg_isready`/`psql`: every property false in turn, an empty or truncated report, a NULL heartbeat, a psql that cannot connect, an empty or unknown `POSTVEC_MODE`, and that the SQL it runs writes nothing — 23 assertions, well under a second |
 | `tests/entrypoint-test.sh` | a `postvec` binary | delegation, preload merge and validation, `_FILE` secrets, loopback contract, and that a relative binary path works (CI passes one) — 36 assertions, under a second |
-| `tests/package-install-test.sh` | Docker | both families, 46 assertions: the **published prerequisite bootstrap** (and its idempotency), dependency resolution, layout, dual-major coexistence, "the install changed nothing", a **real cluster** with `CREATE EXTENSION`, `setup`/`uninstall`, detached symbols, inference with the bundled model, removal — and `doctor`'s actual verdicts: which checks pass with no engine reachable, that it exits 1 and names the endpoint, and that it reports **healthy (exit 0)** once embedded configuration completes |
+| `tests/package-install-test.sh` | Docker | both families: the **published prerequisite bootstrap** (and its idempotency), dependency resolution, layout, dual-major coexistence, "the install changed nothing", a **real cluster** with `CREATE EXTENSION`, `setup`/`uninstall`, detached symbols, inference with the bundled model, removal — and `doctor`'s actual verdicts: which checks pass with no engine reachable, that it exits 1 and names the endpoint, and that it reports **healthy (exit 0)** once embedded configuration completes. The full run also installs `postvec-server` and starts the packaged node as its service account against the packaged runtime and model, over TLS |
 | `tests/image-smoke-test.sh` | Docker, a built image | health, PID 1, published ports, embed → sync → search, remote-mode degradation, persistence, clean SIGTERM, startup failure modes |
+| `tests/server-image-test.sh` | Docker, a built postvec-server image | composed of exactly this release's packages, licence and version labels, unprivileged, admin port unexposed, `/ready` only once the model answers, `/config` advertises it, `postvec-server status` and the bundled CLI work inside, clean drain on SIGTERM |
 | `tests/model-golden-test.sh` | Docker, an embedded image | the bundled model still produces the embeddings it was published with |
 
 The remote image test needs a real engine to be meaningful:
-`scripts/build-server-image.sh` builds a **postvec-server** image from this
-commit, serving the same ONNX Runtime and the same model bundle the embedded
-image carries, and `--server-image` makes the test bring it up on a private
-network and drive embed → sync → search through it. Without one the test
-*fails* rather than skipping: "the remote image works" is not something to
-assert by omission.
+`scripts/build-server-image.sh` assembles the **postvec-server** image from
+this release's own packages — the node, the CLI, the same ONNX Runtime and the
+same model bundle the embedded image carries — and `--server-image` makes the
+test bring it up on a private network and drive embed → sync → search through
+it. Without one the test *fails* rather than skipping: "the remote image works"
+is not something to assert by omission.
 
 Until 2026-08 this was a stand-in — `fixtures/inference-server`, an imitation
-node written because no real server existed. It is gone; the test now runs
-against the artifact a fleet actually runs. The image is local: nothing
-publishes it and no release manifest references it.
+node written because no real server existed. Then it was a real node compiled
+from source inside the image build, local only: nothing published it and no
+manifest referenced it. Now it is the published artifact itself, so the engine
+the remote image is tested against is the engine a fleet pulls.
 
 `package-install-test.sh --minimal` installs only the CLI and the extension.
 That is the dependency boundary a remote-mode user actually has, and running

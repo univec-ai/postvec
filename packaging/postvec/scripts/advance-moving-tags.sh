@@ -17,7 +17,7 @@
 #
 # **Why this is a script, and why it does not stop on the first failure.**
 #
-# Both the release workflow and the recovery workflow advance the same six
+# Both the release workflow and the recovery workflow advance the same seven
 # names, and both ran this as an inline loop under `set -e`. That is exactly
 # wrong for the job: a registry write that fails aborts the loop, so the
 # remaining tags are never attempted, the verification pass never runs, and the

@@ -1,33 +1,40 @@
 #!/usr/bin/env bash
-# Build a postvec-server container image from this commit.
+# Assemble the postvec-server image for one architecture from already-built
+# Debian 12 packages.
 #
-#   build-server-image.sh [--arch amd64]
+#   build-server-image.sh [--arch amd64] [--repository <repo>] [--load]
 #
-# postvec-server is the inference node postvec's *remote* mode dials. This
-# image carries the same ONNX Runtime and the same bundled model the complete
-# image runs in-process, so a container of each loads byte-identical model
-# assets — which is what makes a passing remote test and a passing embedded
-# test mean the same thing about the model.
+# postvec-server is the inference node postvec's *remote* mode dials. Like the
+# database images, this is a composition step, not a build step: it installs
+# the exact postvec-server, postvec-cli, postvec-onnxruntime and model .deb
+# files this commit produced, so the image a fleet runs is byte-for-byte the
+# packages a host installs — same binary, same runtime, same model, same
+# licence file — and the two are tested by the same install.
 #
-# The remote-mode smoke test uses it. Without a reachable engine that path is
-# only ever exercised in its degraded state — worker beating, jobs queueing,
-# search falling back to full text — which proves the failure mode works and
-# says nothing about the success one.
+# It used to compile the node from source inside a builder stage, as a stand-in
+# for the remote smoke test. That produced a second, unverified copy of the
+# binary that no package carried and no manifest recorded. Now the image is
+# published: the release manifest records it under `variant: server` in
+# SERVER_IMAGE_REPOSITORY, tagged `<release id>` with a `latest` moving tag.
 #
-# This replaces the old fixture builder, which built a stand-in
-# (`fixtures/inference-server`) because no real server existed yet. The test
-# now runs against the artifact rather than an imitation of it.
-#
-# The image is local. Nothing publishes it and no release manifest references
-# it; the tag is `postvec-server:<arch>`.
+# The remote-mode smoke test still uses it — `--server-image` on
+# tests/image-smoke-test.sh — and tests/server-image-test.sh exercises the
+# image on its own.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-RELEASE_ARCH=""
+RELEASE_ARCH=""; REPOSITORY=""; OUTPUT=--load; EXTRA_TAGS=()
 while (($#)); do
     case "$1" in
-    --arch) RELEASE_ARCH="$2"; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    --arch)       RELEASE_ARCH="$2"; shift 2 ;;
+    # The repository the versioned tag is built under. Defaults to
+    # SERVER_IMAGE_REPOSITORY; a disposable publication rehearsal passes its
+    # throwaway namespace so the image it tests is the image it pushes.
+    --repository) REPOSITORY="$2"; shift 2 ;;
+    --tag)        EXTRA_TAGS+=("$2"); shift 2 ;;
+    --load)       OUTPUT=--load; shift ;;
+    --push)       OUTPUT=--push; shift ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -38,80 +45,110 @@ arch_facts "${RELEASE_ARCH}"
 distro_facts debian12
 need docker
 
-ORT_PAYLOAD="${PKG_DIR}/build/payload-${RELEASE_ARCH}/opt/postvec"
-MODEL_PAYLOAD="${PKG_DIR}/build/payload-common/opt/postvec"
-[[ -d "${ORT_PAYLOAD}/libs" ]] \
-    || die "no ONNX Runtime payload; run scripts/build-onnxruntime-bundle.sh --arch ${RELEASE_ARCH}"
-[[ -d "${MODEL_PAYLOAD}/models" ]] \
-    || die "no model payload; run scripts/build-model-bundle.sh"
+# The image is built from the Debian 12 packages, which live in two roots: the
+# per-architecture common cell (node, CLI, ONNX Runtime) and the
+# per-distribution noarch root (model, metapackage).
+COMMON_CELL="$(common_dist_dir debian12 "${RELEASE_ARCH}")"
+NOARCH_CELL="$(noarch_dist_dir debian12)"
+build_first="Build them first:
+  scripts/build-onnxruntime-bundle.sh --arch ${RELEASE_ARCH}
+  scripts/build-extension-stage.sh --distro debian12 --pg 18 --arch ${RELEASE_ARCH} --with-server
+  scripts/build-model-bundle.sh --cli build/debian12-pg18-${RELEASE_ARCH}/cli/postvec
+  scripts/build-packages.sh --distro debian12 --pg 18 --arch ${RELEASE_ARCH}"
+[[ -d "${COMMON_CELL}" ]] || die "no shared Debian packages at ${COMMON_CELL}. ${build_first}"
+[[ -d "${NOARCH_CELL}" ]] || die "no architecture-independent packages at ${NOARCH_CELL}. ${build_first}"
 
-CONTEXT="${PKG_DIR}/build/postvec-server-${RELEASE_ARCH}"
-rm -rf "${CONTEXT}"
-mkdir -p "${CONTEXT}/src/payload"
-
-# The engine root: exactly the reviewed payloads, so this image and the
-# complete image load byte-identical model assets.
-cp -a "${ORT_PAYLOAD}/libs"     "${CONTEXT}/src/payload/"
-cp -a "${MODEL_PAYLOAD}/models" "${CONTEXT}/src/payload/"
-
-# Stage the workspace sources explicitly: cargo parses every workspace
-# member's manifest, so all members travel, but the extension crate
-# (workspace-excluded) and any build output do not.
-for path in Cargo.toml Cargo.lock proto engine shared \
-            postvec-cli registry providers postvec-server; do
-    cp -a "${REPO_ROOT}/${path}" "${CONTEXT}/src/${path}"
+# Release packages only: the globs are anchored on the version that follows
+# the name, so `postvec-server-dbgsym_…` and `….deb.spdx.json` stay out.
+shopt -s nullglob
+server=("${COMMON_CELL}"/postvec-server_[0-9]*.deb)
+cli=("${COMMON_CELL}"/postvec-cli_[0-9]*.deb)
+runtime=("${COMMON_CELL}"/postvec-onnxruntime_[0-9]*.deb)
+model=("${NOARCH_CELL}"/postvec-model-*_[0-9]*.deb)
+extras=("${NOARCH_CELL}"/"${EXTRAS_METAPACKAGE}"_[0-9]*.deb)
+shopt -u nullglob
+for pair in "server:${#server[@]}" "cli:${#cli[@]}" "runtime:${#runtime[@]}" \
+            "model:${#model[@]}" "extras:${#extras[@]}"; do
+    (( ${pair#*:} == 1 )) || die "expected exactly one ${pair%%:*} package for the server image, found ${pair#*:}
+  ${COMMON_CELL}  (postvec-server, postvec-cli, postvec-onnxruntime)
+  ${NOARCH_CELL}  (postvec-model-*, ${EXTRAS_METAPACKAGE})
+${build_first}"
 done
 
-IMAGE="postvec-server:${RELEASE_ARCH}"
-log "building postvec-server (${RELEASE_ARCH})"
-
-cp "${PKG_DIR}/docker/Dockerfile.postvec-server" "${CONTEXT}/src/Dockerfile"
+# A narrow context: the packages and the entrypoint, nothing else. An image
+# build has no business seeing source code.
+CONTEXT="${PKG_DIR}/build/server-image-context-${RELEASE_ARCH}"
+rm -rf "${CONTEXT}"
+mkdir -p "${CONTEXT}/dist"
+cp "${server[@]}" "${cli[@]}" "${runtime[@]}" "${model[@]}" "${extras[@]}" "${CONTEXT}/dist/"
 install -m 0755 "${PKG_DIR}/docker/postvec-server-entrypoint.sh" \
-    "${CONTEXT}/src/postvec-server-entrypoint.sh"
+    "${CONTEXT}/postvec-server-entrypoint.sh"
+
+REPOSITORY="${REPOSITORY:-${SERVER_IMAGE_REPOSITORY}}"
+# Held to the same grammar as the pinned value: this ends up in `docker tag`.
+[[ "${REPOSITORY}" =~ ^([a-z0-9]+([.-][a-z0-9]+)*(:[0-9]{1,5})?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$ ]] \
+    || die "--repository is not a plain container repository reference: ${REPOSITORY}"
+[[ "${REPOSITORY}" == "${SERVER_IMAGE_REPOSITORY}" ]] \
+    || warn "building into ${REPOSITORY}, not the pinned ${SERVER_IMAGE_REPOSITORY}"
+
+# The versioned tag carries the packaging revision, like the database images:
+# a packaging-only rebuild is a new tag, never an overwrite. The moving tag
+# (`latest`) is advanced by the release job, last, after verification.
+TAGS=("${REPOSITORY}:${RELEASE_ID}")
+TAGS+=("${EXTRA_TAGS[@]}")
+tag_args=()
+for tag in "${TAGS[@]}"; do tag_args+=(--tag "${tag}"); done
+
+log "building the postvec-server image (${RELEASE_ARCH}, ${SERVER_LICENSE})"
+for tag in "${TAGS[@]}"; do log "  ${tag}"; done
+log "  from $(basename "${server[0]}")"
+
+# Pushing from here would bypass the release job's gates. The release pushes
+# per-architecture staging images itself; this script builds and loads.
+if [[ "${OUTPUT}" == --push ]]; then
+    die "build-server-image.sh does not push.
+Publishing is the release workflow's job: it pushes the per-architecture image
+to the staging repository, tests it natively, and only then creates the
+versioned manifest. A push from here would skip all of that."
+fi
 
 # `--load`, because this image exists to be `docker run` on this machine.
-# Under the `docker-container` driver — which is what `docker/setup-buildx-action`
-# provisions, and therefore what CI uses — a build with no output flag writes
-# to the builder's cache and leaves *nothing* in the local image store. The
-# build then reports success and the test fails much later with "pull access
-# denied" for an image that was never meant to be pulled. (Locally, where the
-# plugin is often absent, the classic-builder fallback below loads the image
-# implicitly, so this divergence only ever shows up in CI.) With the plain
-# `docker` driver `--load` is what already happens, so it is safe either way.
-build=(docker buildx build --load)
-docker buildx version >/dev/null 2>&1 || {
-    warn "docker buildx is not installed — using the classic builder"
-    "${PKG_DIR}/scripts/strip-cache-mounts.py" \
-        "${CONTEXT}/src/Dockerfile" "${CONTEXT}/src/Dockerfile.nocache"
-    mv "${CONTEXT}/src/Dockerfile.nocache" "${CONTEXT}/src/Dockerfile"
+# Under the `docker-container` driver — what CI provisions — a build with no
+# output flag writes to the builder's cache and leaves *nothing* in the local
+# image store; the test then fails much later with "pull access denied" for an
+# image that was never meant to be pulled.
+if docker buildx version >/dev/null 2>&1; then
+    build=(docker buildx build --load)
+    export DOCKER_BUILDKIT=1
+else
+    [[ "${RELEASE_ARCH}" == "$(host_release_arch)" ]] \
+        || die "building for ${RELEASE_ARCH} on $(host_release_arch) needs docker buildx"
+    warn "docker buildx is not installed — using the classic builder (local build only)"
     build=(docker build)
     export DOCKER_BUILDKIT=0
-}
+fi
 
 "${build[@]}" \
-    --file "${CONTEXT}/src/Dockerfile" \
-    --target server \
-    --tag "${IMAGE}" \
+    --file "${PKG_DIR}/docker/Dockerfile.postvec-server" \
+    --platform "${OCI_PLATFORM}" \
+    "${tag_args[@]}" \
     --build-arg "BUILD_BASE=${DIST_BASE_IMAGE}" \
-    --build-arg "RUST_VERSION=${RUST_VERSION}" \
-    --build-arg "RUSTUP_VERSION=${RUSTUP_VERSION}" \
-    --build-arg "RUSTUP_INIT_SHA256=${RUSTUP_INIT_SHA256}" \
-    --build-arg "RUST_TRIPLE=${RUST_TRIPLE}" \
-    --build-arg "PROTOC_VERSION=${PROTOC_VERSION}" \
-    --build-arg "PROTOC_ARCH=${PROTOC_ARCH}" \
-    --build-arg "PROTOC_SHA256=${PROTOC_SHA256}" \
-    "${CONTEXT}/src"
+    --build-arg "POSTVEC_VERSION=${POSTVEC_VERSION}" \
+    --build-arg "RELEASE_ID=${RELEASE_ID}" \
+    --build-arg "SERVER_LICENSE=${SERVER_LICENSE}" \
+    --build-arg "IMAGE_SOURCE=${SOURCE_REPOSITORY}" \
+    --build-arg "GIT_REVISION=$(git -C "${REPO_ROOT}" rev-parse HEAD)" \
+    --build-arg "BUILD_DATE=$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)" \
+    --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
+    "${CONTEXT}"
 
-rm -rf "${CONTEXT}/src"
+rm -rf "${CONTEXT}"
 
-# A build that reported success but left no image is a real failure mode: the
-# smoke test then tries to `docker run` a tag that does not exist, Docker
-# treats it as a registry reference, and the run dies with "pull access denied
-# for postvec-server" — an error about permissions on an image nobody ever
-# intended to publish. Assert the postcondition instead, so whatever the
+# A build that reported success but left no image is a real failure mode —
+# see the `--load` note above. Assert the postcondition, so whatever the
 # builder or its flags do, the failure names itself here.
-docker image inspect "${IMAGE}" >/dev/null 2>&1 || die "the build succeeded but ${IMAGE} is not in the local image store.
+docker image inspect "${TAGS[0]}" >/dev/null 2>&1 || die "the build succeeded but ${TAGS[0]} is not in the local image store.
 A buildx build with no --load writes to the builder's cache and loads nothing;
 check the output flag above and the driver in use (docker buildx ls)."
 
-log "postvec-server image ready: ${IMAGE}"
+log "postvec-server image ready: ${TAGS[0]}"

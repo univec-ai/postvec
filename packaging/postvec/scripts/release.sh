@@ -83,9 +83,11 @@ for DISTRO in "${DISTROS[@]}"; do
     # matrix does the same, and for the same reason: building them per major
     # would produce several files with one name.
     FIRST_MAJOR="${PG_MAJORS[0]}"
+    # `--with-server`: the shared cell is the one that compiles the inference
+    # node, which is PostgreSQL-independent like the CLI it sits beside.
     step "${DISTRO}: shared packages via PostgreSQL ${FIRST_MAJOR}"
     "${PKG_DIR}/scripts/build-extension-stage.sh" \
-        --distro "${DISTRO}" --pg "${FIRST_MAJOR}" --arch "${ARCH}"
+        --distro "${DISTRO}" --pg "${FIRST_MAJOR}" --arch "${ARCH}" --with-server
 
     # The bundled model, once, with the CLI that stage just produced. Do not
     # assume every target distribution's binary runs on every release host:
@@ -165,6 +167,17 @@ if (( ! SKIP_IMAGES )) && (( ! IMAGES_WANTED )); then
 fi
 
 if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
+    # The inference node's image first: it is composed from the shared and
+    # noarch Debian 12 packages built above, it is a published artifact in its
+    # own right, and the remote database images are tested against it.
+    step "image: postvec-server"
+    "${PKG_DIR}/scripts/build-server-image.sh" --arch "${ARCH}" --load
+    SERVER_TAG="${SERVER_IMAGE_REPOSITORY}:${RELEASE_ID}"
+    if (( ! SKIP_TESTS )); then
+        step "image: postvec-server on its own"
+        "${PKG_DIR}/tests/server-image-test.sh" "${SERVER_TAG}"
+    fi
+
     for major in "${PG_MAJORS[@]}"; do
         for variant in remote "${COMPLETE_IMAGE_VARIANT}"; do
             step "image: PG ${major} ${variant}"
@@ -183,17 +196,15 @@ if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
                 tag="${IMAGE_REPOSITORY}:${RELEASE_ID}-pg${major}${tag_suffix}"
                 if [[ "${variant}" == remote ]]; then
                     # The remote image is only meaningfully tested against a
-                    # real engine, so build the real one: postvec-server, from
-                    # this commit, carrying the same payloads.
-                    step "image: postvec-server"
-                    "${PKG_DIR}/scripts/build-server-image.sh" --arch "${ARCH}"
+                    # real engine: the postvec-server image built above, from
+                    # this release's own packages.
                     "${PKG_DIR}/tests/image-smoke-test.sh" --variant remote \
-                        --server-image "postvec-server:${ARCH}" "${tag}"
+                        --server-image "${SERVER_TAG}" "${tag}"
                     if [[ "${major}" == 18 ]]; then
                         step "image: PV-13 provider gate (remote + postvec-server)"
                         "${PKG_DIR}/tests/provider-e2e-test.sh" --target image \
                             --variant remote --arch "${ARCH}" \
-                            --server-image "postvec-server:${ARCH}" "${tag}"
+                            --server-image "${SERVER_TAG}" "${tag}"
                     fi
                 else
                     "${PKG_DIR}/tests/image-smoke-test.sh" \
@@ -229,5 +240,8 @@ printf 'distros:    %s\n' "${DISTROS[*]}" >&2
 printf 'majors:     %s\n' "${PG_MAJORS[*]}" >&2
 printf 'artifacts:  %s/release\n' "${PKG_DIR}" >&2
 printf 'manifest:   %s/release/postvec-release.json\n' "${PKG_DIR}" >&2
+if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
+    printf 'node image: %s:%s (%s)\n' "${SERVER_IMAGE_REPOSITORY}" "${RELEASE_ID}" "${SERVER_LICENSE}" >&2
+fi
 printf '\nThis is one architecture. A publishable release also needs the other one,\n' >&2
 printf 'built and tested on a native runner, before the manifest is final.\n' >&2

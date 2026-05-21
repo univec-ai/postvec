@@ -1,0 +1,48 @@
+# Detached debug information for the postvec-server binary.
+#
+# Its own package for the same reason the CLI's symbols are: the binary is
+# owned by exactly one package on a host, so its symbols must be too. The file
+# sits at /usr/lib/debug/usr/bin/postvec-server.debug, the mirrored path gdb
+# and coredumpctl look at.
+
+name: postvec-server-${DEBUG_SUFFIX}
+arch: ${PKG_ARCH}
+platform: linux
+version: ${POSTVEC_VERSION}
+release: ${PKG_RELEASE}
+section: debug
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+homepage: ${SOURCE_REPOSITORY}
+license: ${SERVER_LICENSE}
+description: |
+  Debug symbols for the postvec-server inference node.
+  .
+  Install alongside postvec-server to get readable backtraces from a crash in
+  the node. Never needed to run it.
+
+contents:
+  - src: ${CELL_DIR}/debug/postvec-server.debug
+    dst: /usr/lib/debug/usr/bin/postvec-server.debug
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${SERVER_COPYRIGHT_SRC}
+    dst: ${LICENSE_DST}/postvec-server-${DEBUG_SUFFIX}/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # See postvec-cli.yaml: one changelog per release, shipped by every package.
+  - src: ${CHANGELOG_FILE}
+    dst: /usr/share/doc/postvec-server-${DEBUG_SUFFIX}/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+
+overrides:
+  deb:
+    depends:
+      - postvec-server (= ${POSTVEC_VERSION}-${PKG_RELEASE})
+  rpm:
+    depends:
+      - postvec-server = ${POSTVEC_VERSION}-${PKG_RELEASE}
+
+rpm:
+  group: Development/Debug
+
+umask: 0022

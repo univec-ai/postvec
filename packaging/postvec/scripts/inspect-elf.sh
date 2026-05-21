@@ -12,12 +12,21 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 RELEASE_ARCH=""; LIBRARY=""; BINARY=""; DISTRO="${POSTVEC_DISTRO:-}"
+PROVIDED_BY_PACKAGE=()
 while (($#)); do
     case "$1" in
     --arch)    RELEASE_ARCH="$2"; shift 2 ;;
     --distro)  DISTRO="$2"; shift 2 ;;
     --library) LIBRARY="$2"; shift 2 ;;
     --binary)  BINARY="$2"; shift 2 ;;
+    # A soname the target's *bare* base image does not carry but a package
+    # the artifact will declare a dependency on does — OpenSSL for the
+    # inference node's TLS listener. The resolution check runs in the base
+    # image so that a missing dependency cannot hide behind a fat builder;
+    # this names the one kind of "not found" that is the dependency working
+    # as designed, and it is still checked to be a real NEEDED entry, so a
+    # stale allowance cannot outlive the dependency it excuses. Repeatable.
+    --provided-by-package) PROVIDED_BY_PACKAGE+=("$2"); shift 2 ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
@@ -80,9 +89,30 @@ inspect_target_dependencies() {
     fi
     docker rm --force "${container}" >/dev/null 2>&1 || true
 
-    if (( run_status )) || grep -q 'not found' <<<"${output}"; then
+    if (( run_status )); then
         printf '%s\n' "${output}" >&2
-        problem "unresolved shared library dependencies in the ${DIST_ID} target"
+        problem "could not resolve shared libraries in the ${DIST_ID} target"
+        return 0
+    fi
+
+    # Every unresolved soname must be one a declared package dependency
+    # provides; anything else is a binary that installs cleanly on a minimal
+    # host and fails to start.
+    local unresolved=() excused=() soname
+    while IFS= read -r soname; do
+        [[ -n "${soname}" ]] || continue
+        if printf '%s\n' "${PROVIDED_BY_PACKAGE[@]}" | grep -qxF "${soname}"; then
+            excused+=("${soname}")
+        else
+            unresolved+=("${soname}")
+        fi
+    done < <(awk '/not found/ {print $1}' <<<"${output}")
+
+    if (( ${#unresolved[@]} )); then
+        printf '%s\n' "${output}" >&2
+        problem "unresolved shared library dependencies in the ${DIST_ID} target: ${unresolved[*]}"
+    elif (( ${#excused[@]} )); then
+        pass "all shared libraries resolve in the ${DIST_ID} target, except ${excused[*]} — provided by a declared package dependency (scripts/elf-depends.sh)"
     else
         pass "all shared libraries resolve in the ${DIST_ID} target"
     fi
@@ -135,6 +165,18 @@ inspect() {
     printf '  needed: '
     readelf -d "${path}" | awk -F'[][]' '/NEEDED/ {printf "%s ", $2}'
     printf '\n'
+
+    # An allowance must name something the binary actually needs. One that
+    # does not is either a typo (and the real soname would then fail below,
+    # unexcused) or a leftover from a dependency that no longer exists.
+    local allowed
+    for allowed in "${PROVIDED_BY_PACKAGE[@]}"; do
+        if readelf -d "${path}" | awk -F'[][]' '/NEEDED/ {print $2}' | grep -qxF "${allowed}"; then
+            pass "needs ${allowed}, to be provided by a declared package dependency"
+        else
+            problem "--provided-by-package ${allowed} names a soname this binary does not need"
+        fi
+    done
 
     # Highest required glibc symbol version versus the target's floor.
     local highest floor

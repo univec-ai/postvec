@@ -22,6 +22,12 @@ ARG RUSTUP_INIT_SHA256
 ARG RUST_TRIPLE
 ARG PGRX_VERSION
 ARG SOURCE_DATE_EPOCH
+# 1 to also build postvec-server, the inference node, in this cell. Off by
+# default: the node is PostgreSQL-independent, so only the shared-package
+# builder (one per distribution × architecture) needs it, and compiling it in
+# all 24 extension cells would be 24 chances for a longer build and no extra
+# artifact. See scripts/build-extension-stage.sh --with-server.
+ARG WITH_SERVER=0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=UTC \
@@ -155,12 +161,20 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
             --features "pg${PG_MAJOR},embedded" \
             --pg-config "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"; \
     cd /src; \
+    # One cargo invocation for the workspace binaries, so the engine, shared
+    # and provider crates the node and the CLI both link are compiled once.
+    packages="-p postvec-cli"; \
+    if [ "${WITH_SERVER}" = 1 ]; then packages="${packages} -p postvec-server"; fi; \
     RUSTFLAGS="${remap}" \
         CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
-        cargo build --locked --release -p postvec-cli; \
+        cargo build --locked --release ${packages}; \
     mkdir -p /out/stage /out/cli; \
     cp -a "/src/postvec/target/release/postvec-pg${PG_MAJOR}/." /out/stage/; \
-    cp -a /src/target/release/postvec /out/cli/postvec
+    cp -a /src/target/release/postvec /out/cli/postvec; \
+    if [ "${WITH_SERVER}" = 1 ]; then \
+        mkdir -p /out/server; \
+        cp -a /src/target/release/postvec-server /out/server/postvec-server; \
+    fi
 
 # Record what actually built this, for the release manifest and for anyone
 # holding an artifact and wondering. The package inventory is the important

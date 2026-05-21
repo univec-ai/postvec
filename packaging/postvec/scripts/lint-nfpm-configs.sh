@@ -52,6 +52,8 @@ export CELL_DIR="${WORK}/cell" \
        MODEL_SEQUENCE_LEN=256 \
        MODEL_REGISTRY_REVISION=2 \
        MODEL_ARCHIVE_SHA256=0000000000000000000000000000000000000000000000000000000000000000 \
+       SERVER_COPYRIGHT_SRC="${WORK}/server-copyright" \
+       SERVER_UNIT_DIR=/usr/lib/systemd/system \
        SHLIB_DEPENDS='      - libc6 (>= 2.34)'
 
 failed=0
@@ -78,11 +80,12 @@ for required in ("name", "arch", "version", "maintainer", "description"):
     if not document.get(required):
         problems.append(f"missing {required}")
 # Every content entry must say where it comes from and where it goes; a `dst`
-# with no `src` silently packages nothing.
+# with no `src` silently packages nothing. The one entry kind that has no
+# source by definition is `type: dir` — an empty, package-owned directory.
 for entry in document.get("contents", []):
     if not entry.get("dst"):
         problems.append(f"a contents entry has no dst: {entry}")
-    if not entry.get("src"):
+    if not entry.get("src") and entry.get("type") != "dir":
         problems.append(f"a contents entry has no src: {entry}")
 if problems:
     for problem in problems:

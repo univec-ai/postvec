@@ -1,0 +1,45 @@
+# One postvec-server inference node, from the published image — the node
+# postvec's remote mode (`postvec.mode = 'grpc'`) dials. Pair it with
+# postvec-pg17-remote.yml (or the pg18 tag) by pointing that file's
+# POSTVEC_GRPC_ENDPOINTS / POSTVEC_HTTP_ENDPOINTS at this host.
+#
+# The image is composed of the same packages a node host installs:
+# postvec-server, the postvec CLI, ONNX Runtime and the bundled model, with
+# the engine root at /opt/postvec. It serves that model out of the box.
+#
+# LICENCE: postvec-server is not under the PostgreSQL License that covers the
+# rest of postvec. The image's org.opencontainers.image.licenses label and the
+# release manifest's `licenses` block say which licence it carries.
+#
+# The gRPC (33333) and discovery (22222) ports carry no authentication. Keep
+# them on a private network — bind them to a private interface as below, or
+# leave `ports:` off and reach the node over a compose/overlay network only.
+
+services:
+  inference:
+    image: ghcr.io/univec-ai/postvec-server:0.1.0-1
+    # The container generates a self-signed certificate for the discovery
+    # listener at start, per container, into /opt/postvec/certs. To supply
+    # your own pair instead, mount it there (server.crt / server.key) — or
+    # name one with POSTVEC_SERVER_SSL_CERT / POSTVEC_SERVER_SSL_KEY.
+    # Peers, for a fleet: POSTVEC_SERVER_PEERS=node-2,node-3 and
+    # POSTVEC_SERVER_ADVERTISE=<this host's private IP>.
+    environment:
+      RUST_LOG: info
+    ports:
+      - "10.0.0.20:22222:22222"
+      - "10.0.0.20:33333:33333"
+    # More models: `docker compose exec inference postvec model pull <name> --yes`
+    # then `docker compose exec inference postvec-server load <name>`. Persist
+    # them across container replacement with a named volume on the model root;
+    # a fresh named volume is seeded with the bundled model.
+    volumes:
+      - postvec-models:/opt/postvec/models
+    # SIGTERM starts a drain: /ready flips to 503, peers are told, in-flight
+    # requests finish. Allow more than the drain delay (5 s) plus the longest
+    # request budget.
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+volumes:
+  postvec-models:

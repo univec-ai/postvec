@@ -1,0 +1,12 @@
+{
+  "//": "postvec-server configuration, read by the packaged unit (--config /etc/postvec-server/config.json). Every key is optional and has a default; unknown keys are a hard error. Keys beginning with // are comments. Precedence: defaults < this file < environment < flags. Every key, explained: /usr/share/doc/postvec-server/postvec-server.example.json",
+
+  "//peers": "Bare hosts of the other nodes in this fleet, e.g. [\"10.0.0.11\", \"10.0.0.12\"]. Leave empty for a single node.",
+  "peers": [],
+
+  "//ssl": "Certificate pair for the discovery listener. Relative paths resolve against the engine root (/opt/postvec for the packaged unit), so the default pair is /opt/postvec/certs/server.{crt,key}; absolute paths work too. Without a readable pair the node refuses to start — set \"insecure\": true only for local development.",
+  "ssl": {
+    "cert": "certs/server.crt",
+    "key": "certs/server.key"
+  }
+}

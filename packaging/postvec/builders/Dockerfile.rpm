@@ -22,6 +22,8 @@ ARG SOURCE_DATE_EPOCH
 # only in scope from its ARG onwards, so declaring it later would have the
 # checksum compared against an empty string.
 ARG PGDG_EL9_REPO_RPM_SHA256
+# 1 to also build postvec-server in this cell; see Dockerfile.deb.
+ARG WITH_SERVER=0
 
 ENV TZ=UTC \
     LC_ALL=C.UTF-8 \
@@ -131,12 +133,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
             --features "pg${PG_MAJOR},embedded" \
             --pg-config "/usr/pgsql-${PG_MAJOR}/bin/pg_config"; \
     cd /src; \
+    packages="-p postvec-cli"; \
+    if [ "${WITH_SERVER}" = 1 ]; then packages="${packages} -p postvec-server"; fi; \
     RUSTFLAGS="${remap}" \
         CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
-        cargo build --locked --release -p postvec-cli; \
+        cargo build --locked --release ${packages}; \
     mkdir -p /out/stage /out/cli; \
     cp -a "/src/postvec/target/release/postvec-pg${PG_MAJOR}/." /out/stage/; \
-    cp -a /src/target/release/postvec /out/cli/postvec
+    cp -a /src/target/release/postvec /out/cli/postvec; \
+    if [ "${WITH_SERVER}" = 1 ]; then \
+        mkdir -p /out/server; \
+        cp -a /src/target/release/postvec-server /out/server/postvec-server; \
+    fi
 
 RUN set -eux; \
     { \
