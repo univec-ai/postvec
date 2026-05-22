@@ -10,6 +10,10 @@ export type Tokens = {
   imageComplete: string;
   imageMoving: string;
   imageMovingRemote: string;
+  imageServer: string;
+  imageServerMoving: string;
+  serverdeb: string;
+  serverrpm: string;
   pkgdeb: string;
   pkgel: string;
   debfile: string;
@@ -40,6 +44,10 @@ export function tokens(pg: PgMajor): Tokens {
     imageComplete: `${SITE.ghcr}:${SITE.release}-pg${pg}-complete`,
     imageMoving: `${SITE.ghcr}:pg${pg}-complete`,
     imageMovingRemote: `${SITE.ghcr}:pg${pg}`,
+    imageServer: `${SITE.ghcrServer}:${SITE.release}`,
+    imageServerMoving: `${SITE.ghcrServer}:latest`,
+    serverdeb: `postvec-server_${SITE.release}+deb12_amd64.deb`,
+    serverrpm: `postvec-server-${SITE.release}.el9.x86_64.rpm`,
     pkgdeb: `postgresql-${pg}-postvec`,
     pkgel: `postgresql${pg}-postvec`,
     debfile: `postgresql-${pg}-postvec_${SITE.release}+deb12_amd64.deb`,
@@ -158,7 +166,67 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         `Pinned, remote:    ${t.image}`,
         `Moving, embedded:  ${t.imageMoving}`,
         `Moving, remote:    ${t.imageMovingRemote}`,
+        `Pinned, node:      ${t.imageServer}`,
+        `Moving, node:      ${t.imageServerMoving}`,
       ].join("\n"),
+  },
+
+  "docker-server": {
+    lang: "bash",
+    render: (t) =>
+      [
+        "docker run -d --name postvec-server \\",
+        "  -p 22222:22222 \\",
+        "  -p 33333:33333 \\",
+        "  -v postvec-models:/opt/postvec/models \\",
+        `  ${t.imageServer}`,
+      ].join("\n"),
+  },
+
+  "docker-server-verify": {
+    lang: "bash",
+    render: (t) =>
+      [
+        `gh attestation verify oci://${t.imageServer} \\`,
+        `  --repo ${SITE.githubRepo} \\`,
+        `  --signer-workflow ${SITE.signerWorkflow}`,
+      ].join("\n"),
+  },
+
+  "packages-server": {
+    lang: "bash",
+    families: [
+      {
+        id: "debian",
+        label: "Debian / Ubuntu",
+        render: (t) =>
+          [
+            "sudo apt install \\",
+            `  ./${t.serverdeb} \\`,
+            "  ./postvec-onnxruntime_*.deb \\",
+            "  ./postvec-model-minilm-l6-v2_*.deb \\",
+            "  ./postvec-extras_*.deb",
+            "",
+            "sudo systemctl enable --now postvec-server",
+            "postvec-server status",
+          ].join("\n"),
+      },
+      {
+        id: "el9",
+        label: "EL9",
+        render: (t) =>
+          [
+            "sudo dnf install \\",
+            `  ./${t.serverrpm} \\`,
+            "  ./postvec-onnxruntime-*.rpm \\",
+            "  ./postvec-model-minilm-l6-v2-*.rpm \\",
+            "  ./postvec-extras-*.rpm",
+            "",
+            "sudo systemctl enable --now postvec-server",
+            "postvec-server status",
+          ].join("\n"),
+      },
+    ],
   },
 
   prerequisites: {

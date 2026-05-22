@@ -8,40 +8,50 @@ description: Install the files, choose TLS or --insecure, start postvec-server a
 One node, from an empty directory. The result is a process serving gRPC on
 `33333` and discovery on `22222`, with at least one model loaded.
 
-## 1. Get the binary
+## 1. Install the package
 
-There is no `.deb` or `.rpm` for `postvec-server` yet, and no published image.
-Today it comes from a checkout:
+`postvec-server` is published with every release as a `.deb` / `.rpm`, one
+per distribution and architecture (there is no PostgreSQL major in it), next
+to the runtime and model packages it serves. Download and verify them as on
+the [packages page](/docs/install/packages), then:
+
+<PgSnippet id="packages-server" />
+
+The package installs the binary, the systemd unit, a conffile at
+`/etc/postvec-server/config.json` and the `postvec-server` service account.
+It enables and starts nothing — the `systemctl` line is yours.
+
+::: warning Licence
+`postvec-server` is not under the PostgreSQL License that covers the rest of
+postvec. The package's copyright file, the image label and the release
+manifest state its terms; see the [release page](/download#postvec-server).
+:::
+
+A checkout still builds it, and needs neither pgrx nor PostgreSQL headers:
 
 ```bash
 cargo build --release -p postvec-server
 sudo install -m 0755 target/release/postvec-server /usr/local/bin/
 ```
 
-It is an ordinary workspace member, so it needs neither pgrx nor PostgreSQL
-headers. The [release page](/download) is the source for publication status.
-
 ## 2. Put the files in place
 
-A node needs ONNX Runtime and at least one model under the same root:
-
-```bash
-sudo mkdir -p /var/lib/postvec-server
-```
-
-Both come from the same packages the database host uses:
+A node needs ONNX Runtime and at least one model under the same root. The
+packaged unit reads **`/opt/postvec`**, which is exactly where these packages
+install and where `postvec model pull` writes — so the install line above
+already put everything in place:
 
 | Artifact | Installs |
 |---|---|
 | `postvec-onnxruntime` | `libonnxruntime.so` under `/opt/postvec/libs` |
-| `postvec-model-minilm-l6-v2` | The bundled 384-d model |
-| `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands |
+| `postvec-model-minilm-l6-v2` | The bundled 384-d model under `/opt/postvec/models` |
+| `postvec-extras` | Pins the two above |
+| `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands (optional) |
 
-Point `--root` at `/opt/postvec` to use those directly, or copy the
-tree to `/var/lib/postvec-server` and keep the node's inventory separate from
-any local cluster. See [packages](/docs/install/packages) for the download and
-verification steps, and [models on a node](/docs/server/models) for pulling
-more.
+A node built from a checkout, or a unit without the packaged drop-in, defaults
+to `/var/lib/postvec-server` instead: point `--root` at `/opt/postvec`, or copy
+the tree there to keep the node's inventory separate from any local cluster.
+See [models on a node](/docs/server/models) for pulling more.
 
 ## 3. Decide about TLS
 
@@ -72,32 +82,33 @@ found without flags.
 
 ### As a container
 
-A checkout builds an image carrying the binary, ONNX Runtime and the bundled
-model, which are the same payloads the complete postvec image runs in-process:
+The published image is the packages above composed on Debian 12: the node,
+the CLI, ONNX Runtime and the bundled model — the same model bytes the
+complete postvec image runs in-process. It serves MiniLM out of the box:
 
-```bash
-cd packaging/postvec
-scripts/build-onnxruntime-bundle.sh --arch amd64
-scripts/build-model-bundle.sh
-scripts/build-server-image.sh --arch amd64
-
-docker run -d --name postvec-server \
-  -p 22222:22222 -p 33333:33333 \
-  postvec-server:amd64
-```
+<PgSnippet id="docker-server" />
 
 The container generates its own self-signed certificate at start, per
 container, never baked into the image. Mount a pair over `/opt/postvec/certs`
 or pass `--ssl-cert` / `--ssl-cert-key` to override it. The healthcheck is
 `/ready`, so `docker inspect` reports healthy only once a model can answer.
+The admin port is not exposed. Verify the image the way you verify a package:
 
-No server image is published yet. The [release page](/download) is the source
-for publication status.
+<PgSnippet id="docker-server-verify" />
+
+A checkout builds the same image from locally built packages with
+`packaging/postvec/scripts/build-server-image.sh`.
 
 ### As a service
 
-A systemd unit lives under `postvec-server/systemd/`. It runs
-the process unprivileged, with a strict sandbox and a read-only model root.
+The package installs the unit from `postvec-server/systemd/` plus a drop-in
+that sets `POSTVEC_SERVER_ROOT=/opt/postvec`. It runs the process
+unprivileged, with a strict sandbox and a read-only model root:
+
+```bash
+sudo systemctl enable --now postvec-server
+journalctl -u postvec-server -f
+```
 
 ## 5. Read the boot log
 

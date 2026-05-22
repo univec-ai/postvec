@@ -41,6 +41,11 @@ Omit `-complete` and point at your `postvec-server` nodes:
 
 <PgSnippet id="docker-remote" />
 
+The node itself is published too, as `ghcr.io/univec-ai/postvec-server`,
+composed of the same packages and serving the bundled model out of the box.
+[Run a node](/docs/server/node) covers it; the release's remote images are
+smoke-tested against exactly that image.
+
 ## Volume path
 
 | PostgreSQL major | Mount |

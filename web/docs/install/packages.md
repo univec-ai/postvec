@@ -48,6 +48,11 @@ inference:
 
 <PgSnippet id="packages-remote" />
 
+The nodes install from the same release: the `postvec-server` package plus
+the runtime and model packages, on hosts that need no PostgreSQL. See
+[run a node](/docs/server/node). That package carries its own licence, stated
+on the [release page](/download#postvec-server).
+
 Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies
 resolve. `dpkg` / `rpm -i` skip that resolution.
 
