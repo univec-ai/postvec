@@ -188,6 +188,27 @@ check_model_engine_paths() {
     done <<<"$(grep '/opt/postvec/models/' <<<"${files}" || true)"
 }
 
+# Every path a package puts under /opt/postvec must be inside the one engine
+# subtree it owns (`libs` for the runtime, `models` for a model bundle). This
+# is what catches a payload in a superseded layout: the files are all present
+# and correctly named, one directory level away from where the engine looks.
+# ${1} newline-separated file list, ${2} the subtree (libs | models)
+check_engine_root_paths() {
+    local files="$1" subtree="$2" path stray=0
+    while IFS= read -r path; do
+        [[ -n "${path}" ]] || continue
+        # dpkg lists `./opt/…` with trailing slashes on directories; rpm lists
+        # `/opt/…` with neither. Normalise both to `opt/…`.
+        path="${path#./}"
+        path="${path#/}"
+        case "${path}" in
+        opt/|opt/postvec/|opt/postvec|"opt/postvec/${subtree}"|"opt/postvec/${subtree}/"*) ;;
+        *)  problem "outside /opt/postvec/${subtree}/: /${path}"; stray=1 ;;
+        esac
+    done <<<"$(grep -E '^\.?/opt(/|$)' <<<"${files}" || true)"
+    (( stray )) || pass "everything under /opt/postvec is inside ${subtree}/"
+}
+
 # ${1} package basename, ${2} newline-separated file list, ${3} dependency text
 check_contents() {
     local name="$1" files="$2" depends="$3"
@@ -238,7 +259,34 @@ check_contents() {
         if grep -qE '/opt/postvec/(models|libs)/' <<<"${files}"; then
             problem "the node package carries engine assets — those belong to postvec-onnxruntime and postvec-model-*"
         fi
+        # Nothing of the extension either: a node host has no PostgreSQL
+        # major, and the extension's files have one owner per major.
+        if grep -qE 'postvec\.so$|postvec--.*\.sql$|postvec\.control$' <<<"${files}"; then
+            problem "the node package carries extension files (postvec.so / SQL / control)"
+        fi
         pass "owns /usr/bin/postvec-server, its unit, the drop-in and its configuration"
+
+        # The packaged config names the certificate pair beside itself: the
+        # crate's <root>/certs default is under root-owned, read-only
+        # /opt/postvec, which the service account can neither write nor read a
+        # 0600 key in. A config that regressed to the relative default would
+        # install fine and refuse to start on every host.
+        if grep -qE '^\.?/etc/postvec-server$' <<<"${files}" \
+            || grep -qE '^\.?/etc/postvec-server/$' <<<"${files}"; then
+            pass "owns /etc/postvec-server, where the certificate pair goes"
+        else
+            problem "does not own /etc/postvec-server"
+        fi
+
+        # A node host has no PostgreSQL. The generated dependencies are
+        # libraries; a `postgresql` anywhere in Depends is the CLI's
+        # postgresql-common leaking in through a Depends that should have
+        # been a Recommends.
+        if grep -qi 'postgresql' <<<"${depends}"; then
+            problem "depends on PostgreSQL packaging: ${depends}"
+        else
+            pass "depends on nothing from PostgreSQL"
+        fi
 
         # The TLS listener links OpenSSL, which the ELF gate excused in the
         # bare base image on the strength of this very dependency. If the
@@ -269,6 +317,13 @@ check_contents() {
         else
             pass "contains no CLI binary (PG majors stay co-installable)"
         fi
+        # The node is its own package; a database host with two majors and a
+        # node would otherwise see three owners of one path.
+        if grep -qE '/usr/bin/postvec-server$|/systemd/system/postvec-server' <<<"${files}"; then
+            problem "an extension package contains the inference node — that is postvec-server's"
+        else
+            pass "contains no inference node"
+        fi
         grep -q 'postvec\.so$'      <<<"${files}" || problem "no postvec.so"
         grep -q 'postvec\.control$' <<<"${files}" || problem "no postvec.control"
         grep -q "postvec--${POSTVEC_VERSION}\.sql$" <<<"${files}" \
@@ -283,9 +338,16 @@ check_contents() {
         grep -q 'libonnxruntime\.so' <<<"${files}" || problem "no libonnxruntime.so"
         grep -q '/opt/postvec/libs/' <<<"${files}" \
             || problem "runtime is not under the engine root the extension searches"
+        check_engine_root_paths "${files}" libs
         pass "installs ONNX Runtime under /opt/postvec/libs"
         ;;
     postvec-model-*)
+        # The canonical root, and only the canonical root. A package built from
+        # a payload in a former layout (/opt/postvec/ninference/…) has every
+        # file the checks below look for, at paths nothing loads.
+        check_engine_root_paths "${files}" models
+        grep -q '/opt/postvec/models/' <<<"${files}" \
+            || problem "model is not under the engine root the extension searches"
         grep -q 'ninference\.hub\.json$' <<<"${files}" || problem "no engine descriptor"
         grep -q 'onnx/model\.onnx$'      <<<"${files}" || problem "no ONNX graph"
         grep -q 'SOURCE\.json$'          <<<"${files}" || problem "no provenance (SOURCE.json)"

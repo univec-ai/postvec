@@ -716,7 +716,14 @@ else
     # PID below is the node itself. curl and openssl are test tools, like jq
     # above; a node host needs neither.
     install -d -m 1775 -o root -g postvec-server /run/lock/postvec
-    PKG_INSTALL curl openssl
+    # EL9's base image ships curl-minimal, which provides the curl command
+    # and conflicts with the full `curl` package unless dnf may erase it.
+    # Installing `curl` there is redundant and fails; only openssl is needed.
+    if [[ "${DIST_FAMILY}" == deb ]]; then
+        PKG_INSTALL curl openssl
+    else
+        PKG_INSTALL openssl
+    fi
     # A certificate pair the way an operator supplies one — absolute paths on
     # the command line override the packaged config's relative defaults — so
     # the discovery listener is exercised over TLS, as it is in production.

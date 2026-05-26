@@ -169,8 +169,14 @@ from the same commit as the extension it serves and tested against it.
 # A node host (Debian/Ubuntu; .rpm for EL9). The packaged unit reads
 # /opt/postvec, which is where postvec-extras — ONNX Runtime plus the bundled
 # model — installs, and where `postvec model pull` writes.
-sudo apt install ./postvec-server_*.deb ./postvec-onnxruntime_*.deb \
-  ./postvec-model-*.deb ./postvec-extras_*.deb
+sudo apt install ./postvec-server_*.deb ./postvec-cli_*.deb \
+  ./postvec-onnxruntime_*.deb ./postvec-model-*.deb ./postvec-extras_*.deb
+
+# The discovery listener needs a certificate pair the service account can
+# read; the packaged configuration looks here (the engine root is read-only).
+sudo install -o root -g postvec-server -m 0644 server.crt /etc/postvec-server/server.crt
+sudo install -o root -g postvec-server -m 0640 server.key /etc/postvec-server/server.key
+
 sudo systemctl enable --now postvec-server
 postvec-server status
 ```
@@ -185,8 +191,10 @@ The package installs files and creates the `postvec-server` account; it
 enables and starts nothing. Configuration is `/etc/postvec-server/config.json`
 (a conffile; the commented example is under `/usr/share/doc/postvec-server/`),
 and the unit runs with the sandbox in [systemd/](systemd/) plus a drop-in that
-sets `POSTVEC_SERVER_ROOT=/opt/postvec`. Verification steps, file names and
-the image's tag scheme are on the release page.
+sets `POSTVEC_SERVER_ROOT=/opt/postvec`. `postvec-cli` is a Recommends — the
+daemon never calls it, but `postvec model pull` (as root: the engine root is
+package-owned) is how more models get onto the node. Verification steps, file
+names and the image's tag scheme are on the release page.
 
 ## Building
 

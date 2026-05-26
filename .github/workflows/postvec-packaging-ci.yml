@@ -371,6 +371,14 @@ jobs:
           packaging/postvec/tests/package-install-test.sh \
             --distro debian12 --pg 18 --arch amd64
 
+      # An inference host with no PostgreSQL: the node bundle from local
+      # files and the distribution archive only, then the node package alone.
+      - name: Install on a clean node host (no PostgreSQL)
+        timeout-minutes: 20
+        run: |
+          packaging/postvec/tests/node-install-test.sh --distro debian12 --arch amd64
+          packaging/postvec/tests/node-install-test.sh --without-cli --distro debian12 --arch amd64
+
       # PV-13: the packaged external-provider gate — a deterministic provider
       # mock inside the container, the shipped CLI's live probe, write-back,
       # search, bounded retries, reload, and crash recovery. See
@@ -510,6 +518,14 @@ jobs:
         run: |
           packaging/postvec/tests/package-install-test.sh \
             --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
+      - name: Install on a clean node host (no PostgreSQL)
+        if: matrix.pg == 18
+        run: |
+          packaging/postvec/tests/node-install-test.sh \
+            --distro ${{ matrix.distro }} --arch ${{ matrix.arch }}
+          packaging/postvec/tests/node-install-test.sh --without-cli \
+            --distro ${{ matrix.distro }} --arch ${{ matrix.arch }}
 
       - name: PV-13 provider gate (package cell)
         if: matrix.pg == 18 && (matrix.distro == 'debian12' || matrix.distro == 'el9')

@@ -117,19 +117,26 @@ fi
 # output flag writes to the builder's cache and leaves *nothing* in the local
 # image store; the test then fails much later with "pull access denied" for an
 # image that was never meant to be pulled.
+DOCKERFILE="${PKG_DIR}/docker/Dockerfile.postvec-server"
 if docker buildx version >/dev/null 2>&1; then
     build=(docker buildx build --load)
     export DOCKER_BUILDKIT=1
 else
     [[ "${RELEASE_ARCH}" == "$(host_release_arch)" ]] \
         || die "building for ${RELEASE_ARCH} on $(host_release_arch) needs docker buildx"
+    # The Dockerfile uses BuildKit cache mounts for apt; the classic builder
+    # does not know them. Same fallback as build-extension-stage.sh: strip
+    # the mounts and build without a cache. Slower, identical image.
     warn "docker buildx is not installed — using the classic builder (local build only)"
+    DOCKERFILE="${CONTEXT}/Dockerfile.nocache"
+    "${PKG_DIR}/scripts/strip-cache-mounts.py" \
+        "${PKG_DIR}/docker/Dockerfile.postvec-server" "${DOCKERFILE}"
     build=(docker build)
     export DOCKER_BUILDKIT=0
 fi
 
 "${build[@]}" \
-    --file "${PKG_DIR}/docker/Dockerfile.postvec-server" \
+    --file "${DOCKERFILE}" \
     --platform "${OCI_PLATFORM}" \
     "${tag_args[@]}" \
     --build-arg "BUILD_BASE=${DIST_BASE_IMAGE}" \

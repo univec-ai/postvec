@@ -891,12 +891,12 @@ FAKE
 
     creates="$(grep -c '^create ' "${ADVANCE_LOG}" || true)"
     [[ "${creates}" == 6 ]] \
-        && ok "all six writes were attempted despite the failure" \
+        && ok "every write in the plan was attempted despite the failure" \
         || bad "only ${creates} of 6 writes were attempted"
 
     inspects="$(grep -c '^inspect ' "${ADVANCE_LOG}" || true)"
     [[ "${inspects}" == 6 ]] \
-        && ok "all six tags were inspected afterwards" \
+        && ok "every tag in the plan was inspected afterwards" \
         || bad "only ${inspects} of 6 tags were inspected"
 
     grep -qF "Rerun the postvec-moving-tags workflow." <<<"${ADVANCE_OUTPUT}" \

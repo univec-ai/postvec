@@ -143,6 +143,11 @@ for DISTRO in "${DISTROS[@]}"; do
                     --distro "${DISTRO}" --pg "${major}" --arch "${ARCH}"
             fi
         done
+        # The inference host: the node bundle on a clean machine with no
+        # PostgreSQL, with the CLI and then the node package on its own.
+        step "${DISTRO}: clean node-host install test"
+        "${PKG_DIR}/tests/node-install-test.sh" --distro "${DISTRO}" --arch "${ARCH}"
+        "${PKG_DIR}/tests/node-install-test.sh" --without-cli --distro "${DISTRO}" --arch "${ARCH}"
         if (( ${#PG_MAJORS[@]} > 1 )) && [[ "${DIST_FAMILY}" == deb ]]; then
             step "${DISTRO}: PostgreSQL majors coexist"
             args=(--minimal --distro "${DISTRO}" --arch "${ARCH}")

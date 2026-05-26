@@ -19,7 +19,10 @@ the [packages page](/docs/install/packages), then:
 
 The package installs the binary, the systemd unit, a conffile at
 `/etc/postvec-server/config.json` and the `postvec-server` service account.
-It enables and starts nothing — the `systemctl` line is yours.
+It enables and starts nothing — the certificate and `systemctl` lines are
+yours. `postvec-cli` is a Recommends of the node package (for `postvec model
+pull`); it is listed explicitly because an install from local files cannot
+fetch a recommended package by itself.
 
 ::: warning Licence
 `postvec-server` is not under the PostgreSQL License that covers the rest of
@@ -46,7 +49,7 @@ already put everything in place:
 | `postvec-onnxruntime` | `libonnxruntime.so` under `/opt/postvec/libs` |
 | `postvec-model-minilm-l6-v2` | The bundled 384-d model under `/opt/postvec/models` |
 | `postvec-extras` | Pins the two above |
-| `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands (optional) |
+| `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands (a Recommends of the node; the daemon itself never needs it) |
 
 A node built from a checkout, or a unit without the packaged drop-in, defaults
 to `/var/lib/postvec-server` instead: point `--root` at `/opt/postvec`, or copy
@@ -76,7 +79,12 @@ postvec-server \
 ```
 
 A pair dropped at `$root/certs/server.crt` and `$root/certs/server.key` is
-found without flags.
+found without flags — for a node run from a checkout. **On a package
+install** the engine root is `/opt/postvec`, root-owned and read-only for the
+service account, so the packaged configuration names the pair beside itself
+instead: `/etc/postvec-server/server.crt` and `server.key`, installed
+`root:postvec-server`, the key `0640`. The package's post-install message
+prints the two `install` lines.
 
 ## 4. Start it
 
@@ -89,8 +97,9 @@ complete postvec image runs in-process. It serves MiniLM out of the box:
 <PgSnippet id="docker-server" />
 
 The container generates its own self-signed certificate at start, per
-container, never baked into the image. Mount a pair over `/opt/postvec/certs`
-or pass `--ssl-cert` / `--ssl-cert-key` to override it. The healthcheck is
+container, never baked into the image. Mount a pair over
+`/etc/postvec-server/server.crt` and `server.key` (where the packaged
+configuration looks) or pass `--ssl-cert` / `--ssl-cert-key` to override it. The healthcheck is
 `/ready`, so `docker inspect` reports healthy only once a model can answer.
 The admin port is not exposed. Verify the image the way you verify a package:
 

@@ -4,9 +4,9 @@
   "//peers": "Bare hosts of the other nodes in this fleet, e.g. [\"10.0.0.11\", \"10.0.0.12\"]. Leave empty for a single node.",
   "peers": [],
 
-  "//ssl": "Certificate pair for the discovery listener. Relative paths resolve against the engine root (/opt/postvec for the packaged unit), so the default pair is /opt/postvec/certs/server.{crt,key}; absolute paths work too. Without a readable pair the node refuses to start — set \"insecure\": true only for local development.",
+  "//ssl": "Certificate pair for the discovery listener. The packaged unit runs as the postvec-server account with /opt/postvec read-only and root-owned, so the pair lives here, beside this file: install the key as root:postvec-server, mode 0640 (see /usr/share/doc/postvec-server/README.md). Without a readable pair the node refuses to start — set \"insecure\": true only for local development.",
   "ssl": {
-    "cert": "certs/server.crt",
-    "key": "certs/server.key"
+    "cert": "/etc/postvec-server/server.crt",
+    "key": "/etc/postvec-server/server.key"
   }
 }

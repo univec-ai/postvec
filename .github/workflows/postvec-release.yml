@@ -720,6 +720,18 @@ jobs:
           packaging/postvec/tests/package-install-test.sh \
             --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
 
+      # The other topology: an inference host with no PostgreSQL at all. The
+      # node package is PostgreSQL-independent, so once per distribution and
+      # architecture — the PG 18 cell — both with the CLI (the documented
+      # bundle) and without it (the package standing alone).
+      - name: Node-only install (no PostgreSQL)
+        if: matrix.pg == 18
+        run: |
+          packaging/postvec/tests/node-install-test.sh \
+            --distro ${{ matrix.distro }} --arch ${{ matrix.arch }}
+          packaging/postvec/tests/node-install-test.sh --without-cli \
+            --distro ${{ matrix.distro }} --arch ${{ matrix.arch }}
+
       # PV-13: the packaged external-provider gate, on the review-mandated
       # cells (Debian 12 and EL9, one major). A deterministic provider mock
       # inside the container; no internet service, no credential, no billable
@@ -1542,10 +1554,13 @@ jobs:
             `/usr/share/doc/postvec-server/copyright` in the package.
 
             ```bash
-            # A node host: the node, the runtime and the bundled model. The
-            # unit reads /opt/postvec, where postvec-extras installs.
-            sudo apt install ./postvec-server_*.deb ./postvec-onnxruntime_*.deb \
-              ./postvec-model-*.deb ./postvec-extras_*.deb
+            # A node host: the node, the CLI, the runtime and the bundled
+            # model. The unit reads /opt/postvec, where postvec-extras
+            # installs; the certificate pair goes beside the configuration.
+            sudo apt install ./postvec-server_*.deb ./postvec-cli_*.deb \
+              ./postvec-onnxruntime_*.deb ./postvec-model-*.deb ./postvec-extras_*.deb
+            sudo install -o root -g postvec-server -m 0644 server.crt /etc/postvec-server/server.crt
+            sudo install -o root -g postvec-server -m 0640 server.key /etc/postvec-server/server.key
             sudo systemctl enable --now postvec-server
 
             # Or the image — same packages, same model:

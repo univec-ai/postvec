@@ -19,9 +19,10 @@ services:
   inference:
     image: ghcr.io/univec-ai/postvec-server:0.1.0-1
     # The container generates a self-signed certificate for the discovery
-    # listener at start, per container, into /opt/postvec/certs. To supply
-    # your own pair instead, mount it there (server.crt / server.key) — or
-    # name one with POSTVEC_SERVER_SSL_CERT / POSTVEC_SERVER_SSL_KEY.
+    # listener at start, per container, into /etc/postvec-server (where the
+    # packaged configuration looks). To supply your own pair instead, mount
+    # it there as server.crt / server.key — or name one with
+    # POSTVEC_SERVER_SSL_CERT / POSTVEC_SERVER_SSL_KEY.
     # Peers, for a fleet: POSTVEC_SERVER_PEERS=node-2,node-3 and
     # POSTVEC_SERVER_ADVERTISE=<this host's private IP>.
     environment:

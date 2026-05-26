@@ -109,7 +109,13 @@ const serverInstallCmd = computed(() => {
           `postvec-model-minilm-l6-v2-${model}${d.tag}.noarch.rpm`,
           `postvec-extras-${SITE.release}${d.tag}.noarch.rpm`,
         ];
-  const names = [...serverFiles.value, ...extras].map((f) => `./${f}`).join(" \\\n  ");
+  // The CLI too: the node package only Recommends it, and a local-file
+  // install cannot fetch a Recommends that is not supplied.
+  const cli =
+    d.family === "deb"
+      ? `postvec-cli_${SITE.release}${d.tag}_${a.deb}.deb`
+      : `postvec-cli-${SITE.release}${d.tag}.${a.rpm}.rpm`;
+  const names = [...serverFiles.value, cli, ...extras].map((f) => `./${f}`).join(" \\\n  ");
   return `sudo ${tool} install \\\n  ${names}\nsudo systemctl enable --now postvec-server`;
 });
 
@@ -284,7 +290,11 @@ function assetUrl(name: string): string | null {
     <p class="hint">
       The unit reads <code>/opt/postvec</code>, where the runtime and model
       packages install. The package creates the service account and starts
-      nothing; the last line is yours to run.
+      nothing; put a certificate pair at
+      <code>/etc/postvec-server/server.crt</code> and <code>server.key</code>
+      (key <code>root:postvec-server 0640</code>) first, then the last line is
+      yours to run. The CLI is a Recommends of the node package; it is listed
+      because a local-file install cannot fetch it on its own.
     </p>
     <CopyCommand :command="`docker pull ${serverImageTag}`" label="Node image" />
     <p class="hint">

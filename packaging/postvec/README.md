@@ -213,10 +213,27 @@ configuration file is a conffile (`noreplace` on RPM): the minimal
 `server/config.json`, with the fully commented example under
 `/usr/share/doc/postvec-server/`.
 
-ONNX Runtime and the model are `Recommends`, not `Depends`: a node that serves
-only external providers needs neither, and the engine dlopen()s the runtime
-rather than linking it — `inspect-elf.sh` asserts that for the node exactly as
-it does for the extension.
+ONNX Runtime, the model and the CLI are `Recommends`, not `Depends`: a node
+that serves only external providers needs neither runtime nor model, the
+engine dlopen()s the runtime rather than linking it — `inspect-elf.sh` asserts
+that for the node exactly as it does for the extension — and the daemon never
+calls the CLI. The CLI is version-bounded like the extension's dependency on
+it, and is never a `Depends`: that would put `postgresql-common` on every
+node. The documented install lines name it explicitly, because an install
+from local files cannot fetch a Recommends by itself.
+
+The certificate pair lives beside the configuration,
+`/etc/postvec-server/server.{crt,key}` (key `root:postvec-server 0640`), not
+under the crate's `<root>/certs` default: the packaged engine root is
+root-owned and read-only for the service account, so a pair could neither be
+created nor read there. `verify-package.sh` fails a package whose
+configuration regressed to the relative default.
+
+`tests/node-install-test.sh` is the inference-host topology: the node bundle on
+a clean machine with no PGDG repository and no PostgreSQL, with the CLI and
+then without it, asserting that nothing PostgreSQL arrives, that the packaged
+configuration serves over TLS as the service account, and that removal keeps
+the certificate, the engine root and the account.
 
 The **image** is a composition of the same packages — `postvec-server`,
 `postvec-cli`, `postvec-onnxruntime`, the model and the metapackage — on the
@@ -389,11 +406,13 @@ install on Ubuntu 22.04 or 24.04, PostgreSQL 16 or 17, any arm64 installation or
 inference, the full 56-package/40-debug closure, seven multi-architecture
 indexes with fourteen child SBOMs, GitHub-hosted attestations, exact draft
 assets, publication resumption, or moving tags. The node package and image
-have the same Debian 12 / amd64 / PostgreSQL 18 evidence and no more: package
-built, verified and lintian-clean (no errors), image composed from the
-packages and passing `tests/server-image-test.sh`, the full clean-host install
-starting the packaged node over TLS, and the remote database image embedding
-through the node image. No other distribution, no arm64, no CI run yet.
+have Debian 12 and AlmaLinux 9 evidence on amd64 / PostgreSQL 18 and no more:
+packages built, verified and (Debian) lintian-clean of errors, the node-only
+install with and without the CLI, the full clean-host install starting the
+packaged node over TLS with the packaged configuration, the image composed
+from the packages and passing `tests/server-image-test.sh`, and the remote
+database image embedding through the node image. No Ubuntu cell, no arm64, no
+booted systemd, no CI run yet.
 
 The fixture suite (`tests/unit-test.sh`) gives real confidence that the closure
 logic *refuses* the right things, which is what synthetic tests are good for. It
@@ -1033,6 +1052,7 @@ project will not pretend otherwise.
 | `tests/entrypoint-test.sh` | a `postvec` binary | delegation, preload merge and validation, `_FILE` secrets, loopback contract, and that a relative binary path works (CI passes one) — 36 assertions, under a second |
 | `tests/package-install-test.sh` | Docker | both families: the **published prerequisite bootstrap** (and its idempotency), dependency resolution, layout, dual-major coexistence, "the install changed nothing", a **real cluster** with `CREATE EXTENSION`, `setup`/`uninstall`, detached symbols, inference with the bundled model, removal — and `doctor`'s actual verdicts: which checks pass with no engine reachable, that it exits 1 and names the endpoint, and that it reports **healthy (exit 0)** once embedded configuration completes. The full run also installs `postvec-server` and starts the packaged node as its service account against the packaged runtime and model, over TLS |
 | `tests/image-smoke-test.sh` | Docker, a built image | health, PID 1, published ports, embed → sync → search, remote-mode degradation, persistence, clean SIGTERM, startup failure modes |
+| `tests/node-install-test.sh` | Docker | the inference host: node + runtime + model (+ CLI, or `--without-cli`) on a clean OS with no PostgreSQL, from local files and the distribution archive; nothing PostgreSQL arrives; the packaged configuration serves the packaged model over TLS as the service account; removal keeps configuration, engine root and account |
 | `tests/server-image-test.sh` | Docker, a built postvec-server image | composed of exactly this release's packages, licence and version labels, unprivileged, admin port unexposed, `/ready` only once the model answers, `/config` advertises it, `postvec-server status` and the bundled CLI work inside, clean drain on SIGTERM |
 | `tests/model-golden-test.sh` | Docker, an embedded image | the bundled model still produces the embeddings it was published with |
 

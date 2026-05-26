@@ -24,20 +24,26 @@ esac
 cat >&2 <<'EOF' || true
 postvec-server: installed, not started.
 
-The node serves models from /opt/postvec (the packaged unit's engine root):
+The node serves models from /opt/postvec (the packaged unit's engine root),
+which the postvec-onnxruntime and postvec-model-* packages fill and
+`sudo postvec model pull <name> --yes` (postvec-cli) adds to.
 
-  apt install postvec-extras            # ONNX Runtime + the bundled model
-  postvec model pull <name> --yes       # more models (needs postvec-cli)
+The discovery listener needs a certificate pair the service account can read.
+Put yours beside the configuration, owned by root and readable by the
+service group:
 
-Put a certificate pair at /opt/postvec/certs/server.crt and server.key, or
-name one in /etc/postvec-server/config.json ("ssl"), then:
+  install -o root -g postvec-server -m 0644 server.crt /etc/postvec-server/server.crt
+  install -o root -g postvec-server -m 0640 server.key /etc/postvec-server/server.key
+
+Then, when the models and the certificate are in place:
 
   systemctl daemon-reload
   systemctl enable --now postvec-server
   postvec-server status
 
 The gRPC and discovery ports (33333, 22222) carry no authentication. Keep
-them on a private network, or set "bind_address" to a private interface.
+them on a private network, or set "bind_address" in
+/etc/postvec-server/config.json to a private interface.
 EOF
 
 exit 0

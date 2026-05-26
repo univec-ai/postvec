@@ -13,13 +13,19 @@
 # self-signed certificates on a trusted network, which is the only kind of
 # network this port belongs on.
 #
-# Mount your own pair over /opt/postvec/certs (or point --ssl-cert /
+# Mount your own pair over the certificate directory (or point --ssl-cert /
 # --ssl-cert-key elsewhere) and this step does nothing. Pass --insecure and it
 # does nothing either.
+#
+# The directory is where the configuration the node reads expects the pair.
+# The packaged /etc/postvec-server/config.json — which the image installs —
+# names /etc/postvec-server/server.{crt,key}, so the image sets
+# POSTVEC_SERVER_CERTS_DIR to that; the crate's own default, for a node run
+# without that file, is <root>/certs.
 set -Eeuo pipefail
 
 ROOT="${POSTVEC_SERVER_ROOT:-/opt/postvec}"
-CERTS="${ROOT}/certs"
+CERTS="${POSTVEC_SERVER_CERTS_DIR:-${ROOT}/certs}"
 
 wants_insecure() {
     case "${POSTVEC_SERVER_INSECURE:-}" in 1 | true | yes | on) return 0 ;; esac
@@ -43,8 +49,8 @@ if ! wants_insecure "$@" && ! supplies_own_cert "$@" \
     && [[ ! -f "${CERTS}/server.crt" || ! -f "${CERTS}/server.key" ]]; then
     if ! mkdir -p "${CERTS}" 2>/dev/null; then
         cat >&2 <<EOF
-postvec-server: no TLS certificate at ${CERTS}/server.{crt,key}, and ${ROOT}
-is not writable so one cannot be generated here.
+postvec-server: no TLS certificate at ${CERTS}/server.{crt,key}, and that
+directory is not writable so one cannot be generated here.
 
 Either mount a certificate pair at that path, point --ssl-cert/--ssl-cert-key
 at one, or pass --insecure to serve discovery over plain HTTP (development

@@ -68,11 +68,20 @@ contents:
   # ports or certificate paths. Minimal on purpose: the example with every key
   # explained goes to the documentation directory, because installing it as
   # the live configuration would have a fresh node gossiping at example
-  # addresses.
+  # addresses. It names /etc/postvec-server/server.{crt,key} as the
+  # certificate pair: the service account cannot write /opt/postvec, so the
+  # crate's <root>/certs default is unreachable on a package host.
   - src: ${PKG_DIR}/server/config.json
     dst: /etc/postvec-server/config.json
     type: config|noreplace
     file_info: { mode: 0644, owner: root, group: root }
+  # The directory itself stays root:root 0755 (every packaged path is
+  # root-owned; verify-package.sh insists). The key the operator installs is
+  # what carries the service group: root:postvec-server 0640, which the
+  # postinstall spells out.
+  - dst: /etc/postvec-server
+    type: dir
+    file_info: { mode: 0755, owner: root, group: root }
 
   # The unit's default engine root before the drop-in redirects it, and the
   # service account's home. Kept so that an operator who removes the drop-in
@@ -104,28 +113,38 @@ contents:
 # differently on every supported release. Only the block matching the packager
 # in use is read.
 #
-# The runtime and the model are Recommends, not Depends: a node that serves
-# only external providers (providers.d) needs neither, and the engine
-# dlopen()s ONNX Runtime from the root rather than linking it, so the package
-# installs and starts without them. A node with no runtime and no model refuses
-# to serve local models, and says so in its log.
+# The runtime, the model and the CLI are Recommends, not Depends: a node that
+# serves only external providers (providers.d) needs neither runtime nor
+# model, the engine dlopen()s ONNX Runtime from the root rather than linking
+# it, and the daemon never calls the CLI — so the package installs and starts
+# without any of them, and `--no-install-recommends` gives a fleet the slim
+# node. apt and dnf both install Recommends by default, so an ordinary node
+# host gets `postvec model pull` without a second thought. The CLI carries the
+# same version bounds the extension package uses, so a node and its CLI can
+# never be silently mixed across incompatible lines. Never Depends on the
+# CLI: that would drag postgresql-common onto every node.
 overrides:
   deb:
     depends:
 ${SHLIB_DEPENDS}
     recommends:
       - postvec-onnxruntime
+      - postvec-cli (>= ${POSTVEC_VERSION})
+      - postvec-cli (<< ${NEXT_BREAKING_VERSION})
     suggests:
       - ${EXTRAS_METAPACKAGE}
-      - postvec-cli
   rpm:
     depends:
+      # useradd/groupadd, for the preinstall. Essential on Debian (passwd),
+      # a package on EL9 that a strictly minimal bootstrap may lack.
+      - shadow-utils
 ${SHLIB_DEPENDS}
     recommends:
       - postvec-onnxruntime
+      - postvec-cli >= ${POSTVEC_VERSION}
+      - postvec-cli < ${NEXT_BREAKING_VERSION}
     suggests:
       - ${EXTRAS_METAPACKAGE}
-      - postvec-cli
 
 # The account the unit runs as is created here and never removed: the model
 # root it owns nothing in, but a home directory and a lease file may have been

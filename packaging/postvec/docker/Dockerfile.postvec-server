@@ -44,8 +44,14 @@ LABEL org.opencontainers.image.title="postvec-server" \
 # database host, in the complete image, and here. POSTVEC_PATH and
 # POSTVEC_PROVIDERS_PATH point the bundled CLI at the same root, so
 # `docker exec <ctr> postvec model|provider …` needs no flags.
+#
+# POSTVEC_SERVER_CERTS_DIR is where the entrypoint generates (or expects) the
+# TLS pair: the packaged /etc/postvec-server/config.json names
+# /etc/postvec-server/server.{crt,key}, and the entrypoint and the
+# configuration have to agree.
 ENV DEBIAN_FRONTEND=noninteractive \
     POSTVEC_SERVER_ROOT=/opt/postvec \
+    POSTVEC_SERVER_CERTS_DIR=/etc/postvec-server \
     POSTVEC_PATH=/opt/postvec \
     POSTVEC_PROVIDERS_PATH=/opt/postvec \
     RUST_LOG=info
@@ -73,11 +79,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
 
-# Run unprivileged. The packages leave /opt/postvec root-owned and read-only,
-# which is right for a host; in a container the service account owns the root
-# so that the entrypoint can generate a certificate under certs/ and so that
-# `docker exec <ctr> postvec model pull …` can add models without a second
-# account. The serving-lease directory is what the unit's ExecStartPre creates
+# Run unprivileged. The packages leave /opt/postvec and /etc/postvec-server
+# root-owned, which is right for a host; in a container the service account
+# owns both, so that the entrypoint can generate a per-container certificate
+# beside the configuration and `docker exec <ctr> postvec model pull …` can
+# add models without a second account. Mount your own pair over
+# /etc/postvec-server/server.{crt,key} to skip generation.
+# The serving-lease directory is what the unit's ExecStartPre creates
 # on a host; the server FAILS TO START without it, deliberately. 1775
 # root:postvec-server — group write for the lease, sticky so the service
 # account cannot unlink locks it does not own. If your runtime mounts a fresh
@@ -86,8 +94,8 @@ COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
 # /run/lock/postvec too, so `postvec uninstall --purge` on the host and this
 # node see the same lease inode.
 RUN set -eux; \
-    chown -R postvec-server:postvec-server /opt/postvec; \
-    install -d -m 0750 -o postvec-server -g postvec-server /opt/postvec/certs; \
+    chown -R postvec-server:postvec-server /opt/postvec /etc/postvec-server; \
+    chmod 0750 /etc/postvec-server; \
     install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 USER postvec-server
 
