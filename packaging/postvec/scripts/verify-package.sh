@@ -300,11 +300,29 @@ PY
         # repository install is a ready local node (extras: the pinned
         # runtime and model) with the CLI, both weak so that a provider-only
         # or slim node stays possible. See the description's comment.
-        if grep -q "${EXTRAS_METAPACKAGE}" <<<"${recommends:-}" \
-            && grep -q 'postvec-cli' <<<"${recommends:-}"; then
-            pass "recommends ${EXTRAS_METAPACKAGE} and postvec-cli"
+        # The exact relation, not its shape: the metapackage, the CLI with
+        # both bounds, and nothing else — a direct runtime recommendation
+        # would duplicate the metapackage's pin, and a dropped upper bound
+        # would let a future incompatible CLI satisfy the node silently.
+        local rec_lines
+        rec_lines="$(tr ',' '\n' <<<"${recommends:-}" | sed 's/^ *//; s/ *$//' | grep -v '^$' | LC_ALL=C sort)"
+        local want_rec
+        case "${name}" in
+        *.deb)
+            want_rec="$(printf '%s\n' "${EXTRAS_METAPACKAGE}" \
+                "postvec-cli (<< ${NEXT_BREAKING_VERSION})" \
+                "postvec-cli (>= ${POSTVEC_VERSION})" | LC_ALL=C sort)" ;;
+        *)
+            want_rec="$(printf '%s\n' "${EXTRAS_METAPACKAGE}" \
+                "postvec-cli < ${NEXT_BREAKING_VERSION}" \
+                "postvec-cli >= ${POSTVEC_VERSION}" | LC_ALL=C sort)" ;;
+        esac
+        if [[ "${rec_lines}" == "${want_rec}" ]]; then
+            pass "recommends exactly ${EXTRAS_METAPACKAGE} and postvec-cli [${POSTVEC_VERSION}, ${NEXT_BREAKING_VERSION})"
         else
-            problem "Recommends should name ${EXTRAS_METAPACKAGE} and postvec-cli: ${recommends:-<none>}"
+            problem "Recommends is not the intended relation:
+      have: ${rec_lines//$'\n'/; }
+      want: ${want_rec//$'\n'/; }"
         fi
         if grep -qE 'postvec-cli|postvec-model|postvec-onnxruntime|postvec-extras' <<<"${depends}"; then
             problem "hard-depends on another postvec package: ${depends}"
@@ -567,11 +585,15 @@ verify_rpm() {
     pkg_license="$(rpm_query -qp --qf '%{LICENSE}' "${name}" 2>/dev/null || true)"
     recommends="$(rpm_query -qp --recommends "${name}" 2>/dev/null || true)"
     [[ -n "${files}" ]] || problem "could not read the package contents"
-    # The node's packaged configuration, for the checks that read it.
+    # The node's packaged configuration, for the checks that read it. The
+    # extraction lands in a scratch directory removed when this function
+    # returns (the RETURN trap, as verify_deb's `tmp` is).
+    local scratch; scratch="$(mktemp -d)"
+    trap 'rm -rf "${scratch}"' RETURN
     pkg_config=""
     if [[ "${name}" == postvec-server-[0-9]* ]]; then
         if command -v rpm2cpio >/dev/null 2>&1 && command -v cpio >/dev/null 2>&1; then
-            local cdir; cdir="$(mktemp -d)"
+            local cdir="${scratch}/cpio"; mkdir -p "${cdir}"
             (cd "${cdir}" && rpm2cpio "${RPM_QUERY_DIR}/${name}" \
                 | cpio -id --quiet --no-absolute-filenames) || true
             [[ -f "${cdir}/etc/postvec-server/config.json" ]] \
@@ -581,7 +603,7 @@ verify_rpm() {
             # the target, the same way the metadata is read. The base image
             # has rpm2cpio but no cpio, so the (newc) archive is walked in
             # Python, which the image does have.
-            local cfile; cfile="$(mktemp)"
+            local cfile="${scratch}/config.json"
             timeout 120 docker run --rm --volume "${RPM_QUERY_DIR}:/pkgs:ro" \
                 "${DIST_BASE_IMAGE:-almalinux:9@${BUILD_BASE_EL9_DIGEST}}" \
                 bash -c 'rpm2cpio "/pkgs/$1" | python3 -c "

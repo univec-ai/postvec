@@ -222,7 +222,7 @@ runtime rather than linking it — `inspect-elf.sh` asserts that for the node
 exactly as it does for the extension — the daemon never calls the CLI, and a
 `Depends` on the CLI would put `postgresql-common` on every node.
 `--no-install-recommends` is the slim, model-free node. `verify-package.sh`
-asserts the fields. The documented install lines name every file explicitly,
+asserts the exact relation — the metapackage, both CLI bounds, nothing else. The documented install lines name every file explicitly,
 because an install from local files cannot fetch a Recommends by itself.
 
 Removal follows each package manager's rules for the configuration file, and
