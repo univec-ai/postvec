@@ -213,8 +213,23 @@ else
 fi
 
 step "removal keeps the operator'"'"'s state"
+# An operator-edited configuration, because that is the case that matters:
+# Debian `remove` keeps a conffile edited or not; RPM removes an unchanged
+# %config(noreplace) file and keeps an edited one as .rpmsave. Both families
+# must end with the operator'"'"'s edit still on disk.
+sed -i "s/\"peers\": \[\]/\"peers\": [\"10.0.0.11\"]/" /etc/postvec-server/config.json
+grep -q "10.0.0.11" /etc/postvec-server/config.json || bad "could not edit the configuration for the removal test"
 PKG_REMOVE postvec-server
 [[ ! -e /usr/bin/postvec-server ]] && ok "the binary is gone" || bad "the binary survived removal"
+if [[ "${DIST_FAMILY}" == deb ]]; then
+    [[ -f /etc/postvec-server/config.json ]] && grep -q "10.0.0.11" /etc/postvec-server/config.json \
+        && ok "the edited conffile is kept (remove; purge would delete it)" \
+        || bad "the edited conffile did not survive apt remove"
+else
+    [[ -f /etc/postvec-server/config.json.rpmsave ]] && grep -q "10.0.0.11" /etc/postvec-server/config.json.rpmsave \
+        && ok "the edited configuration is kept as config.json.rpmsave" \
+        || bad "the edited configuration was not preserved as .rpmsave"
+fi
 [[ -f /etc/postvec-server/server.key ]] && ok "the certificate pair is kept" || bad "removal deleted the certificate"
 [[ -d "/opt/postvec/models/onnx-runtime/${BUNDLED_MODEL_NAME}" ]] && ok "the engine root is kept" || bad "removal touched the engine root"
 getent passwd postvec-server >/dev/null && ok "the account is kept (uid never reused)" || bad "removal deleted the account"

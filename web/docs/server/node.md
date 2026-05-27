@@ -99,7 +99,13 @@ complete postvec image runs in-process. It serves MiniLM out of the box:
 The container generates its own self-signed certificate at start, per
 container, never baked into the image. Mount a pair over
 `/etc/postvec-server/server.crt` and `server.key` (where the packaged
-configuration looks) or pass `--ssl-cert` / `--ssl-cert-key` to override it. The healthcheck is
+configuration looks) or pass `--ssl-cert` / `--ssl-cert-key` to override it.
+A bind mount keeps the host's numeric owner, and the container runs as
+uid/gid **999**, which a host's own `postvec-server` group need not be: a key
+that is `root:postvec-server 0640` on the host is unreadable inside the
+container unless that group is gid 999. Make a mounted key readable by
+uid or gid 999, or use Compose secrets with an explicit `uid: "999"` and
+`mode: 0400`. The healthcheck is
 `/ready`, so `docker inspect` reports healthy only once a model can answer.
 The admin port is not exposed. Verify the image the way you verify a package:
 

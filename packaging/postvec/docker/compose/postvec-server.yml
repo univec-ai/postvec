@@ -22,7 +22,10 @@ services:
     # listener at start, per container, into /etc/postvec-server (where the
     # packaged configuration looks). To supply your own pair instead, mount
     # it there as server.crt / server.key — or name one with
-    # POSTVEC_SERVER_SSL_CERT / POSTVEC_SERVER_SSL_KEY.
+    # POSTVEC_SERVER_SSL_CERT / POSTVEC_SERVER_SSL_KEY. The container runs as
+    # uid/gid 999 and a bind mount keeps the host's numeric owner, so a
+    # mounted key must be readable by 999 — a Compose secret with
+    # `uid: "999"` and `mode: 0400` is the clean way to do that.
     # Peers, for a fleet: POSTVEC_SERVER_PEERS=node-2,node-3 and
     # POSTVEC_SERVER_ADVERTISE=<this host's private IP>.
     environment:

@@ -213,21 +213,32 @@ configuration file is a conffile (`noreplace` on RPM): the minimal
 `server/config.json`, with the fully commented example under
 `/usr/share/doc/postvec-server/`.
 
-ONNX Runtime, the model and the CLI are `Recommends`, not `Depends`: a node
-that serves only external providers needs neither runtime nor model, the
-engine dlopen()s the runtime rather than linking it — `inspect-elf.sh` asserts
-that for the node exactly as it does for the extension — and the daemon never
-calls the CLI. The CLI is version-bounded like the extension's dependency on
-it, and is never a `Depends`: that would put `postgresql-common` on every
-node. The documented install lines name it explicitly, because an install
-from local files cannot fetch a Recommends by itself.
+A plain repository install of `postvec-server` is a ready local node: it
+`Recommends` `postvec-extras` (the pinned runtime and the reviewed model —
+which is why the runtime is not recommended a second time on its own) and the
+version-bounded CLI. Recommends, never Depends: a node that serves only
+external providers needs neither runtime nor model, the engine dlopen()s the
+runtime rather than linking it — `inspect-elf.sh` asserts that for the node
+exactly as it does for the extension — the daemon never calls the CLI, and a
+`Depends` on the CLI would put `postgresql-common` on every node.
+`--no-install-recommends` is the slim, model-free node. `verify-package.sh`
+asserts the fields. The documented install lines name every file explicitly,
+because an install from local files cannot fetch a Recommends by itself.
+
+Removal follows each package manager's rules for the configuration file, and
+the `postrm` says which: Debian `remove` keeps the conffile and `purge`
+deletes it; RPM removes an unedited `config.json` and keeps an edited one as
+`config.json.rpmsave`. `tests/node-install-test.sh` edits the file before
+removal and asserts the edit survives on both families. Certificates, the
+engine root and the account are never touched.
 
 The certificate pair lives beside the configuration,
 `/etc/postvec-server/server.{crt,key}` (key `root:postvec-server 0640`), not
 under the crate's `<root>/certs` default: the packaged engine root is
 root-owned and read-only for the service account, so a pair could neither be
-created nor read there. `verify-package.sh` fails a package whose
-configuration regressed to the relative default.
+created nor read there. `verify-package.sh` extracts the packaged
+`config.json` and fails a package whose `ssl` block regressed to the relative
+default or disabled TLS.
 
 `tests/node-install-test.sh` is the inference-host topology: the node bundle on
 a clean machine with no PGDG repository and no PostgreSQL, with the CLI and
@@ -406,13 +417,14 @@ install on Ubuntu 22.04 or 24.04, PostgreSQL 16 or 17, any arm64 installation or
 inference, the full 56-package/40-debug closure, seven multi-architecture
 indexes with fourteen child SBOMs, GitHub-hosted attestations, exact draft
 assets, publication resumption, or moving tags. The node package and image
-have Debian 12 and AlmaLinux 9 evidence on amd64 / PostgreSQL 18 and no more:
-packages built, verified and (Debian) lintian-clean of errors, the node-only
-install with and without the CLI, the full clean-host install starting the
-packaged node over TLS with the packaged configuration, the image composed
-from the packages and passing `tests/server-image-test.sh`, and the remote
-database image embedding through the node image. No Ubuntu cell, no arm64, no
-booted systemd, no CI run yet.
+have Debian 12, Ubuntu 22.04 and AlmaLinux 9 evidence on amd64 / PostgreSQL
+18 and no more: packages built and verified (Debian lintian-clean of errors),
+the node-only install with and without the CLI including edited-config
+removal, the full clean-host install (Debian, EL9) starting the packaged node
+over TLS with the packaged configuration, the image composed from the
+packages and passing `tests/server-image-test.sh`, and the remote database
+image embedding through the node image. No Ubuntu 24.04 install test here,
+no arm64, no booted systemd, no CI run yet.
 
 The fixture suite (`tests/unit-test.sh`) gives real confidence that the closure
 logic *refuses* the right things, which is what synthetic tests are good for. It

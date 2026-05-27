@@ -116,7 +116,15 @@ const serverInstallCmd = computed(() => {
       ? `postvec-cli_${SITE.release}${d.tag}_${a.deb}.deb`
       : `postvec-cli-${SITE.release}${d.tag}.${a.rpm}.rpm`;
   const names = [...serverFiles.value, cli, ...extras].map((f) => `./${f}`).join(" \\\n  ");
-  return `sudo ${tool} install \\\n  ${names}\nsudo systemctl enable --now postvec-server`;
+  // The certificate pair before the unit starts: the packaged service fails
+  // closed without one, so a copied command that went straight to
+  // `enable --now` would start a node that immediately dies.
+  return [
+    `sudo ${tool} install \\\n  ${names}`,
+    "sudo install -o root -g postvec-server -m 0644 server.crt /etc/postvec-server/server.crt",
+    "sudo install -o root -g postvec-server -m 0640 server.key /etc/postvec-server/server.key",
+    "sudo systemctl enable --now postvec-server",
+  ].join("\n");
 });
 
 const serverImageTag = computed(() => `${SITE.ghcrServer}:${SITE.release}`);
@@ -290,11 +298,12 @@ function assetUrl(name: string): string | null {
     <p class="hint">
       The unit reads <code>/opt/postvec</code>, where the runtime and model
       packages install. The package creates the service account and starts
-      nothing; put a certificate pair at
-      <code>/etc/postvec-server/server.crt</code> and <code>server.key</code>
-      (key <code>root:postvec-server 0640</code>) first, then the last line is
-      yours to run. The CLI is a Recommends of the node package; it is listed
-      because a local-file install cannot fetch it on its own.
+      nothing: the two <code>install</code> lines put your certificate pair
+      where the packaged configuration looks (key
+      <code>root:postvec-server 0640</code>), and only then is the unit
+      started. The CLI and the extras are Recommends of the node package;
+      they are listed because a local-file install cannot fetch them on its
+      own.
     </p>
     <CopyCommand :command="`docker pull ${serverImageTag}`" label="Node image" />
     <p class="hint">

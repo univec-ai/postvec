@@ -113,26 +113,27 @@ contents:
 # differently on every supported release. Only the block matching the packager
 # in use is read.
 #
-# The runtime, the model and the CLI are Recommends, not Depends: a node that
-# serves only external providers (providers.d) needs neither runtime nor
-# model, the engine dlopen()s ONNX Runtime from the root rather than linking
-# it, and the daemon never calls the CLI — so the package installs and starts
-# without any of them, and `--no-install-recommends` gives a fleet the slim
-# node. apt and dnf both install Recommends by default, so an ordinary node
-# host gets `postvec model pull` without a second thought. The CLI carries the
-# same version bounds the extension package uses, so a node and its CLI can
-# never be silently mixed across incompatible lines. Never Depends on the
-# CLI: that would drag postgresql-common onto every node.
+# The policy: a plain `apt install postvec-server` from a repository is a
+# node that serves local inference out of the box. That is the extras
+# metapackage — it pins the exact ONNX Runtime and the reviewed model, which
+# is why the runtime is not recommended a second time on its own — plus the
+# CLI, for `postvec model pull`. Both are Recommends, never Depends: a node
+# that serves only external providers (providers.d) needs no runtime and no
+# model, the engine dlopen()s the runtime rather than linking it, the daemon
+# never calls the CLI, and a Depends on the CLI would drag postgresql-common
+# onto every node. apt and dnf both install Recommends by default, and
+# `--no-install-recommends` (`--setopt=install_weak_deps=False`) gives a
+# fleet the slim, model-free node. The CLI carries the same version bounds
+# the extension package uses, so a node and its CLI can never be silently
+# mixed across incompatible lines. verify-package.sh asserts these fields.
 overrides:
   deb:
     depends:
 ${SHLIB_DEPENDS}
     recommends:
-      - postvec-onnxruntime
+      - ${EXTRAS_METAPACKAGE}
       - postvec-cli (>= ${POSTVEC_VERSION})
       - postvec-cli (<< ${NEXT_BREAKING_VERSION})
-    suggests:
-      - ${EXTRAS_METAPACKAGE}
   rpm:
     depends:
       # useradd/groupadd, for the preinstall. Essential on Debian (passwd),
@@ -140,11 +141,9 @@ ${SHLIB_DEPENDS}
       - shadow-utils
 ${SHLIB_DEPENDS}
     recommends:
-      - postvec-onnxruntime
+      - ${EXTRAS_METAPACKAGE}
       - postvec-cli >= ${POSTVEC_VERSION}
       - postvec-cli < ${NEXT_BREAKING_VERSION}
-    suggests:
-      - ${EXTRAS_METAPACKAGE}
 
 # The account the unit runs as is created here and never removed: the model
 # root it owns nothing in, but a home directory and a lease file may have been

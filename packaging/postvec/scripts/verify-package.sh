@@ -270,12 +270,46 @@ check_contents() {
         # crate's <root>/certs default is under root-owned, read-only
         # /opt/postvec, which the service account can neither write nor read a
         # 0600 key in. A config that regressed to the relative default would
-        # install fine and refuse to start on every host.
+        # install fine and refuse to start on every host — so the file itself
+        # is read (${pkg_config}, extracted by the caller), not only listed.
         if grep -qE '^\.?/etc/postvec-server$' <<<"${files}" \
             || grep -qE '^\.?/etc/postvec-server/$' <<<"${files}"; then
             pass "owns /etc/postvec-server, where the certificate pair goes"
         else
             problem "does not own /etc/postvec-server"
+        fi
+        if [[ -z "${pkg_config:-}" ]]; then
+            problem "could not read the packaged /etc/postvec-server/config.json"
+        elif python3 - "${pkg_config}" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1]))
+ssl = config.get("ssl") or {}
+if ssl.get("cert") != "/etc/postvec-server/server.crt" \
+        or ssl.get("key") != "/etc/postvec-server/server.key":
+    sys.exit("ssl names %r / %r" % (ssl.get("cert"), ssl.get("key")))
+if config.get("insecure"):
+    sys.exit("the packaged configuration must not disable TLS")
+PY
+        then
+            pass "the packaged configuration names /etc/postvec-server/server.{crt,key}"
+        else
+            problem "the packaged configuration does not name the pair under /etc/postvec-server"
+        fi
+
+        # The relationship to the rest of the release, as metadata: a plain
+        # repository install is a ready local node (extras: the pinned
+        # runtime and model) with the CLI, both weak so that a provider-only
+        # or slim node stays possible. See the description's comment.
+        if grep -q "${EXTRAS_METAPACKAGE}" <<<"${recommends:-}" \
+            && grep -q 'postvec-cli' <<<"${recommends:-}"; then
+            pass "recommends ${EXTRAS_METAPACKAGE} and postvec-cli"
+        else
+            problem "Recommends should name ${EXTRAS_METAPACKAGE} and postvec-cli: ${recommends:-<none>}"
+        fi
+        if grep -qE 'postvec-cli|postvec-model|postvec-onnxruntime|postvec-extras' <<<"${depends}"; then
+            problem "hard-depends on another postvec package: ${depends}"
+        else
+            pass "hard-depends on no other postvec package"
         fi
 
         # A node host has no PostgreSQL. The generated dependencies are
@@ -431,6 +465,15 @@ verify_deb() {
     info="$(dpkg-deb --info "${pkg}")"
     files="$(dpkg-deb --contents "${pkg}" | awk '{print $6}')"
     depends="$(sed -n 's/^ *Depends: //p' <<<"${info}")"
+    recommends="$(sed -n 's/^ *Recommends: //p' <<<"${info}")"
+    # The node's packaged configuration, for the checks that read it.
+    pkg_config=""
+    if [[ "${name}" == postvec-server_* ]]; then
+        dpkg-deb --fsys-tarfile "${pkg}" \
+            | tar -x -C "${tmp}" ./etc/postvec-server/config.json 2>/dev/null || true
+        [[ -f "${tmp}/etc/postvec-server/config.json" ]] \
+            && pkg_config="${tmp}/etc/postvec-server/config.json"
+    fi
     owners="$(dpkg-deb --contents "${pkg}" | awk '{print $2}' | sort -u)"
     # The licence a package declares. Debian has no control field for it —
     # nfpm writes its `license:` into the copyright file — so it is read from
@@ -522,7 +565,47 @@ verify_rpm() {
     scripts="$(rpm_query -qp --scripts "${name}")"
     # RPM records the licence as a header field.
     pkg_license="$(rpm_query -qp --qf '%{LICENSE}' "${name}" 2>/dev/null || true)"
+    recommends="$(rpm_query -qp --recommends "${name}" 2>/dev/null || true)"
     [[ -n "${files}" ]] || problem "could not read the package contents"
+    # The node's packaged configuration, for the checks that read it.
+    pkg_config=""
+    if [[ "${name}" == postvec-server-[0-9]* ]]; then
+        if command -v rpm2cpio >/dev/null 2>&1 && command -v cpio >/dev/null 2>&1; then
+            local cdir; cdir="$(mktemp -d)"
+            (cd "${cdir}" && rpm2cpio "${RPM_QUERY_DIR}/${name}" \
+                | cpio -id --quiet --no-absolute-filenames) || true
+            [[ -f "${cdir}/etc/postvec-server/config.json" ]] \
+                && pkg_config="${cdir}/etc/postvec-server/config.json"
+        else
+            # No rpm2cpio on the host: read the file out of a container of
+            # the target, the same way the metadata is read. The base image
+            # has rpm2cpio but no cpio, so the (newc) archive is walked in
+            # Python, which the image does have.
+            local cfile; cfile="$(mktemp)"
+            timeout 120 docker run --rm --volume "${RPM_QUERY_DIR}:/pkgs:ro" \
+                "${DIST_BASE_IMAGE:-almalinux:9@${BUILD_BASE_EL9_DIGEST}}" \
+                bash -c 'rpm2cpio "/pkgs/$1" | python3 -c "
+import sys
+data = sys.stdin.buffer.read()
+pos = 0
+while True:
+    assert data[pos:pos+6] == b\"070701\", \"not a newc cpio archive\"
+    fields = [int(data[pos+6+i*8:pos+14+i*8], 16) for i in range(13)]
+    namesize, filesize = fields[11], fields[6]
+    name = data[pos+110:pos+110+namesize-1].decode()
+    start = pos + 110 + namesize
+    start += (-start) % 4
+    if name == \"TRAILER!!!\":
+        break
+    if name.lstrip(\"./\") == \"etc/postvec-server/config.json\":
+        sys.stdout.buffer.write(data[start:start+filesize])
+        break
+    pos = start + filesize
+    pos += (-pos) % 4
+"' _ "${name}" > "${cfile}" 2>/dev/null || true
+            [[ -s "${cfile}" ]] && pkg_config="${cfile}"
+        fi
+    fi
 
     printf '%s\n' "${scripts}" > /tmp/postvec-rpm-scripts.$$
     check_maintainer_scripts /tmp/postvec-rpm-scripts.$$
