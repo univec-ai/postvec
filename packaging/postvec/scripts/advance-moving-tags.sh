@@ -1,38 +1,15 @@
 #!/usr/bin/env bash
-# Point moving image tags at recorded digests, and report what actually landed.
+# Point moving image tags at recorded digests and report what landed.
 #
 #   advance-moving-tags.sh [--recovery-hint TEXT] <plan-file>
 #
-# The plan is whitespace-separated, one line per tag:
+# Plan line: <moving tag>  <repository>@sha256:<digest>  <expected digest>
+# Source must be a digest: time passes between deciding and writing.
 #
-#   <moving tag>  <immutable source>  <expected digest>  [anything else]
-#
-# The source must be `<repository>@sha256:…`. A tag would be a mutable pointer,
-# and the whole reason a plan exists is that time passes between deciding what
-# to write and writing it — an environment approval, a queue behind another
-# publication. A digest cannot move; a tag can, and the one thing worse than a
-# stale plan is a stale plan that still looks applied.
-#
-# ---------------------------------------------------------------------------
-#
-# **Why this is a script, and why it does not stop on the first failure.**
-#
-# Both the release workflow and the recovery workflow advance the same seven
-# names, and both ran this as an inline loop under `set -e`. That is exactly
-# wrong for the job: a registry write that fails aborts the loop, so the
-# remaining tags are never attempted, the verification pass never runs, and the
-# recovery guidance never prints. The operator is left with a red step, some
-# unknown number of tags advanced, and nothing telling them which.
-#
-# So: every registry operation here is individually non-fatal. All entries are
-# attempted, then *all* entries are inspected, and the exit status is decided by
-# what the registry actually holds at the end — not by which command happened to
-# fail first. A write that fails but whose tag already points at the right digest
-# is not a failure; a write that "succeeds" and leaves the wrong digest is.
-#
-# Idempotent by construction: pointing a tag at the digest it already has is a
-# no-op, so every entry is applied every time rather than compared against a
-# `current` value captured before the wait.
+# Every registry op is non-fatal. Attempt all entries, inspect all of
+# them, and exit on what the registry holds. A failed write whose tag
+# already has the right digest is success. Idempotent: rewrite every
+# entry rather than comparing against a captured current.
 
 set -Eeuo pipefail
 

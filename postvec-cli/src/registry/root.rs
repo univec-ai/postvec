@@ -30,11 +30,9 @@ const TRASH_DIR: &str = ".trash";
 /// never swept blindly.
 const SWAP_DIR: &str = ".swap";
 const SWAP_RECORD: &str = "txn.json";
-// 2: every batch member is recorded with a `role`, not replacements only.
-// 3: a member records whether rollback must reload it — a replacement of a
-//    deactivated model has no resident predecessor to restore into the engine.
-// No registry has been deployed, so an older record is refused rather than
-// migrated — see `pending_swap`.
+// Schema 3: every batch member has a role, and whether rollback must reload
+// it (a deactivated replacement has no resident predecessor). Older records
+// are refused, not migrated (`pending_swap`).
 const SWAP_RECORD_SCHEMA: u32 = 3;
 const DESCRIPTOR_FILE: &str = "ninference.hub.json";
 
@@ -73,16 +71,11 @@ pub enum EnabledChange {
     Unchanged,
 }
 
-/// What a batch member is doing, and therefore how recovery undoes it.
+/// What a batch member is doing, and how recovery undoes it.
 ///
-/// Recording fresh installs alongside replacements is what makes the record a
-/// description of the whole batch rather than of its replacements only. Before
-/// this existed, a crash mid-load could leave a fresh dependency installed
-/// *and resident* while recovery — which knew only the replacement names —
-/// neither unloaded nor removed it. Every loaded model participates in the
-/// engine's resolver, so that left the recovered runtime unequal to the
-/// pre-command runtime, which is precisely what the transaction exists to
-/// prevent.
+/// Fresh installs are recorded too. A crash mid-load can leave a new
+/// dependency installed and resident; recovery must unload and remove it
+/// or the engine's resolver will not match the pre-command runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SwapRole {
@@ -161,10 +154,9 @@ struct SwapRecord {
     models: Vec<SwapModel>,
 }
 
-/// Write the transaction record durably. Every step propagates its error
-/// the general-purpose `write_atomic` treats the
-/// parent-directory fsync as best effort, which is fine for configuration but
-/// not for the one fact that decides whether a predecessor may be deleted.
+/// Write the transaction record durably. Errors propagate. Unlike
+/// `write_atomic` on config, the parent-directory fsync is required: this
+/// record decides whether a predecessor may be deleted.
 fn write_swap_record(dir: &Path, phase: SwapPhase, models: &[SwapModel]) -> Result<()> {
     let body = serde_json::to_vec_pretty(&SwapRecord {
         schema_version: SWAP_RECORD_SCHEMA,

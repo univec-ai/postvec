@@ -300,14 +300,10 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     let effective_region = args.region.clone().or_else(|| recorded("region"));
     let base_url_changes = args.base_url.is_some() && args.base_url != recorded("base_url");
     let region_changes = args.region.is_some() && args.region != recorded("region");
-    // An endpoint move is a **recipient** change: the same public names, the
-    // same bound columns, a different organisation, network or jurisdiction
-    // receiving their source text. The privacy gate exists for exactly that
-    // event and was scanning only newly added names — which for an
-    // endpoint-only edit is the empty set, so the gate never fired.
-    // Only for a file that already exists: writing a *new* connector file is
-    // an ordinary add, covered by the ordinary scan over its new names.
-    // Nothing is being moved because nothing was there.
+    // Moving base_url or region on an existing file is a recipient change:
+    // same public names, different destination. The privacy gate must
+    // cover those names, not only newly added models. A brand-new file is
+    // an ordinary add over its new names.
     let endpoint_changes = existing.is_some() && (base_url_changes || region_changes);
     // A new key source for the same endpoint is not a recipient change: the
     // text goes to the same place. It does change what the host will do, so
@@ -441,14 +437,9 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         }
         apply_key_spec(table, &canonical, &key);
     }
-    // **Every** new model, including the ones whose dimension the probe has
-    // yet to measure — those carry a placeholder that the provider's own
-    // per-model rule accepts. Leaving them out (a previous pass) removed them
-    // from every *other* structural check as well: a brand-new file with one
-    // uncatalogued model failed with "no [[models]] entries" and could never
-    // reach dimension discovery, while in an existing file the omitted
-    // entries skipped the per-file count, the id-length rule and the
-    // duplicate-name rule and were probed before any of them applied.
+    // Include models whose dim is still a placeholder so structural rules
+    // (file count, id length, duplicates) still see them. The probe then
+    // replaces the placeholder.
     for model in &new_models {
         doc.push_model(model_entry(model))?;
     }
@@ -869,15 +860,10 @@ fn model_entry(model: &NewModel) -> toml::Value {
     toml::Value::Table(entry)
 }
 
-/// Which models get a live verification call: `(provider id, public name,
-/// declared dimension)`.
+/// Models that get a live verification call.
 ///
-/// Always the models being added. Plus, when the connector itself changed —
-/// a rotated key, a moved endpoint — every model the file already declares,
-/// because those are exactly the ones whose behaviour the change alters and
-/// which nothing else in this command would touch. Before this, a key
-/// rotation with no new model made **zero** verification calls while the
-/// command and the documentation both said it verified.
+/// Always the ones being added. If the connector itself changed (key or
+/// endpoint), every model the file already declares too.
 fn probe_targets(
     new_models: &[NewModel],
     already_declared: &[(String, String)],

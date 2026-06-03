@@ -1,36 +1,9 @@
-//! The public HTTP listener: discovery, health and metrics.
+//! Public HTTP listener: discovery, health and metrics. Nothing here mutates.
+//! Admin routes live on the loopback listener in [`crate::admin`].
 //!
-//! | Route | Purpose |
-//! |---|---|
-//! | `GET /config` | Model discovery. **The compatibility surface.** |
-//! | `GET /health` | Liveness — the process is up. |
-//! | `GET /ready` | Readiness — a model can answer right now. |
-//! | `GET /metrics` | Prometheus exposition. |
-//!
-//! Nothing here mutates anything; the admin routes live on their own
-//! loopback listener in [`crate::admin`]. That split is deliberate. The
-//! embedded loopback server can safely put `/admin/*` beside `/config`
-//! because the whole listener refuses to bind a non-loopback address; this
-//! listener is published to the network, so a peer-address check would be
-//! its only boundary — and peer addresses are forgeable by anything sharing
-//! a network namespace. The port that is reachable carries no mutation
-//! routes at all.
-//!
-//! ## What `/config` promises
-//!
-//! `data.models` is the contract, and it is parsed by
-//! `postvec/src/client/discovery.rs`: an array of `{name, status,
-//! configuration}` where `configuration.enabled` gates inclusion parser-side
-//! and `configuration.params` carries the model type and dimensions. That
-//! parser tolerates unknown fields, so `server`, `cluster` and `system` are
-//! safe additions — but only additions. Renaming or nesting `models` breaks
-//! every installed extension.
-//!
-//! `models` lists what is **loaded**, not what is on disk: a node advertises
-//! what it can serve this second. The consequence is worth knowing before it
-//! surprises someone — after `postvec model pull` and `postvec model
-//! activate`, a model stays invisible to discovery until
-//! `postvec-server load` (or a restart) makes it resident.
+//! `GET /config` `data.models` is the compatibility surface: an array of
+//! `{name, status, configuration}`. Additions are safe. Renaming or nesting
+//! `models` is not. The list is what is loaded now, not what is on disk.
 
 use crate::metrics::Snapshot;
 use crate::models;
@@ -278,9 +251,6 @@ pub struct Listener {
 }
 
 /// Spawn the public listener on an already-reserved socket.
-///
-/// Sockets are reserved before model loading (see `main`), so a port
-/// conflict fails the boot immediately instead of after a long warmup.
 pub fn spawn(
     state: Arc<ServerState>,
     std_listener: std::net::TcpListener,
@@ -356,12 +326,9 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
-    // ---- A local mirror of postvec/src/client/discovery.rs ------------
-    //
-    // postvec is a pgrx extension and workspace-excluded, so it cannot be
-    // linked from here. These structs match the discovery client's
-    // envelope: if a change here breaks them, it breaks every installed
-    // extension.
+    // Local discovery envelope. postvec cannot be linked from here
+    // (pgrx, workspace-excluded). If a change here breaks these
+    // structs, it breaks every installed extension.
 
     #[derive(Debug, Deserialize)]
     struct Envelope {

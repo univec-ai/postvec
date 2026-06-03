@@ -324,9 +324,8 @@ async fn admin_load(
 }
 
 /// The number of models this loader may keep resident, shared with the
-/// startup scan's ceiling: this is the ONLY post-startup load path (round 8
-/// removed inference-request JIT loading), so together they bound resident
-/// pools/sessions/threads for the process lifetime.
+/// startup scan's ceiling. This is the only post-startup load path, so
+/// together they bound resident pools for the process lifetime.
 const MAX_RESIDENT_MODELS: usize = super::MAX_SCAN_LOADED_MODELS;
 
 async fn load_one(
@@ -335,11 +334,8 @@ async fn load_one(
     allowed: &[String],
     name: &str,
 ) -> Value {
-    // `postvec.embedded_models` is the eligibility policy for every load,
-    // not only the startup preload (round 8): with an explicit list set,
-    // /admin/load may only name listed models (their descriptor
-    // dependencies stay implicitly eligible, exactly as at startup). An
-    // empty list means scan semantics — any enabled on-disk descriptor.
+    // `postvec.embedded_models` is the eligibility policy for admin loads
+    // too. Empty means any enabled descriptor.
     if !allowed.is_empty() && !allowed.iter().any(|a| a == name) {
         return model_result(
             name,

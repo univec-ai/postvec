@@ -1,6 +1,4 @@
-//! Thin binary wrapper. Everything lives in the library so the HTTP and
-//! admin surfaces can be exercised by integration tests against a real
-//! router rather than by asserting on handler internals.
+//! Binary entry. The library owns serve and the node-local subcommands.
 
 use std::process::ExitCode;
 

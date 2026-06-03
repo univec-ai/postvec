@@ -254,17 +254,11 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
         ));
         return out;
     }
-    // The directory holds credentials, so its own mode matters. `setup` and
-    // `provider add` create it 0700 and deliberately leave an existing one
-    // alone, which is why nothing else notices when it drifts.
-    //
-    // Read and write are different findings, and conflating them was wrong.
-    // Group/other **read** discloses which providers a host is configured
-    // for — worth saying, not worth failing. Group/other **write** lets
-    // anyone with access drop in a connector file and choose where this host
-    // sends source text, which is a larger problem than the world-readable
-    // key file the loader already refuses. The loader refuses it too; doctor
-    // says so first, and in the operator's own words.
+    // Directory mode: setup and provider add create 0700 and never
+    // re-permission an existing dir. Group/other read is a warning
+    // (discloses which providers). Group/other write is a failure (anyone
+    // can drop a connector). The loader refuses write too; doctor says so
+    // first.
     if let Some(problem) = &facts.scan_error {
         out.push(
             CheckResult::fail("provider.directory", "providers", problem.clone()).with_fix(

@@ -83,12 +83,9 @@ if wanted cli || wanted onnxruntime || wanted server; then mkdir -p "${COMMON_DI
 if wanted extension;                   then mkdir -p "${EXTENSION_DIR_OUT}"; fi
 if wanted model;                       then mkdir -p "${NOARCH_DIR_OUT}"; fi
 
-# The architecture-independent packages used to be written into an
-# architecture's common cell. A working tree built before that changed still
-# holds them there, and the release manifest walks the whole of dist/ — so a
-# stale copy would be collected beside the real one, and, being byte-identical
-# often enough, published without a word. Two names, removed where the current
-# ones are produced.
+# Remove leftover model and metapackage files from dist/common. The
+# manifest walks all of dist/, so a leftover copy next to the noarch
+# one would be published.
 shopt -s nullglob
 for stale in "${PKG_DIR}"/dist/common/"${DISTRO}"-*/postvec-model-* \
              "${PKG_DIR}"/dist/common/"${DISTRO}"-*/"${EXTRAS_METAPACKAGE}"[-_]* \

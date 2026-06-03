@@ -135,20 +135,11 @@ RUN cargo pgrx init "--pg${PG_MAJOR}" "/usr/lib/postgresql/${PG_MAJOR}/bin/pg_co
 # overridden by the `-C debuginfo=0` Cargo derives from the profile and passes
 # afterwards. The environment variable overrides the profile itself, which is
 # the only one of the three that actually takes effect.
-# `--no-gc-sections` is restored by hand here because exporting RUSTFLAGS
-# silences the one cargo-pgrx passes. Cargo's four sources of extra rustflags
-# are mutually exclusive and RUSTFLAGS wins outright, so the
-# `-C link-arg=-Wl,--no-gc-sections` that `cargo pgrx package` supplies through
-# `--config target.'cfg(all(target_family = "unix", ...))'.rustflags` is
-# discarded, not merged. pgrx puts its schema entities in `.pgrxsc` marked
-# SHF_GNU_RETAIN, and `ld` honours that flag only from binutils 2.36: Debian 12
-# and Ubuntu ride on 2.38/2.40, while EL9's 2.35.2 garbage-collects the section
-# and `cargo pgrx package` then fails with "no embedded pgrx schema section
-# found". Both builders set the flag so the two produce the same library for
-# the same reason, rather than one of them passing on its linker's age.
-#
-# The extension build alone: the CLI carries no such section, and widening the
-# flag to it would change a shipped binary for no reason.
+# Restore -Wl,--no-gc-sections by hand: exporting RUSTFLAGS replaces the
+# cargo-pgrx rustflags instead of merging them. pgrx keeps schema in
+# .pgrxsc with SHF_GNU_RETAIN, which ld honours only from binutils 2.36.
+# EL9's 2.35.2 would drop the section. Extension build only; the CLI has
+# no such section.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/postvec/target,sharing=locked,id=postvec-target-${PG_MAJOR} \
     --mount=type=cache,target=/src/target,sharing=locked,id=workspace-target \

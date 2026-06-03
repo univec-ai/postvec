@@ -1,24 +1,8 @@
-# One reviewed embedding model, so the embedded image and an embedded-mode
-# package install are useful with no API key and no external service.
-#
-# The bytes come from the postvec model registry's public channel, pulled by
-# the same `postvec model pull` a user runs and pinned to the archive's
-# SHA-256 digest. Everything below that varies with the model — its name, its
-# package name, its version, its licence and its dimension — is derived from
-# that verified archive by scripts/build-model-bundle.sh and read from
-# build/payload-common/model-facts.env, so changing which model is bundled is
-# five reviewed values in versions.env rather than an edit here.
-#
-# Architecture-independent: the packaged graph is portable FP32 ONNX, identical
-# on amd64 and arm64. Which files the archive contains is the publisher's
-# `exclude` decision, recorded in the registry; packaging ships exactly the
-# archive-owned set its install receipt lists and prunes nothing.
-#
-# The version is <registry revision>.<bundle version>.0, not postvec's: model
-# content and extension code upgrade independently. Changing weights,
-# tokenizer, pooling, normalisation or sequence length behind the same model
-# name would silently make new vectors incomparable with stored ones, so that
-# is a new name — never a rebuild of this one.
+# One reviewed embedding model from the registry public channel, pinned
+# by archive SHA-256. Facts come from model-facts.env. Architecture
+# independent. Version is <registry revision>.<bundle version>.0, not
+# postvec's. Changing weights behind the same name would make new
+# vectors incomparable: publish a new name.
 
 name: ${MODEL_PKG_NAME}
 arch: ${NOARCH}

@@ -1,20 +1,11 @@
-//! `postvec setup` — configure a cluster and install the extension.
+//! `postvec setup`: configure a cluster and install the extension.
 //!
-//! The ordering is deliberate and differs from the older hand-written recipe:
-//! **databases and extensions are prepared before the launcher configuration
-//! and the restart.** A configured but missing database makes its worker fail to
-//! connect and respawn every ~15 seconds, so the CLI never activates a launcher
-//! for a database that does not exist yet.
+//! Create databases and CREATE EXTENSION before writing launcher config
+//! and restarting. A configured missing database makes its worker fail
+//! to connect and respawn every ~15s.
 //!
-//! ```text
-//! discover -> validate -> plan -> confirm
-//!          -> create missing databases
-//!          -> CREATE EXTENSION in every target (verified in-transaction)
-//!          -> write configuration and ownership state atomically
-//!          -> validate the candidate configuration offline (postgres -C)
-//!          -> restart (or defer) / reload
-//!          -> mode-aware smoke checks
-//! ```
+//! discover -> validate -> plan -> confirm -> create DBs -> CREATE
+//! EXTENSION -> write config -> postgres -C -> restart or reload -> smoke.
 
 use super::{collect, require_host_privileges, Context};
 use crate::checks::{self, CheckResult, CheckStatus, SCHEMA_VERSION};
@@ -1512,9 +1503,9 @@ mod tests {
         assert_eq!(activation(&desired, &spaced), Activation::None);
     }
 
-    /// The regression this guards: after `setup --no-restart`, a rerun writes
-    /// no file, and a restart gated on "the file changed" would silently skip
-    /// the restart the cluster is still owed.
+    /// After `setup --no-restart`, a rerun writes no file. Restart is gated
+    /// on settings vs the running server, not on whether this run rewrote
+    /// the snippet.
     #[test]
     fn a_rerun_after_a_deferred_restart_still_owes_the_restart() {
         let desired = desired_for(&snapshot(&[], None), &Ownership::Unmanaged, &["univec"]);

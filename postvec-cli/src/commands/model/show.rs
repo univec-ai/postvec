@@ -389,9 +389,8 @@ mod tests {
         })
     }
 
-    /// M2: `model show` reports the exact recorded document and the local
-    /// acknowledgement — as "locally acknowledged", never as acceptance or
-    /// assent — and stays silent for a pre-M2 receipt.
+    /// Reports the recorded document as locally acknowledged, never as
+    /// acceptance. A receipt without those fields stays silent.
     #[test]
     fn terms_lines_report_the_recorded_document_and_acknowledgement() {
         assert!(terms_lines(&receipt(base())).is_empty());

@@ -1,23 +1,11 @@
 #!/usr/bin/env bash
-# Fixture-based regression tests for the parts of the release chain that decide
-# whether a build may be published.
+# Fixture tests for the release gates. No Docker, compiler, network or
+# PostgreSQL.
 #
 #   tests/unit-test.sh [pattern]
 #
-# No Docker, no compiler, no network, no PostgreSQL — seconds, on any machine.
-#
-# The expensive matrix proves that packages build, install and work. It does not
-# prove that the *checks* work, because a check only reports when something is
-# wrong, and nothing is ever deliberately wrong in a passing matrix. Two real
-# defects lived through a full green matrix for exactly that reason: the package
-# closure compared an RPM's `x86_64` against the canonical `amd64` and rejected
-# every RPM, and the debug closure was keyed on a package name alone, so one
-# Debian/amd64 symbols package satisfied all eight CLI tuples.
-#
-# So each case here builds a release that is correct, asserts it passes, then
-# breaks exactly one thing and asserts it fails — and asserts *why*, because a
-# check that fails for the wrong reason is a check that is not testing what its
-# name says.
+# Each case builds a correct release, asserts it passes, breaks one thing
+# and asserts the failure names that thing.
 
 set -Eeuo pipefail
 
@@ -357,11 +345,8 @@ if case_ "package closure: a correct full matrix is accepted"; then
 fi
 
 if case_ "package closure: RPM architectures are canonicalised"; then
-    # The regression. Artifact discovery canonicalises x86_64 to amd64;
-    # verification used to compare the raw file-name spelling against the
-    # canonical one, which no RPM can ever satisfy. Every EL9 package in the
-    # fixture is named the way rpm names them, so this case fails if the
-    # canonicalisation is removed again.
+    # Artifact discovery canonicalises x86_64 to amd64. EL9 fixtures use
+    # rpm spelling, so this fails if that canonicalisation is dropped.
     s="$(scenario rpm-arch)"
     expect_accepted "el9 x86_64/aarch64 packages satisfy amd64/arm64" \
         "${s}/dist" "${s}/build" "${s}/images.json"
@@ -805,14 +790,8 @@ if case_ "release mode: which runs may publish, and where"; then
 fi
 
 if case_ "moving tags: a failed write does not abandon the other five"; then
-    # The defect this replaced: both workflows advanced the six tags in an
-    # inline loop under `set -e`, so the first registry failure aborted the
-    # step — the remaining tags were never attempted, the verification never
-    # ran, and the recovery guidance never printed. An operator was left with a
-    # red step and no idea which tags had moved.
-    #
-    # A fake registry client stands in for `docker buildx imagetools`, which is
-    # what makes the failure paths testable at all.
+    # Fake `docker buildx imagetools` so a failed write still attempts the
+    # rest of the plan and verification still runs.
     fake_registry() {
         local dir="$1"
         mkdir -p "${dir}"
@@ -942,8 +921,7 @@ FAKE
 
     refuses_plan "a mutable tag as the source is refused, with nothing written" \
         "${REPO}:pg18 ${REPO}:0.1.0-1-pg18 ${GOOD} x"
-    # `@sha256:` appearing *somewhere* is not a pinned reference. Both of these
-    # satisfied the old substring test.
+    # `@sha256:` appearing somewhere is not a pin.
     refuses_plan "a source whose digest is not hexadecimal is refused" \
         "${REPO}:pg18 ${REPO}@sha256:not-a-digest ${GOOD} x"
     refuses_plan "a source with no repository is refused" \
@@ -1568,10 +1546,9 @@ if case_ "bundled model: the pins and the policy are enforced"; then
 fi
 
 if case_ "bundled model: an untrimmed archive is refused, not pruned"; then
-    # Registry revision 1 of the bundled model shipped all nine ONNX graphs —
-    # 499 MB where 91 MB is referenced. Packaging must refuse it and point at
-    # the publisher's `exclude`, because pruning after extraction would
-    # invalidate the pull's own per-file receipt.
+    # Refuse an archive that carries unreferenced ONNX graphs. Point at
+    # the publisher's exclude: pruning after extraction would invalidate
+    # the pull receipt.
     d="${WORK}/model-untrimmed"
     EXTRA_FILES='["onnx/model_qint8_avx512.onnx", "onnx/model_O2.onnx"]' \
         make_installed_model "${d}/model"

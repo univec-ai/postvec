@@ -1,20 +1,11 @@
 #!/usr/bin/env bash
-# Assert the properties a postvec package must have, from the package file
-# alone — before it is ever installed anywhere.
+# Assert package shape from the file alone: contents, ownership,
+# dependencies, and that no maintainer script touches a cluster or database.
 #
-#   verify-package.sh dist/common/debian12-amd64/*.deb \
-#                     dist/noarch/debian12/*.deb \
-#                     dist/extension/debian12-pg18-amd64/*.deb
-#   verify-package.sh dist/common/el9-amd64/*.rpm dist/noarch/el9/*.rpm \
-#                     dist/extension/el9-pg18-amd64/*.rpm
-#   verify-package.sh --assert-model-layout   # stdin: a package file listing
+#   verify-package.sh dist/common/debian12-amd64/*.deb ...
+#   verify-package.sh --assert-model-layout   # stdin: a file listing
 #
-# This checks *shape*: what is inside, who owns it, what it depends on, and —
-# the important one — that no maintainer script does anything to a PostgreSQL
-# cluster or a database. Installing files is the package's whole job; anything
-# else belongs to `postvec setup`, run by an operator who chose to run it.
-#
-# Live install testing is separate; see tests/package-install-test.sh.
+# Live install testing is tests/package-install-test.sh.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -105,17 +96,9 @@ lintian_gate() {
     local pkg="$1" output line tag status
     local -a exceptions=() accepted=() unexpected=()
 
-    # A missing file is a broken checkout, not an empty list. Treating absence
-    # as "nothing is excepted" makes the gate stricter, which sounds fail-safe
-    # and is not: it reports three dozen errors that read like a regression in
-    # the packages and says nothing about the file that is actually missing.
-    # (This happened — the repository root ignores *.txt, so the list needs an
-    # explicit negation in packaging/postvec/.gitignore to be committed at all.)
-    #
-    # Checked here rather than inside read_lintian_exceptions, because that runs
-    # in a process substitution: `die` there would exit the subshell, print to
-    # stderr, and let the caller carry on with an empty list — which is the
-    # exact failure this check exists to replace.
+    # A missing exceptions file is a broken checkout, not an empty list.
+    # Check here, not inside read_lintian_exceptions: that runs in a
+    # process substitution, so `die` would only kill the subshell.
     [[ -f "${LINTIAN_EXCEPTIONS}" ]] || die "no ${LINTIAN_EXCEPTIONS}
 The reviewed list of lintian tags these packages may trip is missing, so every
 tag on it would be reported as an unexpected error. Restore the file, and check

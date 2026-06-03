@@ -1,13 +1,6 @@
-# Detached debug information for the `postvec` command.
-#
-# Separate from the extension's debug package for the same reason the CLI
-# itself is separate: /usr/bin/postvec is owned by one package regardless of
-# how many PostgreSQL majors are installed, so its symbols must be too.
-# Bundling them into a per-major debug package would make two majors' debug
-# packages conflict.
-#
-# The file sits at /usr/lib/debug/usr/bin/postvec.debug — the mirrored path
-# where gdb and coredumpctl look.
+# Detached debug info for /usr/bin/postvec. Separate from the per-major
+# extension debug package so two majors cannot conflict. File sits at
+# /usr/lib/debug/usr/bin/postvec.debug.
 
 name: postvec-cli-${DEBUG_SUFFIX}
 arch: ${PKG_ARCH}

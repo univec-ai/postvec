@@ -1,26 +1,9 @@
-//! The model registry client.
+//! Model registry client: index, credentials, verified download, receipt,
+//! and engine-root install/swap.
 //!
-//! Submodules, in dependency order: [`urls`] (the two product-constant
-//! index addresses), [`index`] (schema, validation, closure expansion),
-//! [`auth`] (credential store and resolution), [`client`] (index fetch and
-//! verified resumable downloads), [`receipt`] (`.postvec-install.json`) and
-//! [`root`] (engine-root locking, staging, atomic install and swap, guarded
-//! removal).
-//!
-//! Three more names resolve here without being defined here — [`archive`]
-//! (the deterministic ustar writer and the strict reader), [`descriptor`]
-//! (the engine descriptor and its agreement with the index entry) and
-//! [`identity`] (the fields a model name may never change). They are
-//! re-exported from `registry-schema`, which the publisher links too: what
-//! this client accepts and what the registry publishes are one
-//! implementation, not two that agree today.
-//!
-//! This file owns the one composite operation the commands share: turning
-//! a verified archive into a staged model directory, extracted, validated
-//! against the entry that advertised it and receipted. Publishing that
-//! tree into the root is [`root::ModelRoot`]'s job, because whether it
-//! lands as a fresh install or replaces a predecessor is a transaction
-//! decision.
+//! Archive, descriptor and identity types come from `registry-schema` (same
+//! crate the publisher links). This file turns a verified archive into a
+//! staged, receipted tree; [`root::ModelRoot`] publishes it.
 
 pub mod auth;
 pub mod client;

@@ -1,15 +1,7 @@
 //! Settings resolution: `defaults < file < environment < flags`.
 //!
-//! Three properties this module exists to guarantee, all of them tested
-//! below:
-//!
-//! 1. **A flag that is absent does not clear a file value.** Every layer
-//!    contributes `Option`s and the merge is a chain of `.or()`, so "not
-//!    given" and "given the default" are different things.
-//! 2. **An unknown key in the configuration file is fatal.** A silently
-//!    ignored typo is how a node "starts fine" and never joins its peers.
-//! 3. **A node can start with no configuration file at all.** The file is a
-//!    convenience for systemd units, never a requirement.
+//! An absent flag does not clear a file value. An unknown file key is
+//! fatal. A node can start with no file at all.
 
 use crate::cli::{
     ServeArgs, DEFAULT_ADMIN_PORT, DEFAULT_GOSSIP_PORT, DEFAULT_GRPC_PORT, DEFAULT_HTTP_PORT,
@@ -93,8 +85,7 @@ pub struct FileConfig {
     pub grpc_port: Option<u16>,
     pub gossip_port: Option<u16>,
     pub admin_port: Option<u16>,
-    /// `cluster` is the upstream engine's spelling and the one in the original
-    /// sketch; `peers` is the documented name.
+    /// `cluster` is accepted; `peers` is the documented name.
     #[serde(alias = "cluster")]
     pub peers: Option<Vec<String>>,
     pub group: Option<String>,

@@ -1,15 +1,7 @@
-# Detached debug information for the extension library of one PostgreSQL major.
-#
-# Named the way each ecosystem names such packages so the usual tooling finds
-# it: `-dbgsym` on Debian, `-debuginfo` on RPM.
-#
-# The files sit at /usr/lib/debug<full path of the stripped object>, which is
-# where gdb, `coredumpctl` and `debuginfod` look — a debug file placed anywhere
-# else is a debug file nobody loads. The build also attaches a GNU debug link,
-# so the lookup does not depend on a build-id index existing.
-#
-# The CLI's symbols are deliberately *not* here: /usr/bin/postvec belongs to one
-# package for every major, so its symbols do too (postvec-cli-dbgsym).
+# Detached debug info for this major's extension library, named -dbgsym
+# (Debian) or -debuginfo (RPM). Files sit at /usr/lib/debug<full path>.
+# CLI symbols are in postvec-cli-dbgsym: /usr/bin/postvec is one package
+# for every major.
 
 name: ${DEBUG_PACKAGE}
 arch: ${PKG_ARCH}

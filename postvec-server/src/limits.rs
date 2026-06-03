@@ -1,11 +1,5 @@
-//! Response-envelope budgets.
-//!
-//! Lifted unchanged from postvec's embedded loopback server (which lifted
-//! them from its own queue engine, postvec/src/jobs.rs), so a remote node
-//! refuses exactly the requests an embedded one refuses. A client that
-//! sub-batches for embedded mode needs no second calibration for remote
-//! mode — and postvec's own client never comes close to these; they guard
-//! foreign or buggy callers.
+//! Response-envelope budgets, matching the embedded loopback server.
+//! postvec's own client never comes close; these guard foreign or buggy callers.
 
 /// The gRPC response for a batch is `count × dim` doubles in a protobuf
 /// `Value` tree (~12 wire bytes per float, several times that while

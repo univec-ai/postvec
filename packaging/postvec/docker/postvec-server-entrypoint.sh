@@ -1,27 +1,13 @@
 #!/usr/bin/env bash
-# Container entrypoint for postvec-server.
+# postvec-server container entrypoint. Job: the TLS pair the discovery
+# listener requires. The server will not start without a readable pair.
 #
-# Its one job is the TLS certificate. The discovery listener serves HTTPS and
-# the server refuses to start without a readable certificate pair — deliberately,
-# because silently falling back to plain HTTP on a port operators write into
-# `POSTVEC_HTTP_ENDPOINTS=https://…` produces a listener that answers and a
-# client that fails confusingly.
+# If none is present, generate a self-signed pair at container start, not
+# in the image: a baked-in key would be shared by every pull. Mount your
+# own pair or pass --insecure and this does nothing.
 #
-# So: if no pair is present, generate a self-signed one **at container start**.
-# Per container, not baked into the image — an image that shipped a private key
-# would hand the same key to everyone who pulled it. postvec's discovery accepts
-# self-signed certificates on a trusted network, which is the only kind of
-# network this port belongs on.
-#
-# Mount your own pair over the certificate directory (or point --ssl-cert /
-# --ssl-cert-key elsewhere) and this step does nothing. Pass --insecure and it
-# does nothing either.
-#
-# The directory is where the configuration the node reads expects the pair.
-# The packaged /etc/postvec-server/config.json — which the image installs —
-# names /etc/postvec-server/server.{crt,key}, so the image sets
-# POSTVEC_SERVER_CERTS_DIR to that; the crate's own default, for a node run
-# without that file, is <root>/certs.
+# POSTVEC_SERVER_CERTS_DIR matches the packaged config
+# (/etc/postvec-server/server.{crt,key}). The crate default is <root>/certs.
 set -Eeuo pipefail
 
 ROOT="${POSTVEC_SERVER_ROOT:-/opt/postvec}"

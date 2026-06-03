@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
-# Runs once, from /docker-entrypoint-initdb.d, only when the data directory is
-# empty. That is the official image's contract and it is exactly the right
-# scope for this: creating an extension is a first-run convenience, never an
-# upgrade mechanism.
+# Runs once from /docker-entrypoint-initdb.d when the data directory is
+# empty. Creating the extension is first-run convenience, not an upgrade.
 #
-# On an existing volume this script does not run at all. To adopt a database
-# that already exists:
-#
+# On an existing volume this does not run. Adopt with:
 #     CREATE EXTENSION postvec CASCADE;
-#
-# and make sure its name is in POSTVEC_DATABASES. The image deliberately never
-# enumerates every database and installs itself into each one.
+# and put that database in POSTVEC_DATABASES. This script never walks
+# every database.
 set -Eeuo pipefail
 
 if [[ "${POSTVEC_CREATE_EXTENSION:-1}" != 1 ]]; then

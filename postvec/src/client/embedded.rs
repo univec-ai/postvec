@@ -102,10 +102,9 @@ struct EmbeddedConfig {
     /// loads. A path, never a credential.
     providers_path: PathBuf,
     predict_timeout: Duration,
-    /// `postvec.embedded_max_inflight` — sizes BOTH the engine admission
-    /// gate and the loopback server's global ingress limit (round 7: the
-    /// ingress memory envelope scales with this, so it must be the same
-    /// knob).
+    /// `postvec.embedded_max_inflight`: sizes both the engine admission
+    /// gate and the loopback server's global ingress limit. The ingress
+    /// memory envelope scales with this, so it is one knob.
     max_inflight: usize,
 }
 

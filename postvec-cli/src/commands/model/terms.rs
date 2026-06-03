@@ -10,12 +10,11 @@
 //! `--accept-license <id>@<version>` flag. `--yes` answers only the ordinary
 //! mutation confirmation and never stands in for a terms acknowledgement.
 //!
-//! What the acknowledgement is: **local evidence that this host was shown
-//! the exact document**, recorded in the install receipt. It is not an
-//! organization acceptance, not proof of assent, and cannot protect an
-//! anonymously readable public archive. `organization` acceptance is M4b's
-//! server-side gate; an index carrying it is refused here defensively — no
-//! local prompt substitutes for server acceptance.
+//! What the acknowledgement is: local evidence that this host was shown
+//! the exact document, recorded in the install receipt. It is not
+//! organization acceptance. An index that requires `organization`
+//! acceptance is refused here; no local prompt stands in for the server
+//! gate.
 //!
 //! Staleness mirrors the publisher's acknowledgement rule: a flag naming a
 //! document this run does not need — unknown, wrong version, a `none`

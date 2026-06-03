@@ -1,10 +1,5 @@
-//! Observed facts — the boundary between IO and judgement.
-//!
-//! Collectors (`cluster`, `db`, `engine`) produce these structures; checks
-//! (`checks`) consume them and produce [`crate::checks::CheckResult`]s. Nothing
-//! in `checks` performs IO, which is what makes the diagnosis logic testable
-//! without a PostgreSQL cluster, and what keeps `setup`'s preflight, `setup`'s
-//! smoke checks, and `doctor` looking at the same facts.
+//! Observed facts. Collectors fill these; checks consume them with no IO,
+//! so doctor, setup preflight and setup smoke share one definition of healthy.
 
 use crate::cli::Mode;
 use crate::validate::{GrpcEndpoint, HttpEndpoint};
@@ -134,16 +129,9 @@ impl SettingsSnapshot {
         crate::config::guc::parse_extension_list(self.value("postvec.database").unwrap_or(""))
     }
 
-    /// The mode the extension will actually use.
-    ///
-    /// An empty value means the default, and the default is **embedded**
-    /// (`postvec/src/gucs.rs::parse_mode`). Reading it as remote would let
-    /// `doctor` check the wrong half of the installation and call an
-    /// unconfigured cluster healthy.
-    ///
-    /// `None` here means "the setting was not observed at all" — a cluster
-    /// that has not loaded the library — which is different from an
-    /// unconfigured one and is reported as such.
+    /// Mode the extension will use. Empty means embedded (the extension
+    /// default). None means the GUC was not observed at all (library not
+    /// loaded), which is not the same as unconfigured.
     pub fn mode(&self) -> Option<Mode> {
         match self.value("postvec.mode").map(str::trim) {
             None => None,

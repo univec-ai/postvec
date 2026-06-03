@@ -1,32 +1,13 @@
-//! The loopback admin listener: `POST /admin/load` and `POST /admin/unload`.
+//! Loopback admin listener: `POST /admin/load`, `POST /admin/unload` and
+//! `POST /admin/providers/reload`.
 //!
-//! Lifted from postvec's embedded admin routes
-//! (`postvec/src/client/embedded/http.rs`) so `postvec-server load` behaves
-//! exactly like `postvec model activate` does against an in-database engine —
-//! same envelope, same per-model outcomes, same admission rules.
+//! These routes mutate the engine and have no auth. They bind `127.0.0.1`
+//! only. The per-request peer check is a second line, not the boundary.
+//! Read-only routes are mirrored so the node-local CLI can hit `/config`
+//! over plain loopback HTTP.
 //!
-//! ## Why this is a second listener
-//!
-//! These routes mutate the engine and have no authentication. In embedded
-//! mode that is safe because the listener *refuses to bind anything but
-//! loopback*, and the per-request peer check is defence in depth behind that.
-//! Reproducing only the peer check on a listener bound to `0.0.0.0` would
-//! make a forgeable source address the entire boundary. So the mutation
-//! routes get their own socket, bound to `127.0.0.1`, and the peer check
-//! stays as the second line rather than becoming the first.
-//!
-//! The read-only routes are mirrored here as well, which costs nothing and
-//! means the node-local CLI never has to negotiate TLS with a self-signed
-//! certificate just to read `/config` from the machine it is running on.
-//!
-//! ## What it will not do
-//!
-//! Activation is *not* fleet orchestration. `postvec model activate` rewrites
-//! a descriptor on disk; `postvec-server load` makes one node's engine catch
-//! up. Spreading either across N nodes is a job for the tool that already
-//! owns the fleet — Ansible, a systemd restart, a shared volume — and
-//! pretending the CLI can do it over an open port is how an unauthenticated
-//! load gadget ships.
+//! `postvec-server load` is one node's engine catching up to disk. It is
+//! not fleet orchestration.
 
 use crate::models::{self, DescriptorIndex};
 use crate::state::ServerState;
@@ -122,18 +103,13 @@ fn parse_request(
 // ---- /admin/load -------------------------------------------------------
 
 async fn admin_load(state: Arc<ServerState>, names: Vec<String>) -> (StatusCode, Json<Value>) {
-    // Detach the whole policy-check-and-load sequence. If the client
-    // disconnects, this task keeps the lifecycle lock and finishes
-    // commit-or-rollback rather than leaving the engine half-mutated. The
-    // same lock serializes concurrent admin requests, which is what makes
-    // the resident-count check an admission decision instead of a stale
-    // observation.
+    // Detach the load. If the client disconnects, this task still holds
+    // the lifecycle lock and finishes commit-or-rollback.
     let lifecycle = state.lifecycle.clone();
     let root = state.settings.root.clone();
     let outcome = tokio::spawn(async move {
         let _guard = lifecycle.lock().await;
-        // Filesystem work goes to a blocking thread, and the index is built
-        // once per request rather than once per requested name.
+        // Index once per request, off the serving runtime.
         let index = match tokio::task::spawn_blocking(move || models::descriptor_index(&root))
             .await
             .map_err(|e| format!("descriptor scan task failed: {e}"))
@@ -165,11 +141,8 @@ async fn admin_load(state: Arc<ServerState>, names: Vec<String>) -> (StatusCode,
 }
 
 async fn load_one(state: &ServerState, index: &Arc<DescriptorIndex>, name: &str) -> Value {
-    // `--models` is the eligibility policy for every load, not only the
-    // startup preload: with an explicit list configured, the admin route may
-    // only name listed models. Their dependency closures stay implicitly
-    // eligible, exactly as at startup. An empty list means scan semantics —
-    // any enabled descriptor on disk.
+    // `--models` is the eligibility policy for admin loads too. Empty
+    // means any enabled descriptor.
     let allowed = &state.settings.models;
     if !allowed.is_empty() && !allowed.iter().any(|a| a == name) {
         return model_result(
@@ -514,11 +487,6 @@ pub fn router(state: Arc<ServerState>) -> Router {
 }
 
 /// Bind and spawn the loopback admin listener.
-///
-/// The address is asserted to be loopback rather than merely expected to be:
-/// failing the boot is strictly better than exposing an unauthenticated
-/// mutation surface, and this is the assertion that makes the peer check
-/// defence in depth rather than the whole defence.
 pub fn spawn(
     state: Arc<ServerState>,
     std_listener: std::net::TcpListener,
@@ -526,10 +494,7 @@ pub fn spawn(
     let bound = std_listener
         .local_addr()
         .map_err(|e| format!("local_addr: {e}"))?;
-    // Asserted here as well as at reservation time: this is the invariant
-    // that makes the per-request peer check defence in depth rather than the
-    // whole defence, and it should be impossible to reach this function
-    // without it holding.
+    // Fail the boot rather than expose an unauthenticated mutation surface.
     if !bound.ip().is_loopback() {
         return Err(format!(
             "the admin listener is bound to {bound}, which is not loopback; these routes \

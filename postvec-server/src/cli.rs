@@ -1,13 +1,8 @@
 //! Command-line surface.
 //!
-//! Every value-carrying flag is an `Option`, and *only* the flags are parsed
-//! here: the environment and the optional configuration file are separate
-//! layers merged in [`crate::config`]. That separation is what makes the
-//! precedence rule (`defaults < file < env < flags`) a testable function
-//! rather than a property of clap's argument table.
-//!
-//! `serve` is the default subcommand, so a systemd unit is
-//! `ExecStart=/usr/bin/postvec-server --peers …` with no verb.
+//! Value-carrying flags are `Option` so [`crate::config`] can tell unset
+//! from default. `serve` is the default subcommand: a unit can be
+//! `ExecStart=... --peers ...` with no verb.
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -283,9 +278,8 @@ mod tests {
         );
     }
 
-    /// `--cluster` is the spelling in the original sketch and in the upstream engine's
-    /// configuration. It stays typeable; `--peers` is the documented name
-    /// because "cluster" already means "PostgreSQL cluster" in postvec-cli.
+    /// `--cluster` is accepted as an alias of `--peers`. "cluster" already
+    /// means a PostgreSQL cluster in postvec-cli.
     #[test]
     fn cluster_is_an_accepted_alias_for_peers() {
         let cli = Cli::try_parse_from(["postvec-server", "--cluster", "a,b"]).unwrap();

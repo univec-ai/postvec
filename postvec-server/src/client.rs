@@ -1,20 +1,11 @@
-//! The node-local subcommands: `status`, `load`, `unload`.
+//! Node-local subcommands: `status`, `load`, `unload`.
 //!
-//! All three talk to `127.0.0.1` on the **admin** port, which mirrors the
-//! read-only routes precisely so this client never has to negotiate TLS with
-//! a self-signed certificate against a machine it is already running on.
-//! They are node-local tools by design: nothing here gossip-scans, and
-//! nothing here mutates a peer.
+//! All three talk to `127.0.0.1` on the admin port. Nothing here mutates a
+//! peer. `status --fleet` is read-only: it compares alive peers' `/config`
+//! inventories, because postvec round-robins its gRPC endpoints and a
+//! missing converter on one node looks like a fluke.
 //!
-//! `status --fleet` is the one exception, and it is read-only. It reads each
-//! alive peer's `/config` and compares model inventories, because a fleet
-//! whose nodes carry different models is the failure remote mode actually
-//! produces: postvec round-robins its configured gRPC endpoints, so a
-//! converter present on two nodes out of three fails one request in three,
-//! intermittently, with a `MODEL_NOT_LOADED` that looks like a fluke.
-//!
-//! Exit codes: `0` healthy, `1` reachable but degraded (not ready, inventory
-//! drift, a failed model operation), `2` the node could not be reached.
+//! Exit codes: `0` healthy, `1` reachable but degraded, `2` unreachable.
 
 use crate::cli::DEFAULT_ADMIN_PORT;
 use crate::cli::{LocalArgs, ModelArgs, StatusArgs};

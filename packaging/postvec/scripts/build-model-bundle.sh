@@ -1,42 +1,15 @@
 #!/usr/bin/env bash
-# Acquire the bundled embedding model from the postvec model registry and lay
-# it out as a packageable engine-model directory.
+# Pull the bundled model and lay it out for packaging.
 #
 #   build-model-bundle.sh [--cli PATH] [--from ENGINE_ROOT] [--refresh]
 #
-# --cli PATH      the postvec binary to pull with. Default discovery order:
-#                 $POSTVEC_CLI, the newest build/*/cli/postvec, target/release,
-#                 target/debug.
-# --from ROOT     take the model from an existing engine root instead of
-#                 pulling. Every receipt and file-integrity assertion still
-#                 applies; it is a cache, not an escape hatch.
-# --refresh       ignore the digest-keyed cache and pull again.
+# Writes build/payload-common/opt/postvec/models/<backend>/<name>/ plus
+# provenance under usr/share/doc and model-facts.env.
 #
-# Writes build/payload-common/opt/postvec/models/<backend>/<name>/
-# in the layout the engine loads, plus the licence, provenance and per-file
-# digests under build/payload-common/usr/share/doc/<package>/, and the derived
-# facts every later stage reads from build/payload-common/model-facts.env.
-#
-# The bundle is architecture-independent: one portable FP32 ONNX graph, the
-# same bytes on amd64 and arm64.
-#
-# Four rules this script exists to enforce:
-#
-#   1. Acquisition is `postvec model pull` — the same command a user runs. The
-#      CLI owns index parsing, channel containment, resumable download, whole-
-#      archive digest verification, strict extraction and the receipt. There is
-#      no second, packaging-private installer here, and no `curl`.
-#   2. Nothing unpinned reaches the payload. The receipt's archive digest must
-#      equal BUNDLED_MODEL_ARCHIVE_SHA256, or the build refuses before any byte
-#      is copied.
-#   3. Only archive-owned files are packaged, byte for byte. The CLI-generated
-#      receipt is deliberately *not* shipped: it records `installed_at`, so
-#      shipping it would make an otherwise reproducible package differ on every
-#      clean rebuild. Packaging's own provenance lives in /usr/share/doc.
-#   4. A descriptor requirement is a publication defect. This script asserts
-#      and refuses; it never edits ninference.hub.json inside the archive.
-#      The one sanctioned mutation is `postvec model activate` below — the
-#      CLI's own persistent enable flip, which also updates the receipt.
+# Acquisition is `postvec model pull`. The receipt digest must equal
+# BUNDLED_MODEL_ARCHIVE_SHA256. Ship archive-owned files only (no CLI
+# receipt: it records installed_at). Refuse descriptor defects; the only
+# mutation is `postvec model activate`.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

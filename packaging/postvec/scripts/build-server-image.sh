@@ -4,22 +4,10 @@
 #
 #   build-server-image.sh [--arch amd64] [--repository <repo>] [--load]
 #
-# postvec-server is the inference node postvec's *remote* mode dials. Like the
-# database images, this is a composition step, not a build step: it installs
-# the exact postvec-server, postvec-cli, postvec-onnxruntime and model .deb
-# files this commit produced, so the image a fleet runs is byte-for-byte the
-# packages a host installs — same binary, same runtime, same model, same
-# licence file — and the two are tested by the same install.
-#
-# It used to compile the node from source inside a builder stage, as a stand-in
-# for the remote smoke test. That produced a second, unverified copy of the
-# binary that no package carried and no manifest recorded. Now the image is
-# published: the release manifest records it under `variant: server` in
-# SERVER_IMAGE_REPOSITORY, tagged `<release id>` with a `latest` moving tag.
-#
-# The remote-mode smoke test still uses it — `--server-image` on
-# tests/image-smoke-test.sh — and tests/server-image-test.sh exercises the
-# image on its own.
+# Composition, not a compile: install the postvec-server, postvec-cli,
+# postvec-onnxruntime and model .deb files this commit produced. The
+# manifest records the image under variant: server in SERVER_IMAGE_REPOSITORY,
+# tagged <release id>, with a latest moving tag.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

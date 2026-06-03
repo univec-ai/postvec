@@ -1,47 +1,16 @@
-//! Cluster membership over the `memberlist` gossip protocol.
+//! Cluster membership over memberlist gossip (memberlist 0.8, TCP only).
 //!
-//! Modelled on UniVec's internal inference engine (`app_lib/src/cluster.rs`) so the
-//! two fleets behave the same way under partition. It is not a literal
-//! transcription, because the upstream engine pins `memberlist` 0.6.6 and **the whole
-//! 0.6 line is yanked on crates.io** — a published crate cannot depend on it.
-//! This targets 0.8, whose API differs in three places: `join` takes an
-//! address rather than a `Node`, bind addresses are added one at a time, and
-//! the gossip advertise address is settable directly (which is an
-//! improvement — see below). Everything else is the same protocol with the
-//! same defaults.
+//! Default group is `postvec`. Peers are resolved in [`crate::net`] before
+//! they get here. The gossip advertise address is set explicitly.
+//! Self-detection compares this node's real gossip addresses: treating
+//! "same port + wildcard bind" as "this is me" would discard every peer,
+//! because a fleet shares one gossip port.
 //!
-//! What changed deliberately, and why:
+//! Reported membership is filtered to this node's group. Leave is graceful.
 //!
-//! - **The default group is `postvec`, not the upstream's.** A stray internal
-//!   node must never join a customer's fleet, and a published server must
-//!   never join UniVec's mesh because somebody copied a remembered
-//!   the upstream group name via `--group`.
-//! - **Peers are resolved before they get here** ([`crate::net`]), so
-//!   Compose service names and DNS records work. The upstream's seeds are
-//!   literal `ip:port` because Ansible renders them.
-//! - **The gossip advertise address is set explicitly** rather than inferred
-//!   from a wildcard bind. `--advertise` therefore controls what peers dial
-//!   at the transport layer, not only what the metadata claims.
-//! - **Self-detection compares real addresses.** The upstream engine decides a seed is
-//!   itself when the *ports* match and its own bind is a wildcard — which,
-//!   since gossip always binds `0.0.0.0:<gossip_port>` and every node in a
-//!   fleet uses the same gossip port, classifies **every peer** as self and
-//!   silently discards the whole seed list. (UniVec's mesh forms anyway only
-//!   because aphex seeds sit on a different port.) Here the check is an
-//!   explicit set of this node's own gossip addresses.
-//! - **Membership is filtered to this node's own group** everywhere it is
-//!   reported.
-//! - **Leave is graceful**: a drained node broadcasts its departure so peers
-//!   mark it dead immediately instead of waiting out the suspicion timeout.
-//!
-//! What gossip is *for* here is worth stating, because it is narrower than
-//! it looks. postvec never joins, never reads membership, and routes purely
-//! from its configured endpoint lists. Membership exists so that (a) one
-//! node's `/config` can report the whole fleet, which is what makes
-//! "every node carries the same enabled set" checkable rather than
-//! aspirational, and (b) `postvec-server status` can show an operator which
-//! peers are alive. It replicates nothing, elects nothing, and balances
-//! nothing.
+//! postvec never joins this mesh. Membership exists so `/config` and
+//! `postvec-server status` can describe the fleet. It replicates nothing,
+//! elects nothing and balances nothing.
 
 use crate::config::Settings;
 use crate::state::NodeIdentity;
@@ -381,10 +350,8 @@ fn active_count(members: &[ClusterMember]) -> usize {
 /// seeds. The second one matters because a partition can heal on one side
 /// only, leaving a node permanently half-connected with nothing to notice it.
 ///
-/// With **no** configured peers there is nothing to re-join to, so a
-/// deliberate single-node deployment must not qualify. The upstream's version
-/// of this heuristic omits that clause and logs "cluster appears degraded"
-/// every thirty seconds, forever, on every single-node install.
+/// With no configured peers there is nothing to re-join to, so a
+/// single-node deployment must not qualify.
 pub fn should_rejoin(active: usize, seed_count: usize) -> bool {
     seed_count > 0 && (active <= 1 || active < seed_count)
 }
@@ -436,9 +403,7 @@ mod tests {
         assert_eq!(active_count(&members), 2);
     }
 
-    /// The bug this replaces: the upstream engine decides a seed is itself when the
-    /// ports match and its own bind is a wildcard, which discards every peer
-    /// in a fleet that (correctly) uses one gossip port everywhere.
+    /// Same gossip port on every node must not classify every seed as self.
     #[test]
     fn only_this_nodes_real_addresses_count_as_self() {
         let own = own_gossip_addrs(

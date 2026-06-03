@@ -1,13 +1,5 @@
-//! The golden path, against a real model root.
-//!
-//! Everything else in this suite proves refusals and wiring without touching
-//! ONNX Runtime. These tests prove the one thing those cannot: that a request
-//! arriving over gRPC comes back as an embedding of the right shape. Nothing
-//! about the server is worth much if that is broken.
-//!
-//! Ignored by default, because they need assets CI does not carry. Run them
-//! against any tree that has `libs/**/libonnxruntime.so` and at least one
-//! enabled embedding model:
+//! Golden path against a real model root. Ignored by default; needs ONNX
+//! and a model.
 //!
 //! ```console
 //! POSTVEC_SERVER_TEST_ROOT=/var/lib/postvec-server \
@@ -15,8 +7,8 @@
 //!   cargo test -p postvec-server --test live_engine -- --ignored --nocapture
 //! ```
 //!
-//! Both variables have defaults matching a stock install, so on a machine
-//! that already runs an inference node `-- --ignored` alone is enough.
+//! Both variables default to a stock install, so `-- --ignored` is enough
+//! on a machine that already runs a node.
 
 use postvec_server::metrics::Metrics;
 use postvec_server::proto::ninference_service_client::NinferenceServiceClient;

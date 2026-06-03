@@ -1,19 +1,8 @@
-# postvec-server: the inference node postvec's remote mode (`postvec.mode =
-# 'grpc'`) dials. One binary, one systemd unit, one configuration file, and a
-# drop-in that points the unit at the engine root the other packages install
-# to — so `apt install postvec-server postvec-extras` is a serving node.
+# Inference node for postvec.mode=grpc. Native, no PostgreSQL major:
+# built once per (distribution, architecture) into the common root.
 #
-# Like postvec-cli, it is native code with no PostgreSQL major in it, so it is
-# built once per (distribution, architecture) in the shared-package cell and
-# lives in the `common` root.
-#
-# LICENCE: this is the one package in the release that is *not* under the
-# PostgreSQL License. The identifier comes from SERVER_LICENSE in versions.env,
-# and scripts/assert-versions.sh refuses a release where it disagrees with
-# postvec-server/Cargo.toml or the root LICENSE index. The copyright file is
-# rendered by scripts/build-packages.sh from postvec-server/LICENSE.
-#
-# Environment is supplied by scripts/build-packages.sh.
+# Not PostgreSQL-licensed. Identifier is SERVER_LICENSE in versions.env;
+# assert-versions.sh refuses a mismatch with the crate and the LICENSE index.
 
 name: postvec-server
 arch: ${PKG_ARCH}
@@ -51,11 +40,8 @@ contents:
     dst: /usr/bin/postvec-server
     file_info: { mode: 0755, owner: root, group: root }
 
-  # The crate's own unit, verbatim: it is the reference unit the README
-  # points at, and it stays the same on every host. The one thing a package
-  # knows that the unit cannot — where *these* packages put the engine root —
-  # is a drop-in beside it, so the unit and the drop-in cannot drift apart
-  # in two copies.
+  # The crate's unit, verbatim. The engine root these packages install to
+  # is a drop-in beside it so the two cannot drift.
   - src: ${REPO_ROOT}/postvec-server/systemd/postvec-server.service
     dst: ${SERVER_UNIT_DIR}/postvec-server.service
     file_info: { mode: 0644, owner: root, group: root }
@@ -145,11 +131,9 @@ ${SHLIB_DEPENDS}
       - postvec-cli >= ${POSTVEC_VERSION}
       - postvec-cli < ${NEXT_BREAKING_VERSION}
 
-# The account the unit runs as is created here and never removed: the model
-# root it owns nothing in, but a home directory and a lease file may have been
-# created under its uid, and a reused uid is a worse outcome than a stale one.
-# Nothing here enables, starts, reloads or stops anything — see README
-# §"What the packages may not do"; the postinstall only prints the commands.
+# Create the service account here and never remove it: a reused uid is
+# worse than a leftover one. Scripts must not enable start reload or stop
+# the unit; postinstall only prints the commands.
 scripts:
   preinstall: ${PKG_DIR}/nfpm/scripts/server-preinstall.sh
   postinstall: ${PKG_DIR}/nfpm/scripts/server-postinstall.sh

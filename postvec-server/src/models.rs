@@ -1,25 +1,9 @@
-//! The on-disk model store: `<root>/models/<backend>/<name>/ninference.hub.json`.
+//! On-disk model store: `<root>/models/<backend>/<name>/ninference.hub.json`.
+//! Nothing here fetches. A model that is not on disk is a refusal.
 //!
-//! The same two-level layout the engine scans, `postvec model pull` writes and
-//! embedded mode reads — which is what makes a model root portable between an
-//! in-database engine and this server. Nothing here fetches anything: a model
-//! that is not on disk is a refusal, never a download.
-//!
-//! Three policies live here, and each one differs deliberately from a
-//! neighbour that looks similar:
-//!
-//! - A **malformed** descriptor is a warning, and the rest of the root still
-//!   loads. (The packaging test fixture fatals instead, because its assets
-//!   are reviewed payloads; a production node's root is whatever the operator
-//!   copied in, and one bad directory must not keep fifteen good models
-//!   offline.)
-//! - A **duplicated enabled** name is excluded with a warning, because the
-//!   engine resolves duplicates by directory-read order and would otherwise
-//!   load a nondeterministic one of the two. Naming it explicitly in
-//!   `--models` is fatal instead: the operator asked for something ambiguous.
-//! - A **disabled** descriptor never loads, on any path. That is the switch
-//!   `postvec model activate` throws, and honouring it here is what makes the
-//!   switch mean the same thing in the database and on the node.
+//! A malformed descriptor is a warning; the rest of the root still loads.
+//! A duplicated enabled name is excluded with a warning. Naming it in
+//! `--models` is fatal. A disabled descriptor never loads on any path.
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -93,23 +77,15 @@ impl Inventory {
 /// exists under more than one backend.
 pub type DescriptorIndex = BTreeMap<String, Vec<PathBuf>>;
 
-/// Walk `<root>/models/*/*/ninference.hub.json`.
+/// Names this node's engine owns: currently loaded, plus every on-disk
+/// descriptor.
 ///
-/// Dot-directories are never backends or models — the CLI stages downloads in
-/// `models/.staging`, and a half-written descriptor there must not be visible
-/// to a scan.
-/// Every model name this node's engine owns: loaded now, plus every
-/// descriptor on disk.
+/// Wider than `get_active_models()`. A configured model that failed to load
+/// is missing from the engine map. Reserving only loaded names would let a
+/// provider file take that name and send source text off-box.
 ///
-/// Wider than `get_active_models()` on purpose. A model that is configured
-/// but currently failing to load is absent from the engine's map, so
-/// reserving only loaded names would let a provider file declaring that name
-/// take it over — and a column bound to it would start sending source text to
-/// a third party because a local model was broken.
-///
-/// A failed scan is an **error**, not a smaller reservation: narrowing this
-/// list is precisely how a provider claims a local name, so the caller keeps
-/// the previous gateway snapshot (reload) or serves no providers (boot).
+/// A failed scan is an error, not a smaller set. The caller keeps the
+/// previous gateway snapshot on reload, or serves no providers at boot.
 pub fn reserved_local_names(
     root: &Path,
     engine: &engine::InferenceEngine,
@@ -120,6 +96,11 @@ pub fn reserved_local_names(
     Ok(names)
 }
 
+/// Walk `<root>/models/*/*/ninference.hub.json`.
+///
+/// Dot-directories are never backends or models. The CLI stages downloads
+/// in `models/.staging`; a half-written descriptor there must not appear
+/// in a scan.
 pub fn descriptor_index(root: &Path) -> Result<DescriptorIndex, String> {
     let models_dir = root.join(MODELS_DIR);
     let backends = std::fs::read_dir(&models_dir).map_err(|e| {
@@ -431,8 +412,7 @@ mod tests {
         assert!(inv.warnings.is_empty(), "{:?}", inv.warnings);
     }
 
-    /// The divergence from the packaging fixture, stated as a test: one bad
-    /// directory must not keep the rest of the root offline.
+    /// One bad directory must not keep the rest of the root offline.
     #[test]
     fn a_malformed_descriptor_warns_and_the_rest_still_load() {
         let root = Root::new();
@@ -538,8 +518,7 @@ mod tests {
         assert!(err.contains("postvec model activate off"), "{err}");
     }
 
-    /// A disabled *dependency* is recorded by the walk and refused by the
-    /// admin path, with the same reasoning postvec's embedded admin uses.
+    /// A disabled dependency is recorded by the walk and refused on the admin path.
     #[test]
     fn admin_load_refuses_a_deactivated_dependency() {
         let root = Root::new();

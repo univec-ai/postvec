@@ -1,16 +1,10 @@
 #!/bin/sh
-# Runs before postvec-server's files are unpacked.
+# Create the postvec-server system account. Do not enable start or reload
+# the unit, and do not edit configuration. verify-package.sh scans this
+# file for those commands.
 #
-# Its one job is the service account the unit runs as. Creating a system user
-# is the ordinary thing a daemon package does at install time, and it is the
-# only thing this script does: no unit is enabled, started or reloaded, no
-# configuration is edited, nothing is downloaded, nothing is deleted. See
-# packaging/postvec/README.md §"What the packages may not do" — the same
-# contract every postvec package is held to, and scripts/verify-package.sh
-# scans this file for the commands that would break it.
-#
-# Same name on both families, and never removed on purge: a uid that has owned
-# a lease file or a home directory is not one to hand to the next account.
+# Same account name on Debian and RPM. Never removed on purge: a uid that
+# has owned a lease file or a home directory is not one to reuse.
 set -e
 
 if ! getent group postvec-server >/dev/null 2>&1; then

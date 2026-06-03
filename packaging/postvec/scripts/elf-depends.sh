@@ -1,23 +1,12 @@
 #!/usr/bin/env bash
-# Compute the package dependencies a set of binaries actually needs, using the
-# target distribution's own dependency generator.
+# ELF dependencies from the target distribution's own generator.
 #
-#   elf-depends.sh --distro debian12 --arch amd64 file...   # -> deb relations
-#   elf-depends.sh --distro el9 --arch amd64 file...        # -> rpm requires
+#   elf-depends.sh --distro debian12 --arch amd64 file...
 #
-# Prints one relation per line, sorted, ready to be spliced into a package
-# description. Prints nothing and fails if there is nothing to report — a
-# binary with no dependencies at all means the generator did not run.
-#
-# Why this exists: nFPM does not run `dpkg-shlibdeps` or RPM's dependency
-# generators. It writes exactly the `depends` it is given. Without this step
-# `postvec-onnxruntime` would declare no dependencies at all, apt would install
-# it happily on a minimal host, and the engine would then fail to dlopen the
-# runtime — an error that appears at the first embedding, not at install time.
-#
-# The generators must run *inside* the target distribution: `libstdc++6 (>= 13)`
-# on one release is `libstdc++6 (>= 5.2)` on another, and the answer must match
-# the archive the package will be installed from.
+# nFPM writes exactly the depends it is given. Without this,
+# postvec-onnxruntime would declare none and fail at dlopen. Run inside
+# the target distribution: the same soname is a different package version
+# on each release.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

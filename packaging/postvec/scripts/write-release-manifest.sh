@@ -1,25 +1,11 @@
 #!/usr/bin/env bash
-# Generate postvec-release.json and SHA256SUMS from the artifacts on disk.
+# Build postvec-release.json and SHA256SUMS from artifacts on disk.
 #
 #   write-release-manifest.sh [--dist DIR] [--build-info DIR]
 #                             [--images images.json] [--git-tag TAG] [--out DIR]
 #
-# Everything in the manifest is either read from a reviewed pin or computed
-# from an artifact. Nothing is typed in: a hand-edited checksum is a checksum
-# that is eventually wrong, and this file is what a user verifies a download
-# against.
-#
-# `--images` takes a JSON array of
-# {name, tag, digest, variant, pg_major, base_digest, platforms[]} produced by
-# the image job — `digest` being the multi-architecture index and `platforms`
-# one entry per child manifest, each with its own SBOM. Without it the manifest
-# records no images, which is correct for a packages-only run; a *release* must
-# pass it, because the documented verification steps reference image digests.
-#
-# Artifacts are collected into one flat directory first. That is not tidiness:
-# `sha256sum --check SHA256SUMS` resolves names relative to the working
-# directory, so a checksum file listing basenames next to artifacts that live
-# in per-cell subdirectories cannot be verified by the command the docs give.
+# Everything is a pin or a hash of an artifact. Collect into one flat
+# directory so `sha256sum --check SHA256SUMS` works on the names a user has.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -813,12 +799,8 @@ manifest = {
     "release_id": "%s-%s" % (env("POSTVEC_VERSION"), env("PACKAGE_RELEASE")),
     "git_commit": env("GIT_COMMIT"),
     "source_date_epoch": int(env("SOURCE_DATE_EPOCH")),
-    # Everything the build was pinned to, so a reader does not have to go and
-    # find the versions.env of the commit to know what produced this.
-    # Every reviewed pin, verbatim. The claim in the README is "the manifest
-    # records what produced this release", and a selection of the pins does not
-    # satisfy it: the per-architecture digests are exactly what someone
-    # reproducing an arm64 artifact needs.
+    # Every reviewed pin, verbatim. A selection would drop the per-architecture
+    # digests a reproducer needs.
     "inputs": {
         "rust": env("RUST_VERSION"),
         "cargo_pgrx": env("PGRX_VERSION"),
@@ -875,7 +857,7 @@ manifest = {
     "cargo_pgrx": env("PGRX_VERSION"),
     "pgvector_min": env("PGVECTOR_MIN_VERSION"),
     "onnxruntime": env("ORT_VERSION"),
-    # Every public package is the embedded-capable build; see README §3.
+    # Every public package is the embedded-capable build.
     "extension_features": ["embedded", "onnx"],
     # The one artifact family under different terms. Recorded so a consumer
     # of the manifest need not open a package to learn which licence the node

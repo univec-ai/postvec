@@ -1109,13 +1109,10 @@ fn receipt_json(model_dir: &Path) -> serde_json::Value {
         .unwrap()
 }
 
-/// M2, end to end through the real binary: a notice-policy document is
-/// named in the plan with its exact flag, refuses a non-interactive run
-/// **before any archive download** (`--yes` alone is never an
-/// acknowledgement), refuses a stale flag, installs with the exact flag and
-/// records the receipt evidence, preserves that evidence across a
-/// same-document upgrade without asking again, and demands a fresh
-/// acknowledgement when the exact document changes.
+/// Notice-policy document end to end: named in the plan with its exact
+/// flag, `--yes` alone is not an acknowledgement, stale flags refuse,
+/// receipt records evidence, same-document upgrade is silent, a new
+/// document asks again.
 #[test]
 fn a_notice_document_gates_pull_and_upgrade_end_to_end() {
     let work = tempfile::tempdir().unwrap();

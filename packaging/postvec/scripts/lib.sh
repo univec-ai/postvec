@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 # Shared helpers for the postvec packaging scripts. Sourced, never executed.
-#
-# Everything here is deliberately small and boring: the packaging chain's job
-# is to fail closed, not to be clever.
 
 # shellcheck shell=bash
 
@@ -256,11 +253,8 @@ add-on package is extras, not a one-shot install."
     # overwrite what the previous one published.
     RELEASE_ID="${POSTVEC_VERSION}-${PACKAGE_RELEASE}"
     RELEASE_TAG="postvec-v${RELEASE_ID}"
-    # A disposable publication rehearsal lives in its own tag namespace, so the
-    # *tag* decides which kind of release a run may produce. Sharing `postvec-v*`
-    # between the two meant a real tag dispatched in rehearsal mode would publish
-    # a GitHub release under the real identity — after which the real
-    # publication is refused, because that release already exists.
+    # Rehearsal tags live in their own namespace so a rehearsal cannot
+    # occupy the GitHub release identity a real publication needs.
     REHEARSAL_TAG="postvec-rehearsal-v${RELEASE_ID}"
     export RELEASE_ID RELEASE_TAG REHEARSAL_TAG
 
@@ -586,14 +580,9 @@ extension_dist_dir() {
     printf '%s/dist/extension/%s-pg%s-%s\n' "${PKG_DIR}" "$1" "$2" "$3"
 }
 
-# The architecture-independent packages — the model bundle and the metapackage —
-# get a root of their own, keyed by distribution alone.
-#
-# They used to be written into an arbitrary architecture's common cell, which
-# reads as tidy and is not: an arm64 consumer looks in `<distro>-arm64`, finds
-# no model, and either fails or (worse) quietly tests a release that is missing
-# a package. `all`/`noarch` content belongs to a distribution, so that is the
-# key the directory uses, and every consumer combines three roots.
+# Model bundle and metapackage: keyed by distribution alone. An arm64
+# consumer looking in <distro>-arm64 would miss them. Every consumer
+# combines this root with common and extension.
 noarch_dist_dir() {
     printf '%s/dist/noarch/%s\n' "${PKG_DIR}" "$1"
 }

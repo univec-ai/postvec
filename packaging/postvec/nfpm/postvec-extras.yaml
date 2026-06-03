@@ -1,17 +1,7 @@
-# Convenience metapackage: the extra packages in-process mode needs on the
-# database host, beyond the extension and the CLI.
-#
-# It carries no files. Its whole content is the dependency set, pinned to the
-# exact reviewed asset versions this release was tested against — a model
-# bundle and an ONNX Runtime are database-compatibility material, not
-# interchangeable libraries, so "any newer version" is not an acceptable bound.
-#
-# This is not a complete postvec install. It does not depend on postvec-cli or
-# postgresql-NN-postvec (it is all/noarch and cannot pick a PostgreSQL major).
-# Installing it still changes nothing by itself — the extension has to be
-# preloaded and a database enrolled, which `postvec setup --embedded` does.
-# The payload lands where postvec.path already points by default,
-# so no --path is needed.
+# Metapackage: the extra packages in-process mode needs on the database
+# host, pinned to the reviewed asset versions. No files. Does not pick a
+# PostgreSQL major. Installing it changes nothing until the extension is
+# preloaded and a database is enrolled.
 
 name: ${EXTRAS_METAPACKAGE}
 arch: ${NOARCH}

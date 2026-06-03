@@ -1,16 +1,10 @@
 //! `postvec model ...`: model management for an engine root.
 //!
-//! Target resolution, in order: an explicit `--path DIR` wins and is
-//! pure filesystem management (no cluster, no activation, no database
-//! refresh); `--database-url` is an explicit cluster choice; the
-//! `POSTVEC_PATH` environment variable acts like `--path`
-//! (the container images set it). Otherwise the selected cluster's
-//! effective settings decide. Embedded mode manages (and can activate
-//! against) `postvec.path`. Remote mode can only list what the
-//! configured nodes advertise and refuses local mutation: a remote fleet
-//! is administered through `nin`, not through this CLI. With no cluster
-//! on the host at all, the packaged default root
-//! (`/opt/postvec`) is used when it exists.
+//! `--path` wins (filesystem only: no cluster, no activation). Else
+//! `--database-url`. Else `POSTVEC_PATH`. Else the selected cluster:
+//! embedded manages `postvec.path`; remote can only list advertised
+//! models. With no cluster, the packaged default `/opt/postvec` is used
+//! when it exists.
 
 pub mod activate;
 pub mod admin;
@@ -417,10 +411,8 @@ pub async fn restore_and_prove(
     root.clear_swap(transaction)
 }
 
-/// Settle the replacement transaction an interrupted `model upgrade` may
-/// have left behind, before this command changes anything else
-/// Called by every command that takes the root's
-/// exclusive lock.
+/// Settle an interrupted `model upgrade` transaction before this command
+/// changes anything else. Every exclusive-lock holder calls this.
 ///
 /// A **confirmed** transaction only has superseded copies to drop. An
 /// **unconfirmed** one means the replacement was never proven loadable, so
@@ -466,13 +458,10 @@ pub async fn recover_pending_swap(
     Ok(())
 }
 
-/// A pull/rm on a cluster target also refreshes every configured database's
-/// `postvec.models` cache so new models resolve without waiting out the
-/// refresh interval. Failures are reported, not fatal — the worker refreshes
-/// on its own cadence anyway.
-/// Refresh `postvec.models` in every configured database. A missing
-/// connection (offline listing fallback) is recorded as incomplete rather
-/// than invented as success.
+/// Refresh `postvec.models` in every configured database.
+///
+/// Failures are reported, not fatal (the worker refreshes on its own). A
+/// missing connection is incomplete, not success.
 pub async fn refresh_databases(target: &mut ModelTarget, journal: &mut crate::plan::ApplyJournal) {
     let ModelTarget::Embedded {
         context, settings, ..
@@ -1908,8 +1897,7 @@ mod recovery_tests {
         assert!(root.pending_swap().unwrap().is_none());
     }
 
-    /// A fresh-only batch now opens a transaction too. Before this it opened
-    /// none, so a crash left nothing to recover from and the install stayed.
+    /// A fresh-only batch still opens a transaction so a crash is recoverable.
     #[tokio::test]
     async fn a_fresh_only_batch_is_still_recorded_and_recoverable() {
         let (_guard, root) = root_fixture();

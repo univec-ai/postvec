@@ -1,14 +1,7 @@
-//! The gRPC wire contract, exercised by a real client over a real socket.
-//!
-//! This is the surface postvec's worker actually calls, and the one that
-//! cannot drift: the status codes and the `x-ravenna-error-code` metadata
-//! drive the extension's entire retry and dead-letter policy. A code the
-//! client does not recognise falls through to `Unknown → Transient`, which
-//! turns a permanent failure into one that retries forever.
-//!
-//! No models and no ONNX Runtime: every case here is a refusal raised before
-//! the engine would create a native session, which is precisely the set of
-//! refusals a misconfigured deployment meets in practice.
+//! gRPC wire contract over a real client and socket.
+//! Status codes and `x-ravenna-error-code` drive postvec's retry policy.
+//! An unrecognised code becomes Transient and retries forever.
+//! No models and no ONNX: every case is a pre-session refusal.
 
 use postvec_server::metrics::Metrics;
 use postvec_server::proto::ninference_service_client::NinferenceServiceClient;

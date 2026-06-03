@@ -1,26 +1,11 @@
 #!/usr/bin/env bash
-# Unit tests for the image health check's verdict.
+# Unit tests for the image health check.
 #
-# The health check is what decides whether a container counts as up: it gates
-# `docker run --wait`, compose `depends_on: service_healthy`, orchestrator
-# readiness, and the release's own smoke test. Every one of its judgements is
-# therefore load-bearing, and every one of them was previously only exercised
-# end to end — where the only observable is "the container went healthy", which
-# says nothing about *why*, and nothing at all about the cases where it must
-# refuse.
+#   packaging/postvec/tests/healthcheck-test.sh
 #
-# The two properties worth stating plainly, because both have bitten:
-#
-#   - It must **fail closed**. An empty report, a missing property, a NULL
-#     rendering, a psql that could not connect — each has to be unhealthy.
-#     A health check that reports healthy when it learned nothing is worse
-#     than no health check.
-#   - It must not repair anything. It runs read-only SQL and nothing else.
-#
-# `pg_isready` and `psql` are stubbed, so this needs no PostgreSQL, no
-# container and no network, and runs in well under a second.
-#
-# Run: packaging/postvec/tests/healthcheck-test.sh
+# Fail closed: empty report, missing property, NULL, or a psql that
+# cannot connect must be unhealthy. Read-only: no repair. pg_isready
+# and psql are stubbed.
 
 set -Eeuo pipefail
 
@@ -103,9 +88,8 @@ expect "an unset mode is accepted (the image pins it; this is the net)" 0 \
 echo
 echo "it fails closed"
 
-# The core property. Each of these is a state in which the container is not
-# serving, and each one used to be indistinguishable from a healthy container
-# to anything reading the exit code.
+# Each of these is a container that is not serving. The exit code must
+# say so.
 for property in extension versions mode capability heartbeat model; do
     expect "a false ${property} is unhealthy" 1 \
         "$(full_report | sed "s/${property}=true/${property}=false/")" \

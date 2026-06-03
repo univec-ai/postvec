@@ -162,9 +162,8 @@ done
 # not, rather than failing on packages that were never asked for.
 IMAGES_WANTED=0
 for distro in "${DISTROS[@]}"; do
-    # `if`, not `[[ … ]] && x=1`: as the last command of a loop body a false
-    # test makes the whole `for` return non-zero, and `set -e` ends the run —
-    # the same trap that used to kill this script after the first image.
+    # `if`, not `[[ ... ]] && x=1`: a false test as the last command of a
+    # loop body makes the `for` return non-zero and `set -e` ends the run.
     if [[ "${distro}" == debian12 ]]; then IMAGES_WANTED=1; fi
 done
 if (( ! SKIP_IMAGES )) && (( ! IMAGES_WANTED )); then

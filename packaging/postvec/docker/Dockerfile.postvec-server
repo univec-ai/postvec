@@ -1,23 +1,13 @@
 # syntax=docker/dockerfile:1.7
 #
-# postvec-server: the inference node postvec's remote mode dials, assembled
-# from the release's own Debian 12 packages — postvec-server, postvec-cli,
-# postvec-onnxruntime, the bundled model and the postvec-extras metapackage.
-# A container of this and a host that installed those packages run the same
-# binary against the same runtime and the same model bytes; a container of
-# this and a container of the complete database image load byte-identical
-# model assets, which is what makes a passing remote test and a passing
-# embedded test mean the same thing about the model.
+# postvec-server image from this release's Debian 12 packages: the node,
+# CLI, ONNX Runtime, bundled model and extras metapackage.
 #
-# Build it through scripts/build-server-image.sh, which stages the packages
-# into the context and pins the base. Published by the release workflow to
-# SERVER_IMAGE_REPOSITORY as `<release id>` (immutable) and `latest` (moving).
+# Built through scripts/build-server-image.sh. Published as
+# SERVER_IMAGE_REPOSITORY:<release id> and latest.
 #
-# LICENSE: the `postvec-server` binary inside this image is under the licence
-# named by SERVER_LICENSE in packaging/postvec/versions.env (also the
-# org.opencontainers.image.licenses label below), not the PostgreSQL License
-# that covers the extension, the CLI and the engine assets. See the
-# repository's LICENSE index.
+# The postvec-server binary is under SERVER_LICENSE, not the PostgreSQL
+# License. See the image licenses label.
 
 ARG BUILD_BASE
 FROM ${BUILD_BASE}

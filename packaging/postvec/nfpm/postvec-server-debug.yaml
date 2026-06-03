@@ -1,9 +1,5 @@
-# Detached debug information for the postvec-server binary.
-#
-# Its own package for the same reason the CLI's symbols are: the binary is
-# owned by exactly one package on a host, so its symbols must be too. The file
-# sits at /usr/lib/debug/usr/bin/postvec-server.debug, the mirrored path gdb
-# and coredumpctl look at.
+# Detached debug info for /usr/bin/postvec-server. File sits at
+# /usr/lib/debug/usr/bin/postvec-server.debug.
 
 name: postvec-server-${DEBUG_SUFFIX}
 arch: ${PKG_ARCH}

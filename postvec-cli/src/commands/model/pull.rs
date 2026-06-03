@@ -1,42 +1,17 @@
 //! `postvec model pull` and `postvec model upgrade`.
 //!
-//! One pipeline, two modes. Order of operations: resolve target → resolve
-//! channel index → expand the closure → preflight every entry against the
-//! root (cross-backend collision, ownership, revision comparison, the
-//! identity contract, `min_postvec_version`, disk space) → plan → confirm →
-//! download all archives (≤4 concurrently, resumable, digest-verified) →
-//! stage → install or swap in dependency order → activate → refresh the SQL
-//! caches. Downloads happen before any install, so an interrupted run leaves
-//! either resumable `.part` files or complete models — never half a model.
+//! Resolve target and index, expand the closure, preflight, plan, confirm,
+//! download (resumable, digest-verified), then stage and install. Downloads
+//! finish before any install so a crash leaves `.part` files or complete
+//! models, never half a model.
 //!
-//! The two modes differ in exactly three places:
+//! `pull` never replaces an installed name; it points at `upgrade`.
+//! `upgrade` swaps in place after the identity contract, and refuses a
+//! lower or equal revision.
 //!
-//! - **`pull` never replaces bytes.** An installed name whose head revision
-//!   moved is a no-op that names the upgrade command. An upgrade that
-//!   happened because the registry moved would be the background updater this
-//!   design rejects, arriving through the front door.
-//! - **`upgrade` replaces in place**, under the atomic swap in
-//!   [`crate::registry::root::ModelRoot::swap_in`], and re-checks the
-//!   identity contract against the install's own receipt first — so no
-//!   registry can move an installed column's vector space.
-//! - **`upgrade` refuses a lower or equal revision.** There is no downgrade
-//!   flag; a genuine rollback is published forwards as a new revision.
-//!
-//! ## Installing is not activating
-//!
-//! A fresh install lands **deactivated**: the staged descriptor's `enabled`
-//! field is flipped to `false` before the tree is published, so the model is
-//! neither hot-loaded now nor scan-loaded at the next restart.
-//! `postvec model activate` is the only command that turns a model on.
-//!
-//! Leaving the published `enabled: true` in place and merely skipping the hot
-//! load would not be "pull does not activate" — it would defer activation to
-//! the next PostgreSQL restart, which is activation through another door.
-//!
-//! An **upgrade** carries the previous copy's bit forward: replacing a model's
-//! bytes is not a decision about whether it should serve. A deactivated model
-//! therefore upgrades as a pure filesystem swap — nothing is unloaded, nothing
-//! is loaded, and the rollback path knows not to try.
+//! A fresh install lands with `enabled: false`. Skipping only the hot load
+//! would still scan-load on the next restart. An upgrade copies the
+//! previous `enabled` bit; a deactivated model is a filesystem swap only.
 
 use crate::cli::{Cli, ModelPullArgs, ModelUpgradeArgs};
 use crate::commands::model::{
@@ -1690,9 +1665,8 @@ mod tests {
         assert!(err.to_string().contains("model_type"), "{err}");
     }
 
-    /// M2: an upgrade work item carries the receipt of the installation
-    /// being replaced, so the terms plan can honour an acknowledgement it
-    /// already records — and a fresh install carries none.
+    /// An upgrade work item carries the replaced install's receipt so the
+    /// terms plan can reuse that acknowledgement. A fresh install carries none.
     #[tokio::test]
     async fn preflight_carries_the_replaced_installations_receipt() {
         let (_guard, root) = root_fixture();

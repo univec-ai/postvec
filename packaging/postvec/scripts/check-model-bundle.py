@@ -1,44 +1,16 @@
 #!/usr/bin/env python3
-"""Decide whether a pulled registry model may be packaged, and derive the
-stable facts the rest of the pipeline needs from it.
+"""Decide whether a pulled registry model may be packaged.
 
     check-model-bundle.py <model-dir> <metadata-dir>
 
-`<model-dir>` is an installed engine model directory — the one
-`postvec model pull --path` produced, containing `.postvec-install.json`,
-`ninference.hub.json` and the archive's own files. `<metadata-dir>` receives,
-**only when every check passes**:
+model-dir is an installed engine model directory. metadata-dir receives
+model-facts.env, SOURCE.json, copyright and receipt-files.nul only if
+every check passes.
 
-    model-facts.env      derived, validator-constrained facts for later stages
-    SOURCE.json          stable provenance for /usr/share/doc/<pkg>/
-    copyright            the rendered Debian DEP-5 file
-    receipt-files.nul    the archive-owned file list, NUL separated
-
-Nothing here reaches the network and nothing here is a substitute for
-`postvec model show --verify`, which is the shared, offline implementation of
-`Receipt::verify_files` and must have run first. This script checks the facts
-that decide whether *packaging* may proceed: the pin, the channel, the
-redistribution policy, the closure, and the descriptor requirements that the
-shipped extension can actually satisfy.
-
-The expectations arrive in the environment rather than on the command line so
-that the caller cannot half-supply them:
-
-    BUNDLED_MODEL_NAME
-    BUNDLED_MODEL_REGISTRY_REVISION
-    BUNDLED_MODEL_ARCHIVE_SHA256
-    BUNDLED_MODEL_PKG_SUFFIX
-    BUNDLED_MODEL_BUNDLE_VERSION
-
-Two rules shape the output:
-
-  * `model-facts.env` is *sourced* by later shell stages, so every value it
-    carries is a token, an integer, a digest or a path derived from one of
-    those. The registry's free-form `source` string never appears in it; it
-    reaches the package only through the JSON and DEP-5 documents rendered
-    here, in Python.
-  * A descriptor requirement is a publication defect, not a packaging fix.
-    This script asserts and refuses; it never edits `ninference.hub.json`.
+Does not replace `postvec model show --verify`. Pins arrive in the
+environment so the caller cannot half-supply them. model-facts.env is
+sourced by later shell, so no free-form registry `source` in it.
+Never edits ninference.hub.json.
 """
 
 from __future__ import annotations

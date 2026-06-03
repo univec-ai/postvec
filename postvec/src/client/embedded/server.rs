@@ -290,9 +290,9 @@ impl NinferenceService for EmbeddedService {
         // dimension is best-effort from the model's configuration (bridge
         // executors carry none — their responses are bounded by the caller's
         // sub-batching and the decode cap on the request).
-        // Absolute item ceiling FIRST (round 8): per-item container
-        // overhead, not component bytes, is what millions of tiny items
-        // cost, and every later guard is O(items).
+        // Item ceiling first: later guards are O(items). Per-item
+        // container overhead, not component bytes, is what millions of
+        // tiny items cost.
         if req.texts.len() > crate::jobs::MAX_REQUEST_ITEMS {
             return Err(Status::invalid_argument(format!(
                 "{} texts exceeds the {} items-per-request ceiling; split the request",
@@ -436,12 +436,7 @@ impl NinferenceService for EmbeddedService {
             )));
         }
         let total_components: u64 = req.embeddings.iter().map(|v| v.vector.len() as u64).sum();
-        // Input-tree accounting charges BOTH sides of the allocation
-        // (round 8): ~16 B per float-as-Value component plus
-        // [`TREE_ITEM_OVERHEAD_BYTES`] per row for the containers the
-        // component estimate cannot see. With the 4096-item ceiling above,
-        // the per-item term is bounded (~1 MiB) — it exists so the
-        // arithmetic stays honest, not because it can still dominate.
+        // Charge per-float and per-row overhead, not the first vector only.
         let estimated_tree_bytes = total_components
             .saturating_mul(INPUT_COMPONENT_TRANSIENT_BYTES)
             .saturating_add(count.saturating_mul(TREE_ITEM_OVERHEAD_BYTES));
@@ -1415,8 +1410,7 @@ mod deadline_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A resolved-but-implausible target dimension is a refusal, never an
-    /// input to `as i32` / response sizing (round 7).
+    /// An implausible resolved dimension is a refusal, never used to size a response.
     #[test]
     fn implausible_resolved_dimension_is_refused() {
         let status = invalid_input_status(format!(

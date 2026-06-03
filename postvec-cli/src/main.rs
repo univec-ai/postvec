@@ -1,19 +1,16 @@
-//! The `postvec` binary: parse, pre-runtime dispatch, async dispatch.
-//! Everything else lives in the library crate (see `lib.rs`).
+//! Binary entry: clap parse, then the two pre-runtime paths (__db-agent,
+//! merge-preload) before the async command runtime.
 
 use clap::Parser;
 use postvec_cli::cli::{Cli, Command};
 use postvec_cli::error::Exit;
 use postvec_cli::{commands, config, db};
 
-/// Name the flag whose value came through empty, before clap reports it as
-/// missing.
+/// Name the flag whose value arrived empty.
 ///
-/// `--path "$ROOT"` with `ROOT` unset reaches the process as a real, empty
-/// argument; clap counts zero values and says "a value is required for
-/// '--path <DIR>' but none was supplied", which reads as though the flag were
-/// typed bare. The distinction matters because the fix is in the caller's
-/// shell, not in the command line as written.
+/// `--path "$ROOT"` with ROOT unset is a real empty argv token. Clap then
+/// says the flag was missing, which looks like a bare `--path`. The fix is
+/// in the caller's shell.
 fn empty_flag_value(args: &[std::ffi::OsString]) -> Option<String> {
     args.windows(2).find_map(|pair| {
         let (flag, value) = (pair[0].to_str()?, &pair[1]);

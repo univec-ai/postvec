@@ -1,17 +1,8 @@
-//! Addressing: what this node advertises, and how peer strings become
-//! socket addresses.
+//! Addressing: what this node advertises, and how peer strings become sockets.
 //!
-//! Two things here are load-bearing on a real deployment:
-//!
-//! - **The advertise address.** On a multi-homed host — WireGuard, Docker,
-//!   anything with more than one default route — autodetection picks a NIC
-//!   the other nodes cannot reach, and the symptom is a node that serves
-//!   fine and sees only itself. So the derivation is explicit, logged, and
-//!   warns whenever it had to guess.
-//! - **Name resolution.** The upstream engine's cluster configuration is literal
-//!   `ip:port` because its seeds come from Ansible. A published server is
-//!   pointed at Compose service names and DNS records, so peers are resolved
-//!   here before they reach memberlist's socket-address transport.
+//! On a multi-homed host, autodetection can pick a NIC peers cannot reach.
+//! The derivation is explicit, logged and warned when it had to guess.
+//! Peer names are resolved here before they reach memberlist.
 
 use crate::config::Settings;
 use std::net::{IpAddr, SocketAddr};

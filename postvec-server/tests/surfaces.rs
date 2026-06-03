@@ -1,14 +1,6 @@
-//! End-to-end tests of the HTTP surfaces, over real sockets.
-//!
-//! These drive the actual routers with a real HTTP client rather than calling
-//! handlers directly, because the properties worth protecting here are
-//! properties of the *wiring*: which routes exist on which listener, what
-//! status code a not-ready node returns, whether the discovery envelope still
-//! parses. A handler-level test would pass while the routes were mounted on
-//! the wrong socket.
-//!
-//! No ONNX Runtime is required: every case exercises admission and rendering,
-//! which happen before any native session would be created.
+//! HTTP surfaces over real sockets, not handler-level calls.
+//! Protects which routes exist on which listener and the discovery envelope.
+//! No ONNX: admission and rendering only.
 
 use postvec_server::cli::ServeArgs;
 use postvec_server::config::{self, FileConfig, Settings};
