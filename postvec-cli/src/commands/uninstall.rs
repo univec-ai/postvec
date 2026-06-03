@@ -1,18 +1,9 @@
-//! `postvec uninstall` — remove postvec's database objects and stop serving a
-//! database.
+//! `postvec uninstall`: drop postvec SQL objects and stop serving a database.
 //!
-//! Default policy is **retain user data**: the database, pgvector, the shadow
-//! vector columns, the model assets and the OS packages are all left alone.
-//! What goes away is postvec's generated triggers and runtime objects, the SQL
-//! extension, and the database's entry in the CLI-owned launcher configuration.
-//!
-//! Two rules shape the implementation:
-//!
-//! - `DROP EXTENSION` never uses `CASCADE`. If something still depends on
-//!   postvec, that is for the operator to see and decide about.
-//! - Configuration is only changed for databases whose SQL removal actually
-//!   succeeded, and only where the CLI owns the configuration in the first
-//!   place.
+//! Default keeps user data (database, pgvector, shadow columns, models,
+//! packages). DROP EXTENSION never uses CASCADE. Config changes only for
+//! databases whose SQL removal succeeded, and only where this CLI owns
+//! the snippet.
 
 use super::{collect, purge, require_host_privileges, Context};
 use crate::checks::{self, SCHEMA_VERSION};

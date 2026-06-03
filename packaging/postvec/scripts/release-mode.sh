@@ -1,54 +1,19 @@
 #!/usr/bin/env bash
-# Decide what a release run is allowed to do, and refuse the combinations that
-# would do the wrong thing.
+# Decide what a release run may do. Writes key=value to stdout for
+# $GITHUB_OUTPUT; human text goes to stderr.
 #
-# Reads its inputs from the environment and writes `key=value` lines to stdout
-# for `$GITHUB_OUTPUT`; everything a human should read goes to stderr.
+#   POSTVEC_MODE  rehearse | publish | disposable-publication
+#   POSTVEC_RELEASE_REF   ref being released
+#   POSTVEC_DISPATCH_REF  ref the workflow file came from
+#   POSTVEC_IMAGE_REPOSITORY / POSTVEC_IMAGE_STAGING_REPOSITORY  optional
 #
-#   POSTVEC_MODE                        rehearse | publish | disposable-publication
-#   POSTVEC_RELEASE_REF                 the ref being released (an input)
-#   POSTVEC_DISPATCH_REF                the ref the workflow file came from
-#   POSTVEC_IMAGE_REPOSITORY            optional override
-#   POSTVEC_IMAGE_STAGING_REPOSITORY    optional override
+# rehearse: push nothing, any ref.
+# publish: pinned repos, no overrides, refuse a rehearsal tag.
+# disposable-publication: both overrides and a postvec-rehearsal-v* tag.
 #
-# This lives in a script rather than in the workflow because it is the single
-# decision that separates "built and tested" from "published to where users
-# look", and a decision that cannot be run outside GitHub Actions cannot be
-# tested outside GitHub Actions. tests/unit-test.sh drives the whole
-# mode × tag × override cross-product through it.
-#
-# The rules, and the accident each one prevents:
-#
-#   rehearse                 pushes nothing anywhere, so it needs no environment
-#                            and an override would mean nothing. Any ref: a
-#                            rehearsal exists to run before the tag is cut.
-#
-#   publish                  a real release, to the pinned repositories. Refuses
-#                            overrides — there is no dispatch that redirects a
-#                            production publication — and refuses a rehearsal
-#                            tag, which would advance the production moving tags
-#                            from a scratch build.
-#
-#   disposable-publication   a full publication rehearsal. Requires *both*
-#                            overrides, so half a form cannot publish half a
-#                            release into production, and requires a
-#                            `postvec-rehearsal-v*` tag: it creates and deletes a
-#                            real GitHub release, and under the production tag it
-#                            would occupy the identity the real publication
-#                            needs — which can only be published once.
-#
-# And for both publishing modes, the dispatch ref must equal the released ref.
-# An input controls what is checked out; it does not control which version of
-# the workflow GitHub runs. A dispatch from a branch naming a tag would execute
-# — and attest — the branch's workflow against the tag's artifacts.
-#
-# **This script must be run from the dispatch ref, before the released ref is
-# checked out.** It decides whether publication is enabled, whether the
-# protected environment is requested, and which repositories become job outputs.
-# Run from the ref it is validating, a modified branch would supply the code
-# that authorises its own publication — the check would be asking the suspect.
-# The release workflow checks out the dispatch ref, runs this, and only then
-# checks out what is being built.
+# Publishing modes require dispatch ref == released ref. Run this from the
+# dispatch ref before checking out the released ref, or a branch would
+# authorise its own publication.
 
 set -Eeuo pipefail
 

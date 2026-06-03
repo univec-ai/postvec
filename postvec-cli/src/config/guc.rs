@@ -1,24 +1,16 @@
 //! Parsing and rendering of the two list-shaped settings the CLI touches.
 //!
-//! They are *not* the same grammar, and conflating them is the classic bug in
-//! this area:
+//! They are not the same grammar:
+//! - `shared_preload_libraries` is file names (`SplitDirectoriesString`):
+//!   comma-separated, optional quotes, no case folding. `MyLib` names a
+//!   file called `MyLib`. Folding it would point a working cluster at a
+//!   library that does not exist.
+//! - `postvec.database`, `postvec.grpc_endpoints`, `postvec.http_endpoints`
+//!   and `postvec.embedded_models` are `split(',')` + trim in the
+//!   extension, with no quoting.
 //!
-//! - `shared_preload_libraries` holds **file names**, and the postmaster
-//!   splits it with `SplitDirectoriesString`: comma-separated, surrounding
-//!   whitespace ignored, items double-quotable with `""` as an escaped quote —
-//!   and *no case folding*. `MyLib` names a file called `MyLib`. (This is the
-//!   difference from `SplitIdentifierString`, which does fold, and which an
-//!   earlier version of this module wrongly imitated: lower-casing an
-//!   operator's entry would have pointed a working cluster at a library that
-//!   does not exist.)
-//! - `postvec.database`, `postvec.grpc_endpoints`, `postvec.http_endpoints` and
-//!   `postvec.embedded_models` are parsed by the extension itself with a
-//!   plain `split(',')` + `trim` (see `postvec/src/gucs.rs`
-//!   `parse_endpoint_list`), so they have no quoting mechanism at all.
-//!
-//! The grammar below was established empirically against PostgreSQL 18 rather
-//! than read off the source; [`validate_library_list`] carries that corpus as
-//! its test cases.
+//! [`validate_library_list`] is the write path; the lenient splitter is
+//! only for reading broken configs.
 
 /// The library name postvec is loaded under, and the `$libdir`-qualified form
 /// PostgreSQL also accepts.

@@ -1,18 +1,8 @@
-//! Two real gossip nodes, on one machine, using **identical ports**.
+//! Two real gossip nodes on one machine, identical ports.
+//! Distinct loopback addresses (`127.0.0.2`, `127.0.0.3`, ...) give two
+//! nodes the same port on one host. All of `127.0.0.0/8` is local on Linux.
 //!
-//! That last part is the whole point. A postvec-server fleet runs the same
-//! command on every node, so every node uses the same gossip port and a
-//! seed list is a list of bare hosts. The bug this suite exists to catch is
-//! the one inherited from the upstream engine: deciding a seed is "me" because the
-//! *ports* match while the local bind is a wildcard, which — since every node
-//! in a fleet shares the gossip port — throws away the entire seed list and
-//! leaves every node seeing only itself.
-//!
-//! Distinct loopback addresses (`127.0.0.2`, `127.0.0.3`, …) give two nodes
-//! the same port on one host, which is exactly the shape a fleet has and
-//! exactly the shape a same-port test needs. All of `127.0.0.0/8` is local on
-//! Linux; on a platform where it is not, these tests will fail to bind and
-//! say so.
+//! Self-detection must not treat "same port + wildcard bind" as "this is me".
 
 use postvec_server::cli::ServeArgs;
 use postvec_server::cluster::ClusterManager;

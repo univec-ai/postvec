@@ -1,13 +1,6 @@
-# The `postvec` command, packaged separately from the per-major extension
-# packages.
-#
-# Why separate: a host may legitimately run PostgreSQL 16 and 18 side by side
-# and install both extension packages. If each carried /usr/bin/postvec, dpkg
-# and RPM would refuse the second install with a file-conflict. One CLI package,
-# owned by exactly one package, and each extension package depends on a
-# compatible version of it.
-#
-# Environment is supplied by scripts/build-packages.sh.
+# The postvec command, one package for every PostgreSQL major. If each
+# extension package shipped /usr/bin/postvec, a second major would
+# conflict. Each extension package depends on a compatible CLI version.
 
 name: postvec-cli
 arch: ${PKG_ARCH}

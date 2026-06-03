@@ -1,19 +1,9 @@
-//! Bringing the engine up: what to load, how hard to fail, and warmup.
+//! Engine bring-up: which models to load, how hard to fail, and warmup.
 //!
-//! The engine offers a one-call constructor (`default_with_models`) and a
-//! scan-everything path (`load_models_and_executors`). Neither is used here,
-//! because a node needs a load policy those two do not express:
-//!
-//! - With an explicit `--models` list, **any** failure is fatal. The operator
-//!   named those models; starting without one of them and reporting healthy
-//!   would be a lie.
-//! - Scanning the root, a single bad model is a **warning** and the rest
-//!   load. One broken directory must not keep fifteen good models offline.
-//! - Either way an **ambiguous** name (the same model under two backends) is
-//!   excluded rather than resolved by directory order.
-//! - **Zero** models is a warning, not a failure: a node should be able to
-//!   start empty and have models pushed to it with `postvec-server load`.
-//!   `/ready` stays 503 until one arrives, so nothing routes to it meanwhile.
+//! An explicit `--models` list: any failure is fatal.
+//! A scan of the root: one bad model is a warning and the rest load.
+//! An ambiguous name is excluded, never picked by directory order.
+//! Zero models is a warning; `/ready` stays 503 until one is loaded.
 
 use crate::config::Settings;
 use crate::metrics::Metrics;
@@ -122,18 +112,9 @@ pub async fn build(
     Ok((engine, inventory, report))
 }
 
-/// Run one throwaway prediction per embedding model.
-///
-/// `/ready` reports on `is_model_ready`, which becomes true well before the
-/// first inference has actually run — so without this, the first real
-/// request pays session warmup inside the caller's own `grpc-timeout`, and
-/// a load balancer routes to a node that is technically ready and
-/// practically slow. Warmup also surfaces a model that is broken in a way
-/// loading did not catch, at boot rather than on a user's first query.
-///
-/// Never fatal: a node whose warmup fails is still a node that can serve
-/// everything else, and the failure is counted
-/// (`postvec_server_warmup_failures_total`) as well as logged.
+/// One throwaway prediction per embedding model. `/ready` is true before
+/// the first inference has run; without this the first caller pays session
+/// warmup. Never fatal. Failures are counted and logged.
 pub async fn warm_up(engine: &Arc<InferenceEngine>, metrics: &Metrics) {
     let candidates: Vec<String> = engine
         .get_active_models()

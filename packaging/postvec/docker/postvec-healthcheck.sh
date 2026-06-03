@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
-# Container health for a postvec image.
+# Container health. pg_isready is not enough: also require the extension,
+# a live worker, and in embedded mode a loaded model.
 #
-# `pg_isready` alone says the postmaster accepts connections — which is true
-# long before the extension exists, before the worker is beating, and, in
-# embedded mode, long before a model is loaded. Every one of those is the
-# difference between a container that answers and a container that works, so
-# each is checked here.
-#
-# Strictly read-only: it runs no inference, refreshes no model cache, starts
-# nothing and writes nothing. Health checks that repair things hide the fault
-# they were meant to report.
+# Read-only: no inference, no cache refresh, no writes.
 set -Eeuo pipefail
 
 user="${POSTGRES_USER:-postgres}"
@@ -40,11 +33,11 @@ if [[ "${mode}" == embedded && -z "${model}" ]]; then
     echo "  started with it cleared or is not a postvec embedded image" >&2
     exit 1
 fi
-# An idle worker writes one liveness beat per postvec.heartbeat_interval_ms
-# (default 30 s), not one per poll tick. The default budget matches doctor:
-# liveness interval + three poll ticks + 2 s. A hardcoded 30 s — equal to
-# the interval — made an idle container flap unhealthy between writes.
-# POSTVEC_HEALTHCHECK_BEAT_AGE, when set, overrides the whole budget (seconds).
+# An idle worker writes one beat per postvec.heartbeat_interval_ms
+# (default 30 s), not per poll. Default budget matches doctor: interval
+# plus three poll ticks plus 2 s. A budget equal to the interval flaps
+# an idle container. POSTVEC_HEALTHCHECK_BEAT_AGE overrides the whole
+# budget in seconds.
 max_beat_age="${POSTVEC_HEALTHCHECK_BEAT_AGE:-}"
 
 pg_isready --quiet --username "${user}" --dbname "${database}" || exit 1

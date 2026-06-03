@@ -117,6 +117,18 @@ Build them: scripts/build-packages.sh --distro ${DISTRO} --pg 18 --arch ${RELEAS
   ${NOARCH_DIR}  (postvec-model-*, ${EXTRAS_METAPACKAGE})
 found ${#engine_packages[@]}"
     cp "${engine_packages[@]}" "${STAGE}/"
+
+    # The inference node, with the engine assets it serves: the full install
+    # is also the install a *node* host does, and the body starts the packaged
+    # node against the packaged model to prove that distribution's OpenSSL,
+    # libgomp and libc resolve for it. Not in the minimal run, which exists to
+    # prove the database host's boundary.
+    mapfile -t server_packages < <(release_only "${COMMON_DIR}"/postvec-server[-_]*)
+    (( ${#server_packages[@]} == 1 )) \
+        || die "expected exactly one postvec-server package in ${COMMON_DIR}, found ${#server_packages[@]}
+Build it: scripts/build-extension-stage.sh --distro ${DISTRO} --pg 18 --arch ${RELEASE_ARCH} --with-server
+          scripts/build-packages.sh --distro ${DISTRO} --pg 18 --arch ${RELEASE_ARCH} --only server"
+    cp "${server_packages[@]}" "${STAGE}/"
 fi
 # The debug packages go to their own mount, deliberately not /packages: the
 # release install must be exactly the release packages, and the body installs
@@ -135,16 +147,18 @@ if (( ! MINIMAL )); then
         done
     }
     mapfile -t debug_packages < <(packages_only \
-        "${COMMON_DIR}"/postvec-cli-dbgsym[-_]* "${COMMON_DIR}"/postvec-cli-debuginfo[-_]*)
+        "${COMMON_DIR}"/postvec-cli-dbgsym[-_]* "${COMMON_DIR}"/postvec-cli-debuginfo[-_]* \
+        "${COMMON_DIR}"/postvec-server-dbgsym[-_]* "${COMMON_DIR}"/postvec-server-debuginfo[-_]*)
     for major in "${PG_MAJORS[@]}"; do
         cell="$(extension_dist_dir "${DISTRO}" "${major}" "${RELEASE_ARCH}")"
         mapfile -t -O "${#debug_packages[@]}" debug_packages < <(packages_only \
             "${cell}"/postgresql*postvec-dbgsym[-_]* "${cell}"/postgresql*postvec-debuginfo[-_]*)
     done
-    # One per major plus one for the CLI. Missing symbols in a release are a
-    # defect, so this is an assertion rather than a best-effort copy.
-    (( ${#debug_packages[@]} == ${#PG_MAJORS[@]} + 1 )) \
-        || die "expected $(( ${#PG_MAJORS[@]} + 1 )) debug packages, found ${#debug_packages[@]}:
+    # One per major, one for the CLI, one for the node. Missing symbols in a
+    # release are a defect, so this is an assertion rather than a best-effort
+    # copy.
+    (( ${#debug_packages[@]} == ${#PG_MAJORS[@]} + 2 )) \
+        || die "expected $(( ${#PG_MAJORS[@]} + 2 )) debug packages, found ${#debug_packages[@]}:
 $(printf '  %s\n' "${debug_packages[@]}")"
     cp "${debug_packages[@]}" "${STAGE_DEBUG}/"
 fi
@@ -166,6 +180,7 @@ docker run --rm \
     --env "BUNDLED_MODEL_BACKEND=${MODEL_BACKEND}" \
     --env "BUNDLED_MODEL_TARGET_DIM=${MODEL_TARGET_DIM}" \
     --env "MODEL_PKG_NAME=${MODEL_PKG_NAME}" \
+    --env "SERVER_LICENSE=${SERVER_LICENSE}" \
     --env "DIST_FAMILY=${DIST_FAMILY}" \
     --env "MINIMAL=${MINIMAL}" \
     --env DEBIAN_FRONTEND=noninteractive \

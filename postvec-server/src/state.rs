@@ -1,5 +1,4 @@
-//! Everything the listeners share: the engine, the resolved settings, this
-//! node's advertised identity, the metrics registry and the drain flag.
+//! Shared process state for the HTTP, gRPC and admin listeners.
 
 use crate::cluster::ClusterManager;
 use crate::config::Settings;
@@ -105,18 +104,9 @@ impl ServerState {
         self.draining.load(Ordering::SeqCst)
     }
 
-    /// Every model name this node can answer for **right now** — engine and
-    /// gateway alike.
-    ///
-    /// The gateway half is not decoration. A node configured purely as a
-    /// provider gateway holds no engine models, so counting only those left
-    /// it reporting 503 forever while it served `EmbedTexts` perfectly well:
-    /// a load balancer would never route to a node that works. Readiness has
-    /// to mean "can this node serve a request", and for a provider-backed
-    /// name it can.
-    ///
-    /// Still strictly node-local — it asks what *this* process serves, never
-    /// what a peer thinks.
+    /// Names this process can answer right now, engine and gateway.
+    /// A provider-only node has no engine models; readiness still has to
+    /// be true.
     pub fn ready_models(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .engine

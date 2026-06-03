@@ -1,20 +1,9 @@
-//! `postvec provider ...`: external embedding providers — the providers.d
-//! connector files the inference host reads.
+//! `postvec provider ...`: providers.d connector files.
 //!
-//! Target resolution mirrors the `model` family: an explicit `--path DIR`
-//! wins and is pure filesystem management (the directory is `<DIR>/providers.d`,
-//! or `<DIR>` itself when it already is one — the postvec-server
-//! administration story); `--database-url` is an explicit cluster choice;
-//! the `POSTVEC_PROVIDERS_PATH` environment variable acts like `--path`
-//! (the postvec-server image sets it). Otherwise the selected cluster's
-//! effective settings decide: embedded mode manages `postvec.providers_path`
-//! (default `/etc/postvec/providers.d`); a grpc-mode cluster is refused
-//! with the `--path` escape hatch named, because its provider files live on
-//! the postvec-server nodes.
-//!
-//! Credentials never ride argv and are never printed back. Files are
-//! written 0600 in a 0700 directory, owned by the cluster owner where one
-//! is known — the same discipline as the registry credential store.
+//! `--path` wins (filesystem only). Else `POSTVEC_PROVIDERS_PATH`. Else
+//! the selected cluster: embedded uses `postvec.providers_path`; grpc is
+//! refused (files live on the server nodes) with `--path` named.
+//! Credentials never ride argv. Files are 0600 in a 0700 directory.
 
 pub mod add;
 pub mod ls;
@@ -869,12 +858,10 @@ pub fn write_secret_file(path: &Path, body: &[u8], owner: Option<FileOwner>) -> 
     sync_directory(dir, path)
 }
 
-/// Flush the directory entry a rename or removal just changed.
+/// Flush the directory after a rename or removal.
 ///
-/// Checked, not best-effort: without it a crash can lose a change the command
-/// already reported as applied, which is the exact outcome an atomic write
-/// exists to prevent. A previous pass claimed this and then dropped the
-/// error.
+/// Errors propagate. A crash after "applied" with no dir fsync can lose
+/// the change.
 pub fn sync_directory(dir: &Path, changed: &Path) -> Result<()> {
     std::fs::File::open(dir)
         .and_then(|handle| handle.sync_all())

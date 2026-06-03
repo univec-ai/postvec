@@ -1534,10 +1534,8 @@ mod tests {
     use super::*;
 
     /// The respawn quarantine ladder, deterministically: consecutive
-    /// instant deaths escalate 15 → 30 → 60 → 120 → 240 → 300 and stay
-    /// capped; one healthy lifetime resets to the base. (Audit round 6: the
-    /// scheduling-coupled evaluation oscillated 15/30 because the second
-    /// observation landed exactly on the healthy threshold.)
+    /// instant deaths escalate 15 -> 30 -> 60 -> 120 -> 240 -> 300 and stay
+    /// capped; one healthy lifetime resets to the base.
     #[test]
     fn respawn_ladder_escalates_and_resets() {
         let mut ladder = RespawnLadder::new();

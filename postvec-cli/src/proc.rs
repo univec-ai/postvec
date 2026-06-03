@@ -977,18 +977,13 @@ mod tests {
         ok && current.sa_sigaction == libc::SIG_DFL
     }
 
-    /// The whole guard lifecycle, with real signals.
+    /// Guard lifecycle with real signals.
     ///
-    /// The properties that matter: an armed guard survives one interrupt and
-    /// prints guidance instead of dying; a guard held while another is active
-    /// is refused; and a *second, later* guard genuinely protects again — the
-    /// regression behind this design was `uninstall --purge`, whose sweep is
-    /// the command's second critical section after the restart.
-    ///
-    /// One test rather than several, because the listener is process-wide and
-    /// the steps only make sense in order. No interrupt is raised while
-    /// disarmed: the listener would re-raise it with default handling and
-    /// (correctly) kill the test binary.
+    /// An armed guard survives one interrupt and prints guidance. A second
+    /// overlapping hold is refused. A later hold after drop arms again, which
+    /// `uninstall --purge` needs (restart then sweep). One test because the
+    /// listener is process-wide. Do not raise SIGINT while disarmed: the
+    /// listener re-raises with default handling and would kill the binary.
     #[tokio::test]
     async fn interrupt_guards_warn_survive_and_rearm() {
         fn warned() -> bool {

@@ -5,13 +5,10 @@ description: Source build and manual installation for PostgreSQL 16, 17 or 18.
 
 # Build from source
 
-Build from source when iterating on the extension. Persistent
-deployments should use [packages](/docs/install/packages).
+Build from source for a development tree. Persistent deployments should
+use [packages](/docs/install/packages).
 
-Package-owned files and manually copied files must not share paths.
-`command -v postvec` should resolve to the binary you intend.
-
-Tabs pick the PostgreSQL major and the layout of the target tree.
+Don't overlay a source install on top of packages.
 
 ## Prerequisites
 
@@ -25,7 +22,7 @@ Tabs pick the PostgreSQL major and the layout of the target tree.
 
 ## Build
 
-The extension is **not** in the Cargo workspace. The CLI remains a
+The extension is outside the Cargo workspace. The CLI remains a
 workspace member.
 
 <PgSnippet id="source-build" />
@@ -72,8 +69,7 @@ sudo cp -a build/payload-common/opt/postvec/models \
   /opt/postvec/
 ```
 
-Manually copied models are operator-owned. `postvec model rm` will not
-delete them.
+Manually copied models are operator-owned. Remove them by hand.
 
 ## Build the inference node
 
@@ -94,17 +90,17 @@ covers TLS, the first start and what the boot log means.
 1. `cargo pgrx package`
 2. Stop PostgreSQL before replacing a preloaded `.so`
 3. Copy the staged files
-4. Recreate a disposable database if same-version generated SQL changed
+4. Recreate a development database if same-version generated SQL changed
 
-A new `.so` does not change SQL already in a database. A new extension
+A new `.so` leaves SQL already in a database as it is. A new extension
 version needs upgrade SQL plus `ALTER EXTENSION postvec UPDATE` in the
 same window as the restart. [Upgrade](/docs/install/upgrade).
 
 ## Rollback (files only)
 
-Stop PostgreSQL first. Confirm that each path is **not** package-owned
-with `dpkg -S` or `rpm -qf`. Remove only recorded files, then restore
-any previous manual installation while the cluster remains stopped.
+Stop PostgreSQL first. With `dpkg -S` or `rpm -qf`, skip any path a
+package still owns. Remove only recorded files, then restore any
+previous manual installation while the cluster remains stopped.
 
 [Cluster configuration](/docs/install/setup) follows file installation.
 If `setup` already ran, finish

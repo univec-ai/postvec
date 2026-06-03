@@ -1,24 +1,7 @@
-//! The gRPC inference service: `EmbedTexts` and `ConvertEmbeddings` over the
-//! canonical inference proto.
+//! gRPC inference: `EmbedTexts` and `ConvertEmbeddings` on the canonical proto.
 //!
-//! Lifted from postvec's embedded loopback server
-//! (`postvec/src/client/embedded/server.rs`) by way of the packaging test
-//! fixture, and deliberately kept as a transcription: the same payload
-//! shapes into `predict_raw`, the same envelope guards, the same
-//! `x-ravenna-error-code` metadata out. That is what makes a column tested
-//! in embedded mode behave identically when its owner moves inference off
-//! the database host — every refusal it can meet here, it could already
-//! meet there.
-//!
-//! Two things this service will not do, both on purpose:
-//!
-//! - **It never loads a model.** An unready name is `MODEL_NOT_LOADED`. A
-//!   request-driven load path would let any client on the network expand the
-//!   resident set past every ceiling the operator configured.
-//! - **It has no transport security and no authentication.** postvec's gRPC
-//!   client speaks plaintext and its GUC help says so, so adding TLS on this
-//!   side alone would break every existing `postvec setup --grpc`. The port
-//!   belongs on a trusted private network.
+//! Requests never load models; an unready name is `MODEL_NOT_LOADED`.
+//! This port is plaintext and unauthenticated. It belongs on a private network.
 
 use crate::metrics::{Metrics, METHOD_CONVERT, METHOD_EMBED};
 use crate::proto::ninference_service_server::{NinferenceService, NinferenceServiceServer};
@@ -40,11 +23,8 @@ use tonic::codegen::Body;
 use tonic::{Request, Response, Status};
 use tower::{Layer, Service};
 
-/// Mirror of the client-side envelope (`client/grpc.rs`): decode (requests
-/// arriving here) is bounded at the client's encode ceiling, and encode
-/// (responses leaving here) at the client's decode ceiling. The old 256 MiB
-/// blanket invited GB-scale decode amplification in the engine host — the
-/// process whose death restarts the whole cluster.
+/// Decode ceiling matches the client's encode cap; encode matches its
+/// decode cap.
 const MAX_DECODE_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_ENCODE_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
@@ -192,38 +172,17 @@ struct InferenceService {
     engine: Arc<InferenceEngine>,
     metrics: Arc<Metrics>,
     predict_timeout: Duration,
-    /// A completed unary response is encoded lazily after the handler future
-    /// returns. This semaphore's permit is moved into the HTTP response body,
-    /// so slow/abandoned loopback readers cannot accumulate unbounded prost
-    /// response trees after Tower's request-future limit has been released.
-    /// Engine path only. The provider path never takes a slot (see the
-    /// dispatch comment in `embed_texts_inner`).
+    /// Permit moved into the HTTP response body so a slow reader cannot
+    /// pile up prost trees after Tower has released the request future.
+    /// Engine path only; the provider path never takes a slot.
     response_slots: Arc<Semaphore>,
-    /// The response-lifetime bound for the provider path, denominated in
-    /// **mebibytes of response tree**, not in responses.
+    /// Shared budget, in MiB of finished-but-unsent provider response tree.
     ///
-    /// The provider path deliberately skips `response_slots` so a network
-    /// call never queues behind CPU-bound ONNX — but "no admission gate" and
-    /// "no *response-lifetime* bound" are different things. A completed unary
-    /// response is encoded lazily after the handler returns, so the
-    /// per-provider semaphore and the tower ingress permit are both released
-    /// while the prost tree is still resident, and a slow or abandoned reader
-    /// could accumulate them.
-    ///
-    /// Counting responses does not bound memory. A permit was one response of
-    /// *any* size, so a budget of N permits formally allowed N × the 96 MiB
-    /// envelope — tens of gigabytes at the configuration ceiling. Weighting by
-    /// the size the response actually is makes the number mean what it says:
-    /// [`PROVIDER_RESPONSE_BUDGET_MIB`] is the aggregate resident ceiling for
-    /// finished-but-unsent provider responses, and one oversized response
-    /// costs proportionally.
-    ///
-    /// It is deliberately **one shared budget** rather than one per provider:
-    /// memory is a single resource, and a per-provider budget would multiply
-    /// the ceiling by the number of files. The consequence is intended
-    /// backpressure — a provider whose callers do not read can make another
-    /// provider's callers wait — bounded by every caller's own deadline, and
-    /// the same shape the engine path's `response_slots` has always had.
+    /// The provider path skips `response_slots` so network calls do not
+    /// queue behind ONNX. Encoding is lazy after the handler returns, so
+    /// this bound still holds the tree until the body is dropped. One
+    /// budget for the node, not one per provider file. Weight tracks
+    /// response shape: counting responses does not bound memory.
     provider_response_bytes: Arc<Semaphore>,
     /// External-provider gateway. Empty in the zero-config case; `owns()`
     /// decides routing after the engine readiness check.
@@ -250,10 +209,8 @@ fn status_label(status: &Status) -> &str {
         })
 }
 
-/// The trait impl is a thin instrumentation wrapper so that *every* exit
-/// path — including the early refusals before any work happens — releases
-/// its in-flight slot and lands in exactly one counter. The handlers
-/// themselves are inherent methods below, unchanged from their origin.
+/// Thin instrumentation wrapper: every exit path, including early
+/// refusals, releases its in-flight slot and lands in one counter.
 #[tonic::async_trait]
 impl NinferenceService for InferenceService {
     async fn embed_texts(
@@ -317,57 +274,30 @@ impl InferenceService {
         let req = request.into_inner();
         log::debug!("EmbedTexts model={} texts={}", req.model, req.texts.len());
 
-        // Inference requests NEVER load models: a request-driven load path
-        // would let any loopback client expand the resident set past the
-        // startup and allow-list bounds. Models become resident at startup
-        // or through lifecycle-managed `/admin/load` (`postvec model …`)
-        // only; here an unready model is a refusal. Readiness means pool AND
-        // executor.
+        // Never load from a request. Unready is a refusal. Ready means
+        // pool and executor.
         if deadline <= tokio::time::Instant::now() {
             return Err(Status::deadline_exceeded(
                 "deadline exhausted at request entry",
             ));
         }
-        // Dispatch: a ready engine model wins its name, then the gateway,
-        // then MODEL_NOT_LOADED. Same local-wins rule as `/config`, so
-        // discovery and this handler never disagree. Convert requests
-        // follow the same order through `owns_converter` (UniVec serves
-        // hosted conversion; the other providers embed only).
-        //
-        // The provider path skips the three max-inflight gates: it took a
-        // widened tower slot (see `serve`), it skips `response_slots`, and
-        // it never calls `predict_raw_at` (so HostPolicy is not involved).
-        // Provider calls are network-bound and must not queue behind
-        // CPU-bound ONNX; their limiter is the per-provider
-        // `max_concurrent` semaphore inside the gateway.
+        // Local engine name wins, then the gateway, then MODEL_NOT_LOADED.
+        // Same rule as `/config`. The provider path skips `response_slots`
+        // so network calls do not queue behind ONNX.
         if !self.engine.is_model_ready(&req.model) {
-            // `is_model_loaded` and not `is_model_ready` is what decides the
-            // collision, because `is_model_loaded` is the predicate `/config`
-            // renders from (the engine's model map). A model that is in that
-            // map but has not finished building its executor is briefly
-            // ready == false, and routing it to the provider there would make
-            // discovery and this handler disagree about which model a name
-            // is: `/config` would advertise the local dimension while the
-            // batch came back in the provider's. Refusing is the honest
-            // answer for a load in flight, and MODEL_NOT_LOADED is retried.
+            // Use `is_model_loaded` for the collision: `/config` renders
+            // from the engine map, and a load in flight must not route to
+            // a provider with a different dimension.
             if !self.engine.is_model_loaded(&req.model) && self.gateway.owns(&req.model) {
                 return self.embed_via_gateway(req, deadline_std).await;
             }
             return Err(model_not_loaded_status(&req.model));
         }
 
-        // Refuse a text count whose response cannot fit the transport's
-        // encode ceiling BEFORE the engine builds the response tree —
-        // otherwise the launcher (the process whose death restarts the
-        // cluster) materializes the full JSON/protobuf structure only for
-        // tonic's encoder to reject it. postvec's own client sub-batches and
-        // never trips this; it guards foreign/buggy loopback callers. The
-        // dimension is best-effort from the model's configuration (bridge
-        // executors carry none — their responses are bounded by the caller's
-        // sub-batching and the decode cap on the request).
-        // Absolute item ceiling FIRST (round 8): per-item container
-        // overhead, not component bytes, is what millions of tiny items
-        // cost, and every later guard is O(items).
+        // Item ceiling first: later guards are O(items). Then refuse a
+        // batch whose response cannot fit the encode ceiling, before the
+        // engine builds the tree. Dimension is best-effort (bridges
+        // carry none).
         if req.texts.len() > crate::limits::MAX_REQUEST_ITEMS {
             return Err(Status::invalid_argument(format!(
                 "{} texts exceeds the {} items-per-request ceiling; split the request",
@@ -401,9 +331,7 @@ impl InferenceService {
                 })?
                 .map_err(|_| Status::unavailable("response-capacity gate closed"))?;
 
-        // Keyed JSON payload — the exact shape the production server builds,
-        // including the OpenAI-style optional knobs (wire parity even though
-        // postvec's own client never sets them).
+        // Keyed JSON payload, including optional knobs the client never sets.
         let mut payload = serde_json::Map::new();
         payload.insert(
             "texts".to_string(),
@@ -428,16 +356,9 @@ impl InferenceService {
             );
         }
         // Do not forward `input_type` to the engine. The client always
-        // sets it (the gateway needs it for Cohere). The engine only
-        // applies it to models that declare templates, but a template-less
-        // model warns per request, which would flood this node's log, and
-        // a templated model's vectors would silently change (the
-        // golden-vector suite exists to catch that). Stripping it here
-        // keeps engine numbers as they are, with no client-side model
-        // lookup. Forwarding it is a separate, tested change.
+        // sets it for Cohere. Template-less models would warn per request;
+        // templated models would silently change vectors.
         let _ = req.input_type;
-        // `user` is a pass-through identifier; not forwarded (same as the
-        // production server).
         let _ = req.user;
 
         let output = self
@@ -463,11 +384,9 @@ impl InferenceService {
         Ok(response)
     }
 
-    /// Provider path of `EmbedTexts`: the gateway, bounded by the
-    /// per-provider semaphore and the caller's deadline, never by
-    /// `response_slots` or HostPolicy (network-bound, must not serialize
-    /// behind local ONNX). The response envelope uses the same math as the
-    /// engine path, sized from the descriptor's declared dimension.
+    /// Provider `EmbedTexts`. Bounded by the per-provider semaphore and the
+    /// caller's deadline, not by `response_slots`. Take the byte-weighted
+    /// response permit before the paid call.
     async fn embed_via_gateway(
         &self,
         req: EmbedTextsRequest,
@@ -496,11 +415,8 @@ impl InferenceService {
             )));
         }
 
-        // Taken BEFORE the call, so no paid embedding is ever thrown away for
-        // want of capacity, and released only when the encoded body is
-        // dropped (see `ResponsePermit` below). Weighted by what this
-        // response will actually occupy, and bounded by the caller's deadline
-        // like every other wait on this path.
+        // Permit is taken before the paid call and held on the response
+        // body until bytes leave.
         let weight = provider_response_mib(req.texts.len(), dim);
         let response_permit = tokio::time::timeout_at(
             tokio::time::Instant::from_std(deadline),
@@ -528,21 +444,13 @@ impl InferenceService {
             embeddings: Some(vectors_to_list_value(vectors, deadline)?),
             usage: None,
         });
-        // The permit rides the response body: `ResponsePermitLayer` moves
-        // it into `PermitBody`, which holds it until hyper finishes or
-        // drops the encoding. A completed tree is not done until the
-        // bytes leave.
         response
             .extensions_mut()
             .insert(ResponsePermit(Arc::new(response_permit)));
         Ok(response)
     }
 
-    /// Provider path of `ConvertEmbeddings`: same shape as
-    /// [`Self::embed_via_gateway`]. Bounded by the per-provider semaphore
-    /// and the caller's deadline, never by `response_slots` or HostPolicy.
-    /// The byte-weighted response permit is taken before the call so a paid
-    /// conversion is never thrown away for want of capacity.
+    /// Provider `ConvertEmbeddings`. Same shape as [`Self::embed_via_gateway`].
     async fn convert_via_gateway(
         &self,
         req: ConvertEmbeddingsRequest,
@@ -631,32 +539,23 @@ impl InferenceService {
             req.embeddings.len()
         );
 
-        // Same round-8 discipline as EmbedTexts: refuse an exhausted budget
-        // and an unready model; never load from a request path.
+        // Refuse an exhausted deadline and an unready model. Never load
+        // from a request.
         if deadline <= tokio::time::Instant::now() {
             return Err(Status::deadline_exceeded(
                 "deadline exhausted at request entry",
             ));
         }
         if !self.engine.is_model_ready(&req.model) {
-            // Same dispatch rule as EmbedTexts (see the comment there), with
-            // `owns_converter`: a provider-backed *embed* model cannot
-            // convert, and MODEL_NOT_LOADED for it is the same answer the
-            // engine gives every name it does not hold.
+            // Same local-wins dispatch as EmbedTexts, via `owns_converter`.
             if !self.engine.is_model_loaded(&req.model) && self.gateway.owns_converter(&req.model) {
                 return self.convert_via_gateway(req, deadline_std).await;
             }
             return Err(model_not_loaded_status(&req.model));
         }
 
-        // Refuse before ANY tree exists. Input side: sum
-        // EVERY vector's components — a first-vector-only estimate let
-        // ragged input bypass the guard. Output side: resolve the
-        // converter's TARGET dimension (direct model param, or the bridge
-        // chain's second converter) — 16,000-dim conservative fallback when
-        // unknown — and cap the expected response to the wire envelope the
-        // encoder will actually accept, so the launcher never builds a
-        // response tree that is doomed at the encoder.
+        // Estimate every input vector, not only the first. Cap the expected
+        // response to the wire envelope before building a tree.
         let count = req.embeddings.len() as u64;
         if req.embeddings.len() > crate::limits::MAX_REQUEST_ITEMS {
             return Err(Status::invalid_argument(format!(
@@ -666,12 +565,7 @@ impl InferenceService {
             )));
         }
         let total_components: u64 = req.embeddings.iter().map(|v| v.vector.len() as u64).sum();
-        // Input-tree accounting charges BOTH sides of the allocation
-        // (round 8): ~16 B per float-as-Value component plus
-        // [`TREE_ITEM_OVERHEAD_BYTES`] per row for the containers the
-        // component estimate cannot see. With the 4096-item ceiling above,
-        // the per-item term is bounded (~1 MiB) — it exists so the
-        // arithmetic stays honest, not because it can still dominate.
+        // Charge per-float and per-row overhead, not the first vector only.
         let estimated_tree_bytes = total_components
             .saturating_mul(INPUT_COMPONENT_TRANSIENT_BYTES)
             .saturating_add(count.saturating_mul(TREE_ITEM_OVERHEAD_BYTES));
@@ -703,8 +597,7 @@ impl InferenceService {
                 })?
                 .map_err(|_| Status::unavailable("response-capacity gate closed"))?;
 
-        // Positional payload; JSON numbers cannot carry NaN/Inf, reject
-        // explicitly (same contract as the remote server).
+        // Positional payload. JSON numbers cannot carry NaN/Inf.
         let mut rows = Vec::with_capacity(req.embeddings.len());
         let mut components_built = 0u64;
         let mut next_deadline_check = DEADLINE_CHECK_COMPONENTS;
@@ -867,16 +760,8 @@ where
     }
 }
 
-/// Bind, then serve until `shutdown` resolves.
-///
-/// Unlike postvec's embedded loopback server this binds a routable address:
-/// the whole point of remote mode is that the engine lives somewhere other
-/// than the database host. There is no TLS and no authentication on this
-/// port — see the module docs.
-///
-/// `shutdown` stops the listener accepting new connections; requests already
-/// in flight run to completion or to their own deadline, whichever comes
-/// first. Callers wire it to SIGTERM/ctrl-c.
+/// Bind and serve until `shutdown` resolves. In-flight requests run to
+/// completion or to their own deadline.
 pub async fn serve(
     engine: Arc<InferenceEngine>,
     metrics: Arc<Metrics>,
@@ -886,8 +771,7 @@ pub async fn serve(
     gateway: Arc<Gateway>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), String> {
-    // The socket was reserved before the models loaded, so a port conflict
-    // fails the boot in the first second rather than after a long warmup.
+    // Socket was reserved before model load.
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("set_nonblocking on the gRPC listener: {e}"))?;
@@ -901,21 +785,13 @@ pub async fn serve(
     log::info!("gRPC listening on {bound} (plaintext, unauthenticated — private networks only)");
 
     let response_slots = Arc::new(Semaphore::new(max_inflight.max(1)));
-    // Tower ingress stays the decode-amplification backstop, widened by
-    // the sum of per-provider `max_concurrent` so network-bound provider
-    // calls never queue behind CPU-bound ONNX. The budget is the gateway
-    // loaded at boot; a later `/admin/providers/reload` that raises it
-    // still shares this width until the next restart (serving is correct,
-    // admission is tighter; the reload route reports restart_needed).
-    // Zero-config: budget 0, size unchanged. Residual: a burst of engine
-    // EmbedTexts can occupy the extra tower slots, decode, then wait on
-    // `response_slots`. Extra decoded RSS exists only when providers are
-    // configured; callers still carry `grpc-timeout`.
+    // Tower ingress is the decode backstop, widened by provider
+    // `max_concurrent` loaded at boot. A later reload that raises the
+    // budget still uses this width until restart (`restart_needed` on
+    // the reload route).
     let ingress_limit = max_inflight.max(1) + gateway.inflight_budget();
-    // The response-lifetime bound for the provider path, in MiB of response
-    // tree. Fixed rather than derived from the provider count: it is an
-    // aggregate memory ceiling, and memory does not grow because a second
-    // connector file appeared.
+    // Provider response-lifetime bound, in MiB of response tree. One
+    // shared ceiling, not one per connector file.
     let provider_response_bytes = Arc::new(Semaphore::new(PROVIDER_RESPONSE_BUDGET_MIB as usize));
     let service = NinferenceServiceServer::new(InferenceService {
         engine,
@@ -928,9 +804,8 @@ pub async fn serve(
     .max_encoding_message_size(MAX_ENCODE_MESSAGE_SIZE)
     .max_decoding_message_size(MAX_DECODE_MESSAGE_SIZE);
 
-    // Same layering as the embedded loopback server: the deadline layer sits
-    // OUTSIDE the concurrency limit, so time spent queued behind the global
-    // cap is charged against the caller's `grpc-timeout`.
+    // Deadline layer sits outside the concurrency limit so queue time
+    // counts against grpc-timeout.
     tonic::transport::Server::builder()
         .layer(ResponsePermitLayer { predict_timeout })
         .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
@@ -974,13 +849,8 @@ fn engine_error_to_status(e: EngineError) -> Status {
 fn gateway_error_to_status(e: GatewayError) -> Status {
     let code = e.code;
     let message = e.message;
-    // The code and the provider name, never the message. The message can
-    // carry a bounded slice of a provider's error body, and a provider can
-    // echo the *source text* it was asked to embed — which in remote mode
-    // would put a fragment of a database's content into a different
-    // machine's log. It still travels to the caller, over the wire, to the
-    // database the text came from: that is the one place it is not a
-    // disclosure, and the one place it is useful.
+    // Log the code only. The message can echo source text; that belongs
+    // on the wire back to the database, not in this node's log.
     log::warn!("provider request failed [{}]", code.as_str());
     let mut status = match code {
         shared::ErrorCode::Timeout => Status::deadline_exceeded(message),
@@ -1088,9 +958,7 @@ fn resource_exhausted_status(message: impl Into<String>) -> Status {
     status
 }
 
-/// Internal error with `INTERNAL_ERROR` metadata — used where the remote
-/// server routes marshalling failures through `app_error_to_status` (which
-/// attaches the code), so the wire stays byte-parity with a real nin node.
+/// Internal error with `INTERNAL_ERROR` metadata, same as other marshalling failures.
 fn internal_status(message: impl Into<String>) -> Status {
     let mut status = Status::internal(message.into());
     status.metadata_mut().insert(
@@ -1138,12 +1006,9 @@ fn split_output(output: ExecutorOutput) -> Result<(Value, Option<TokenUsage>), S
     }
 }
 
-/// `[[f32]]` JSON → prost `ListValue[ListValue[NumberValue]]` (the port of
-/// the production server's `parse_embeddings_to_list_value`). The engine JSON and prost
-/// trees coexist during this conversion, so validate the ACTUAL output shape
-/// and combined allocation estimate before creating the second tree. This is
-/// the post-execution backstop for a descriptor whose declared target_dim does
-/// not match what its executor returned.
+/// JSON `[[f32]]` to prost nested lists. Engine JSON and prost trees
+/// coexist, so check the actual shape and combined size before building
+/// the second tree.
 #[allow(clippy::result_large_err)]
 fn json_to_list_value(
     embeddings: Value,
@@ -1258,8 +1123,7 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
         assert_eq!(code_meta(&status), "CONVERTER_NOT_FOUND");
 
-        // Round 8: an exhausted engine budget is a typed timeout and must
-        // cross the wire as DeadlineExceeded, never Internal.
+        // Engine timeout must be DeadlineExceeded, not Internal.
         let status = engine_error_to_status(EngineError::Timeout("budget exhausted".into()));
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
         assert_eq!(code_meta(&status), "TIMEOUT");
@@ -1284,8 +1148,7 @@ mod tests {
         assert_eq!(inner.values.len(), 2);
         assert!(matches!(inner.values[0].kind, Some(Kind::NumberValue(n)) if n == 1.0));
 
-        // Marshalling failures carry INTERNAL_ERROR metadata — the remote
-        // server routes them through app_error_to_status, which attaches it.
+        // Marshalling failures carry INTERNAL_ERROR metadata.
         for bad in [json!("nope"), json!([1, 2]), json!([["a"]])] {
             let status = json_to_list_value(bad, deadline).unwrap_err();
             assert_eq!(status.code(), tonic::Code::Internal);
@@ -1305,9 +1168,7 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
     }
 
-    /// Counting responses does not bound memory: a permit used to be one
-    /// response of any size, so N permits formally allowed N × the 96 MiB
-    /// envelope. The weight has to track the shape.
+    /// Weight tracks response shape. Counting responses does not bound memory.
     #[test]
     fn the_provider_response_weight_tracks_the_response_size() {
         // A small answer costs the 1 MiB floor.
@@ -1475,8 +1336,7 @@ mod deadline_tests {
         );
     }
 
-    /// A resolved-but-implausible target dimension is a refusal, never an
-    /// input to `as i32` / response sizing (round 7).
+    /// An implausible resolved dimension is a refusal, never used to size a response.
     #[test]
     fn implausible_resolved_dimension_is_refused() {
         let status = invalid_input_status(format!(

@@ -1,9 +1,11 @@
-# Point the moving image tags at a published release, and prove all six landed.
+# Point the moving image tags at a published release, and prove all seven
+# landed.
 #
-# The release workflow advances `pg16`…`pg18-complete` as its last act, after
-# the GitHub release is public. Those are six separate registry writes with no
-# transaction around them: a failure part-way leaves some majors advanced and
-# some not, and the release itself is already published and correct.
+# The release workflow advances `pg16`…`pg18-complete` on the database images
+# and `latest` on the postvec-server image as its last act, after the GitHub
+# release is public. Those are seven separate registry writes with no
+# transaction around them: a failure part-way leaves some advanced and some
+# not, and the release itself is already published and correct.
 #
 # This is the repair. It is idempotent — pointing a moving tag at a digest it
 # already has is a no-op — so it is also the safe thing to run when nobody is
@@ -18,8 +20,8 @@
 # It never builds, never publishes a versioned tag, and can only point a moving
 # tag at a release that already exists — production or disposable rehearsal
 # alike. The rehearsal path matters: a disposable publication that fails after
-# its GitHub release exists but before all six of its moving tags have advanced
-# needs exactly this repair, and criterion 2 covers that path.
+# its GitHub release exists but before all seven of its moving tags have
+# advanced needs exactly this repair, and criterion 2 covers that path.
 #
 # The image repositories and versioned tags come from the release's own
 # manifest, so a rehearsal's moving tags land in the throwaway namespace it
@@ -77,7 +79,7 @@ jobs:
       # release manifest is trusted enough to be turned into registry writes.
       attestations: read
     outputs:
-      # base64, because a job output is a single string and this is six lines.
+      # base64, because a job output is a single string and this is seven lines.
       plan: ${{ steps.resolve.outputs.plan }}
       # Keys the concurrency group the write job shares with the release
       # workflow, so production and a disposable namespace stay independent.
@@ -120,8 +122,8 @@ jobs:
       # What the moving tags follow is the *published release*, not this
       # workflow's checkout. The checkout is the default branch — a versions.env
       # edited since the release would silently point these tags at a different
-      # repository, and the six digests would come from the registry rather than
-      # from anything the release itself attested to.
+      # repository, and the seven digests would come from the registry rather
+      # than from anything the release itself attested to.
       #
       # So the plan is read out of the release's own manifest, and the manifest
       # is only trusted after its attestation verifies.
@@ -153,8 +155,8 @@ jobs:
             || { echo "::error::the release manifest is not for ${RELEASE_ID}"; exit 1; }
           jq -e --arg t "${RELEASE_TAG}" '.git_tag == $t' postvec-release.json \
             || { echo "::error::the release manifest names $(jq -r .git_tag postvec-release.json), not ${RELEASE_TAG}"; exit 1; }
-          test "$(jq '.images | length' postvec-release.json)" = 6 \
-            || { echo "::error::the release manifest does not describe six images"; exit 1; }
+          test "$(jq '.images | length' postvec-release.json)" = 7 \
+            || { echo "::error::the release manifest does not describe seven images"; exit 1; }
 
           # moving-tag  immutable-source  expected-digest  current-digest-when-planned
           #
@@ -172,10 +174,16 @@ jobs:
           # wrong and the repair unmade.
           : > /tmp/plan
           while IFS=$'\t' read -r name tag digest variant major; do
-            suffix=""
-            [ "${variant}" = complete ] && suffix="-complete"
             versioned="${name}:${tag}"
-            moving="${name}:pg${major}${suffix}"
+            # `latest` for the node's image (no PostgreSQL major to hide);
+            # `pg<N>[-complete]` for the database images.
+            if [ "${variant}" = server ]; then
+              moving="${name}:latest"
+            else
+              suffix=""
+              [ "${variant}" = complete ] && suffix="-complete"
+              moving="${name}:pg${major}${suffix}"
+            fi
 
             # The registry must agree with the manifest. A versioned tag that no
             # longer resolves to the digest the release recorded is not a tag to
@@ -195,15 +203,20 @@ jobs:
           done < <(jq -r '.images[] | [.name, .tag, .digest, .variant, (.pg_major|tostring)] | @tsv' \
                      postvec-release.json)
 
-          test "$(wc -l < /tmp/plan)" = 6 \
-            || { echo "::error::the plan does not cover six images"; cat /tmp/plan; exit 1; }
+          test "$(wc -l < /tmp/plan)" = 7 \
+            || { echo "::error::the plan does not cover seven images"; cat /tmp/plan; exit 1; }
           echo "plan:"; cat /tmp/plan
 
-          # The repository every image in this release lives in, for the
-          # concurrency group the write job shares with the release workflow.
-          repository="$(jq -r '[.images[].name] | unique | .[0]' postvec-release.json)"
-          test "$(jq -r '[.images[].name] | unique | length' postvec-release.json)" = 1 \
-            || { echo "::error::the release spans more than one image repository"; exit 1; }
+          # The repository the database images live in, for the concurrency
+          # group the write job shares with the release workflow. The node's
+          # image is in its own repository, always paired with these (the
+          # release derives one from the other), so the database repository
+          # is the key for both.
+          repository="$(jq -r '[.images[] | select(.variant != "server") | .name] | unique | .[0]' postvec-release.json)"
+          test "$(jq -r '[.images[] | select(.variant != "server") | .name] | unique | length' postvec-release.json)" = 1 \
+            || { echo "::error::the database images span more than one repository"; exit 1; }
+          test "$(jq -r '[.images[] | select(.variant == "server") | .name] | unique | length' postvec-release.json)" = 1 \
+            || { echo "::error::the release does not describe exactly one server image repository"; exit 1; }
           echo "repository=${repository}" >> "$GITHUB_OUTPUT"
           # Handed to the write job as a job output rather than recomputed
           # there: the plan the human read on a dry run is the plan that is
@@ -225,8 +238,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # **Shared with postvec-release's `publish` job.** Three operations mutate
-    # the same six moving tags — publishing release A, publishing release B, and
-    # this repair — and whichever finished last would decide where `pg18` points,
+    # the same seven moving tags — publishing release A, publishing release B,
+    # and this repair — and whichever finished last would decide where `pg18` points,
     # which is how users get moved backwards. One group per image repository
     # serialises them without coupling production to a disposable rehearsal.
     concurrency:
@@ -250,8 +263,8 @@ jobs:
           PLAN: ${{ needs.plan.outputs.plan }}
         run: |
           printf '%s' "${PLAN}" | base64 -d > /tmp/plan
-          test "$(wc -l < /tmp/plan)" = 6 \
-            || { echo "::error::the plan does not cover six images"; cat /tmp/plan; exit 1; }
+          test "$(wc -l < /tmp/plan)" = 7 \
+            || { echo "::error::the plan does not cover seven images"; cat /tmp/plan; exit 1; }
           cat /tmp/plan
 
       # One helper, shared with the release workflow's own advance step.
@@ -264,4 +277,4 @@ jobs:
       - name: Advance and verify
         run: |
           packaging/postvec/scripts/advance-moving-tags.sh /tmp/plan \
-            --recovery-hint "Rerun this workflow. It is idempotent: it rewrites every tag from the release's own recorded digests, so a partial advance is repaired by running it again rather than by working out which tags are missing."
+            --recovery-hint "Rerun this workflow. It is idempotent: it rewrites every tag (the six database moving tags and the node image's latest) from the release's own recorded digests, so a partial advance is repaired by running it again rather than by working out which tags are missing."

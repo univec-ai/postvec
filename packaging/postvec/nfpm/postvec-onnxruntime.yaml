@@ -1,12 +1,5 @@
-# CPU ONNX Runtime for embedded mode, laid out where the engine looks for it.
-#
-# postvec never links this library: engine::initialize_onnx() searches
-# <postvec.path>/libs recursively and dlopen()s what it finds. So
-# this package is optional — remote-mode installations neither need nor load
-# it — and installing it changes nothing until postvec.mode = 'embedded'.
-#
-# Version and release track ONNX Runtime, not postvec: the two upgrade
-# independently, and the release manifest pins both.
+# CPU ONNX Runtime under the engine root. postvec dlopen()s it; remote
+# mode does not need it. Version tracks ONNX Runtime, not postvec.
 
 name: postvec-onnxruntime
 arch: ${PKG_ARCH}

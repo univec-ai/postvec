@@ -1,23 +1,11 @@
 #!/usr/bin/env bash
-# Fixture-based regression tests for the parts of the release chain that decide
-# whether a build may be published.
+# Fixture tests for the release gates. No Docker, compiler, network or
+# PostgreSQL.
 #
 #   tests/unit-test.sh [pattern]
 #
-# No Docker, no compiler, no network, no PostgreSQL — seconds, on any machine.
-#
-# The expensive matrix proves that packages build, install and work. It does not
-# prove that the *checks* work, because a check only reports when something is
-# wrong, and nothing is ever deliberately wrong in a passing matrix. Two real
-# defects lived through a full green matrix for exactly that reason: the package
-# closure compared an RPM's `x86_64` against the canonical `amd64` and rejected
-# every RPM, and the debug closure was keyed on a package name alone, so one
-# Debian/amd64 symbols package satisfied all eight CLI tuples.
-#
-# So each case here builds a release that is correct, asserts it passes, then
-# breaks exactly one thing and asserts it fails — and asserts *why*, because a
-# check that fails for the wrong reason is a check that is not testing what its
-# name says.
+# Each case builds a correct release, asserts it passes, breaks one thing
+# and asserts the failure names that thing.
 
 set -Eeuo pipefail
 
@@ -139,11 +127,17 @@ make_dist() {
             if [[ "${family}" == deb ]]; then
                 artifact "${common}/$(deb_name postvec-cli "${POSTVEC_VERSION}" "${tag}" "${arch}")"
                 artifact "${common}/$(deb_name postvec-cli-dbgsym "${POSTVEC_VERSION}" "${tag}" "${arch}")"
+                # The inference node: native and PostgreSQL-independent, so
+                # it shares the CLI's cell and owes symbols like the CLI does.
+                artifact "${common}/$(deb_name postvec-server "${POSTVEC_VERSION}" "${tag}" "${arch}")"
+                artifact "${common}/$(deb_name postvec-server-dbgsym "${POSTVEC_VERSION}" "${tag}" "${arch}")"
                 artifact "${common}/$(deb_name postvec-onnxruntime "${ORT_VERSION}" "${tag}" "${arch}")"
             else
                 local rpm_arch=x86_64; [[ "${arch}" == arm64 ]] && rpm_arch=aarch64
                 artifact "${common}/$(rpm_name postvec-cli "${POSTVEC_VERSION}" "${tag}" "${rpm_arch}")"
                 artifact "${common}/$(rpm_name postvec-cli-debuginfo "${POSTVEC_VERSION}" "${tag}" "${rpm_arch}")"
+                artifact "${common}/$(rpm_name postvec-server "${POSTVEC_VERSION}" "${tag}" "${rpm_arch}")"
+                artifact "${common}/$(rpm_name postvec-server-debuginfo "${POSTVEC_VERSION}" "${tag}" "${rpm_arch}")"
                 artifact "${common}/$(rpm_name postvec-onnxruntime "${ORT_VERSION}" "${tag}" "${rpm_arch}")"
             fi
 
@@ -214,19 +208,32 @@ fixture=1.0
 INFO
 }
 
-# Six image descriptors, each with one SBOM per child manifest.
+# Seven image descriptors — six database images plus the inference node's, in
+# its own repository — each with one SBOM per child manifest.
 make_images() {
     local out="$1"
     python3 - "$out" "${POSTVEC_VERSION}" "${PACKAGE_RELEASE}" "${IMAGE_REPOSITORY}" \
         "${POSTGRES_IMAGE_PG16_DIGEST}" "${POSTGRES_IMAGE_PG17_DIGEST}" \
-        "${POSTGRES_IMAGE_PG18_DIGEST}" <<'PY'
+        "${POSTGRES_IMAGE_PG18_DIGEST}" \
+        "${SERVER_IMAGE_REPOSITORY}" "${BUILD_BASE_DEBIAN12_DIGEST}" <<'PY'
 import hashlib, json, sys
 
 out, version, revision, repo = sys.argv[1:5]
 bases = dict(zip((16, 17, 18), sys.argv[5:8]))
+server_repo, server_base = sys.argv[8:10]
 
 def digest(*parts):
     return "sha256:" + hashlib.sha256("/".join(parts).encode()).hexdigest()
+
+def platforms(tag):
+    return [
+        {"platform": "linux/%s" % arch,
+         "digest": digest("child", tag, arch),
+         "sbom": "image-%s-linux-%s.spdx.json" % (tag, arch),
+         "sbom_sha256": hashlib.sha256(
+             ("sbom/%s/%s" % (tag, arch)).encode()).hexdigest()}
+        for arch in ("amd64", "arm64")
+    ]
 
 images = []
 for major in (16, 17, 18):
@@ -236,15 +243,18 @@ for major in (16, 17, 18):
         images.append({
             "name": repo, "tag": tag, "digest": digest("index", tag),
             "variant": variant, "pg_major": major, "base_digest": bases[major],
-            "platforms": [
-                {"platform": "linux/%s" % arch,
-                 "digest": digest("child", tag, arch),
-                 "sbom": "image-%s-linux-%s.spdx.json" % (tag, arch),
-                 "sbom_sha256": hashlib.sha256(
-                     ("sbom/%s/%s" % (tag, arch)).encode()).hexdigest()}
-                for arch in ("amd64", "arm64")
-            ],
+            "platforms": platforms(tag),
         })
+# The node: bare release id, no major, the Debian 12 base its packages were
+# built on. Its SBOM file names carry the repository's last path component so
+# they cannot collide with a database image's.
+tag = "%s-%s" % (version, revision)
+images.append({
+    "name": server_repo, "tag": tag, "digest": digest("index", "server", tag),
+    "variant": "server", "pg_major": None, "base_digest": server_base,
+    "platforms": [dict(p, sbom="image-server-%s-%s.spdx.json" % (tag, p["platform"].replace("/", "-")))
+                  for p in platforms("server/" + tag)],
+})
 open(out, "w").write(json.dumps(images))
 PY
 }
@@ -335,11 +345,8 @@ if case_ "package closure: a correct full matrix is accepted"; then
 fi
 
 if case_ "package closure: RPM architectures are canonicalised"; then
-    # The regression. Artifact discovery canonicalises x86_64 to amd64;
-    # verification used to compare the raw file-name spelling against the
-    # canonical one, which no RPM can ever satisfy. Every EL9 package in the
-    # fixture is named the way rpm names them, so this case fails if the
-    # canonicalisation is removed again.
+    # Artifact discovery canonicalises x86_64 to amd64. EL9 fixtures use
+    # rpm spelling, so this fails if that canonicalisation is dropped.
     s="$(scenario rpm-arch)"
     expect_accepted "el9 x86_64/aarch64 packages satisfy amd64/arm64" \
         "${s}/dist" "${s}/build" "${s}/images.json"
@@ -516,7 +523,7 @@ json.dump(images, open(sys.argv[1], "w"))
         "but this release pins" "${s}/dist" "${s}/build" "${s}/images.json"
 fi
 
-if case_ "image closure: six distinct images, correctly tagged"; then
+if case_ "image closure: seven distinct images, correctly tagged"; then
     s="$(scenario image-missing)"
     python3 -c '
 import json, sys
@@ -535,6 +542,96 @@ json.dump(images, open(sys.argv[1], "w"))
 ' "${s}/images.json"
     expect_rejected "an image whose tag is not this release's is refused" \
         "expected" "${s}/dist" "${s}/build" "${s}/images.json"
+
+    # The inference node's image is part of the closure, not an optional
+    # extra: a release that published the database images and forgot the node
+    # would leave remote mode with nothing published to dial.
+    s="$(scenario image-no-server)"
+    python3 -c '
+import json, sys
+images = [i for i in json.load(open(sys.argv[1])) if i["variant"] != "server"]
+json.dump(images, open(sys.argv[1], "w"))
+' "${s}/images.json"
+    expect_rejected "a release without the server image is refused" \
+        "missing image: PG None server" "${s}/dist" "${s}/build" "${s}/images.json"
+
+    # …and it is its own product: a node recorded under the database images'
+    # repository, or carrying a PostgreSQL major, is a descriptor for
+    # something the release does not publish.
+    s="$(scenario image-server-repo)"
+    python3 -c '
+import json, sys
+images = json.load(open(sys.argv[1]))
+for image in images:
+    if image["variant"] == "server":
+        image["name"] = sys.argv[2]
+json.dump(images, open(sys.argv[1], "w"))
+' "${s}/images.json" "${IMAGE_REPOSITORY}"
+    expect_rejected "a server image in the database images' repository is refused" \
+        "is not ${SERVER_IMAGE_REPOSITORY}" "${s}/dist" "${s}/build" "${s}/images.json"
+
+    s="$(scenario image-server-major)"
+    python3 -c '
+import json, sys
+images = json.load(open(sys.argv[1]))
+for image in images:
+    if image["variant"] == "server":
+        image["pg_major"] = 18
+json.dump(images, open(sys.argv[1], "w"))
+' "${s}/images.json"
+    expect_rejected "a server image claiming a PostgreSQL major is refused" \
+        "it has no major" "${s}/dist" "${s}/build" "${s}/images.json"
+
+    # The node sits on the pinned Debian 12 base — the builder its packages
+    # came from — not on a postgres image.
+    s="$(scenario image-server-base)"
+    python3 -c '
+import json, sys
+images = json.load(open(sys.argv[1]))
+for image in images:
+    if image["variant"] == "server":
+        image["base_digest"] = sys.argv[2]
+json.dump(images, open(sys.argv[1], "w"))
+' "${s}/images.json" "${POSTGRES_IMAGE_PG18_DIGEST}"
+    expect_rejected "a server image built on a postgres base is refused" \
+        "PG None server was built on" "${s}/dist" "${s}/build" "${s}/images.json"
+fi
+
+# ============================================================== server closure
+
+if case_ "package closure: the inference node is part of every shared cell"; then
+    # Same standard as the CLI: one package and one symbols package per
+    # (distribution, architecture), carrying this release's identity.
+    s="$(scenario server-missing)"
+    rm "${s}/dist/common/el9-arm64/postvec-server-${POSTVEC_VERSION}"*
+    expect_rejected "a shared cell without postvec-server is refused" \
+        "missing: postvec-server for el9/arm64" "${s}/dist" "${s}/build" "${s}/images.json"
+
+    s="$(scenario server-no-symbols)"
+    rm "${s}/dist/common/debian12-amd64/"postvec-server-dbgsym_*
+    expect_rejected "postvec-server without symbols is refused" \
+        "missing debug package for postvec-server" "${s}/dist" "${s}/build" "${s}/images.json"
+
+    # The node is PostgreSQL-independent; one turning up in an extension cell
+    # would be a second copy the manifest must not collect.
+    s="$(scenario server-in-extension-cell)"
+    name="$(deb_name postvec-server "${POSTVEC_VERSION}" ubuntu22.04 amd64)"
+    mkdir -p "${s}/dist/extension/ubuntu2204-pg16-amd64"
+    printf 'a different build\n' > "${s}/dist/extension/ubuntu2204-pg16-amd64/${name}"
+    printf '{}\n' > "${s}/dist/extension/ubuntu2204-pg16-amd64/${name}.spdx.json"
+    expect_rejected "a second postvec-server build in an extension cell is refused" \
+        "two different builds of ${name}" "${s}/dist" "${s}/build" "${s}/images.json"
+
+    # The manifest says which licence the node carries, from the pin.
+    s="$(scenario server-licence)"
+    if run_manifest "${s}/dist" "${s}/build" "${s}/images.json" \
+        && [[ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["licenses"]["postvec-server"])' \
+                  "${PKG_DIR}/build/.unit-test-release/postvec-release.json")" == "${SERVER_LICENSE}" ]]; then
+        ok "the manifest records postvec-server under ${SERVER_LICENSE}"
+    else
+        bad "the manifest does not record the node's licence"
+        printf '%s\n' "${LAST_OUTPUT}" | sed 's/^/          /' >&2
+    fi
 fi
 
 # ================================================================== the manifest
@@ -693,14 +790,8 @@ if case_ "release mode: which runs may publish, and where"; then
 fi
 
 if case_ "moving tags: a failed write does not abandon the other five"; then
-    # The defect this replaced: both workflows advanced the six tags in an
-    # inline loop under `set -e`, so the first registry failure aborted the
-    # step — the remaining tags were never attempted, the verification never
-    # ran, and the recovery guidance never printed. An operator was left with a
-    # red step and no idea which tags had moved.
-    #
-    # A fake registry client stands in for `docker buildx imagetools`, which is
-    # what makes the failure paths testable at all.
+    # Fake `docker buildx imagetools` so a failed write still attempts the
+    # rest of the plan and verification still runs.
     fake_registry() {
         local dir="$1"
         mkdir -p "${dir}"
@@ -779,12 +870,12 @@ FAKE
 
     creates="$(grep -c '^create ' "${ADVANCE_LOG}" || true)"
     [[ "${creates}" == 6 ]] \
-        && ok "all six writes were attempted despite the failure" \
+        && ok "every write in the plan was attempted despite the failure" \
         || bad "only ${creates} of 6 writes were attempted"
 
     inspects="$(grep -c '^inspect ' "${ADVANCE_LOG}" || true)"
     [[ "${inspects}" == 6 ]] \
-        && ok "all six tags were inspected afterwards" \
+        && ok "every tag in the plan was inspected afterwards" \
         || bad "only ${inspects} of 6 tags were inspected"
 
     grep -qF "Rerun the postvec-moving-tags workflow." <<<"${ADVANCE_OUTPUT}" \
@@ -830,8 +921,7 @@ FAKE
 
     refuses_plan "a mutable tag as the source is refused, with nothing written" \
         "${REPO}:pg18 ${REPO}:0.1.0-1-pg18 ${GOOD} x"
-    # `@sha256:` appearing *somewhere* is not a pinned reference. Both of these
-    # satisfied the old substring test.
+    # `@sha256:` appearing somewhere is not a pin.
     refuses_plan "a source whose digest is not hexadecimal is refused" \
         "${REPO}:pg18 ${REPO}@sha256:not-a-digest ${GOOD} x"
     refuses_plan "a source with no repository is refused" \
@@ -1456,10 +1546,9 @@ if case_ "bundled model: the pins and the policy are enforced"; then
 fi
 
 if case_ "bundled model: an untrimmed archive is refused, not pruned"; then
-    # Registry revision 1 of the bundled model shipped all nine ONNX graphs —
-    # 499 MB where 91 MB is referenced. Packaging must refuse it and point at
-    # the publisher's `exclude`, because pruning after extraction would
-    # invalidate the pull's own per-file receipt.
+    # Refuse an archive that carries unreferenced ONNX graphs. Point at
+    # the publisher's exclude: pruning after extraction would invalidate
+    # the pull receipt.
     d="${WORK}/model-untrimmed"
     EXTRA_FILES='["onnx/model_qint8_avx512.onnx", "onnx/model_O2.onnx"]' \
         make_installed_model "${d}/model"

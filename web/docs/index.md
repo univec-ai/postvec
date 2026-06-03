@@ -25,37 +25,31 @@ PostgreSQL 16, 17 or 18 on a host that can set
 `shared_preload_libraries = 'postvec'`. First-time setup restarts the
 cluster.
 
-RDS and Aurora cannot load the worker.
-
 ## Start here
 
 | Situation | Page |
 |---|---|
-| Try it without touching the host cluster | [Quick start](/docs/quickstart) |
+| Try it in a container | [Quick start](/docs/quickstart) |
 | Install on an existing PostgreSQL | [Install](/docs/install/), then [configure](/docs/install/setup) |
-| Decide enable vs adopt vs migrate | [Which SQL call](/docs/guides/starting) |
+| Pick enable, adopt or migrate | [SQL functions](/docs/guides/starting) |
 
 ## The path
 
-1. [Install the files](/docs/install/) - Docker, packages or a source build.
-   Packages put files on disk and stop. They do not restart PostgreSQL or
-   create a database.
+1. [Install](/docs/install/) - Docker, packages or a source build.
 2. [Configure the cluster](/docs/install/setup) with `postvec setup`.
    Expected: `postvec doctor --deep` exits 0 and `postvec.models` lists
    MiniLM (or whatever the node advertises in remote mode).
 3. [Enable](/docs/guides/enable) a text column, or [adopt](/docs/guides/adopt)
    one that already has vectors.
    Expected: a registry id. Vectors stay NULL until the worker writes them.
-4. Wait until `pending_jobs = 0`. Vectors fill after commit, not inside
-   the inserting transaction.
+4. Wait until `pending_jobs = 0`. Vectors fill after commit.
 5. [Build an ANN index](/docs/guides/indexes). Default `index_mode` is
    `manual`.
 6. [Search](/docs/guides/search).
 
-The [quick start](/docs/quickstart) is the same path in one disposable
-container.
+The [quick start](/docs/quickstart) is the same path in one container.
 
-## Which SQL call
+## SQL functions
 
 | You have | Call | What happens |
 |---|---|---|
@@ -65,11 +59,11 @@ container.
 | Ready to change the stored model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert, or re-embed if you choose that. |
 | Long source documents | [Chunking](/docs/guides/chunking) | A managed 1:N table holds passage vectors. Search still returns documents. |
 
-[Which SQL call](/docs/guides/starting) has the SQL and expected result
+[SQL functions](/docs/guides/starting) has the SQL and expected result
 for each case.
 
 Functions live in the `postvec` schema (`postvec.enable(...)`).
-`search_path` is left unchanged.
+Leave `search_path` as it is.
 
 ## Two inference modes
 
@@ -100,6 +94,6 @@ from the database process (CPU, GPU, crash domain).
 The extension, CLI and their packages are under the **PostgreSQL License**.
 Converter weights are a separate UniVec product. The public model
 catalogue is a subset; a verified account sees the private superset. The
-bundled MiniLM model works offline and does not need registry access.
+bundled MiniLM model works offline without registry access.
 
 Terms for `postvec-server` will be stated before the first release.

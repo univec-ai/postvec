@@ -1,0 +1,147 @@
+# Inference node for postvec.mode=grpc. Native, no PostgreSQL major:
+# built once per (distribution, architecture) into the common root.
+#
+# Not PostgreSQL-licensed. Identifier is SERVER_LICENSE in versions.env;
+# assert-versions.sh refuses a mismatch with the crate and the LICENSE index.
+
+name: postvec-server
+arch: ${PKG_ARCH}
+platform: linux
+version: ${POSTVEC_VERSION}
+release: ${PKG_RELEASE}
+section: net
+priority: optional
+maintainer: ${MAINTAINER}
+vendor: ${VENDOR}
+homepage: ${SOURCE_REPOSITORY}
+license: ${SERVER_LICENSE}
+description: |
+  Standalone inference node for postvec's remote mode.
+  .
+  Serves the same embedding and conversion engine postvec's embedded mode runs
+  inside PostgreSQL, as a separate process: gRPC on 33333, /config discovery on
+  22222, cluster gossip on 11111, and a loopback-only admin listener. Point a
+  cluster at one or more nodes with `postvec setup --grpc … --http …`.
+  .
+  The node serves models from an engine root laid out exactly like embedded
+  mode's. The packaged unit reads /opt/postvec, which is where postvec-extras
+  (ONNX Runtime plus the bundled model) installs and where `postvec model pull`
+  writes — so the runtime and the model packages are all a node needs.
+  .
+  Installing this package creates the postvec-server system account and
+  installs the unit; it does not enable or start it. Configuration is
+  /etc/postvec-server/config.json.
+  .
+  This package is licensed under ${SERVER_LICENSE}. The postvec extension, the
+  postvec command and the engine assets are under the PostgreSQL License.
+
+contents:
+  - src: ${CELL_DIR}/server/postvec-server
+    dst: /usr/bin/postvec-server
+    file_info: { mode: 0755, owner: root, group: root }
+
+  # The crate's unit, verbatim. The engine root these packages install to
+  # is a drop-in beside it so the two cannot drift.
+  - src: ${REPO_ROOT}/postvec-server/systemd/postvec-server.service
+    dst: ${SERVER_UNIT_DIR}/postvec-server.service
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${PKG_DIR}/server/packaged.conf
+    dst: ${SERVER_UNIT_DIR}/postvec-server.service.d/packaged.conf
+    file_info: { mode: 0644, owner: root, group: root }
+
+  # The configuration file the unit's ExecStart names. Shipped as a conffile
+  # (`noreplace` on RPM) so an upgrade never overwrites an operator's peers,
+  # ports or certificate paths. Minimal on purpose: the example with every key
+  # explained goes to the documentation directory, because installing it as
+  # the live configuration would have a fresh node gossiping at example
+  # addresses. It names /etc/postvec-server/server.{crt,key} as the
+  # certificate pair: the service account cannot write /opt/postvec, so the
+  # crate's <root>/certs default is unreachable on a package host.
+  - src: ${PKG_DIR}/server/config.json
+    dst: /etc/postvec-server/config.json
+    type: config|noreplace
+    file_info: { mode: 0644, owner: root, group: root }
+  # The directory itself stays root:root 0755 (every packaged path is
+  # root-owned; verify-package.sh insists). The key the operator installs is
+  # what carries the service group: root:postvec-server 0640, which the
+  # postinstall spells out.
+  - dst: /etc/postvec-server
+    type: dir
+    file_info: { mode: 0755, owner: root, group: root }
+
+  # The unit's default engine root before the drop-in redirects it, and the
+  # service account's home. Kept so that an operator who removes the drop-in
+  # (to keep a node's inventory separate from a local cluster's) has the
+  # directory the unit already names.
+  - dst: /var/lib/postvec-server
+    type: dir
+    file_info: { mode: 0755, owner: root, group: root }
+
+  - src: ${REPO_ROOT}/postvec-server/README.md
+    dst: /usr/share/doc/postvec-server/README.md
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${REPO_ROOT}/postvec-server/postvec-server.example.json
+    dst: /usr/share/doc/postvec-server/postvec-server.example.json
+    file_info: { mode: 0644, owner: root, group: root }
+  # Rendered by scripts/build-packages.sh: a DEP-5 copyright on Debian (a
+  # reference to /usr/share/common-licenses for Apache-2.0, the full text
+  # inlined for any other id), the verbatim licence on RPM.
+  - src: ${SERVER_COPYRIGHT_SRC}
+    dst: ${LICENSE_DST}/postvec-server/${LICENSE_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+  # See postvec-cli.yaml: one changelog per release, shipped by every package.
+  - src: ${CHANGELOG_FILE}
+    dst: /usr/share/doc/postvec-server/${CHANGELOG_NAME}
+    file_info: { mode: 0644, owner: root, group: root }
+
+# The SHLIB_DEPENDS splice carries what the target distribution's own generator
+# found — notably the OpenSSL runtime the TLS listener links, which is spelled
+# differently on every supported release. Only the block matching the packager
+# in use is read.
+#
+# The policy: a plain `apt install postvec-server` from a repository is a
+# node that serves local inference out of the box. That is the extras
+# metapackage — it pins the exact ONNX Runtime and the reviewed model, which
+# is why the runtime is not recommended a second time on its own — plus the
+# CLI, for `postvec model pull`. Both are Recommends, never Depends: a node
+# that serves only external providers (providers.d) needs no runtime and no
+# model, the engine dlopen()s the runtime rather than linking it, the daemon
+# never calls the CLI, and a Depends on the CLI would drag postgresql-common
+# onto every node. apt and dnf both install Recommends by default, and
+# `--no-install-recommends` (`--setopt=install_weak_deps=False`) gives a
+# fleet the slim, model-free node. The CLI carries the same version bounds
+# the extension package uses, so a node and its CLI can never be silently
+# mixed across incompatible lines. verify-package.sh asserts these fields.
+overrides:
+  deb:
+    depends:
+${SHLIB_DEPENDS}
+    recommends:
+      - ${EXTRAS_METAPACKAGE}
+      - postvec-cli (>= ${POSTVEC_VERSION})
+      - postvec-cli (<< ${NEXT_BREAKING_VERSION})
+  rpm:
+    depends:
+      # useradd/groupadd, for the preinstall. Essential on Debian (passwd),
+      # a package on EL9 that a strictly minimal bootstrap may lack.
+      - shadow-utils
+${SHLIB_DEPENDS}
+    recommends:
+      - ${EXTRAS_METAPACKAGE}
+      - postvec-cli >= ${POSTVEC_VERSION}
+      - postvec-cli < ${NEXT_BREAKING_VERSION}
+
+# Create the service account here and never remove it: a reused uid is
+# worse than a leftover one. Scripts must not enable start reload or stop
+# the unit; postinstall only prints the commands.
+scripts:
+  preinstall: ${PKG_DIR}/nfpm/scripts/server-preinstall.sh
+  postinstall: ${PKG_DIR}/nfpm/scripts/server-postinstall.sh
+  postremove: ${PKG_DIR}/nfpm/scripts/server-postremove.sh
+
+rpm:
+  group: System Environment/Daemons
+
+umask: 0022
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# explicit `mtime:` here would be parsed before environment expansion.

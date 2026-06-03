@@ -1,45 +1,21 @@
-//! `postvec uninstall --all --purge` — the host-side sweep. **Experimental**:
-//! destructive cleanup for disposable release-test hosts, not yet a
-//! production promise (see `docs/postvec-uninstall.md`).
+//! `postvec uninstall --all --purge`: host-side sweep. Experimental.
+//! Destructive cleanup for disposable test hosts, not a production promise.
 //!
-//! The contract is narrow on purpose. The sweep deletes only paths for which
-//! it holds **positive evidence** that postvec put them there, and only under
-//! roots it has proven safe to operate in:
+//! Deletes only paths with positive evidence postvec created them, under
+//! roots that pass [`safe_root`]. Model dirs need `ninference.hub.json`.
+//! CLI state is exact names (`.staging`, `.trash`, `.swap`). `libs/` only
+//! if it holds ONNX Runtime. Provider files are `<name>.toml`; other
+//! files in providers.d stay. Extension and state files are exact names
+//! under trusted roots.
 //!
-//! - a model directory is one that carries the engine descriptor
-//!   (`ninference.hub.json`); a directory without one is retained;
-//! - the CLI's model-store state is matched by exact name (`.staging`,
-//!   `.trash`, `.swap`);
-//! - `libs/` is swept only when it actually holds ONNX Runtime;
-//! - a provider file is one `provider ls` would list (`<name>.toml`); every
-//!   other file in `providers.d` is retained and reported — the CLI writes
-//!   inline keys, so a separate key file is the operator's;
-//! - the cluster state file and the extension files are exact names under
-//!   trusted roots (`/var/lib/postvec`, `pg_config`'s directories).
+//! Every leaf is classified (device/inode, every package database,
+//! fail-closed). Apply re-enumerates and deletes only an identical leaf
+//! set, file by file, directories with `rmdir` never recursive. Unreadable
+//! candidates are retained and the run is partial (exit 3).
 //!
-//! A root is used only if it passes [`safe_root`]: absolute, canonical, not a
-//! system directory, at least two components deep, and — for the leaf **and
-//! every ancestor** — owned by root, the effective user or the cluster's own
-//! account, with no group/world write (`setup` creates `/etc/postvec` and
-//! `providers.d` owned by the cluster account). The caller additionally
-//! proves the GUC naming it comes from the CLI-owned snippet or is the
-//! built-in default (`uninstall::purge_roots`).
-//!
-//! **Every leaf is classified, and only classified leaves are deleted.** A
-//! candidate is enumerated down to its leaves at planning time, each leaf with
-//! its device/inode and a package-ownership verdict (from *every* installed
-//! package database, fail-closed). At apply time the candidate is enumerated
-//! again; the sweep proceeds only if the leaf set is identical, deletes files
-//! one by one against their recorded identity, and removes directories with
-//! `rmdir` — never recursively — so a child that appeared in between retains
-//! its directory and the result is partial. A traversal that cannot read an
-//! entry makes the whole candidate *uncertain*: retained, reported, exit 3.
-//!
-//! Concurrency: the caller holds the host-wide postvec lock exclusively and
-//! has **stopped the cluster** before calling [`apply`]; `apply` then takes the
-//! engine root's model-store lock and the providers directory's lock, and
-//! only then re-checks processes and other clusters, rebuilds the plan and
-//! deletes. Lock files are unlinked while their locks are still held.
+//! Caller holds the host lock exclusive and has stopped the cluster.
+//! [`apply`] then takes the model-store and providers locks, re-checks,
+//! rebuilds the plan and deletes.
 
 use crate::commands::provider::FileOwner;
 use crate::config::owned;
@@ -62,21 +38,12 @@ const DESCRIPTOR_FILE: &str = "ninference.hub.json";
 const AUTH_FILE: &str = "auth.json";
 /// The providers directory's lock file (`provider::lock_provider_dir`).
 const PROVIDER_LOCK_FILE: &str = ".lock";
-/// The engine-root serving lease: a **stable inode** under
-/// `/run/lock/postvec`, named by the **SHA-256 of the canonical root path
-/// bytes** (fixed 64-hex — a raw-path encoding hit `NAME_MAX` at 121 root
-/// bytes), and **never unlinked** — a lock file inside a tree the sweep is
-/// about to `rmdir`, or one that gets unlinked, silently forks the lock
-/// domain the moment someone else creates a new inode at the pathname.
-/// `postvec-server` holds the shared side for its whole serving lifetime
-/// (fail-closed at its startup); the sweep holds the exclusive side, so a
-/// server starting after the process scan blocks the sweep, or is blocked
-/// by it, never races it — **provided both see the same inode**: across
-/// container mount namespaces the participants must share
-/// `/run/lock/postvec` as a bind mount, or the container must be stopped
-/// first. The derivation is a cross-crate contract with
-/// `postvec-server/src/lib.rs::serving_lease_path` — both carry a literal
-/// test pinning the same example.
+/// Serving lease under `/run/lock/postvec`: SHA-256 of the canonical root
+/// (64 hex, so NAME_MAX cannot bite), never unlinked. Unlinking forks the
+/// lock domain on the next create. postvec-server holds shared for its
+/// life; the sweep holds exclusive. Across containers both sides must
+/// share that directory (bind mount) or the container must be stopped.
+/// Path formula is pinned with postvec-server by a shared example test.
 pub fn serving_lease_path(canonical_root: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(canonical_root.as_os_str().as_encoded_bytes());

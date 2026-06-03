@@ -1,18 +1,14 @@
 ---
 title: Quick start
-description: Hybrid search in a disposable postvec container. Pick PostgreSQL 16, 17 or 18.
+description: Hybrid search in a postvec container. Pick PostgreSQL 16, 17 or 18.
 ---
 
 # Quick start
 
-A disposable container with PostgreSQL, postvec and the bundled MiniLM
-model. The host cluster is not modified. No API key.
+A container with PostgreSQL, postvec and the bundled MiniLM model.
 
 Steps: start the image, confirm inference, enable a column, wait for
-vectors, index, search, remove the container.
-
-Tabs select the PostgreSQL major. The same choice is remembered on the
-installation pages.
+vectors, index, search, then remove the container.
 
 :::: info Release status
 Commands use the planned `0.1.0-1` image. Publication status is listed
@@ -62,9 +58,6 @@ SQL
 The bundled model is listed. `vector_dims` returns **384**.
 ::::
 
-`embed()` is an administrative helper. Application roles require an
-explicit `GRANT`. Search is the public query surface.
-
 ## 3. Enable a column and insert
 
 ```bash
@@ -94,10 +87,8 @@ SELECT relation, pending_jobs, dead_jobs
 SQL
 ```
 
-Vectors fill **asynchronously**. A committed write arms an at-commit
-latch, so the worker normally starts within inference time of the
-commit. Repeat until `pending_jobs = 0` and every `body_semantic` is
-non-NULL:
+Vectors fill **asynchronously**. After the INSERT commits, wait until
+`pending_jobs = 0` and every `body_semantic` is non-NULL:
 
 ```sql
 SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
@@ -107,9 +98,7 @@ SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
 
 :::: tip Expected
 `filled = total`, `pending_jobs = 0`, `dead_jobs = 0`. On this image
-that is usually a second or two. `postvec.poll_interval_ms` (default
-5000) is only the backstop if the worker restarted between the latch
-being armed and the commit.
+that is usually a second or two.
 ::::
 
 ## 4. Index and search
@@ -133,20 +122,14 @@ The engineering row ranks highly despite almost no keyword overlap.
 `status().has_vector_index` is true.
 ::::
 
-`search()` returns the primary key as **text**, which joins back to the
-source table without a dynamic record type.
-
 ## 5. Remove the container
 
 ```bash
 docker rm -f postvec
 ```
 
-That removes the disposable container. No host files or PostgreSQL
-cluster configuration were created.
-
 ## Next
 
-- [Install on a real cluster](/docs/install/)
-- [Which SQL call](/docs/guides/starting) - enable, adopt, bridge or migrate
+- [Install on a cluster](/docs/install/)
+- [SQL functions](/docs/guides/starting) - enable, adopt, bridge or migrate
 - [How the worker fills vectors](/docs/concepts/consistency)

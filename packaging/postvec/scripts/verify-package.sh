@@ -1,20 +1,11 @@
 #!/usr/bin/env bash
-# Assert the properties a postvec package must have, from the package file
-# alone — before it is ever installed anywhere.
+# Assert package shape from the file alone: contents, ownership,
+# dependencies, and that no maintainer script touches a cluster or database.
 #
-#   verify-package.sh dist/common/debian12-amd64/*.deb \
-#                     dist/noarch/debian12/*.deb \
-#                     dist/extension/debian12-pg18-amd64/*.deb
-#   verify-package.sh dist/common/el9-amd64/*.rpm dist/noarch/el9/*.rpm \
-#                     dist/extension/el9-pg18-amd64/*.rpm
-#   verify-package.sh --assert-model-layout   # stdin: a package file listing
+#   verify-package.sh dist/common/debian12-amd64/*.deb ...
+#   verify-package.sh --assert-model-layout   # stdin: a file listing
 #
-# This checks *shape*: what is inside, who owns it, what it depends on, and —
-# the important one — that no maintainer script does anything to a PostgreSQL
-# cluster or a database. Installing files is the package's whole job; anything
-# else belongs to `postvec setup`, run by an operator who chose to run it.
-#
-# Live install testing is separate; see tests/package-install-test.sh.
+# Live install testing is tests/package-install-test.sh.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -105,17 +96,9 @@ lintian_gate() {
     local pkg="$1" output line tag status
     local -a exceptions=() accepted=() unexpected=()
 
-    # A missing file is a broken checkout, not an empty list. Treating absence
-    # as "nothing is excepted" makes the gate stricter, which sounds fail-safe
-    # and is not: it reports three dozen errors that read like a regression in
-    # the packages and says nothing about the file that is actually missing.
-    # (This happened — the repository root ignores *.txt, so the list needs an
-    # explicit negation in packaging/postvec/.gitignore to be committed at all.)
-    #
-    # Checked here rather than inside read_lintian_exceptions, because that runs
-    # in a process substitution: `die` there would exit the subshell, print to
-    # stderr, and let the caller carry on with an empty list — which is the
-    # exact failure this check exists to replace.
+    # A missing exceptions file is a broken checkout, not an empty list.
+    # Check here, not inside read_lintian_exceptions: that runs in a
+    # process substitution, so `die` would only kill the subshell.
     [[ -f "${LINTIAN_EXCEPTIONS}" ]] || die "no ${LINTIAN_EXCEPTIONS}
 The reviewed list of lintian tags these packages may trip is missing, so every
 tag on it would be reported as an unexpected error. Restore the file, and check
@@ -188,6 +171,27 @@ check_model_engine_paths() {
     done <<<"$(grep '/opt/postvec/models/' <<<"${files}" || true)"
 }
 
+# Every path a package puts under /opt/postvec must be inside the one engine
+# subtree it owns (`libs` for the runtime, `models` for a model bundle). This
+# is what catches a payload in a superseded layout: the files are all present
+# and correctly named, one directory level away from where the engine looks.
+# ${1} newline-separated file list, ${2} the subtree (libs | models)
+check_engine_root_paths() {
+    local files="$1" subtree="$2" path stray=0
+    while IFS= read -r path; do
+        [[ -n "${path}" ]] || continue
+        # dpkg lists `./opt/…` with trailing slashes on directories; rpm lists
+        # `/opt/…` with neither. Normalise both to `opt/…`.
+        path="${path#./}"
+        path="${path#/}"
+        case "${path}" in
+        opt/|opt/postvec/|opt/postvec|"opt/postvec/${subtree}"|"opt/postvec/${subtree}/"*) ;;
+        *)  problem "outside /opt/postvec/${subtree}/: /${path}"; stray=1 ;;
+        esac
+    done <<<"$(grep -E '^\.?/opt(/|$)' <<<"${files}" || true)"
+    (( stray )) || pass "everything under /opt/postvec is inside ${subtree}/"
+}
+
 # ${1} package basename, ${2} newline-separated file list, ${3} dependency text
 check_contents() {
     local name="$1" files="$2" depends="$3"
@@ -197,10 +201,12 @@ check_contents() {
     # debug package would be asked to contain /usr/bin/postvec.
     case "${name}" in
     postvec-cli-dbgsym[-_]*|postvec-cli-debuginfo[-_]*|\
+    postvec-server-dbgsym[-_]*|postvec-server-debuginfo[-_]*|\
     postgresql*postvec-dbgsym[-_]*|postgresql*postvec-debuginfo[-_]*)
-        # Detached symbols only. It must contain no library and no SQL, or it
-        # would conflict with the package it is supposed to accompany.
-        if grep -qE 'postvec\.so$|postvec--.*\.sql$|/usr/bin/postvec$' <<<"${files}"; then
+        # Detached symbols only. It must contain no library, no SQL and no
+        # binary, or it would conflict with the package it is supposed to
+        # accompany.
+        if grep -qE 'postvec\.so$|postvec--.*\.sql$|/usr/bin/postvec(-server)?$' <<<"${files}"; then
             problem "the debug package duplicates files from the package it accompanies"
         else
             pass "carries only detached debug information"
@@ -216,6 +222,127 @@ check_contents() {
             || problem "the CLI package does not contain /usr/bin/postvec"
         pass "owns /usr/bin/postvec"
         ;;
+    postvec-server_*|postvec-server-*)
+        # The inference node: one binary, the crate's unit, the packaged
+        # drop-in that points it at /opt/postvec, and a conffile. It must not
+        # carry the CLI (that is postvec-cli's file, and the two are
+        # co-installable) and must not carry engine assets (a node that
+        # bundled a model would put two owners on one path).
+        grep -qE '^\.?/usr/bin/postvec-server$' <<<"${files}" \
+            || problem "the node package does not contain /usr/bin/postvec-server"
+        if grep -qE '^\.?/usr/bin/postvec$' <<<"${files}"; then
+            problem "the node package contains /usr/bin/postvec — that is postvec-cli's file"
+        fi
+        grep -qE '/systemd/system/postvec-server\.service$' <<<"${files}" \
+            || problem "no systemd unit"
+        grep -qE '/systemd/system/postvec-server\.service\.d/packaged\.conf$' <<<"${files}" \
+            || problem "no packaged drop-in pointing the unit at /opt/postvec"
+        grep -qE '^\.?/etc/postvec-server/config\.json$' <<<"${files}" \
+            || problem "no /etc/postvec-server/config.json"
+        if grep -qE '/opt/postvec/(models|libs)/' <<<"${files}"; then
+            problem "the node package carries engine assets — those belong to postvec-onnxruntime and postvec-model-*"
+        fi
+        # Nothing of the extension either: a node host has no PostgreSQL
+        # major, and the extension's files have one owner per major.
+        if grep -qE 'postvec\.so$|postvec--.*\.sql$|postvec\.control$' <<<"${files}"; then
+            problem "the node package carries extension files (postvec.so / SQL / control)"
+        fi
+        pass "owns /usr/bin/postvec-server, its unit, the drop-in and its configuration"
+
+        # The packaged config names the certificate pair beside itself: the
+        # crate's <root>/certs default is under root-owned, read-only
+        # /opt/postvec, which the service account can neither write nor read a
+        # 0600 key in. A config that regressed to the relative default would
+        # install fine and refuse to start on every host — so the file itself
+        # is read (${pkg_config}, extracted by the caller), not only listed.
+        if grep -qE '^\.?/etc/postvec-server$' <<<"${files}" \
+            || grep -qE '^\.?/etc/postvec-server/$' <<<"${files}"; then
+            pass "owns /etc/postvec-server, where the certificate pair goes"
+        else
+            problem "does not own /etc/postvec-server"
+        fi
+        if [[ -z "${pkg_config:-}" ]]; then
+            problem "could not read the packaged /etc/postvec-server/config.json"
+        elif python3 - "${pkg_config}" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1]))
+ssl = config.get("ssl") or {}
+if ssl.get("cert") != "/etc/postvec-server/server.crt" \
+        or ssl.get("key") != "/etc/postvec-server/server.key":
+    sys.exit("ssl names %r / %r" % (ssl.get("cert"), ssl.get("key")))
+if config.get("insecure"):
+    sys.exit("the packaged configuration must not disable TLS")
+PY
+        then
+            pass "the packaged configuration names /etc/postvec-server/server.{crt,key}"
+        else
+            problem "the packaged configuration does not name the pair under /etc/postvec-server"
+        fi
+
+        # The relationship to the rest of the release, as metadata: a plain
+        # repository install is a ready local node (extras: the pinned
+        # runtime and model) with the CLI, both weak so that a provider-only
+        # or slim node stays possible. See the description's comment.
+        # The exact relation, not its shape: the metapackage, the CLI with
+        # both bounds, and nothing else — a direct runtime recommendation
+        # would duplicate the metapackage's pin, and a dropped upper bound
+        # would let a future incompatible CLI satisfy the node silently.
+        local rec_lines
+        rec_lines="$(tr ',' '\n' <<<"${recommends:-}" | sed 's/^ *//; s/ *$//' | grep -v '^$' | LC_ALL=C sort)"
+        local want_rec
+        case "${name}" in
+        *.deb)
+            want_rec="$(printf '%s\n' "${EXTRAS_METAPACKAGE}" \
+                "postvec-cli (<< ${NEXT_BREAKING_VERSION})" \
+                "postvec-cli (>= ${POSTVEC_VERSION})" | LC_ALL=C sort)" ;;
+        *)
+            want_rec="$(printf '%s\n' "${EXTRAS_METAPACKAGE}" \
+                "postvec-cli < ${NEXT_BREAKING_VERSION}" \
+                "postvec-cli >= ${POSTVEC_VERSION}" | LC_ALL=C sort)" ;;
+        esac
+        if [[ "${rec_lines}" == "${want_rec}" ]]; then
+            pass "recommends exactly ${EXTRAS_METAPACKAGE} and postvec-cli [${POSTVEC_VERSION}, ${NEXT_BREAKING_VERSION})"
+        else
+            problem "Recommends is not the intended relation:
+      have: ${rec_lines//$'\n'/; }
+      want: ${want_rec//$'\n'/; }"
+        fi
+        if grep -qE 'postvec-cli|postvec-model|postvec-onnxruntime|postvec-extras' <<<"${depends}"; then
+            problem "hard-depends on another postvec package: ${depends}"
+        else
+            pass "hard-depends on no other postvec package"
+        fi
+
+        # A node host has no PostgreSQL. The generated dependencies are
+        # libraries; a `postgresql` anywhere in Depends is the CLI's
+        # postgresql-common leaking in through a Depends that should have
+        # been a Recommends.
+        if grep -qi 'postgresql' <<<"${depends}"; then
+            problem "depends on PostgreSQL packaging: ${depends}"
+        else
+            pass "depends on nothing from PostgreSQL"
+        fi
+
+        # The TLS listener links OpenSSL, which the ELF gate excused in the
+        # bare base image on the strength of this very dependency. If the
+        # generator did not produce it, the excuse was unearned.
+        if grep -qiE 'libssl|openssl' <<<"${depends}"; then
+            pass "declares the OpenSSL runtime its TLS listener links"
+        else
+            problem "does not declare an OpenSSL dependency (libssl3 / openssl-libs): ${depends:-<none>}"
+        fi
+
+        # The one package in the release under a different licence. The
+        # metadata must say so, and must say what versions.env pinned: a
+        # description that quietly inherited the neighbouring package's
+        # `license:` line would misstate the terms on every host.
+        [[ -n "${pkg_license:-}" ]] || problem "could not read the package's declared licence"
+        if [[ "${pkg_license:-}" == "${SERVER_LICENSE}" ]]; then
+            pass "declares licence ${SERVER_LICENSE} (SERVER_LICENSE)"
+        else
+            problem "declares licence '${pkg_license:-}', but SERVER_LICENSE is ${SERVER_LICENSE}"
+        fi
+        ;;
     postgresql*postvec[-_]*)
         # The reason the CLI is a separate package at all: PG 16 and PG 18
         # packages must be co-installable, which they cannot be if both ship
@@ -224,6 +351,13 @@ check_contents() {
             problem "an extension package contains /usr/bin/postvec — PG majors could not coexist"
         else
             pass "contains no CLI binary (PG majors stay co-installable)"
+        fi
+        # The node is its own package; a database host with two majors and a
+        # node would otherwise see three owners of one path.
+        if grep -qE '/usr/bin/postvec-server$|/systemd/system/postvec-server' <<<"${files}"; then
+            problem "an extension package contains the inference node — that is postvec-server's"
+        else
+            pass "contains no inference node"
         fi
         grep -q 'postvec\.so$'      <<<"${files}" || problem "no postvec.so"
         grep -q 'postvec\.control$' <<<"${files}" || problem "no postvec.control"
@@ -239,9 +373,16 @@ check_contents() {
         grep -q 'libonnxruntime\.so' <<<"${files}" || problem "no libonnxruntime.so"
         grep -q '/opt/postvec/libs/' <<<"${files}" \
             || problem "runtime is not under the engine root the extension searches"
+        check_engine_root_paths "${files}" libs
         pass "installs ONNX Runtime under /opt/postvec/libs"
         ;;
     postvec-model-*)
+        # The canonical root, and only the canonical root. A package built from
+        # a payload in a former layout (/opt/postvec/ninference/…) has every
+        # file the checks below look for, at paths nothing loads.
+        check_engine_root_paths "${files}" models
+        grep -q '/opt/postvec/models/' <<<"${files}" \
+            || problem "model is not under the engine root the extension searches"
         grep -q 'ninference\.hub\.json$' <<<"${files}" || problem "no engine descriptor"
         grep -q 'onnx/model\.onnx$'      <<<"${files}" || problem "no ONNX graph"
         grep -q 'SOURCE\.json$'          <<<"${files}" || problem "no provenance (SOURCE.json)"
@@ -325,7 +466,23 @@ verify_deb() {
     info="$(dpkg-deb --info "${pkg}")"
     files="$(dpkg-deb --contents "${pkg}" | awk '{print $6}')"
     depends="$(sed -n 's/^ *Depends: //p' <<<"${info}")"
+    recommends="$(sed -n 's/^ *Recommends: //p' <<<"${info}")"
+    # The node's packaged configuration, for the checks that read it.
+    pkg_config=""
+    if [[ "${name}" == postvec-server_* ]]; then
+        dpkg-deb --fsys-tarfile "${pkg}" \
+            | tar -x -C "${tmp}" ./etc/postvec-server/config.json 2>/dev/null || true
+        [[ -f "${tmp}/etc/postvec-server/config.json" ]] \
+            && pkg_config="${tmp}/etc/postvec-server/config.json"
+    fi
     owners="$(dpkg-deb --contents "${pkg}" | awk '{print $2}' | sort -u)"
+    # The licence a package declares. Debian has no control field for it —
+    # nfpm writes its `license:` into the copyright file — so it is read from
+    # /usr/share/doc/<pkg>/copyright, which for this project's packages is
+    # either the DEP-5 rendering (a `License:` line) or the verbatim text.
+    pkg_license="$(dpkg-deb --fsys-tarfile "${pkg}" \
+        | tar -xO --wildcards './usr/share/doc/*/copyright' 2>/dev/null \
+        | sed -n 's/^License: //p' | head -1 || true)"
 
     # `0/0` and `root/root` are the same owner: dpkg-deb prints the numeric form
     # when the tar entry carries no user name, which is how nfpm writes a file
@@ -407,7 +564,53 @@ verify_rpm() {
     files="$(rpm_query -qpl "${name}")"
     depends="$(rpm_query -qpR "${name}")"
     scripts="$(rpm_query -qp --scripts "${name}")"
+    # RPM records the licence as a header field.
+    pkg_license="$(rpm_query -qp --qf '%{LICENSE}' "${name}" 2>/dev/null || true)"
+    recommends="$(rpm_query -qp --recommends "${name}" 2>/dev/null || true)"
     [[ -n "${files}" ]] || problem "could not read the package contents"
+    # The node's packaged configuration, for the checks that read it. The
+    # extraction lands in a scratch directory removed when this function
+    # returns (the RETURN trap, as verify_deb's `tmp` is).
+    local scratch; scratch="$(mktemp -d)"
+    trap 'rm -rf "${scratch}"' RETURN
+    pkg_config=""
+    if [[ "${name}" == postvec-server-[0-9]* ]]; then
+        if command -v rpm2cpio >/dev/null 2>&1 && command -v cpio >/dev/null 2>&1; then
+            local cdir="${scratch}/cpio"; mkdir -p "${cdir}"
+            (cd "${cdir}" && rpm2cpio "${RPM_QUERY_DIR}/${name}" \
+                | cpio -id --quiet --no-absolute-filenames) || true
+            [[ -f "${cdir}/etc/postvec-server/config.json" ]] \
+                && pkg_config="${cdir}/etc/postvec-server/config.json"
+        else
+            # No rpm2cpio on the host: read the file out of a container of
+            # the target, the same way the metadata is read. The base image
+            # has rpm2cpio but no cpio, so the (newc) archive is walked in
+            # Python, which the image does have.
+            local cfile="${scratch}/config.json"
+            timeout 120 docker run --rm --volume "${RPM_QUERY_DIR}:/pkgs:ro" \
+                "${DIST_BASE_IMAGE:-almalinux:9@${BUILD_BASE_EL9_DIGEST}}" \
+                bash -c 'rpm2cpio "/pkgs/$1" | python3 -c "
+import sys
+data = sys.stdin.buffer.read()
+pos = 0
+while True:
+    assert data[pos:pos+6] == b\"070701\", \"not a newc cpio archive\"
+    fields = [int(data[pos+6+i*8:pos+14+i*8], 16) for i in range(13)]
+    namesize, filesize = fields[11], fields[6]
+    name = data[pos+110:pos+110+namesize-1].decode()
+    start = pos + 110 + namesize
+    start += (-start) % 4
+    if name == \"TRAILER!!!\":
+        break
+    if name.lstrip(\"./\") == \"etc/postvec-server/config.json\":
+        sys.stdout.buffer.write(data[start:start+filesize])
+        break
+    pos = start + filesize
+    pos += (-pos) % 4
+"' _ "${name}" > "${cfile}" 2>/dev/null || true
+            [[ -s "${cfile}" ]] && pkg_config="${cfile}"
+        fi
+    fi
 
     printf '%s\n' "${scripts}" > /tmp/postvec-rpm-scripts.$$
     check_maintainer_scripts /tmp/postvec-rpm-scripts.$$

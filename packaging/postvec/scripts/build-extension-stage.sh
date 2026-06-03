@@ -3,25 +3,33 @@
 # a hermetic builder container and lay the result out for packaging.
 #
 #   build-extension-stage.sh --distro debian12 --pg 18 --arch amd64
+#   build-extension-stage.sh --distro debian12 --pg 18 --arch amd64 --with-server
 #
 # Produces build/<distro>-pg<major>-<arch>/ containing:
 #   stage/        the pg_config-rooted extension tree, library stripped
 #   cli/postvec   the CLI binary, stripped
+#   server/postvec-server   the inference node, stripped (--with-server only)
 #   debug/        the split debug objects (a separate -dbgsym/-debuginfo package)
 #   build-info.txt what the builder actually used
+#
+# `--with-server` is for the shared-package cell — one per distribution and
+# architecture — because the node, like the CLI, is PostgreSQL-independent.
+# The extension cells do not pass it: compiling the node 24 times would
+# produce nothing the manifest could accept twice.
 #
 # The container never writes outside the exported directory, and the export is
 # a scratch stage, so no toolchain or cargo cache can reach an artifact.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-DISTRO=""; PG_MAJOR=""; RELEASE_ARCH=""
+DISTRO=""; PG_MAJOR=""; RELEASE_ARCH=""; WITH_SERVER=0
 while (($#)); do
     case "$1" in
     --distro) DISTRO="$2"; shift 2 ;;
     --pg)     PG_MAJOR="$2"; shift 2 ;;
     --arch)   RELEASE_ARCH="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --with-server) WITH_SERVER=1; shift ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -53,6 +61,7 @@ log "building ${CELL}"
 log "  base        ${DIST_BASE_IMAGE}"
 log "  rust        ${RUST_VERSION} / cargo-pgrx ${PGRX_VERSION}"
 log "  features    pg${PG_MAJOR},embedded"
+(( WITH_SERVER )) && log "  server      postvec-server (this is a shared-package cell)"
 log "  epoch       ${SOURCE_DATE_EPOCH}"
 
 rm -rf "${OUT}"
@@ -72,6 +81,7 @@ BUILD_ARGS=(
     --build-arg "PGDG_KEY_FINGERPRINT=${PGDG_DEBIAN_KEY_FINGERPRINT}"
     --build-arg "PGDG_EL9_REPO_RPM_SHA256=${PGDG_EL9_REPO_RPM_SHA256}"
     --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"
+    --build-arg "WITH_SERVER=${WITH_SERVER}"
 )
 
 if docker buildx version >/dev/null 2>&1; then
@@ -120,6 +130,15 @@ CONTROL="$(find "${OUT}/stage" -name postvec.control -type f | head -1)"
 mapfile -t SQL < <(find "${OUT}/stage" -name 'postvec--*.sql' -type f)
 ((${#SQL[@]})) || die "builder produced no extension SQL"
 [[ -f "${OUT}/cli/postvec" ]] || die "builder produced no CLI binary"
+if (( WITH_SERVER )); then
+    [[ -f "${OUT}/server/postvec-server" ]] || die "builder produced no postvec-server binary"
+elif [[ -e "${OUT}/server" ]]; then
+    # The export is a fresh scratch stage, so this cannot happen unless the
+    # builder was changed to emit the node unconditionally — in which case
+    # every extension cell would carry one and the manifest would see the
+    # same package name produced 24 times.
+    die "the builder emitted a postvec-server binary without --with-server"
+fi
 
 # cargo-pgrx substitutes @CARGO_VERSION@ at package time; if that did not
 # happen, CREATE EXTENSION would fail on the user's machine with a confusing
@@ -214,14 +233,36 @@ PY
 need objcopy strip readelf
 split_debug "${SO}" postvec.so
 split_debug "${OUT}/cli/postvec" postvec
+# The node's symbols are its own detached package, for the same reason the
+# CLI's are: /usr/bin/postvec-server is owned by one package however many
+# majors are installed beside it.
+(( WITH_SERVER )) && split_debug "${OUT}/server/postvec-server" postvec-server
 
 normalize_tree "${OUT}/stage"
 chmod 0755 "${OUT}/cli/postvec"
+(( WITH_SERVER )) && chmod 0755 "${OUT}/server/postvec-server"
 
 # ---------------------------------------------------------------- the ELF gate
 
 "${PKG_DIR}/scripts/inspect-elf.sh" --arch "${RELEASE_ARCH}" --distro "${DISTRO}" \
     --library "${SO}" --binary "${OUT}/cli/postvec"
+# The same gate for the node. The ONNX Runtime rule matters here just as much:
+# the node links the same engine, which dlopen()s the runtime from its root —
+# a link-time dependency would make the package uninstallable without the
+# runtime present, which is not the dependency boundary a provider-only node
+# has.
+#
+# OpenSSL is the one link-time dependency the node has that the extension does
+# not: its discovery listener serves TLS, and the bare base image the gate
+# resolves in carries no libssl. That is the package dependency doing its job
+# — `elf-depends.sh` turns the NEEDED entry into `libssl3` / `openssl-libs`,
+# and verify-package.sh asserts the package declares it — so the two sonames
+# are named as provided-by-package, and anything else unresolved still fails.
+if (( WITH_SERVER )); then
+    "${PKG_DIR}/scripts/inspect-elf.sh" --arch "${RELEASE_ARCH}" --distro "${DISTRO}" \
+        --binary "${OUT}/server/postvec-server" \
+        --provided-by-package libssl.so.3 --provided-by-package libcrypto.so.3
+fi
 
 log "staged ${CELL}"
 find "${OUT}" -type f -printf '  %-72p %s bytes\n' | sort

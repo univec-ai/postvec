@@ -19,10 +19,9 @@ Environment=RUST_LOG=info
 # can be templated without an ExecStart forty words long.
 ExecStart=/usr/bin/postvec-server --config /etc/postvec-server/config.json
 
-# SIGTERM starts the drain: /ready flips to 503 and the node announces its
-# departure, then it keeps serving for --drain-delay-ms (5s by default) so both
-# are observed before the socket closes, then in-flight requests finish. Allow
-# more than the drain delay plus the longest request budget.
+# SIGTERM starts drain: /ready 503, announce, wait --drain-delay-ms, then
+# finish in-flight work. TimeoutStopSec must exceed drain delay plus the
+# longest request budget.
 KillSignal=SIGTERM
 TimeoutStopSec=45
 
@@ -55,18 +54,9 @@ SystemCallErrorNumber=EPERM
 # the root to ReadWritePaths) only if you have a reason.
 ReadOnlyPaths=/var/lib/postvec-server /etc/postvec-server
 
-# The serving lease: a stable flock inode under /run/lock/postvec, held shared
-# for the serving lifetime so `postvec uninstall --purge` (which takes the
-# exclusive side) can never sweep an engine root from under a running or
-# starting server. The privileged pre-start creates the directory writable by
-# this service's group; ReadWritePaths lifts ProtectSystem=strict for it. The
-# server FAILS TO START without the lease — that is deliberate.
-# 1775: group-writable so this service can create its lease; sticky so the
-# service account cannot unlink files it does not own (host.lock, a lease a
-# root-driven purge created first). A lease this service created itself
-# remains its own — the lease is a cooperative advisory interlock between
-# well-behaved participants, not protection against a compromised service
-# account.
+# Serving lease under /run/lock/postvec. Fail-closed without it.
+# 1775: group-writable so this service can create a lease; sticky so it
+# cannot unlink files it does not own.
 ExecStartPre=+/usr/bin/install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 ReadWritePaths=/run/lock/postvec
 

@@ -68,7 +68,7 @@ sudo postvec doctor --database app --deep --format json \
 | `--strict` | Warnings fail the command |
 | `--format json` | Versioned object on stdout; progress on stderr |
 
-`doctor` is read-only, does not run inference and does not call `refresh_models()`.
+`doctor` is read-only: host files, cluster settings and the heartbeat.
 
 Inside a container, use `postvec-healthcheck` or an explicit socket URL. See [Docker](/docs/install/docker).
 

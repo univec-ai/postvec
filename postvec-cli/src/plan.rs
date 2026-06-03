@@ -946,10 +946,9 @@ mod tests {
         );
     }
 
-    /// M2: the terms block renders every document with its exact identity —
-    /// version, canonical URL, policy, sorted models, and the ready-to-paste
-    /// flag when acknowledgement is required — and the same structure rides
-    /// the plan's JSON. Plans without terms omit the field entirely.
+    /// Terms block: version, canonical URL, policy, sorted models and the
+    /// ready-to-paste flag when acknowledgement is required. Same shape in
+    /// JSON. Plans with no terms omit the field.
     #[test]
     fn the_terms_block_is_rendered_and_serialized() {
         let mut plan = Plan::new("model pull", "path:/opt/root");

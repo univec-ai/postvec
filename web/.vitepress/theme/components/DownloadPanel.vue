@@ -77,6 +77,58 @@ const movingTag = computed(() => {
   return `${SITE.ghcr}:pg${pg.value}${suffix}`;
 });
 
+// The inference node: one package per distribution and architecture (no
+// PostgreSQL major), its own image repository, its own licence.
+const serverFiles = computed(() => {
+  const d = selectedDistro.value;
+  const a = selectedArch.value;
+  const postvec = SITE.release;
+  return d.family === "deb"
+    ? [`postvec-server_${postvec}${d.tag}_${a.deb}.deb`]
+    : [`postvec-server-${postvec}${d.tag}.${a.rpm}.rpm`];
+});
+
+const serverInstallCmd = computed(() => {
+  const d = selectedDistro.value;
+  const a = selectedArch.value;
+  const tool = d.family === "deb" ? "apt" : "dnf";
+  const ort = `${SITE.onnxRuntimeVersion}-${SITE.packageRelease}`;
+  const model = `${SITE.bundledModelVersion}-${SITE.packageRelease}`;
+  // The node serves from /opt/postvec, where the runtime and model packages
+  // install — the same three "extras" files the complete payload lists,
+  // whichever payload the selector above is showing.
+  const extras =
+    d.family === "deb"
+      ? [
+          `postvec-onnxruntime_${ort}${d.tag}_${a.deb}.deb`,
+          `postvec-model-minilm-l6-v2_${model}${d.tag}_all.deb`,
+          `postvec-extras_${SITE.release}${d.tag}_all.deb`,
+        ]
+      : [
+          `postvec-onnxruntime-${ort}${d.tag}.${a.rpm}.rpm`,
+          `postvec-model-minilm-l6-v2-${model}${d.tag}.noarch.rpm`,
+          `postvec-extras-${SITE.release}${d.tag}.noarch.rpm`,
+        ];
+  // The CLI too: the node package only Recommends it, and a local-file
+  // install cannot fetch a Recommends that is not supplied.
+  const cli =
+    d.family === "deb"
+      ? `postvec-cli_${SITE.release}${d.tag}_${a.deb}.deb`
+      : `postvec-cli-${SITE.release}${d.tag}.${a.rpm}.rpm`;
+  const names = [...serverFiles.value, cli, ...extras].map((f) => `./${f}`).join(" \\\n  ");
+  // The certificate pair before the unit starts: the packaged service fails
+  // closed without one, so a copied command that went straight to
+  // `enable --now` would start a node that immediately dies.
+  return [
+    `sudo ${tool} install \\\n  ${names}`,
+    "sudo install -o root -g postvec-server -m 0644 server.crt /etc/postvec-server/server.crt",
+    "sudo install -o root -g postvec-server -m 0640 server.key /etc/postvec-server/server.key",
+    "sudo systemctl enable --now postvec-server",
+  ].join("\n");
+});
+
+const serverImageTag = computed(() => `${SITE.ghcrServer}:${SITE.release}`);
+
 type ReleaseAsset = { name: string; browser_download_url: string; size: number };
 type ReleaseInfo = {
   tag_name: string;
@@ -223,6 +275,43 @@ function assetUrl(name: string): string | null {
 
     <h3>Verify</h3>
     <CopyCommand :command="verifyCmd" label="Checksums + Sigstore" />
+
+    <h3>Inference node (remote mode)</h3>
+    <p class="hint">
+      <code>postvec-server</code> is the node the remote payload dials. One
+      package per distribution and architecture, no PostgreSQL major; the same
+      release, the same checksums and attestations. It is licensed under
+      <strong>{{ SITE.serverLicense }}</strong>, not the PostgreSQL License
+      that covers everything else on this page.
+    </p>
+    <ul class="files">
+      <li v-for="name in serverFiles" :key="name">
+        <a
+          v-if="assetUrl(name)"
+          :href="assetUrl(name)!"
+          rel="noreferrer"
+        >{{ name }}</a>
+        <code v-else>{{ name }}</code>
+      </li>
+    </ul>
+    <CopyCommand :command="serverInstallCmd" :label="selectedDistro.family === 'deb' ? 'apt' : 'dnf'" />
+    <p class="hint">
+      The unit reads <code>/opt/postvec</code>, where the runtime and model
+      packages install. The package creates the service account and starts
+      nothing: the two <code>install</code> lines put your certificate pair
+      where the packaged configuration looks (key
+      <code>root:postvec-server 0640</code>), and only then is the unit
+      started. The CLI and the extras are Recommends of the node package;
+      they are listed because a local-file install cannot fetch them on its
+      own.
+    </p>
+    <CopyCommand :command="`docker pull ${serverImageTag}`" label="Node image" />
+    <p class="hint">
+      The same packages as an image, serving the bundled model out of the box.
+      The moving tag is <code>{{ SITE.ghcrServer }}:latest</code> — there is
+      no PostgreSQL major to hide here. gRPC (33333) and discovery (22222)
+      carry no authentication: keep them on a private network.
+    </p>
   </div>
 </template>
 

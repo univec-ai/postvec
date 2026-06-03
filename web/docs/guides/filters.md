@@ -50,13 +50,12 @@ Caps: 64 KiB serialized, 32 columns, 256 `in` values.
 
 HNSW can under-recall when most of the index is excluded. Increasing
 `candidates`, `hnsw.ef_search` or `hnsw.max_scan_tuples` can compensate.
-postvec does not estimate filter selectivity.
 
 ## Refused forms
 
-:::: danger SQL predicate fragments are not accepted
-`filter => 'category = ''finance'''` is refused. The JSON grammar keeps
-arbitrary SQL out of generated queries.
+:::: danger Use the JSON grammar
+`filter => 'category = ''finance'''` is refused. The JSON object is
+bound as parameters.
 ::::
 
 :::: danger Equality uses the scalar form

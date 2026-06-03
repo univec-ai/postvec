@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
-# postvec image entrypoint.
+# Wrap the official PostgreSQL entrypoint: compute postvec settings, then
+# exec so PostgreSQL is PID 1.
 #
-# It wraps, and then delegates to, the official PostgreSQL image entrypoint.
-# Everything the official image offers — `_FILE` secrets, initialisation
-# scripts, arbitrary commands, `POSTGRES_INITDB_ARGS`, signal handling, the
-# root-to-postgres transition — keeps working unchanged, because this script
-# only computes four settings and then execs the real entrypoint with
-# PostgreSQL still ending up as PID 1.
-#
-# The settings are POSTMASTER-context: postvec's launcher is a preloaded
-# background worker, so they can only be established at server start, which is
-# why they belong here rather than in an initialisation script.
+# Settings are POSTMASTER-context (preloaded background worker), so they
+# belong here, not in an init script.
 set -Eeuo pipefail
 
 # Overridable only so the test harness can substitute a recorder for it; in an

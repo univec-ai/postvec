@@ -3,6 +3,13 @@
 #
 #   build-packages.sh --distro debian12 --pg 18 --arch amd64
 #   build-packages.sh --distro el9 --pg 18 --arch amd64 --only extension
+#   build-packages.sh --distro debian12 --pg 18 --arch amd64 --only cli,onnxruntime,server
+#
+# `--only` names any of: extension, cli, server, onnxruntime, model. Without
+# it, everything the staged cell and the payloads allow: `server` needs a cell
+# built with `build-extension-stage.sh --with-server`, and is skipped (with a
+# warning) when the cell has no node binary — unless POSTVEC_RELEASE=1, where
+# a shared-package cell without one is a defect.
 #
 # Reads packaging/postvec/build/<cell>/ (from build-extension-stage.sh) plus
 # the engine-asset payloads (from build-onnxruntime-bundle.sh and
@@ -61,7 +68,7 @@ wanted() { [[ -z "${ONLY}" || " ${ONLY//,/ } " == *" $1 "* ]]; }
 # requiring a staged build for them would mean compiling the extension in order
 # to package something that does not contain it.
 NEEDS_STAGE=0
-if wanted extension || wanted cli; then NEEDS_STAGE=1; fi
+if wanted extension || wanted cli || wanted server; then NEEDS_STAGE=1; fi
 
 if ((NEEDS_STAGE)); then
     [[ -d "${CELL_DIR}/stage" ]] || die "no staged build at ${CELL_DIR}
@@ -72,16 +79,13 @@ fi
 # behind by `--only model` is not harmless: the next consumer globs it, finds
 # nothing, and has to decide whether that means "not built yet" or "built and
 # produced nothing" — and those need different answers.
-if wanted cli || wanted onnxruntime; then mkdir -p "${COMMON_DIR}"; fi
+if wanted cli || wanted onnxruntime || wanted server; then mkdir -p "${COMMON_DIR}"; fi
 if wanted extension;                   then mkdir -p "${EXTENSION_DIR_OUT}"; fi
 if wanted model;                       then mkdir -p "${NOARCH_DIR_OUT}"; fi
 
-# The architecture-independent packages used to be written into an
-# architecture's common cell. A working tree built before that changed still
-# holds them there, and the release manifest walks the whole of dist/ — so a
-# stale copy would be collected beside the real one, and, being byte-identical
-# often enough, published without a word. Two names, removed where the current
-# ones are produced.
+# Remove leftover model and metapackage files from dist/common. The
+# manifest walks all of dist/, so a leftover copy next to the noarch
+# one would be published.
 shopt -s nullglob
 for stale in "${PKG_DIR}"/dist/common/"${DISTRO}"-*/postvec-model-* \
              "${PKG_DIR}"/dist/common/"${DISTRO}"-*/"${EXTRAS_METAPACKAGE}"[-_]* \
@@ -162,11 +166,17 @@ esac
 PKG_ARCH="${RELEASE_ARCH}"
 SOURCE_DATE_ISO="$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)"
 
+# Where the node's systemd unit goes. /usr/lib/systemd/system on both
+# families: every supported distribution is merged-/usr, so on Debian and
+# Ubuntu this is the same directory as /lib/systemd/system, and it is the
+# path RPM packaging has always used.
+SERVER_UNIT_DIR=/usr/lib/systemd/system
+
 export CELL_DIR \
        ORT_PAYLOAD_DIR="${ORT_PAYLOAD_ROOT}" MODEL_PAYLOAD_DIR="${MODEL_PAYLOAD_ROOT}" \
        PKGLIBDIR EXTENSIONDIR EXTENSION_PACKAGE DEBUG_PACKAGE DEBUG_SUFFIX PG_MAJOR \
        PKG_RELEASE PKG_ARCH NOARCH LICENSE_DST LICENSE_NAME SOURCE_DATE_ISO \
-       CHANGELOG_NAME MODEL_LICENSE_SRC \
+       CHANGELOG_NAME MODEL_LICENSE_SRC SERVER_UNIT_DIR \
        MODEL_PKG_NAME MODEL_PKG_VERSION MODEL_DOC_DIR MODEL_NAME MODEL_BACKEND \
        MODEL_LICENSE MODEL_TARGET_DIM MODEL_SEQUENCE_LEN \
        MODEL_REGISTRY_REVISION MODEL_ARCHIVE_SHA256
@@ -194,6 +204,49 @@ mkdir -p "${RENDERED}"
 # generating it seven times would be seven chances for them to differ.
 export CHANGELOG_FILE="${RENDERED}/${CHANGELOG_NAME}"
 render_changelog "${PKG_DIR}/changelog.Debian" "${CHANGELOG_FILE}"
+
+# The node's licence file, rendered from the crate's own LICENSE and the
+# reviewed SERVER_LICENSE pin rather than kept as a second hand-written copy.
+#
+# Debian wants a DEP-5 copyright file, and for a licence the distribution
+# ships under /usr/share/common-licenses it wants a *reference* — lintian
+# reports repeating the Apache-2.0 text as an error. Any other identifier has
+# no common copy, so the crate's LICENSE is inlined, indented as DEP-5
+# requires. RPM's /usr/share/licenses takes the verbatim text either way.
+# This is the same policy check-model-bundle.py applies to the bundled model.
+render_server_copyright() {
+    local licence="${REPO_ROOT}/postvec-server/LICENSE" out="${RENDERED}/server-copyright"
+    [[ -f "${licence}" ]] || die "no postvec-server/LICENSE to package"
+    case "${PACKAGER}" in
+    rpm)
+        cp "${licence}" "${out}" ;;
+    deb)
+        {
+            echo "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"
+            echo "Upstream-Name: postvec-server"
+            echo "Source: ${SOURCE_REPOSITORY}"
+            echo "Comment: postvec-server is the one component of postvec that is not under"
+            echo " the PostgreSQL License. The extension, the postvec command, the engine"
+            echo " assets and their packaging are; see the root LICENSE index of the source"
+            echo " repository."
+            echo
+            echo "Files: *"
+            echo "Copyright: 2026 the UniVec authors"
+            echo "License: ${SERVER_LICENSE}"
+            if [[ "${SERVER_LICENSE}" == Apache-2.0 ]]; then
+                echo " On Debian systems, the complete text of the Apache License, Version 2.0"
+                echo " can be found in /usr/share/common-licenses/Apache-2.0."
+            else
+                # DEP-5: continuation lines are indented one space, and a
+                # blank line inside the text is a single ` .`.
+                sed -e 's/^$/./' -e 's/^/ /' "${licence}"
+            fi
+        } > "${out}" ;;
+    esac
+    printf '%s\n' "${out}"
+}
+SERVER_COPYRIGHT_SRC="$(render_server_copyright)"
+export SERVER_COPYRIGHT_SRC
 
 # The dependency generators are slow (they start a container), so each distinct
 # set of binaries is resolved once and reused.
@@ -241,6 +294,38 @@ if wanted cli; then
 A publishable build must ship postvec-cli-${DEBUG_SUFFIX}."
     else
         log "  (no separable CLI symbols; skipping postvec-cli-${DEBUG_SUFFIX})"
+    fi
+fi
+if wanted server; then
+    # The inference node. PostgreSQL-independent like the CLI, so it lives in
+    # the common root and comes out of the shared-package cell — which is the
+    # one built with `--with-server`. An extension cell has no node binary and
+    # is not asked for one; a shared-package cell in a release must have one.
+    if [[ -f "${CELL_DIR}/server/postvec-server" ]]; then
+        # The TLS listener links OpenSSL, which no bare base image carries;
+        # the generator installs it first so it can name the package (see
+        # elf-depends.sh --runtime-package). The pattern covers Debian 12 and
+        # Ubuntu 22.04 (libssl3) and Ubuntu 24.04 (libssl3t64); EL9's rpmdeps
+        # needs nothing installed.
+        server_shlibs="$(shlib_depends_for server \
+            --runtime-package '^libssl3(t64)?$' "${CELL_DIR}/server/postvec-server")"
+        SHLIB_DEPENDS="${server_shlibs}" \
+            build_one postvec-server.yaml "postvec-server (${SERVER_LICENSE})" "${COMMON_DIR}"
+        if [[ -f "${CELL_DIR}/debug/postvec-server.debug" ]]; then
+            build_one postvec-server-debug.yaml "postvec-server-${DEBUG_SUFFIX}" "${COMMON_DIR}"
+        elif [[ "${POSTVEC_RELEASE:-0}" == 1 ]]; then
+            die "no detached symbols at ${CELL_DIR}/debug/postvec-server.debug.
+A publishable build must ship postvec-server-${DEBUG_SUFFIX}."
+        else
+            log "  (no separable postvec-server symbols; skipping postvec-server-${DEBUG_SUFFIX})"
+        fi
+    elif [[ "${POSTVEC_RELEASE:-0}" == 1 ]]; then
+        die "no postvec-server binary at ${CELL_DIR}/server/postvec-server.
+A release's shared-package cell is built with --with-server:
+  scripts/build-extension-stage.sh --distro ${DISTRO} --pg ${PG_MAJOR} --arch ${RELEASE_ARCH} --with-server"
+    else
+        warn "no postvec-server binary in ${CELL} — skipping postvec-server"
+        warn "  build it with: scripts/build-extension-stage.sh --distro ${DISTRO} --pg ${PG_MAJOR} --arch ${RELEASE_ARCH} --with-server"
     fi
 fi
 if wanted extension; then

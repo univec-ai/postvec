@@ -1,14 +1,9 @@
-# The extension itself, for one PostgreSQL major.
+# Extension for one PostgreSQL major: library, control file and SQL where
+# that major's pg_config points. No maintainer script may touch a cluster
+# or a database.
 #
-# Contents are exactly the three assets PostgreSQL needs — the loadable
-# library, the control file, and the install/upgrade SQL — placed where that
-# major's pg_config says they belong. No binary, no service, no maintainer
-# script that touches a cluster or a database (see README §"What the packages
-# may not do").
-#
-# One universal build: compiled with `--features pgNN,embedded`. postvec.mode
-# defaults to 'embedded'; 'grpc' selects the thin remote client. Publishing a
-# separate thin package would put two different libraries at the same path.
+# Built with --features pgNN,embedded. A second thin package would put two
+# libraries at the same path.
 
 name: ${EXTENSION_PACKAGE}
 arch: ${PKG_ARCH}

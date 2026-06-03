@@ -5,8 +5,6 @@ description: Runtime shape, write path and common operational constraints.
 
 # How it works
 
-## Implementation details
-
 Vectors fill after commit. Automatic sync needs
 `shared_preload_libraries = 'postvec'` and a restart. Search without an
 ANN index is a sequential scan.
@@ -87,16 +85,15 @@ ANN index is a sequential scan.
 </figure>
 
 `CREATE EXTENSION` exposes the SQL surface immediately. Automatic sync
-still needs the preloaded launcher and a worker for that database. If
-`shared_preload_libraries` does not include `postvec`, there is no
-worker.
+needs `shared_preload_libraries = 'postvec'`, a restart and a worker
+for that database.
 
 ## Write path
 
 <figure class="pvd">
 <svg viewBox="0 0 656 208" role="img" aria-labelledby="pvd-write-title pvd-write-desc">
 <title id="pvd-write-title">The write path, and the window where the vector is empty</title>
-<desc id="pvd-write-desc">Four steps left to right: the application commits, a trigger enqueues the row into postvec.jobs, the worker claims it and calls inference, and the vector is written back. A bracket spans from the commit to the write-back marking the window in which the stored vector is null or stale.</desc>
+<desc id="pvd-write-desc">Four steps left to right: the application commits, a trigger enqueues the row into postvec.jobs, the worker claims it and calls inference, and the worker writes the vector. A bracket spans from the commit to that write marking the window in which the stored vector is null or stale.</desc>
 <defs>
 <marker id="pvd-wp-head" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
 <polygon class="head" points="0 0, 8 3, 0 6"/>
@@ -143,15 +140,12 @@ worker.
 </svg>
 </figure>
 
-Between the application commit and worker write-back, the vector is NULL
-or stale. A committed write arms an at-commit latch and nudges the
-worker, so the gap is normally just inference time.
-`postvec.poll_interval_ms` (default 5000) is only the backstop. See
+Between the application commit and the worker writing the vector, the
+column is NULL or stale. A commit wakes the worker, so the gap is
+normally just inference time. See
 [eventual consistency](/docs/concepts/consistency).
 
-`search()` is the exception: it embeds the **query** synchronously.
-Query embedding is the only synchronous inference step on the search
-path.
+`search()` embeds the **query** synchronously.
 
 ## Durable and transient state
 

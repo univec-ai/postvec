@@ -1,28 +1,11 @@
-# The postvec images: a drop-in replacement for the official `postgres` image
-# with postvec and pgvector preinstalled and preconfigured.
+# postvec images from already-built and verified packages. Never compiles.
 #
-# Two targets:
+#   remote    PostgreSQL + pgvector + postvec. Pins POSTVEC_MODE=grpc
+#             because it has no engine assets.
+#   complete  plus ONNX Runtime and one model. POSTVEC_MODE=grpc still works.
 #
-#   remote    PostgreSQL + pgvector + postvec, talking to postvec-server nodes.
-#             It carries no engine assets, so it pins POSTVEC_MODE=grpc — the
-#             extension's own default is `embedded`, which this image cannot
-#             serve.
-#   complete  the same, plus ONNX Runtime and one embedding model. In-process
-#             inference; POSTVEC_MODE=grpc still works. One container, both
-#             modes.
-#
-# The build consumes the *already built and verified* release packages for this
-# commit; it never compiles anything. That is what makes the image and the
-# `.deb` files provably the same software, and it keeps a compiler, a Cargo
-# cache and a source tree out of the final image.
-#
-# Build it through scripts/build-image.sh, which supplies
-# every ARG from packaging/postvec/versions.env.
-#
-# Deliberately plain Dockerfile syntax — no BuildKit cache mounts. The builder
-# images need them (a Rust compile without a cargo cache is unbearable); this
-# one only installs a handful of local .deb files, so keeping it buildable by
-# any Docker is worth more than the seconds a cache would save.
+# Built through scripts/build-image.sh. Plain Dockerfile syntax, no
+# BuildKit cache mounts, so any Docker can build it.
 
 ARG PG_MAJOR=18
 ARG DEBIAN_CODENAME=bookworm

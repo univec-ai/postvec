@@ -12,8 +12,8 @@ Signatures and grants. Walkthroughs live under [Usage](/docs/guides/).
 `to_regclass` / `::regconfig`, so `'schema.table'` works. `retry_dead()`
 is the exception: it takes `regclass`.
 
-The extension does not change `search_path`. Every call needs the
-`postvec` schema qualifier.
+Every call needs the `postvec` schema qualifier. `search_path` is left
+as it is.
 
 ## Functions
 

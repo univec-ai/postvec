@@ -486,10 +486,8 @@ mod tests {
         assert!(problems[0].contains("sha256"), "{problems:?}");
     }
 
-    /// M2 compatibility: the receipt schema stays at version 1 — a receipt
-    /// written before the terms fields existed parses unchanged and reads
-    /// as an unversioned, unacknowledged document; the fields are omitted
-    /// from a receipt that has nothing to record.
+    /// Schema stays at version 1. Missing terms fields parse as an
+    /// unversioned, unacknowledged document and are omitted when empty.
     #[test]
     fn a_pre_m2_receipt_parses_and_terms_fields_are_omitted_when_absent() {
         assert_eq!(RECEIPT_SCHEMA_VERSION, 1);

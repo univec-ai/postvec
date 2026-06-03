@@ -1,17 +1,7 @@
-//! Prometheus text-format metrics, rendered from plain atomics.
+//! Prometheus text-format metrics from plain atomics.
 //!
-//! Hand-rolled rather than pulled from a client library: the exposition
-//! format is a few lines of text, the label sets here are *closed* (two
-//! methods, a fixed error taxonomy), and a node that runs inside other
-//! people's infrastructure is a poor place to add a dependency for the sake
-//! of six counters.
-//!
-//! Closed label sets are the point. `postvec_server_request_errors_total`
-//! carries the same `shared::ErrorCode` strings that cross the wire in
-//! `x-ravenna-error-code` and drive postvec's retry and dead-letter policy —
-//! which makes "why is this column stuck" a query rather than a log trawl —
-//! and an unrecognised code folds into `OTHER` instead of minting a new
-//! series.
+//! Error labels are a closed set: the `shared::ErrorCode` strings that also
+//! travel as `x-ravenna-error-code`. An unknown code folds into `OTHER`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

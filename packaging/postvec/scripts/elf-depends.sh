@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
-# Compute the package dependencies a set of binaries actually needs, using the
-# target distribution's own dependency generator.
+# ELF dependencies from the target distribution's own generator.
 #
-#   elf-depends.sh --distro debian12 --arch amd64 file...   # -> deb relations
-#   elf-depends.sh --distro el9 --arch amd64 file...        # -> rpm requires
+#   elf-depends.sh --distro debian12 --arch amd64 file...
 #
-# Prints one relation per line, sorted, ready to be spliced into a package
-# description. Prints nothing and fails if there is nothing to report — a
-# binary with no dependencies at all means the generator did not run.
-#
-# Why this exists: nFPM does not run `dpkg-shlibdeps` or RPM's dependency
-# generators. It writes exactly the `depends` it is given. Without this step
-# `postvec-onnxruntime` would declare no dependencies at all, apt would install
-# it happily on a minimal host, and the engine would then fail to dlopen the
-# runtime — an error that appears at the first embedding, not at install time.
-#
-# The generators must run *inside* the target distribution: `libstdc++6 (>= 13)`
-# on one release is `libstdc++6 (>= 5.2)` on another, and the answer must match
-# the archive the package will be installed from.
+# nFPM writes exactly the depends it is given. Without this,
+# postvec-onnxruntime would declare none and fail at dlopen. Run inside
+# the target distribution: the same soname is a different package version
+# on each release.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-DISTRO=""; RELEASE_ARCH=""; FILES=()
+DISTRO=""; RELEASE_ARCH=""; FILES=(); RUNTIME_PACKAGES=()
 while (($#)); do
     case "$1" in
     --distro) DISTRO="$2"; shift 2 ;;
     --arch)   RELEASE_ARCH="$2"; shift 2 ;;
+    # A Debian package-name regex (`^libssl3(t64)?$`) to install in the
+    # generator's container before it runs. dpkg-shlibdeps can only name the
+    # package that provides a soname if that package is *installed* — the
+    # bare base image carries no OpenSSL, so without this the node's
+    # libssl.so.3 is "cannot find library" rather than `libssl3 (>= 3.0.0)`.
+    # A regex rather than a name because the package is spelled differently
+    # per release (Ubuntu 24.04: libssl3t64), and the container of the target
+    # is the right place to resolve that. RPM's generator needs nothing
+    # installed: rpmdeps emits `libssl.so.3()(64bit)` from NEEDED alone.
+    --runtime-package) RUNTIME_PACKAGES+=("$2"); shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *)        FILES+=("$1"); shift ;;
     esac
@@ -69,6 +68,7 @@ deb)
         --platform "${OCI_PLATFORM}" \
         --volume "${WORK}:/work" \
         --env DEBIAN_FRONTEND=noninteractive \
+        --env "RUNTIME_PACKAGES=${RUNTIME_PACKAGES[*]}" \
         "${DIST_BASE_IMAGE}" \
         bash -euo pipefail -c '
             trap "chmod -R a+rwX /work" EXIT
@@ -83,6 +83,19 @@ deb)
             }
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends dpkg-dev libc-bin >/dev/null
+            # The runtime packages a binary links but the base image lacks,
+            # resolved by pattern in *this* release'"'"'s archive. Exactly one
+            # match each: zero means the pattern is wrong for this release,
+            # two means it is too loose to say which package is meant.
+            for pattern in ${RUNTIME_PACKAGES}; do
+                mapfile -t names < <(apt-cache search --names-only "${pattern}" | awk "{print \$1}")
+                if [ "${#names[@]}" -ne 1 ]; then
+                    echo "runtime package pattern ${pattern} matches ${#names[@]} package(s): ${names[*]}" >&2
+                    exit 91
+                fi
+                apt-get install -y -qq --no-install-recommends "${names[0]}" >/dev/null
+                echo "installed ${names[0]} for ${pattern}" >&2
+            done
             mkdir -p /work/src/debian
             cat > /work/src/debian/control <<EOF
 Source: postvec-depends

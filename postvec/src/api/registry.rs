@@ -1670,11 +1670,10 @@ fn enable(
     apply_ddl_lock_timeout();
     let rel = resolve_relation(relation);
     assert_owner(&rel);
-    // Pin the relation's definition before any catalogue classification
-    // (round 8, same discipline as adopt()): the ACCESS SHARE lock, held to
-    // commit, blocks a concurrent ALTER COLUMN TYPE from committing between
-    // the byte-boundability checks below and the trigger/column DDL — the
-    // window in which a just-classified column could become unmeasurable.
+    // Pin the relation's definition before any catalogue classification,
+    // same as adopt(): ACCESS SHARE, held to commit, blocks a concurrent
+    // ALTER COLUMN TYPE between the byte-boundability checks and the
+    // trigger/column DDL.
     Spi::run(&format!(
         "LOCK TABLE {}.{} IN ACCESS SHARE MODE",
         quote_ident(&rel.schema),

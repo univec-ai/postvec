@@ -1,28 +1,11 @@
-//! The privilege-dropped database agent.
+//! Privilege-dropped database agent.
 //!
-//! Parent side ([`AgentClient`]) re-executes this binary as the cluster owner
-//! and exchanges newline-delimited JSON over pipes. Child side ([`serve`])
-//! decodes each request and hands it to [`super::local`].
-//!
-//! Why re-exec rather than fork-and-connect: `setuid` is process-wide and
-//! irreversible, so the parent must keep root to write `/etc/postgresql` and
-//! restart the service. Why not `psql`: passing SQL through another program's
-//! argv and parsing its text output is both a quoting hazard and a redaction
-//! hazard.
-//!
-//! The exec runs as root and the child drops to the cluster owner itself,
-//! first thing (`--drop-to`), rather than dropping pre-exec: the kernel must
-//! load the binary with *root's* access, because the cluster owner often
-//! cannot reach it — a development build under a 0750 home directory being the
-//! canonical case. The privilege window is the child's own first lines of
-//! code; it becomes the target account before reading any input or opening
-//! any connection.
-//!
-//! The hidden `__db-agent` subcommand grants no privilege of its own — a user
-//! running it directly gets exactly the database access they already had, and
-//! `--drop-to` for anyone but themselves fails without root — so it needs no
-//! capability token. It does refuse an interactive stdin, which is the only
-//! way it could be invoked by accident.
+//! Parent re-execs this binary; child drops to the cluster owner then
+//! runs [`super::local`] over newline JSON. Re-exec (not fork): setuid is
+//! process-wide and the parent must keep root. Not psql: quoting and
+//! redaction. Exec as root so the kernel can load a binary the cluster
+//! owner cannot traverse (0750 home). `__db-agent` adds no privilege of
+//! its own; it refuses an interactive stdin.
 
 use super::local::Direct;
 use super::{DbReply, DbRequest, DbTarget};

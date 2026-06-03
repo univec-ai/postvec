@@ -10,8 +10,8 @@ are revoked from PUBLIC. Application search uses
 [`search()`](/docs/guides/search).
 
 Use these to prove a model loads, to translate one vector or to rebuild
-the SQL model cache. They do not change a stored column. Use
-[`migrate()`](/docs/guides/migrate) for that.
+the SQL model cache. Use [`migrate()`](/docs/guides/migrate) to change a
+stored column.
 
 :::: code-group
 
@@ -39,8 +39,8 @@ sudo postvec doctor --database app --deep
 
 :::: tip Expected
 MiniLM returns a 384-d vector. `refresh_models()` returns the number of
-rows written into the `postvec.models` cache. `model ls` and `doctor`
-do not run inference.
+rows written into the `postvec.models` cache. `model ls` lists inventory;
+`doctor` checks the host.
 ::::
 
 ## When to use them
@@ -65,5 +65,4 @@ on an embedded cluster) or after a remote fleet change.
 
 Column-level work stays on [`enable`](/docs/guides/enable),
 [`adopt`](/docs/guides/adopt) and [`migrate`](/docs/guides/migrate).
-A one-shot `convert()` returns a vector. Use `migrate()` to change a
-stored column.
+A one-shot `convert()` returns a vector.

@@ -153,7 +153,8 @@ source text to the provider on the next worker cycle. No SQL change, no
 NOTICE.
 
 `provider add` lists those columns and waits for
-`--acknowledge-in-use` (or the typed answer). `--yes` does not cover it.
+`--acknowledge-in-use` (or the typed answer). `--yes` confirms the
+write; this acknowledgement is separate.
 :::::
 
 A database the command could not inspect is listed as `UNKNOWN`. Columns
@@ -179,7 +180,7 @@ SELECT postvec.adopt('docs', 'body',
                      model => 'openai-text-embedding-ada-002');
 ```
 
-`adopt()` does not rewrite stored bytes. `model` is an assertion: a
+`adopt()` leaves stored bytes as they are. `model` is an assertion: a
 wrong name embeds later queries into the wrong space.
 [Adopt](/docs/guides/adopt) lists the checks.
 
@@ -209,8 +210,9 @@ sudo postvec provider rm openai --acknowledge-in-use --yes
 sudo rm /etc/postvec/keys/openai.key
 ```
 
-`provider rm` lists remaining columns first. It does not delete a key
-file it did not create.
+`provider rm` lists remaining columns first, then removes the connector
+file. Remove a referenced key file by hand if you also want the
+credential gone.
 
 Lifecycle: [migrate](/docs/guides/migrate).
 
@@ -227,7 +229,7 @@ postvec-server status --fleet
 ```
 
 `--path` writes files only. `DIR` must exist. New files inherit its
-owner, so `sudo` does not leave root-owned files the node skips.
+owner, so the node can read them after `sudo`.
 `--acknowledge-in-use` is required.
 
 Every node needs the same connector files. Round-robin to a node that
@@ -246,10 +248,10 @@ A remote-mode cluster without `--path` is refused. The message names
 | What happened | Class | Effect |
 |---|---|---|
 | Network error, timeout, HTTP 408, 424, 429 or 5xx | Transient | Backoff and retry |
-| HTTP 401, 402 or 403 | Config | Retry. Failover-eligible across nodes. For UniVec, 402 means the account has no available credit |
-| Unknown model id at the provider | Config | Retry, failover-eligible |
-| Empty input, or a NUL | PoisonRow | Caught before the request. That row goes to `jobs_dead` |
-| Other HTTP 4xx, or a wrong count, dimension or index | Permanent | The batch is dead-lettered |
+| HTTP 401, 402 or 403 | Config | Retry. On remote, try another node. For UniVec, 402 means the account has no available credit |
+| Unknown model id at the provider | Config | Retry. On remote, try another node |
+| Empty input, or a NUL | Bad row | Caught before the request. That row goes to `jobs_dead` |
+| Other HTTP 4xx, or a wrong count, dimension or index | Permanent | The batch goes to `jobs_dead` |
 
 Config retries until `postvec.max_retries` (default 5), then
 dead-letters. Fix the key and re-drive with
@@ -264,10 +266,10 @@ alone.
 Embedding providers usually bill per token. UniVec conversion bills per
 vector. `postvec.max_document_bytes` (1 MiB) dead-letters an oversized
 document before an embedding call. `max_concurrent` in the file caps
-in-flight requests. It is not a spend cap. Set quotas on the provider.
+in-flight requests. Set spend quotas on the provider.
 
 Provider calls ignore `postvec.embedded_max_inflight`. A slow hosted
-call does not wait behind local ONNX. Raising `max_concurrent` after
+call runs beside local ONNX. Raising `max_concurrent` after
 start needs a restart for the full budget. The models serve either way.
 The CLI says so.
 

@@ -697,12 +697,9 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
         "provider ls must never print a key: {text}"
     );
 
-    // rm takes the file away again — but not on `--yes` alone. With `--path`
-    // there is no cluster to scan for bound columns, and "none found" is not
-    // "none exist": the lost-route acknowledgement is demanded with the
-    // databases marked UNKNOWN, exactly as `add` does for the mirror case.
-    // An earlier version of this test asserted the opposite, and in doing so
-    // pinned the one mode where `--yes` could take a route away unasked.
+    // `--path` cannot scan columns, so `--yes` alone must not remove a
+    // route. The lost-route acknowledgement is demanded with databases
+    // marked UNKNOWN, same as `add`.
     let refused = run(&["provider", "rm", "openai", "--path", root_arg, "--yes"]);
     assert_ne!(code(&refused), 0, "{}", stdout(&refused));
     let text = format!("{}{}", stdout(&refused), stderr(&refused));
@@ -1344,10 +1341,8 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
     );
 }
 
-/// A hand-edited file the host refuses reads as a *refusal* in `ls`, not as
-/// "NOT served (reload or restart the host)" — the one remedy that cannot
-/// work. `doctor` stopped making that misdiagnosis when it started running
-/// the loader's rules; `ls` answers the same question.
+/// A hand-edited file the host refuses reads as a refusal in `ls`, not
+/// as "reload the host". Same question doctor asks via the loader rules.
 #[test]
 fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
     use std::os::unix::fs::PermissionsExt;
@@ -1636,17 +1631,11 @@ fn creating_a_providers_directory_checks_the_chain_it_hangs_from() {
     );
 }
 
-/// The probe is a **paid** call, so it must not be spent on a file or a model
+/// The probe is a paid call, so it must not be spent on a file or model
 /// the serving host would refuse.
 ///
-/// Hermetic by construction: every case points `--base-url` at an in-process
-/// mock and asserts it received **zero** requests. An earlier version used
-/// the real endpoints and would have contacted Google and OpenAI if the gate
-/// regressed — a test that can make the call it forbids is not a test of the
-/// gate. The runtime is **multi-threaded and held for the whole test** so the
-/// mock's accept loop actually runs; a current-thread runtime that has
-/// returned from `block_on` never accepts, which would make the zero-request
-/// assertion true for the wrong reason.
+/// Hermetic: the mock must see zero requests. Multi-threaded runtime so
+/// the accept loop actually runs.
 #[test]
 fn nothing_the_host_would_refuse_is_ever_probed() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1756,15 +1745,8 @@ fn set_mode(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }
 
-/// The two halves of pre-probe validation that have to hold at once: every
-/// new model must be *in* the document being checked (or the structural rules
-/// skip it), and a model whose dimension is not yet known must still reach
-/// the probe that measures it.
-///
-/// A previous pass validated the document with the unknown-dimension models
-/// left out, which satisfied the first half by breaking the second: a
-/// brand-new file with one uncatalogued model failed with "no [[models]]
-/// entries" and could never discover its dimension at all.
+/// Unknown-dimension models stay in the document under validation so they
+/// can still reach the probe. Structural rules still see them.
 #[test]
 fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1828,16 +1810,7 @@ fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
     );
 }
 
-/// `validate_file` got the byte ceiling from the reader that opened the file;
-/// `validate_str` measured a *rendered* document and never checked its size
-/// at all. So `provider add` could compose and write a connector the serving
-/// host — and `provider test`, and `ls`, and doctor — would immediately
-/// refuse: a working configuration replaced by one that fails at the next
-/// restart.
-///
-/// Size was the only rule the two paths differed on; everything else the
-/// reader checks is a property of a file on disk, which a prospective
-/// document does not have yet.
+/// Rendered documents are size-checked the same way as files on disk.
 #[test]
 fn a_composed_file_over_the_byte_ceiling_is_refused_before_anything_is_spent() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1911,13 +1884,8 @@ fn a_composed_file_over_the_byte_ceiling_is_refused_before_anything_is_spent() {
     );
 }
 
-/// `provider add` validated one document, never the directory it was joining.
-/// A perfectly valid file that pushes the set over a loader ceiling makes the
-/// host refuse the **whole directory** — every provider gone at the next
-/// restart, caused by a command that reported success.
-///
-/// `--dry-run` is held to the same standard: a dry run that says "fine" about
-/// a write the real run would refuse has predicted nothing.
+/// Adding a valid file that would push the directory over a loader ceiling
+/// must fail, including `--dry-run`.
 #[test]
 fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -2014,11 +1982,7 @@ fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
     );
 }
 
-/// An oversized connector file must be *refused*, never read as a truncated
-/// prefix. The reader used `take(limit)` and then checked `len() > limit` —
-/// unreachable, since the read stops at the limit. So an oversized file
-/// parsed as its first 256 KiB, and a subsequent `add` would have rewritten
-/// it with the tail silently discarded.
+/// An oversized file is refused, not read as a truncated prefix.
 #[test]
 fn an_oversized_connector_file_is_refused_not_truncated() {
     let root = provider_root();

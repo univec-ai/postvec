@@ -1,11 +1,9 @@
 ---
-title: Which SQL call
+title: SQL functions
 description: Match enable, adopt, bridge, migrate or chunking to the table you have.
 ---
 
-# Which SQL call
-
-Dedicated SQL functions per usage scenario:
+# SQL functions
 
 | Starting point | Call | Result |
 |---|---|---|
@@ -17,7 +15,7 @@ Dedicated SQL functions per usage scenario:
 | Hosted embedding API (OpenAI, Gemini, ...) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
 
 Functions live in the `postvec` schema (`postvec.enable(...)`).
-`search_path` is left unchanged.
+Leave `search_path` as it is.
 
 ## Text, no vectors
 
@@ -44,9 +42,9 @@ keywords.
 
 ## A populated vector column
 
-`adopt()` registers the existing column. It does not rewrite stored
-bytes. The `model` argument records provenance - a wrong name makes
-later search and conversion silently invalid.
+`adopt()` registers the existing column and leaves stored bytes as they
+are. The `model` argument names the space those bytes came from. A
+wrong name makes later search and conversion silently invalid.
 
 ```sql
 SELECT postvec.adopt(

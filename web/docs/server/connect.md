@@ -6,8 +6,8 @@ description: Point a cluster at postvec-server nodes, prove the pairing with doc
 # Connect PostgreSQL
 
 A cluster in remote mode needs two endpoint lists: gRPC for inference, HTTP
-for discovery. The database host installs the extension and the CLI, and
-nothing else. No ONNX Runtime, no models.
+for discovery. The database host installs the extension and the CLI. Engine
+assets go on the node.
 
 ## 1. Install on the database host
 
@@ -16,7 +16,7 @@ sudo apt install ./postvec-cli_*.deb ./postgresql-18-postvec_*.deb
 ```
 
 The engine-asset packages (`postvec-onnxruntime`,
-`postvec-model-minilm-l6-v2`) belong on the node, not here. Full download and
+`postvec-model-minilm-l6-v2`) go on the node. Full download and
 verification steps: [packages](/docs/install/packages).
 
 ## 2. Point the cluster at the node
@@ -46,7 +46,7 @@ sudo postvec setup --database app \
 ```
 
 `--allow-unreachable` stages the configuration before a node exists. The
-worker starts and inference stays unavailable until one answers.
+worker starts. Inference waits until a node answers.
 
 ## 3. Prove the pairing
 
@@ -105,8 +105,8 @@ sudo postvec setup --database app --database analytics \
   --switch-mode
 ```
 
-Engine files already on the database host are left alone. They are unused in
-remote mode, and deleting them is a separate decision.
+Engine files already on the database host are left alone. Deleting them is a
+separate decision.
 
 Stored vectors are unaffected by the switch. A column keeps its model name and
 its dimension, so the node has to serve that model or the column has no

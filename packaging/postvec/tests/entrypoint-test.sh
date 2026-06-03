@@ -260,12 +260,9 @@ fi
 echo
 echo "the harness itself"
 
-# CI passes a repository-relative path (`target/debug/postvec`). If that is not
-# resolved before the symlink is made, the link points at nothing and every
-# assertion above fails with "postvec: not found" — which is exactly how this
-# suite was broken once. Re-run the whole thing that way to prove it.
-#
-# POSTVEC_TEST_NO_RECURSE stops the child from repeating this check forever.
+# CI passes a repository-relative path. Resolve it before the symlink or
+# the link points at nothing. POSTVEC_TEST_NO_RECURSE stops the child
+# repeating this check.
 relative="${POSTVEC_BIN#"${REPO_ROOT}/"}"
 if [[ -n "${POSTVEC_TEST_NO_RECURSE:-}" ]]; then
     :

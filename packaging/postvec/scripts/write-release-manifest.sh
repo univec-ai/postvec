@@ -1,25 +1,11 @@
 #!/usr/bin/env bash
-# Generate postvec-release.json and SHA256SUMS from the artifacts on disk.
+# Build postvec-release.json and SHA256SUMS from artifacts on disk.
 #
 #   write-release-manifest.sh [--dist DIR] [--build-info DIR]
 #                             [--images images.json] [--git-tag TAG] [--out DIR]
 #
-# Everything in the manifest is either read from a reviewed pin or computed
-# from an artifact. Nothing is typed in: a hand-edited checksum is a checksum
-# that is eventually wrong, and this file is what a user verifies a download
-# against.
-#
-# `--images` takes a JSON array of
-# {name, tag, digest, variant, pg_major, base_digest, platforms[]} produced by
-# the image job — `digest` being the multi-architecture index and `platforms`
-# one entry per child manifest, each with its own SBOM. Without it the manifest
-# records no images, which is correct for a packages-only run; a *release* must
-# pass it, because the documented verification steps reference image digests.
-#
-# Artifacts are collected into one flat directory first. That is not tidiness:
-# `sha256sum --check SHA256SUMS` resolves names relative to the working
-# directory, so a checksum file listing basenames next to artifacts that live
-# in per-cell subdirectories cannot be verified by the command the docs give.
+# Everything is a pin or a hash of an artifact. Collect into one flat
+# directory so `sha256sum --check SHA256SUMS` works on the names a user has.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -33,6 +19,7 @@ EXPECT_DISTROS=""
 EXPECT_MAJORS=""
 EXPECT_ARCHES=""
 EXPECT_IMAGES=""
+EXPECT_SERVER_IMAGE=""
 REQUIRE_SCHEMA=0
 ALLOW_DIRTY=0
 while (($#)); do
@@ -52,6 +39,10 @@ while (($#)); do
     --expect-majors)  EXPECT_MAJORS="$2"; shift 2 ;;
     --expect-arches)  EXPECT_ARCHES="$2"; shift 2 ;;
     --expect-images)  EXPECT_IMAGES="$2"; shift 2 ;;
+    # The repository the inference node's image must be recorded under.
+    # Defaults to the pinned SERVER_IMAGE_REPOSITORY; a disposable publication
+    # passes the derived `<override>-server`.
+    --expect-server-image) EXPECT_SERVER_IMAGE="$2"; shift 2 ;;
     --require-schema) REQUIRE_SCHEMA=1; shift ;;
     # Local rehearsal only: lets the publishable-build checks run against a
     # working tree. The release workflow never passes it, and a manifest built
@@ -237,7 +228,7 @@ print(json.dumps(cells))
 PY
 
 export DIST OUT GIT_COMMIT GIT_TAG MODEL_SOURCE_JSON IMAGES_JSON BUILD_CELLS_JSON \
-       EXPECT_DISTROS EXPECT_MAJORS EXPECT_ARCHES EXPECT_IMAGES
+       EXPECT_DISTROS EXPECT_MAJORS EXPECT_ARCHES EXPECT_IMAGES EXPECT_SERVER_IMAGE
 # A publishable build is stricter: debug packages and SBOMs become mandatory,
 # and the build-cell set is checked exactly. The python side reads this.
 export REQUIRE_IMAGES
@@ -444,6 +435,9 @@ def expected_packages():
         distro = DISTRO_TAGS[distro_id]
         for arch in expect_arches:
             wanted[("postvec-cli", distro, arch)] = VERSION
+            # The inference node: native, PostgreSQL-independent, one per
+            # (distribution, architecture) like the CLI, and with symbols.
+            wanted[("postvec-server", distro, arch)] = VERSION
             wanted[("postvec-onnxruntime", distro, arch)] = env("ORT_VERSION")
             for major in expect_majors:
                 name = (f"postgresql{major}-postvec" if family == "rpm"
@@ -692,21 +686,35 @@ if wanted is not None and manifest_cells:
         sys.exit("a build cell's recorded facts contradict what it claims to be")
     print("build-cell facts verified: %d record(s)" % len(manifest_cells))
 
-# The image closure: the same reasoning, for the six published images. Six
-# copies of one descriptor satisfy "length == 6".
+# The image closure: the same reasoning, for the seven published images — six
+# database images in EXPECT_IMAGES, and the inference node's in its own
+# repository. Seven copies of one descriptor satisfy "length == 7".
 expect_repository = os.environ.get("EXPECT_IMAGES") or ""
 if expect_repository:
     expect_majors = [int(m) for m in (os.environ.get("EXPECT_MAJORS") or "").split()]
+    server_variant = env("SERVER_IMAGE_VARIANT")
+    # The node's repository follows the database images' override, so a
+    # disposable publication into `<x>` puts the node into `<x>-server` — the
+    # same derivation the release workflow's `pins` step makes.
+    server_repository = os.environ.get("EXPECT_SERVER_IMAGE") or env("SERVER_IMAGE_REPOSITORY")
     problems, seen_tags, seen = [], set(), {}
     for image in images:
         key = (image.get("pg_major"), image.get("variant"))
         if key in seen:
             problems.append("duplicate descriptor for PG %s %s" % key)
         seen[key] = image
-        if image.get("name") != expect_repository:
-            problems.append("%s is not %s" % (image.get("name"), expect_repository))
-        suffix = env("COMPLETE_IMAGE_SUFFIX") if image.get("variant") == env("COMPLETE_IMAGE_VARIANT") else ""
-        expected_tag = "%s-%s-pg%s%s" % (VERSION, REVISION, image.get("pg_major"), suffix)
+        if image.get("variant") == server_variant:
+            if image.get("name") != server_repository:
+                problems.append("%s is not %s" % (image.get("name"), server_repository))
+            if image.get("pg_major") is not None:
+                problems.append("the server image claims PostgreSQL %s; it has no major"
+                                % image.get("pg_major"))
+            expected_tag = "%s-%s" % (VERSION, REVISION)
+        else:
+            if image.get("name") != expect_repository:
+                problems.append("%s is not %s" % (image.get("name"), expect_repository))
+            suffix = env("COMPLETE_IMAGE_SUFFIX") if image.get("variant") == env("COMPLETE_IMAGE_VARIANT") else ""
+            expected_tag = "%s-%s-pg%s%s" % (VERSION, REVISION, image.get("pg_major"), suffix)
         if image.get("tag") != expected_tag:
             problems.append("tag %r, expected %r" % (image.get("tag"), expected_tag))
         if image.get("tag") in seen_tags:
@@ -749,19 +757,26 @@ if expect_repository:
     expected_keys = {(major, variant)
                      for major in expect_majors
                      for variant in ("remote", env("COMPLETE_IMAGE_VARIANT"))}
-    for key in sorted(expected_keys - set(seen)):
+    expected_keys.add((None, server_variant))
+    # `None` and an int do not order together; sort on the string form.
+    for key in sorted(expected_keys - set(seen), key=str):
         problems.append("missing image: PG %s %s" % key)
-    for key in sorted(set(seen) - expected_keys):
+    for key in sorted(set(seen) - expected_keys, key=str):
         problems.append("unexpected image: PG %s %s" % key)
 
     # The base each image was built on must be the digest this release pinned.
     # An image built on an unpinned base is not the image this release
-    # describes, however correct its own content is.
-    for (major, variant), image in sorted(seen.items()):
-        pinned = os.environ.get("POSTGRES_IMAGE_PG%s_DIGEST" % major)
+    # describes, however correct its own content is. The database images sit
+    # on the pinned postgres image for their major; the node sits on the
+    # pinned Debian 12 base, which is also the builder its packages came from.
+    for (major, variant), image in sorted(seen.items(), key=str):
+        if variant == server_variant:
+            pinned = os.environ.get("BUILD_BASE_DEBIAN12_DIGEST")
+        else:
+            pinned = os.environ.get("POSTGRES_IMAGE_PG%s_DIGEST" % major)
         if not pinned:
             # No pin to compare against is a hole in the check, not a pass.
-            problems.append("no pinned base image for PG %s" % major)
+            problems.append("no pinned base image for PG %s %s" % (major, variant))
         elif image.get("base_digest") != pinned:
             problems.append(
                 "PG %s %s was built on %s, but this release pins %s"
@@ -784,12 +799,8 @@ manifest = {
     "release_id": "%s-%s" % (env("POSTVEC_VERSION"), env("PACKAGE_RELEASE")),
     "git_commit": env("GIT_COMMIT"),
     "source_date_epoch": int(env("SOURCE_DATE_EPOCH")),
-    # Everything the build was pinned to, so a reader does not have to go and
-    # find the versions.env of the commit to know what produced this.
-    # Every reviewed pin, verbatim. The claim in the README is "the manifest
-    # records what produced this release", and a selection of the pins does not
-    # satisfy it: the per-architecture digests are exactly what someone
-    # reproducing an arm64 artifact needs.
+    # Every reviewed pin, verbatim. A selection would drop the per-architecture
+    # digests a reproducer needs.
     "inputs": {
         "rust": env("RUST_VERSION"),
         "cargo_pgrx": env("PGRX_VERSION"),
@@ -846,8 +857,15 @@ manifest = {
     "cargo_pgrx": env("PGRX_VERSION"),
     "pgvector_min": env("PGVECTOR_MIN_VERSION"),
     "onnxruntime": env("ORT_VERSION"),
-    # Every public package is the embedded-capable build; see README §3.
+    # Every public package is the embedded-capable build.
     "extension_features": ["embedded", "onnx"],
+    # The one artifact family under different terms. Recorded so a consumer
+    # of the manifest need not open a package to learn which licence the node
+    # carries; every other package and image is PostgreSQL-licensed.
+    "licenses": {
+        "default": "PostgreSQL",
+        "postvec-server": env("SERVER_LICENSE"),
+    },
     "postgresql_majors": sorted(majors),
     "architectures": sorted(arches),
     "bundled_model": model,

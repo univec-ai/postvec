@@ -8,6 +8,12 @@ export const SITE = {
   githubRepo: "univec-ai/postvec",
   releaseTag: "postvec-v0.1.0-1",
   ghcr: "ghcr.io/univec-ai/postvec",
+  // The inference node's image: its own repository, tagged with the bare
+  // release id and a `latest` moving tag (no PostgreSQL major to hide).
+  ghcrServer: "ghcr.io/univec-ai/postvec-server",
+  // Packaging pin SERVER_LICENSE: the one artifact family not under the
+  // PostgreSQL License.
+  serverLicense: "BUSL-1.1",
   univec: "https://univec.ai",
   version: "0.1.0",
   release: "0.1.0-1",

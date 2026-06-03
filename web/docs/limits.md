@@ -16,8 +16,7 @@ description: Supported environments and explicit limitations.
 
 ## Not supported
 
-- **RDS, Aurora** and any host that cannot set
-  `shared_preload_libraries = 'postvec'`
+- Hosts that cannot set `shared_preload_libraries = 'postvec'`
 - `TEMPORARY` tables (the worker cannot see them)
 - In-SQL chat / RAG completion
 - Provider API keys as GUCs
@@ -68,4 +67,4 @@ description: Supported environments and explicit limitations.
 Terms for `postvec-server` will be stated before the first release.
 
 A verified UniVec account sees the private catalogue superset. The
-public channel is a subset and does not require a key.
+public channel is a subset and needs no key.

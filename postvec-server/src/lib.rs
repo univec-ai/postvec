@@ -1,39 +1,28 @@
-//! postvec-server — the inference node postvec's remote (`grpc`) mode dials.
+//! Inference node that postvec's remote (`grpc`) mode dials.
 //!
 //! ```text
-//!                     postvec (customer's PostgreSQL)
-//!                              │
-//!            gRPC :33333       │       HTTPS :22222  GET /config
-//!            Embed / Convert   │       model discovery
-//!                              ▼
-//!               ┌──────────────────────────────────────┐
-//!               │  postvec-server                      │
-//!               │    InferenceEngine over disk models  │
-//!               │    gossip :11111   admin :22223 (lo) │
-//!               │    no hub, no S3, no UI              │
-//!               └──────────────┬───────────────────────┘
-//!                              │ gossip, identical ports
+//!                     postvec (the customer's PostgreSQL)
+//!                              |
+//!            gRPC :33333       |       HTTPS :22222  GET /config
+//!            Embed / Convert   |       model discovery
+//!                              v
+//!               +--------------------------------------+
+//!               |  postvec-server                      |
+//!               |    InferenceEngine over disk models  |
+//!               |    gossip :11111   admin :22223 (lo) |
+//!               |    no hub, no S3, no UI              |
+//!               +--------------+-----------------------+
+//!                              | gossip, identical ports
 //!                     other postvec-server nodes
 //! ```
 //!
-//! A fleet of identical nodes, not a control plane and workers. Every node
-//! binds the same three ports and runs the same command; only `--advertise`
-//! differs, and usually not even that. Models are files on disk — put there
-//! by `postvec model pull`, a shared volume, or any copy step you already
-//! have. This process never fetches weights.
+//! Identical nodes, not a control plane. Every node binds the same three
+//! ports and runs the same command. Models are files on disk. This process
+//! never fetches weights.
 //!
-//! ## Boot order, and what is fatal
-//!
-//! Sockets are reserved first, before anything slow, so a port conflict
-//! fails in the first second rather than after a multi-minute model load.
-//! Then ONNX Runtime initialises (fatal — a node with no backend is not a
-//! node), then models load, then warmup, then the cluster, then serving
-//! begins. Between reservation and serving the ports are open but silent;
-//! a healthcheck sees a refused connection, which is the honest answer for
-//! "still starting".
-//!
-//! Failing to join the cluster is **not** fatal: a node that cannot see its
-//! peers still serves every client that can see it.
+//! Sockets are reserved before model load so a port conflict fails
+//! immediately. ONNX init is fatal. Failing to join the cluster is not: a
+//! node that cannot see its peers still serves every client that can see it.
 
 pub mod admin;
 pub mod cli;
@@ -157,14 +146,10 @@ enum LeaseOutcome {
     Unavailable(String),
 }
 
-/// The lease pathname: a stable inode under `/run/lock/postvec`, named by
-/// the **SHA-256 of the canonical engine-root path bytes** (fixed 64-hex; a
-/// raw-path encoding hit `NAME_MAX` for roots over 121 bytes), never
-/// unlinked. This is a contract with postvec-cli's purge
-/// (`commands/purge.rs::serving_lease_path`); both crates pin the same
-/// example literal in their tests. It coordinates only processes that see
-/// the same inode: a container sharing an engine root with other mount
-/// namespaces must bind-mount `/run/lock/postvec` too.
+/// Lease path: SHA-256 of the canonical engine-root bytes, 64 hex chars,
+/// never unlinked. Same contract as postvec-cli purge. Coordinates only
+/// processes that see the same inode: a container sharing an engine root
+/// across mount namespaces must bind-mount `/run/lock/postvec` too.
 fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(canonical_root.as_os_str().as_encoded_bytes());
@@ -459,37 +444,17 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     log::info!("shutting down: {stop_reason}");
 
     // --- 8. Drain ---------------------------------------------------------
-    //
-    // `/ready` flips to 503 first so healthchecks and load balancers stop
-    // sending work, while `/health` stays 200 and in-flight requests finish.
-    //
-    // `/config` deliberately keeps advertising this node's models. Emptying
-    // it would look tidier, but postvec's discovery prunes its SQL model
-    // cache on a complete refresh — so a single-node deployment restarting
-    // would have its cache emptied mid-restart, which is a far worse outcome
-    // than a few requests routed at a node that is about to close. The
-    // mechanism that actually reroutes traffic is the transport error, which
-    // postvec already retries.
+    // Flip `/ready` to 503 first. Keep `/config` models so a single-node
+    // restart does not prune postvec's SQL cache. Announce departure, wait
+    // drain-delay so the 503 is observable, then stop. A second signal
+    // skips the wait.
     state.begin_drain();
     if let Some(maintenance) = maintenance {
         maintenance.abort();
     }
     if let Some(cluster) = &cluster {
-        // Announce first, tear down last. The announcement rides the gossip
-        // loop's next tick, so it needs the transport to outlive it by more
-        // than an instant; the drain window below is that time. Announcing
-        // and shutting down together would leave peers to notice through
-        // anti-entropy instead, which is thirty seconds of routing at a node
-        // that has gone.
         let _ = cluster.announce_departure().await;
     }
-
-    // Keep serving for a moment while `/ready` already answers 503. Without
-    // this the listener stops accepting the instant the signal arrives, so
-    // the 503 is never observable from outside and a load balancer learns
-    // the node is leaving from a refused connection instead of from a health
-    // check. A second signal skips the wait, because an operator pressing
-    // ctrl-c twice means it.
     if !settings.drain_delay.is_zero() {
         log::info!(
             "draining: /ready is 503 for {:?} before the listeners close",

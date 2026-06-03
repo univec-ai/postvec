@@ -7,10 +7,10 @@ description: In-place model migration via convert (or re-embed), finalize and ab
 
 Stored vectors move to a new model in place. The default strategy is
 `convert`: a local converter model or a direct UniVec hosted converter
-translates the stored vectors. Source text is not re-embedded.
+translates the stored vectors.
 
-When the corpus should stay put, [bridge search](/docs/guides/bridge)
-converts queries into the existing space instead.
+To keep stored vectors as they are, [bridge search](/docs/guides/bridge)
+converts queries into the existing space.
 
 A migration waits at two operator steps: `awaiting_finalize` (column
 swap) and, if an ANN index existed, `awaiting_index` (rebuild then a
@@ -160,8 +160,8 @@ On an embedded host, pull a local converter with
 each `postvec-server` node.
 
 A [`kind = "convert"` UniVec entry](/docs/models/univec) supplies a hosted
-direct route. The migration sends every stored vector to UniVec, but it does
-not send source text. `migration_status().resolved_via` names the converter:
+direct route. The migration sends every stored vector to UniVec.
+`migration_status().resolved_via` names the converter:
 
 ```json
 {"kind":"direct","model":"univec-convert-snowflake-to-bge-m3"}
@@ -181,7 +181,7 @@ SELECT postvec.migration_abort(:migration_id);
 
 ## Observed entries
 
-An `adopt(sync => false)` entry has no write path. `migrate()` refuses it unless `observed_writes_quiesced => true`, with writes remaining stopped through finalization. Otherwise the watermark can miss updates.
+An `adopt(sync => false)` entry has no write path. `migrate()` refuses it unless `observed_writes_quiesced => true`, with writes remaining stopped through finalization. Otherwise later writes can be missed.
 
 ## Chunked entries
 

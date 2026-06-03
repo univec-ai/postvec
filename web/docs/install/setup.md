@@ -5,13 +5,13 @@ description: Cluster configuration and diagnostics with postvec setup and doctor
 
 # Configure the cluster
 
-`postvec setup` is the step that actually turns files into a working
-extension. After packages or a source copy, run this.
+`postvec setup` writes cluster configuration, creates the extension and
+starts the worker. Run it after a package install or a source copy.
 
-It creates missing databases, installs the extension, merges
+The command creates missing databases, installs the extension, merges
 `shared_preload_libraries`, writes **one** owned file
 (`conf.d/99-postvec.conf`), validates it, restarts or reloads if needed,
-refreshes models and verifies that the worker heartbeat **advances**.
+refreshes models and checks that the worker heartbeat **advances**.
 
 A dry run reports the planned changes without applying them:
 
@@ -21,15 +21,13 @@ sudo postvec setup --database app ... --dry-run
 
 ## Embedded
 
-The engine runs in the launcher. No account or outbound embedding API is
-required. This is the extension's **default** mode, and
-`postvec.path` defaults to `/opt/postvec`, where the engine-asset
+The engine runs in the launcher. This is the extension's **default**
+mode. `postvec.path` defaults to `/opt/postvec`, where the engine-asset
 packages install, so `setup --embedded` needs no `--path` on a package
 install.
 
 `setup` enrols the database in `postvec.database`, installs the
-extension and restarts. Default `postvec.path` only covers the engine
-root; enrolment is still this command.
+extension and restarts.
 
 <PgSnippet id="setup-embedded" />
 
@@ -40,12 +38,12 @@ inventories.
 ::::
 
 `--model NAME` (repeatable) is an embedded preload allow-list. Omit it
-to scan-load every enabled descriptor.
+to load every enabled model.
 
 `--providers-path DIR` moves the [external provider](/docs/models/providers)
 connector directory. Omit it to keep `/etc/postvec/providers.d`. `setup
 --embedded` creates that directory empty (`0700`, cluster owner) if it is
-absent. An empty or missing directory changes nothing.
+absent.
 
 ## Remote gRPC
 
@@ -85,8 +83,8 @@ be restarted before running `doctor`.
 
 ## Multiple databases
 
-`postvec.database` is cluster-wide. Each `--database` **adds**; it does
-not remove the others.
+`postvec.database` is cluster-wide. Each `--database` **adds** to the
+list.
 
 ```bash
 sudo postvec setup --database analytics --embedded
@@ -107,7 +105,8 @@ worker. `setup` creates the database before activating the list.
 | Hand-written (`Foreign`) | Refuse |
 | CLI-owned but edited (`Modified`) | Refuse |
 
-`--yes` does **not** override those two. Reconcile or move the file.
+`Foreign` and `Modified` files are refused, including with `--yes`.
+Reconcile or move the file.
 
 A manually maintained `postvec.conf` should not coexist with the
 CLI-owned `99-postvec.conf`.
@@ -154,17 +153,16 @@ postvec.path = '/opt/postvec'
 ```
 
 Remote deployments set `postvec.mode = 'grpc'` plus
-`postvec.grpc_endpoints` and `postvec.http_endpoints`. `setup` is
-preferred over manual editing.
+`postvec.grpc_endpoints` and `postvec.http_endpoints`.
 
 Create the database and `CREATE EXTENSION postvec CASCADE` **before**
 adding the name to `postvec.database`, then restart.
 
 ## `doctor` summary
 
-`doctor` is read-only and performs approximately 40 checks, each with a
-remediation. `--deep` verifies that the heartbeat advanced and hashes
-CLI-installed model receipts. `--strict` fails on warnings.
-`--format json` is the automation surface. Exit 0 is clean.
+`doctor` is read-only and runs about 40 checks, each with a
+remediation. `--deep` verifies that the heartbeat advanced and that
+CLI-installed model files match their receipts. `--strict` fails on
+warnings. `--format json` is for scripts. Exit 0 is clean.
 
 Full flag list: [CLI reference](/docs/reference/cli).

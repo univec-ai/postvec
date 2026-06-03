@@ -9,8 +9,7 @@ description: Discovery, embed versus convert and which CLI commands apply in eac
 
 On an embedded host, add models with `postvec model pull`. In remote
 mode, administer them on the `postvec-server` nodes ([models on a
-node](/docs/server/models)). Package install, `setup` and `search()` use
-the inventory that is already present.
+node](/docs/server/models)). Models load from the engine root on disk.
 
 Workers refresh the cache on an interval and prune stale entries only
 after **every** discovery endpoint succeeded.
@@ -39,12 +38,12 @@ That converter can be a local model or a UniVec hosted route.
 
 ## Hosted models
 
-A model in `postvec.models` does not have to be a file on disk. A connector
-file on the inference side can declare embed models served by OpenAI, Gemini,
+A model in `postvec.models` can also come from a connector file on the
+inference side. Those files declare embed models served by OpenAI, Gemini,
 Cohere, Mistral, AWS Bedrock, OpenRouter or UniVec. UniVec can also declare
 direct converters. They appear in the same cache with `model_type`, source
-and target names and dimensions. There is no `pull` or `activate` step: the
-connector file is the serving truth.
+and target names and dimensions. The connector file is what the host
+serves. There is no `pull` or `activate` step.
 
 The credential lives in that file, never in PostgreSQL.
 [External providers](/docs/models/providers) is the walkthrough;
@@ -92,16 +91,15 @@ descriptors, but performs no engine load and no SQL refresh.
 The extras package and the complete image ship `sentence-transformers-all-minilm-l6-v2`
 (384-d). It is package-owned, so `model rm` leaves it in place.
 
-## Revisions are not migrations
+## Model revisions
 
 A published name is one vector-space identity. Its head revision can
-move forward. `model upgrade` replaces bytes; it does **not** rewrite
-stored vectors. A column served across four revisions holds a mix of
+move forward. `model upgrade` replaces model files. Stored vectors stay
+as they are. A column served across four revisions holds a mix of
 four generations. To make a column uniform, re-embed or
 [`migrate()`](/docs/guides/migrate).
 
-Upgrading the extension is a different lifecycle. Neither implies the
-other.
+Upgrading the extension is a separate lifecycle.
 
 ## Related documentation
 

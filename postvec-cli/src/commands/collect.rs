@@ -1,9 +1,5 @@
-//! Fact collection, shared by `doctor` and by `setup`'s preflight and smoke
-//! phases.
-//!
-//! Having one collector per fact — rather than one for diagnosis and another
-//! for verification — is what keeps setup's idea of "healthy" identical to
-//! doctor's.
+//! Fact collection shared by doctor and setup. One collector so both
+//! judge the same observations.
 
 use super::Context;
 use crate::checks;
@@ -291,11 +287,7 @@ pub async fn probe_embedded(
     Ok(probe)
 }
 
-/// Build the whole check set from collected facts. This *is* the doctor report's
-/// content, and setup's post-restart verification uses it unchanged.
-/// Model-store facts for an embedded root: the installed inventory with
-/// receipt state, plus (under `--deep`) per-file integrity verification.
-/// Read-only; the hashing is why it is gated.
+/// Installed inventory plus receipt state. Under `--deep`, per-file hashes.
 pub fn model_store_facts(probe: &EmbeddedProbe, deep: bool) -> Option<ModelStoreFacts> {
     let root = probe.root.clone()?;
     let store = crate::registry::root::ModelRoot::new(root.clone());
@@ -391,6 +383,8 @@ pub async fn registry_probe(deep: bool, timeout: Duration) -> RegistryProbeFacts
     }
 }
 
+/// Build the check set from collected facts. Doctor and setup smoke use
+/// this unchanged.
 pub fn evaluate(
     context: &Context,
     snapshot: &ClusterSnapshot,

@@ -15,9 +15,8 @@
     "would fail on hardware that is working correctly; 1e-3 is far tighter than",
     "any behavioural change and far looser than floating-point noise.",
     "",
-    "Regenerate with: tests/model-golden-test.sh --record <image>. Doing so is",
-    "a deliberate act: if the numbers moved, the model changed, and a changed",
-    "model needs a new internal name (see README §The bundled model)."
+    "Regenerate with: tests/model-golden-test.sh --record <image>. If the",
+    "numbers moved the model changed: publish it under a new internal name."
   ],
   "model": "sentence-transformers-all-minilm-l6-v2",
   "bundle_version": 1,

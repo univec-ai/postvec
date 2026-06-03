@@ -10,14 +10,12 @@ Remote mode (`grpc`) runs it in `postvec-server`. PostgreSQL talks to that
 process over gRPC. SQL, the job queue and the wire contract are the same.
 Switching is `postvec.mode` plus a restart.
 
-`postvec-server` ships in the postvec repository.
-
 ## When to run remote mode
 
 - **Crash domain.** An ONNX fault takes down the process it runs in. In
   embedded mode that is PostgreSQL's launcher.
 - **CPU or memory.** Embedded mode uses a conservative host policy so the
-  engine does not starve the database.
+  engine leaves headroom for the database.
 - **GPU.** Embedded mode is CPU-only.
 - **Sharing.** Several databases or services against one engine.
 - **Read replicas.** A replica that should search but not embed.

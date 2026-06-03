@@ -108,6 +108,16 @@ jobs:
             bash -n "$script" || exit 1
           done
 
+      # The node's packaged configuration is read by every node a package
+      # installs, and unknown keys are a hard error there — so it has to be
+      # JSON, and the drop-in has to be a unit fragment systemd will parse.
+      - name: Packaged node configuration parses
+        run: |
+          python3 -c 'import json, sys; json.load(open(sys.argv[1]))' \
+            packaging/postvec/server/config.json
+          grep -q '^\[Service\]$' packaging/postvec/server/packaged.conf
+          grep -q '^Environment=POSTVEC_SERVER_ROOT=/opt/postvec$' packaging/postvec/server/packaged.conf
+
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
@@ -296,11 +306,15 @@ jobs:
       # postvec binary that does it. Adding a Rust toolchain and a second CLI
       # build to every call site would be a duplicate compiler path for a
       # binary the job already has.
+      #
+      # `--with-server`: the reference cell is also the shared-package cell,
+      # so it carries the inference node — which the package step, the
+      # install test and the server image below all need.
       - name: Compile
         timeout-minutes: 45
         run: |
           packaging/postvec/scripts/build-extension-stage.sh \
-            --distro debian12 --pg 18 --arch amd64
+            --distro debian12 --pg 18 --arch amd64 --with-server
 
       - name: Bundled model, from the registry's public channel
         timeout-minutes: 15
@@ -357,6 +371,14 @@ jobs:
           packaging/postvec/tests/package-install-test.sh \
             --distro debian12 --pg 18 --arch amd64
 
+      # An inference host with no PostgreSQL: the node bundle from local
+      # files and the distribution archive only, then the node package alone.
+      - name: Install on a clean node host (no PostgreSQL)
+        timeout-minutes: 20
+        run: |
+          packaging/postvec/tests/node-install-test.sh --distro debian12 --arch amd64
+          packaging/postvec/tests/node-install-test.sh --without-cli --distro debian12 --arch amd64
+
       # PV-13: the packaged external-provider gate — a deterministic provider
       # mock inside the container, the shipped CLI's live probe, write-back,
       # search, bounded retries, reload, and crash recovery. See
@@ -382,7 +404,7 @@ jobs:
           # And the root matters as much as the name: an `all` package written
           # into an architecture's cell is invisible to the other architecture,
           # which is a failure that looks exactly like success on amd64.
-          for package in postvec-cli postvec-onnxruntime; do
+          for package in postvec-cli postvec-server postvec-onnxruntime; do
             ls "$common/${package}"_*.deb >/dev/null 2>&1 \
               || { echo "::error::missing $package"; ls "$common"; exit 1; }
           done
@@ -404,6 +426,8 @@ jobs:
           # package: the CLI's belong with the CLI, not with a PostgreSQL major.
           ls "$common"/postvec-cli-dbgsym_*.deb >/dev/null 2>&1 \
             || { echo "::error::no CLI debug package"; ls "$common"; exit 1; }
+          ls "$common"/postvec-server-dbgsym_*.deb >/dev/null 2>&1 \
+            || { echo "::error::no postvec-server debug package"; ls "$common"; exit 1; }
           ls "$extension"/postgresql-18-postvec-dbgsym_*.deb >/dev/null 2>&1 \
             || { echo "::error::no extension debug package"; ls "$extension"; exit 1; }
           ! ls "$extension"/postvec-cli-dbgsym_*.deb >/dev/null 2>&1 \
@@ -468,11 +492,14 @@ jobs:
 
       # The extension stage produces the postvec binary the model pull needs,
       # so it runs first and the bundle reuses it — no second compiler path.
+      # Every matrix cell here packages the shared components too (one cell
+      # per distribution × major, so the file names collide only within one
+      # job's own dist/), so every cell carries the node.
       - name: Compile and package
         run: |
           cell="${{ matrix.distro }}-pg${{ matrix.pg }}-${{ matrix.arch }}"
           packaging/postvec/scripts/build-extension-stage.sh \
-            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+            --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }} --with-server
           packaging/postvec/scripts/build-model-bundle.sh \
             --cli "packaging/postvec/build/${cell}/cli/postvec"
           packaging/postvec/scripts/build-packages.sh \
@@ -491,6 +518,14 @@ jobs:
         run: |
           packaging/postvec/tests/package-install-test.sh \
             --distro ${{ matrix.distro }} --pg ${{ matrix.pg }} --arch ${{ matrix.arch }}
+
+      - name: Install on a clean node host (no PostgreSQL)
+        if: matrix.pg == 18
+        run: |
+          packaging/postvec/tests/node-install-test.sh \
+            --distro ${{ matrix.distro }} --arch ${{ matrix.arch }}
+          packaging/postvec/tests/node-install-test.sh --without-cli \
+            --distro ${{ matrix.distro }} --arch ${{ matrix.arch }}
 
       - name: PV-13 provider gate (package cell)
         if: matrix.pg == 18 && (matrix.distro == 'debian12' || matrix.distro == 'el9')
@@ -514,7 +549,7 @@ jobs:
           packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch amd64
           for major in 16 18; do
             packaging/postvec/scripts/build-extension-stage.sh \
-              --distro debian12 --pg "$major" --arch amd64
+              --distro debian12 --pg "$major" --arch amd64 --with-server
             # Once, with the first cell's own CLI. The bundle is
             # architecture- and PostgreSQL-independent.
             if [ ! -f packaging/postvec/build/payload-common/model-facts.env ]; then
@@ -562,24 +597,31 @@ jobs:
           packaging/postvec/scripts/build-image.sh \
             --pg ${{ matrix.pg }} --variant ${{ matrix.variant }} --arch amd64 --load
 
+      # The node's image, composed from the packages downloaded above (the
+      # shared cell now carries postvec-server), then tested on its own before
+      # the remote database image is tested against it.
       - name: postvec-server image
         if: matrix.variant == 'remote'
         run: |
-          packaging/postvec/scripts/build-onnxruntime-bundle.sh --arch amd64
-          packaging/postvec/scripts/build-server-image.sh --arch amd64
+          packaging/postvec/scripts/build-server-image.sh --arch amd64 --load
+          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
+          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
+          server_repo="$(sed -n 's/^SERVER_IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
+          packaging/postvec/tests/server-image-test.sh "${server_repo}:${version}-${revision}"
 
       - name: Smoke test
         run: |
+          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
+          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
+          repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
+          server_repo="$(sed -n 's/^SERVER_IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
           suffix=""
           engine=""
           if [ "${{ matrix.variant }}" = complete ]; then
             suffix="-complete"
           else
-            engine="--server-image postvec-server:amd64"
+            engine="--server-image ${server_repo}:${version}-${revision}"
           fi
-          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
-          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
-          repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
           # shellcheck disable=SC2086
           packaging/postvec/tests/image-smoke-test.sh \
             --variant ${{ matrix.variant }} ${engine} \
@@ -590,16 +632,17 @@ jobs:
       - name: PV-13 provider gate (image cell)
         timeout-minutes: 30
         run: |
+          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
+          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
+          repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
+          server_repo="$(sed -n 's/^SERVER_IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
           suffix=""
           engine=""
           if [ "${{ matrix.variant }}" = complete ]; then
             suffix="-complete"
           else
-            engine="--server-image postvec-server:amd64"
+            engine="--server-image ${server_repo}:${version}-${revision}"
           fi
-          version="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
-          revision="$(sed -n 's/^PACKAGE_RELEASE=//p' packaging/postvec/versions.env)"
-          repo="$(sed -n 's/^IMAGE_REPOSITORY=//p' packaging/postvec/versions.env)"
           # shellcheck disable=SC2086
           packaging/postvec/tests/provider-e2e-test.sh --target image \
             --variant ${{ matrix.variant }} ${engine} \

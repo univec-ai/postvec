@@ -10,8 +10,7 @@ description: Behavior and options for postvec.enable().
 triggers and optionally backfills existing rows.
 
 If the table already has a populated `vector(N)` column, use
-[`adopt()`](/docs/guides/adopt) instead. `enable()` always adds a new
-column.
+[`adopt()`](/docs/guides/adopt). `enable()` always adds a new column.
 
 ## 1. Check the table and the model
 
@@ -91,9 +90,10 @@ reason search is slow. See [indexes](/docs/guides/indexes).
 | `format` | raw column | See [templates](/docs/guides/templates) |
 | `chunking` | `none` | See [chunking](/docs/guides/chunking) |
 
-Statement triggers do **not** fire for subscriber-applied logical
-replication. Run postvec on the **publisher**. On a partitioned parent,
-prefer `trigger_mode => 'row'` so every partition is covered.
+Statement triggers fire on the publisher. Subscriber-applied logical
+replication skips them, so run postvec on the **publisher**. On a
+partitioned parent, prefer `trigger_mode => 'row'` so every partition
+is covered.
 
 ## Disable
 
@@ -103,8 +103,8 @@ SELECT postvec.disable('public.docs', 'body');
 SELECT postvec.disable('public.docs', 'body', drop_column => true);
 ```
 
-`drop_column` is refused for a column postvec did not create (adopted).
-Chunk destinations are a separate flag; see
+`drop_column` applies only to a shadow column postvec created. Adopted
+columns stay. Chunk destinations are a separate flag; see
 [chunking](/docs/guides/chunking).
 
 ## Refusals
@@ -117,7 +117,7 @@ Jobs are keyed by primary key. Tables without one are refused.
 The worker uses a separate session and cannot see temporary tables.
 ::::
 
-:::: danger Source text is visible to the bootstrap superuser
-The worker connects as the bootstrap superuser and bypasses RLS. A role
-that can read the table can also read the derived vector.
+:::: danger Source text is visible to the worker
+The worker connects as a superuser and bypasses RLS. A role that can
+read the table can also read the derived vector.
 ::::

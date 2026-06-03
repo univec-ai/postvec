@@ -6,8 +6,8 @@ description: Authentication and access rules for the public and private model ca
 # Login and the private catalogue
 
 The CLI uses two compiled-in catalogue channels. Login is only needed
-to pull from the private channel. The bundled MiniLM model does not
-need it.
+to pull from the private channel. The bundled MiniLM model is already
+on disk after a complete install.
 
 | Channel | Who | Contents |
 |---|---|---|
@@ -15,7 +15,6 @@ need it.
 | Private | A verified UniVec account and a `uv_` API key | The full embedding suite, nearly 100 conversion pairs and additional converter variants |
 
 Public entries retain their public download URLs after authentication.
-Authentication does not move public models to the private channel.
 
 The private catalogue is the same inventory a fleet of nodes can
 serve. Organisation accounts and support around that fleet are
@@ -63,8 +62,8 @@ Credential order:
    otherwise `$XDG_CONFIG_HOME/postvec/auth.json`
 4. None -> public catalogue
 
-An invalid credential returns an error and does not fall back to
-anonymous access. `logout` restores public-only catalogue resolution.
+An invalid credential returns an error. `logout` restores public-only
+catalogue resolution.
 
 ## Credential isolation
 

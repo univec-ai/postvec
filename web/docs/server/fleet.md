@@ -37,7 +37,7 @@ sudo postvec setup --database app \
 
 ## Clustering scope
 
-- **Models.** Load a converter on node A and node B does not grow one.
+- **Models.** Load a converter on each node that should serve it.
 - **Load balancing.** postvec round-robins the gRPC list itself.
 - **Discovery.** postvec never joins gossip and never reads membership.
   The endpoint lists are the routing table.
@@ -74,8 +74,7 @@ missing model directory:
 ```
 
 Provider-backed embed models and converters are also excluded from the
-descriptor-drift checks, which assume an on-disk descriptor. They do not have
-one.
+descriptor-drift checks, which assume an on-disk descriptor.
 
 ## Rolling restarts
 
@@ -92,8 +91,8 @@ On `SIGTERM` or ctrl-c a node drains:
    signal skips the wait.
 3. The listeners stop accepting. In-flight requests finish or hit their own
    deadline. An idle node exits immediately rather than padding the worst case.
-4. `/health` stays `200` throughout, so a supervisor does not kill the process
-   mid-request.
+4. `/health` stays `200` throughout, so a supervisor leaves the process
+   running while in-flight requests finish.
 
 So a rolling upgrade is: restart one node, wait for its `/ready` to go green,
 move on. Budget `TimeoutStopSec` at more than `--drain-delay-ms` plus your

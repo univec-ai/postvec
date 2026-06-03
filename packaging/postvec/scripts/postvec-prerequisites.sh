@@ -333,13 +333,8 @@ configure_deb() {
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg >/dev/null
 
-    # The fingerprint is the check, and it is applied to whatever is about to be
-    # trusted — the file just downloaded, or the file already on disk.
-    #
-    # An existing keyring used to be accepted because it existed. That is the
-    # one case where skipping the check matters most: a keyring placed by
-    # something else, or left over from an earlier mistake, is exactly the file
-    # whose fingerprint nobody has looked at.
+    # Check the fingerprint of whatever is about to be trusted: a file just
+    # downloaded, or a keyring already on disk.
     local tmp; tmp="$(mktemp -d)"
     trap 'rm -rf "${tmp}"' RETURN
 

@@ -722,16 +722,12 @@ fn chunk_hybrid_rows(
             ));
         }
 
-        // Winner-text phases (round 4): (2a) fetch LENGTHS only for the
-        // ≤ limit_n winning chunks; (2b) admit ids in result order under the
-        // byte ceiling, in Rust, before any text exists anywhere; (2c) fetch
-        // text for the admitted ids only — the database never materializes
-        // (and Rust never copies) more than the budget of result text. The
-        // earlier window-query form carried chunk_text through a sort, so
-        // PostgreSQL could still materialize every winner's text before the
-        // outer CASE stripped it. Winners past the ceiling keep their row
-        // with chunk_text NULL, under one WARNING. Strings MOVE from the
-        // fetch map into the rows — no second copy.
+        // Winner-text phases: (2a) fetch LENGTHS only for the
+        // <= limit_n winning chunks; (2b) admit ids in result order under
+        // the byte ceiling, in Rust, before any text exists; (2c) fetch
+        // text for the admitted ids only. Winners past the ceiling keep
+        // their row with chunk_text NULL, under one WARNING. Strings move
+        // from the fetch map into the rows: no second copy.
         if !cids.is_empty() {
             let lens: Vec<(i64, i64)> = {
                 let t = c

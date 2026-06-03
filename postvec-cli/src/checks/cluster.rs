@@ -615,10 +615,7 @@ fn mode(input: &ClusterInput<'_>) -> Option<CheckResult> {
                      and restart; the worker parks on an unknown mode",
                 ),
             ),
-            // Unset means the extension's default, which is embedded
-            // (postvec/src/gucs.rs::MODE) — the same reading facts.rs's
-            // `mode()` documents. Reporting grpc here once made doctor
-            // describe the wrong half of an unconfigured installation.
+            // Unset is the extension default: embedded. Do not treat it as grpc.
             None => Some(CheckResult::pass(
                 "cluster.mode",
                 SCOPE,

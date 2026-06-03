@@ -11,8 +11,8 @@ Two lifecycles share one maintenance window:
 2. `ALTER EXTENSION postvec UPDATE` in **every** database that has it.
 
 Do both in that order. Replacing the library alone parks the worker
-until the SQL catches up. `postvec model upgrade` is a different
-command: it replaces model bytes only.
+until the SQL catches up. `postvec model upgrade` replaces model bytes
+only.
 
 Replace `NEWVERSION` with the version being installed.
 
@@ -39,8 +39,8 @@ Pull the new image, then on the **existing** volume:
 ALTER EXTENSION postvec UPDATE;
 ```
 
-Init scripts do not apply extension upgrades to existing volumes. Run
-`postvec-healthcheck` afterward.
+Init scripts apply only on first initialization of an empty volume.
+Run `ALTER EXTENSION` and `postvec-healthcheck` afterward.
 
 A PostgreSQL major change requires `pg_upgrade` or dump/restore;
 changing only the image tag against the same volume is unsupported.

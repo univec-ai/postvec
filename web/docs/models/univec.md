@@ -19,8 +19,7 @@ also expose a direct converter to `postvec.migrate()` and the one-shot
 Embed and converter entries are independent. They can share one
 `univec.toml` file and key.
 
-The API key stays in `providers.d` on the inference host. It does not enter a
-GUC, catalog row or SQL argument.
+The API key stays in `providers.d` on the inference host.
 
 ## Add a hosted embedding model
 
@@ -104,8 +103,8 @@ The two name pairs have different jobs:
 | `source_dim`, `dim` | Input and output dimensions |
 
 Use the exact public model names and dimensions for the pair. A mismatch is a
-whole-file load error, or a request-time dimension error if the declaration
-does not match the provider response.
+whole-file load error, or a request-time dimension error if the declared
+dimension and the provider response disagree.
 
 Keep the file at `0600` in its existing `0700` directory. Reload the embedded
 host and refresh the database cache only after a hand edit:
@@ -185,11 +184,10 @@ column swap and index rebuild.
 
 ## Route constraints
 
-A provider-backed converter is a direct conversion route only. It cannot act
-as the converter in an `embed-bridge` route for writes or search. Embed-bridge
-resolution runs inside the local inference engine, which cannot resolve
-provider gateway entries. Load a local converter when embed-bridge is
-required.
+A provider-backed converter is a direct conversion route for
+`migrate()` and `convert()`. Embed-bridge resolution runs inside the
+local inference engine and uses local models. Load a local converter
+when embed-bridge is required.
 
 When several direct converters declare the same source and target, postvec
 selects the first converter name in lexical order. `migration_status()` shows
@@ -211,8 +209,8 @@ the account has no available credit. postvec classifies 401, 402 and 403 as
 configuration failures. Queue work retries up to `postvec.max_retries`, then
 moves to `postvec.jobs_dead`. Migrations keep retrying configuration failures.
 
-Provider `max_concurrent` limits requests in flight. It is not a spending
-limit. Billing and spending limits are enforced by the UniVec account.
+Provider `max_concurrent` limits requests in flight. Billing and spending
+limits are enforced by the UniVec account.
 
 ## Remote nodes
 

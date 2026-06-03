@@ -3,8 +3,13 @@ postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
   * First packaged release of postvec: the extension for one PostgreSQL
     major, the `postvec` command, a pinned CPU ONNX Runtime, one reviewed
     embedding model, and the metapackage that pins those two together.
+  * postvec-server, the inference node remote mode dials, as a package of
+    its own: the binary, its systemd unit (pointed at /opt/postvec by a
+    drop-in, where the runtime and model packages install), a conffile, and
+    the postvec-server service account. Under its own licence; see
+    /usr/share/doc/postvec-server/copyright.
   * Installing a package installs files and changes nothing else. Use
     `postvec setup` to configure a cluster and `postvec doctor` to diagnose
-    one.
+    one; enable postvec-server yourself with systemctl.
 
  -- ${MAINTAINER}  Fri, 31 Jul 2026 00:00:00 +0000
