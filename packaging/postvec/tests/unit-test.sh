@@ -596,6 +596,24 @@ json.dump(images, open(sys.argv[1], "w"))
         "PG None server was built on" "${s}/dist" "${s}/build" "${s}/images.json"
 fi
 
+if case_ "image smoke test: the public variant names are exact"; then
+    if output="$("${PKG_DIR}/tests/image-smoke-test.sh" \
+            --variant complete not-an-image 2>&1)"; then
+        status=0
+    else
+        status=$?
+    fi
+    if (( status == 0 )); then
+        bad "the removed complete variant was accepted"
+    elif (( status != 2 )); then
+        bad "the removed complete variant did not fail with usage status: ${output}"
+    elif grep -qF -- "--variant must be local or remote" <<<"${output}"; then
+        ok "the removed complete variant is refused with the replacement names"
+    else
+        bad "the variant refusal did not name local and remote: ${output}"
+    fi
+fi
+
 # ============================================================== server closure
 
 if case_ "package closure: the inference node is part of every shared cell"; then
@@ -1025,6 +1043,9 @@ if case_ "versions.env: a pin must be a pin"; then
     check_versions_env "an extras package named local is refused" \
         "must not contain embedded, engine, complete, local or remote" \
         's|^EXTRAS_METAPACKAGE=.*|EXTRAS_METAPACKAGE=postvec-local|'
+    check_versions_env "an extras package named remote is refused" \
+        "must not contain embedded, engine, complete, local or remote" \
+        's|^EXTRAS_METAPACKAGE=.*|EXTRAS_METAPACKAGE=postvec-remote|'
     check_versions_env "an extras package that is not postvec-* is refused" \
         "is not a postvec-* package name" \
         's|^EXTRAS_METAPACKAGE=.*|EXTRAS_METAPACKAGE=extras|'
