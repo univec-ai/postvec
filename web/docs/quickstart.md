@@ -16,7 +16,7 @@ with the [release artifacts](/download). An unpublished tag requires a
 local image build or an existing development package.
 ::::
 
-## 1. Run the embedded image
+## 1. Run the local image
 
 <PgSnippet id="docker-quickstart" />
 

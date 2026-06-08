@@ -237,8 +237,7 @@ def platforms(tag):
 
 images = []
 for major in (16, 17, 18):
-    for variant in ("remote", "complete"):
-        suffix = "-complete" if variant == "complete" else ""
+    for variant, suffix in (("remote", "-remote"), ("local", "-local")):
         tag = "%s-%s-pg%s%s" % (version, revision, major, suffix)
         images.append({
             "name": repo, "tag": tag, "digest": digest("index", tag),
@@ -527,11 +526,11 @@ if case_ "image closure: seven distinct images, correctly tagged"; then
     s="$(scenario image-missing)"
     python3 -c '
 import json, sys
-images = [i for i in json.load(open(sys.argv[1])) if not (i["pg_major"] == 17 and i["variant"] == "complete")]
+images = [i for i in json.load(open(sys.argv[1])) if not (i["pg_major"] == 17 and i["variant"] == "local")]
 json.dump(images, open(sys.argv[1], "w"))
 ' "${s}/images.json"
     expect_rejected "a missing image is refused" \
-        "missing image: PG 17 complete" "${s}/dist" "${s}/build" "${s}/images.json"
+        "missing image: PG 17 local" "${s}/dist" "${s}/build" "${s}/images.json"
 
     s="$(scenario image-tag)"
     python3 -c '
@@ -830,11 +829,13 @@ FAKE
         local out="$1" repo=ghcr.io/example/postvec i
         : > "${out}"
         for i in 16 17 18; do
-            for suffix in "" "-complete"; do
+            n=0
+            for suffix in "-remote" "-local"; do
+                n=$((n + 1))
                 printf '%s %s %s %s\n' \
                     "${repo}:pg${i}${suffix}" \
-                    "${repo}@sha256:$(printf '%064d' "${i}${#suffix}")" \
-                    "sha256:$(printf '%064d' "${i}${#suffix}")" \
+                    "${repo}@sha256:$(printf '%064d' "${i}${n}")" \
+                    "sha256:$(printf '%064d' "${i}${n}")" \
                     "<none>" >> "${out}"
             done
         done
@@ -864,7 +865,7 @@ FAKE
     fi
 
     # The case that motivated all of this.
-    advance one-write-fails fail FAKE_FAIL_CREATE=ghcr.io/example/postvec:pg17 \
+    advance one-write-fails fail FAKE_FAIL_CREATE=ghcr.io/example/postvec:pg17-remote \
         && bad "a failed write did not fail the command" \
         || ok "a failed write fails the command"
 
@@ -887,7 +888,7 @@ FAKE
         || bad "the report does not say which tag is wrong"
 
     # A tag whose state cannot be read is not 'probably fine'.
-    advance inspect-fails fail FAKE_FAIL_INSPECT=ghcr.io/example/postvec:pg16 \
+    advance inspect-fails fail FAKE_FAIL_INSPECT=ghcr.io/example/postvec:pg16-remote \
         && bad "an uninspectable tag was reported as correct" \
         || ok "a tag whose state is unknown fails the command"
 
@@ -920,22 +921,22 @@ FAKE
     OTHER="sha256:$(printf '%064d' 2)"
 
     refuses_plan "a mutable tag as the source is refused, with nothing written" \
-        "${REPO}:pg18 ${REPO}:0.1.0-1-pg18 ${GOOD} x"
+        "${REPO}:pg18-local ${REPO}:0.1.0-1-pg18-local ${GOOD} x"
     # `@sha256:` appearing somewhere is not a pin.
     refuses_plan "a source whose digest is not hexadecimal is refused" \
-        "${REPO}:pg18 ${REPO}@sha256:not-a-digest ${GOOD} x"
+        "${REPO}:pg18-local ${REPO}@sha256:not-a-digest ${GOOD} x"
     refuses_plan "a source with no repository is refused" \
-        "${REPO}:pg18 @sha256:$(printf '%064d' 1) ${GOOD} x"
+        "${REPO}:pg18-local @sha256:$(printf '%064d' 1) ${GOOD} x"
     refuses_plan "a source digest of the wrong length is refused" \
-        "${REPO}:pg18 ${REPO}@sha256:$(printf '%063d' 1) ${GOOD} x"
+        "${REPO}:pg18-local ${REPO}@sha256:$(printf '%063d' 1) ${GOOD} x"
     refuses_plan "an uppercase source digest is refused" \
-        "${REPO}:pg18 ${REPO}@sha256:$(printf 'A%.0s' {1..64}) ${GOOD} x"
+        "${REPO}:pg18-local ${REPO}@sha256:$(printf 'A%.0s' {1..64}) ${GOOD} x"
     # The one that would otherwise write first and complain afterwards: both
     # halves well-formed, and disagreeing.
     refuses_plan "a source digest that is not the expected digest is refused" \
-        "${REPO}:pg18 ${REPO}@${OTHER} ${GOOD} x"
+        "${REPO}:pg18-local ${REPO}@${OTHER} ${GOOD} x"
     refuses_plan "a malformed expected digest is refused" \
-        "${REPO}:pg18 ${REPO}@${GOOD} sha256:nope x"
+        "${REPO}:pg18-local ${REPO}@${GOOD} sha256:nope x"
 fi
 
 if case_ "release identity: the tag states which kind of release this is"; then
@@ -1016,11 +1017,14 @@ if case_ "versions.env: a pin must be a pin"; then
     check_versions_env "a zero packaging revision is refused" \
         "PACKAGE_RELEASE must be" 's|^PACKAGE_RELEASE=.*|PACKAGE_RELEASE=0|'
     check_versions_env "an extras package named after the mode is refused" \
-        "must not contain embedded, engine, or complete" \
+        "must not contain embedded, engine, complete, local or remote" \
         's|^EXTRAS_METAPACKAGE=.*|EXTRAS_METAPACKAGE=postvec-embedded|'
     check_versions_env "an extras package named complete is refused" \
-        "must not contain embedded, engine, or complete" \
+        "must not contain embedded, engine, complete, local or remote" \
         's|^EXTRAS_METAPACKAGE=.*|EXTRAS_METAPACKAGE=postvec-complete|'
+    check_versions_env "an extras package named local is refused" \
+        "must not contain embedded, engine, complete, local or remote" \
+        's|^EXTRAS_METAPACKAGE=.*|EXTRAS_METAPACKAGE=postvec-local|'
     check_versions_env "an extras package that is not postvec-* is refused" \
         "is not a postvec-* package name" \
         's|^EXTRAS_METAPACKAGE=.*|EXTRAS_METAPACKAGE=extras|'

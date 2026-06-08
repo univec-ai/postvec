@@ -303,10 +303,10 @@
           "variant": {
             "enum": [
               "remote",
-              "complete",
+              "local",
               "server"
             ],
-            "description": "`remote` and `complete` are the PostgreSQL images, one per major. `server` is the postvec-server inference node: its own repository, no PostgreSQL major (pg_major is null), tagged with the bare release id and built on the pinned Debian 12 base."
+            "description": "`remote` and `local` are the PostgreSQL images, one per major (`-pgNN-remote` / `-pgNN-local`). `server` is the postvec-server inference node: its own repository, no PostgreSQL major (pg_major is null), tagged with the bare release id and built on the pinned Debian 12 base."
           },
           "pg_major": {
             "type": [

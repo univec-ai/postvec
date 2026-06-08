@@ -180,7 +180,7 @@ if [[ "${MODE}" == publish ]]; then
         # tags, in two repositories.
         images=()
         for major in 16 17 18; do
-            for suffix in "" "-complete"; do
+            for suffix in "${REMOTE_IMAGE_SUFFIX}" "${LOCAL_IMAGE_SUFFIX}"; do
                 images+=("${IMAGE_REPOSITORY}:${RELEASE_ID}-pg${major}${suffix}")
             done
         done

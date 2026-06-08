@@ -10,13 +10,13 @@
 #
 # Note the volume path: PostgreSQL 16 and 17 images store data in
 # /var/lib/postgresql/data, PostgreSQL 18 in /var/lib/postgresql. This file is
-# for 17; see postvec-pg18-complete.yml for the 18 layout. Changing the image
+# for 17; see postvec-pg18-local.yml for the 18 layout. Changing the image
 # tag from pg17 to pg18 against the same volume does *not* upgrade anything —
 # a PostgreSQL major upgrade needs pg_upgrade or dump/restore.
 
 services:
   db:
-    image: ghcr.io/univec-ai/postvec:0.1.0-1-pg17
+    image: ghcr.io/univec-ai/postvec:0.1.0-1-pg17-remote
     environment:
       POSTGRES_DB: app
       POSTGRES_USER: app

@@ -31,7 +31,7 @@ LABEL org.opencontainers.image.title="postvec-server" \
 
 # The engine root is the path the packages install to — and the one the
 # postvec CLI treats as its default — so `--path` values are identical on a
-# database host, in the complete image, and here. POSTVEC_PATH and
+# database host, in the local image, and here. POSTVEC_PATH and
 # POSTVEC_PROVIDERS_PATH point the bundled CLI at the same root, so
 # `docker exec <ctr> postvec model|provider …` needs no flags.
 #

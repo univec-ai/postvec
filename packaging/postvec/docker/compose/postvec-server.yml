@@ -1,6 +1,6 @@
 # One postvec-server inference node, from the published image — the node
 # postvec's remote mode (`postvec.mode = 'grpc'`) dials. Pair it with
-# postvec-pg17-remote.yml (or the pg18 tag) by pointing that file's
+# postvec-pg17-remote.yml (or the pg18-remote tag) by pointing that file's
 # POSTVEC_GRPC_ENDPOINTS / POSTVEC_HTTP_ENDPOINTS at this host.
 #
 # The image is composed of the same packages a node host installs:

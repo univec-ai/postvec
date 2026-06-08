@@ -550,7 +550,7 @@ def main() -> int:
             "        `ort-cuda` feature skips the provider and falls back to CPU, so this is\n"
             "        a warning: expect one \"CUDA execution provider was requested, but the\n"
             "        application was not compiled with the 'ort-cuda' feature. Skipping.\"\n"
-            "        line per model load in the embedded image's PostgreSQL log."
+            "        line per model load in the local image's PostgreSQL log."
             % (descriptor["execution_providers"],)
         )
     return 0

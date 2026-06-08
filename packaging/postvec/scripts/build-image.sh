@@ -2,7 +2,7 @@
 # Assemble a postvec image for one PostgreSQL major and one architecture from
 # already-built packages.
 #
-#   build-image.sh --pg 18 --variant complete [--arch amd64] [--load|--push]
+#   build-image.sh --pg 18 --variant local [--arch amd64] [--load|--push]
 #
 # The image is a composition step, not a build step: it installs the exact
 # .deb files this commit produced. If they are not there, that is the error —
@@ -10,7 +10,7 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-PG_MAJOR=""; VARIANT=complete; RELEASE_ARCH=""; OUTPUT=--load; EXTRA_TAGS=()
+PG_MAJOR=""; VARIANT=local; RELEASE_ARCH=""; OUTPUT=--load; EXTRA_TAGS=()
 REPOSITORY=""
 while (($#)); do
     case "$1" in
@@ -40,22 +40,22 @@ require_pg_major "${PG_MAJOR}"
 arch_facts "${RELEASE_ARCH}"
 need docker
 case "${VARIANT}" in
-remote|"${COMPLETE_IMAGE_VARIANT}") ;;
-embedded)
-    die "--variant embedded is gone; use --variant ${COMPLETE_IMAGE_VARIANT}
-The image that includes ONNX Runtime and the bundled model is the complete
-image (both inference modes), not an in-process-only build. Runtime mode is
-still POSTVEC_MODE=embedded / postvec setup --embedded."
+"${REMOTE_IMAGE_VARIANT}"|"${LOCAL_IMAGE_VARIANT}") ;;
+complete|embedded)
+    die "--variant ${VARIANT} is gone; use --variant ${LOCAL_IMAGE_VARIANT}
+The image that includes ONNX Runtime and the bundled model is the local
+image (inference in the container). Runtime mode is still
+POSTVEC_MODE=embedded / postvec setup --embedded."
     ;;
-*) die "--variant must be remote or ${COMPLETE_IMAGE_VARIANT}" ;;
+*) die "--variant must be ${REMOTE_IMAGE_VARIANT} or ${LOCAL_IMAGE_VARIANT}" ;;
 esac
 
-# Only the complete image carries a model, and the facts that describe it are
+# Only the local image carries a model, and the facts that describe it are
 # derived from the verified registry archive rather than from versions.env.
 # The remote image knows nothing about a model and is deliberately buildable
 # without one.
 model_args=()
-if [[ "${VARIANT}" == "${COMPLETE_IMAGE_VARIANT}" ]]; then
+if [[ "${VARIANT}" == "${LOCAL_IMAGE_VARIANT}" ]]; then
     load_model_facts
     model_args=(
         --build-arg "BUNDLED_MODEL_NAME=${MODEL_NAME}"
@@ -86,7 +86,7 @@ build_first="Build them first:
 [[ -d "${EXTENSION_CELL}" ]] || die "no PG ${PG_MAJOR} extension package at ${EXTENSION_CELL}. ${build_first}"
 
 rm -rf "${CONTEXT}"
-mkdir -p "${CONTEXT}/dist/packages" "${CONTEXT}/dist/complete" \
+mkdir -p "${CONTEXT}/dist/packages" "${CONTEXT}/dist/local" \
          "${CONTEXT}/packaging/postvec/docker"
 
 shopt -s nullglob
@@ -96,7 +96,7 @@ extension=("${EXTENSION_CELL}"/postgresql-"${PG_MAJOR}"-postvec_*.deb)
 (( ${#extension[@]} )) || die "no PG ${PG_MAJOR} extension package in ${EXTENSION_CELL}. ${build_first}"
 cp "${cli[@]}" "${extension[@]}" "${CONTEXT}/dist/packages/"
 
-if [[ "${VARIANT}" == "${COMPLETE_IMAGE_VARIANT}" ]]; then
+if [[ "${VARIANT}" == "${LOCAL_IMAGE_VARIANT}" ]]; then
     # ONNX Runtime is architecture-specific; the model bundle and the
     # metapackage are `all` and live in the noarch root, not in whichever
     # architecture's cell happened to build them.
@@ -105,7 +105,7 @@ if [[ "${VARIANT}" == "${COMPLETE_IMAGE_VARIANT}" ]]; then
         "${NOARCH_CELL}"/postvec-model-*.deb
         "${NOARCH_CELL}"/"${EXTRAS_METAPACKAGE}"_*.deb
     )
-    (( ${#extras[@]} == 3 )) || die "the complete image needs the three extra packages; \
+    (( ${#extras[@]} == 3 )) || die "the local image needs the three extra packages; \
 found ${#extras[@]} across
   ${COMMON_CELL}  (postvec-onnxruntime)
   ${NOARCH_CELL}  (postvec-model-*, ${EXTRAS_METAPACKAGE})
@@ -113,7 +113,7 @@ Build them first:
   scripts/build-onnxruntime-bundle.sh --arch ${RELEASE_ARCH}
   scripts/build-model-bundle.sh
   scripts/build-packages.sh --distro debian12 --pg ${PG_MAJOR} --arch ${RELEASE_ARCH}"
-    cp "${extras[@]}" "${CONTEXT}/dist/complete/"
+    cp "${extras[@]}" "${CONTEXT}/dist/local/"
 fi
 shopt -u nullglob
 
@@ -122,13 +122,14 @@ cp "${PKG_DIR}/docker/postvec-entrypoint.sh" \
    "${PKG_DIR}/docker/20-create-postvec.sh" \
    "${CONTEXT}/packaging/postvec/docker/"
 
-TAG_SUFFIX=""
-[[ "${VARIANT}" == "${COMPLETE_IMAGE_VARIANT}" ]] && TAG_SUFFIX="${COMPLETE_IMAGE_SUFFIX}"
-# The versioned tag carries the packaging revision (0.1.0-1-pg18), so a
+TAG_SUFFIX="${REMOTE_IMAGE_SUFFIX}"
+[[ "${VARIANT}" == "${LOCAL_IMAGE_VARIANT}" ]] && TAG_SUFFIX="${LOCAL_IMAGE_SUFFIX}"
+# The versioned tag carries the packaging revision (0.1.0-1-pg18-local), so a
 # packaging-only rebuild produces a new tag rather than overwriting one
 # somebody is already running.
 #
-# The moving tag (`pg18`) is deliberately *not* applied here. It is advanced by
+# The moving tag (`pg18-local` or `pg18-remote`) is deliberately *not* applied
+# here. It is advanced by
 # the release job, last, after the release has been verified — a local build
 # that tagged it could publish a moving tag for an image nothing has tested.
 REPOSITORY="${REPOSITORY:-${IMAGE_REPOSITORY}}"

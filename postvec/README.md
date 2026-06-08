@@ -53,7 +53,7 @@ docker run -d --name postvec \
   -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=app \
   -v postvec-data:/var/lib/postgresql \
   -p 127.0.0.1:5432:5432 \
-  ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
+  ghcr.io/univec-ai/postvec:0.1.0-1-pg18-local
 ```
 
 ```sql
@@ -71,10 +71,11 @@ SELECT d.body FROM postvec.search('docs', 'body',
   JOIN docs d ON d.id = s.pk_value::bigint ORDER BY s.rrf_score DESC;
 ```
 
-(Mount `/var/lib/postgresql/data` instead for the PG 16 and 17 images — the
-official image changed its layout in 18. The `:0.1.0-1-pg18` tag, without
-`-complete`, is the same thing pointed at remote inference nodes; the tag is
-`<version>-<packaging revision>`, and `pg18` is the moving equivalent.)
+(Mount `/var/lib/postgresql/data` instead for the PG 16 and 17 images - the
+official image changed its layout in 18. The `:0.1.0-1-pg18-remote` tag is
+the same thing pointed at remote inference nodes; the tag is
+`<version>-<packaging revision>`, and `pg18-local` / `pg18-remote` are the
+moving equivalents.)
 
 **Packages, against your own cluster:**
 

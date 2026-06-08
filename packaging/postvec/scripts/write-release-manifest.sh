@@ -713,7 +713,10 @@ if expect_repository:
         else:
             if image.get("name") != expect_repository:
                 problems.append("%s is not %s" % (image.get("name"), expect_repository))
-            suffix = env("COMPLETE_IMAGE_SUFFIX") if image.get("variant") == env("COMPLETE_IMAGE_VARIANT") else ""
+            if image.get("variant") == env("LOCAL_IMAGE_VARIANT"):
+                suffix = env("LOCAL_IMAGE_SUFFIX")
+            else:
+                suffix = env("REMOTE_IMAGE_SUFFIX")
             expected_tag = "%s-%s-pg%s%s" % (VERSION, REVISION, image.get("pg_major"), suffix)
         if image.get("tag") != expected_tag:
             problems.append("tag %r, expected %r" % (image.get("tag"), expected_tag))
@@ -756,7 +759,7 @@ if expect_repository:
 
     expected_keys = {(major, variant)
                      for major in expect_majors
-                     for variant in ("remote", env("COMPLETE_IMAGE_VARIANT"))}
+                     for variant in (env("REMOTE_IMAGE_VARIANT"), env("LOCAL_IMAGE_VARIANT"))}
     expected_keys.add((None, server_variant))
     # `None` and an int do not order together; sort on the string form.
     for key in sorted(expected_keys - set(seen), key=str):

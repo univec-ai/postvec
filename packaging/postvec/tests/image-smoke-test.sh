@@ -2,10 +2,10 @@
 # Live test of a built postvec image: the user journey, the container contract,
 # and the failure modes that must fail *fast* rather than quietly.
 #
-#   tests/image-smoke-test.sh ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
+#   tests/image-smoke-test.sh ghcr.io/univec-ai/postvec:0.1.0-1-pg18-local
 #   tests/image-smoke-test.sh --variant remote \
 #       --server-image postvec-server:amd64 \
-#       ghcr.io/univec-ai/postvec:0.1.0-1-pg18
+#       ghcr.io/univec-ai/postvec:0.1.0-1-pg18-remote
 #
 # Everything runs against the exact image reference given — pass a digest in a
 # release job, so what is tested is bit-for-bit what will be published.
@@ -33,7 +33,7 @@ if [[ -f "${MODEL_FACTS}" ]]; then
     DIMS="$(sed -n 's/^MODEL_TARGET_DIM=//p' "${MODEL_FACTS}")"
 fi
 
-VARIANT=complete
+VARIANT=local
 HEALTH_TIMEOUT=300
 IMAGE=""
 REMOTE_GRPC=""
@@ -53,7 +53,11 @@ while (($#)); do
     *)         IMAGE="$1"; shift ;;
     esac
 done
-[[ -n "${IMAGE}" ]] || { echo "usage: image-smoke-test.sh [--variant remote|complete] <image>" >&2; exit 2; }
+[[ -n "${IMAGE}" ]] || { echo "usage: image-smoke-test.sh [--variant remote|local] <image>" >&2; exit 2; }
+case "${VARIANT}" in
+local|remote) ;;
+*) echo "--variant must be local or remote" >&2; exit 2 ;;
+esac
 
 # No default, and no guess. A wrong dimension either fails a correct image or —
 # worse, if it were merely skipped — passes a broken one.
@@ -183,7 +187,7 @@ embedded_capable="$(sql -c "SELECT (postvec.build_info()->'features'->>'embedded
 vector="$(sql -c "SELECT extversion FROM pg_extension WHERE extname='vector'")"
 [[ -n "${vector}" ]] && ok "pgvector ${vector} is installed" || bad "no pgvector"
 
-if [[ "${VARIANT}" == complete ]]; then
+if [[ "${VARIANT}" == local ]]; then
     echo
     echo "inference (no external service, no API key)"
 
@@ -410,7 +414,7 @@ after="$(sql -c "SELECT count(*) FROM pg_extension WHERE extname='postvec'")"
 docker rm --force "${RUN_ID}" >/dev/null
 start_container
 if wait_healthy; then ok "a fresh container on the same volume is healthy"; else bad "recreate failed"; fi
-if [[ "${VARIANT}" == complete ]]; then
+if [[ "${VARIANT}" == local ]]; then
     rows="$(sql -c "SELECT count(*) FROM smoke WHERE body_semantic IS NOT NULL")"
     [[ "${rows}" == 3 ]] && ok "data and vectors persisted" || bad "only ${rows}/3 rows survived"
 fi

@@ -181,7 +181,7 @@ expect_exit "an unknown mode is refused" 64 POSTVEC_MODE=bogus -- postgres
 
 # Compose renders an undefined interpolation as the empty string, so an empty
 # POSTVEC_MODE is a realistic accident rather than a hypothetical one. Silently
-# reading it as grpc would disable the engine a complete image was built
+# reading it as grpc would disable the engine a local image was built
 # around, and the only symptom would be search quietly degrading to FTS.
 expect_exit "an empty mode is refused rather than defaulted" 64 POSTVEC_MODE= -- postgres
 expect_exit "an empty database list is refused" 64 POSTVEC_DATABASES=" , " -- postgres

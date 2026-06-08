@@ -6,7 +6,7 @@
 #
 #   tests/provider-e2e-test.sh --target package --distro debian12 --pg 18
 #   tests/provider-e2e-test.sh --target package --distro el9 --pg 18
-#   tests/provider-e2e-test.sh --target image --variant complete <image>
+#   tests/provider-e2e-test.sh --target image --variant local <image>
 #   tests/provider-e2e-test.sh --target image --variant remote \
 #       --server-image postvec-server:amd64 <image>
 #
@@ -31,7 +31,7 @@ PKG_DIR="$(cd "${TESTS_DIR}/.." && pwd)"
 source "${PKG_DIR}/scripts/lib.sh"
 
 TARGET=""; DISTRO=debian12; PG_MAJOR=18; RELEASE_ARCH=""
-VARIANT=complete; SERVER_IMAGE=""; IMAGE=""
+VARIANT=local; SERVER_IMAGE=""; IMAGE=""
 while (($#)); do
     case "$1" in
     --target)       TARGET="$2"; shift 2 ;;
@@ -274,18 +274,18 @@ setup_image_common_bits() {
     docker cp "${TESTS_DIR}/provider-mock.py" "$1:/provider-mock.py"
 }
 
-setup_complete_image() {
-    [[ -n "${IMAGE}" ]] || die "pass the complete image reference"
+setup_local_image() {
+    [[ -n "${IMAGE}" ]] || die "pass the local image reference"
     image_password_file="$(mktemp_mountable_file e2e-pw)"; printf 'pv13-%s' "$$" > "${image_password_file}"
     local pg_major
     pg_major="$(docker run --rm --entrypoint sh "${IMAGE}" -c 'echo "$PG_MAJOR"' 2>/dev/null || echo 18)"
     if (( pg_major >= 18 )); then DATA_MOUNT=/var/lib/postgresql; else DATA_MOUNT=/var/lib/postgresql/data; fi
-    log "PV-13 complete-image cell: ${IMAGE}"
+    log "PV-13 local-image cell: ${IMAGE}"
     start_pg_image
     DB="${RUN_ID}"; SRV="${RUN_ID}"; EMBEDDED=1
     wait_pg_healthy || die "the image never became healthy"
     setup_image_common_bits "${DB}"
-    ok "the complete image serves an embedded cluster"
+    ok "the local image serves an embedded cluster"
 }
 
 setup_remote_image() {
@@ -634,9 +634,9 @@ package)
     ;;
 image)
     case "${VARIANT}" in
-    complete) setup_complete_image ;;
-    remote)   setup_remote_image ;;
-    *) die "--variant must be complete or remote" ;;
+    local)  setup_local_image ;;
+    remote) setup_remote_image ;;
+    *) die "--variant must be local or remote" ;;
     esac
     ;;
 *) die "--target must be package or image" ;;

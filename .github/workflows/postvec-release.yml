@@ -22,8 +22,8 @@
 # **Publication is ordered so a failure cannot leave a half-release.** Images
 # become immutable versioned manifests first, then are attested; the GitHub
 # release is created as a *draft*, verified by downloading its own assets,
-# published, and only then are the moving tags (`pg18`, `pg18-complete`, and
-# the node image's `latest`) advanced. A failure at any step leaves the
+# published, and only then are the moving tags (`pg18-remote`, `pg18-local`,
+# and the node image's `latest`) advanced. A failure at any step leaves the
 # previous release as the one users reach.
 #
 # **Two products, one release.** The packages and the six database images are
@@ -331,7 +331,7 @@ jobs:
           resuming=0
           tags=()
           for major in 16 17 18; do
-            for suffix in "" "-complete"; do
+            for suffix in "-remote" "-local"; do
               tags+=("${repo}:${release_id}-pg${major}${suffix}")
             done
           done
@@ -783,7 +783,7 @@ jobs:
       matrix:
         pg: [16, 17, 18]
         arch: [amd64, arm64]
-        variant: [remote, complete]
+        variant: [remote, local]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 60
     permissions:
@@ -805,8 +805,8 @@ jobs:
         with:
           name: extension-debian12-pg${{ matrix.pg }}-${{ matrix.arch }}
           path: packaging/postvec/dist/extension/
-      # postvec-server serves the same model bundle the complete image carries,
-      # so the remote and complete tests mean the same thing about it.
+      # postvec-server serves the same model bundle the local image carries,
+      # so the remote and local tests mean the same thing about it.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: model-bundle
@@ -867,10 +867,10 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PG: ${{ matrix.pg }}
         run: |
-          suffix=""
+          suffix="-remote"
           engine=""
-          if [ "${VARIANT}" = complete ]; then
-            suffix="-complete"
+          if [ "${VARIANT}" = local ]; then
+            suffix="-local"
           else
             engine="--server-image ${SERVER_REPOSITORY}:${RELEASE_ID}"
           fi
@@ -883,17 +883,17 @@ jobs:
       # differ: the bundle must produce the embeddings it was published with on
       # both, within the recorded tolerance.
       - name: Golden embeddings
-        if: matrix.variant == 'complete'
+        if: matrix.variant == 'local'
         env:
           REPOSITORY: ${{ needs.validate.outputs.repository }}
           RELEASE_ID: ${{ needs.validate.outputs.release_id }}
           PG: ${{ matrix.pg }}
         run: |
           packaging/postvec/tests/model-golden-test.sh \
-            "${REPOSITORY}:${RELEASE_ID}-pg${PG}-complete"
+            "${REPOSITORY}:${RELEASE_ID}-pg${PG}-local"
 
       # PV-13's image cells: the same provider gate through the images —
-      # embedded (complete) and the remote pair with postvec-server.
+      # local (embedded) and the remote pair with postvec-server.
       - name: PV-13 provider gate (image cell)
         if: matrix.pg == 18
         timeout-minutes: 30
@@ -905,10 +905,10 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PG: ${{ matrix.pg }}
         run: |
-          suffix=""
+          suffix="-remote"
           engine=""
-          if [ "${VARIANT}" = complete ]; then
-            suffix="-complete"
+          if [ "${VARIANT}" = local ]; then
+            suffix="-local"
           else
             engine="--server-image ${SERVER_REPOSITORY}:${RELEASE_ID}"
           fi
@@ -939,8 +939,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PG: ${{ matrix.pg }}
         run: |
-          suffix=""
-          [ "${VARIANT}" = complete ] && suffix="-complete"
+          suffix="-remote"
+          [ "${VARIANT}" = local ] && suffix="-local"
           local_tag="${REPOSITORY}:${RELEASE_ID}-pg${PG}${suffix}"
           staging="${STAGING}:run${RUN_ID}-pg${PG}${suffix}-${ARCH}"
           docker tag "${local_tag}" "${staging}"
@@ -984,7 +984,7 @@ jobs:
       fail-fast: false
       matrix:
         pg: [16, 17, 18]
-        variant: [remote, complete]
+        variant: [remote, local]
         include:
           - variant: server
     runs-on: ubuntu-latest
@@ -1007,8 +1007,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # What this cell publishes. The database images: `<repo>:<id>-pg<N>[-complete]`
-      # from staging `run<id>-pg<N>[-complete]-<arch>`, on the pinned postgres
+      # What this cell publishes. The database images: `<repo>:<id>-pg<N>-remote`
+      # or `-local`, from staging `run<id>-pg<N>-{remote,local}-<arch>`, on the
+      # pinned postgres
       # base for that major. The node: `<server repo>:<id>` from staging
       # `run<id>-server-<arch>`, on the pinned Debian 12 base its packages
       # were built on.
@@ -1029,8 +1030,8 @@ jobs:
             base="$(pin BUILD_BASE_DEBIAN12_DIGEST)"
             pg_major=null
           else
-            suffix=""
-            [ "${VARIANT}" = complete ] && suffix="-complete"
+            suffix="-remote"
+            [ "${VARIANT}" = local ] && suffix="-local"
             repository="${REPOSITORY}"
             tag="${RELEASE_ID}-pg${PG}${suffix}"
             staging_suffix="pg${PG}${suffix}"
@@ -1257,7 +1258,7 @@ jobs:
     # The workflow-level group above keys on the ref, which stops one release
     # racing itself; it does not stop *two* releases racing each other, and both
     # end by advancing the same six moving tags. Add the recovery workflow, which
-    # advances them too, and the last writer decides where `pg18` points — a
+    # advances them too, and the last writer decides where `pg18-local` points — a
     # published release can be moved backwards by an unrelated run finishing
     # late. One group per image repository serialises all three, and keying on
     # the repository keeps a disposable rehearsal from serialising against
@@ -1348,7 +1349,7 @@ jobs:
 
       - name: Collect the image descriptors
         run: |
-          jq -s . /tmp/descriptors/*-remote.json /tmp/descriptors/*-complete.json \
+          jq -s . /tmp/descriptors/*-remote.json /tmp/descriptors/*-local.json \
                   /tmp/descriptors/*-server.json \
             > /tmp/images.json
           test "$(jq length /tmp/images.json)" = 7 \
@@ -1535,11 +1536,11 @@ jobs:
             # Or one container, with no external service and no API key —
             # nothing above applies, the image carries everything:
             docker run -e POSTGRES_PASSWORD=… -p 127.0.0.1:5432:5432 \
-              ${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-complete
+              ${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-local
             ```
 
             ```bash
-            gh attestation verify oci://${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-complete \
+            gh attestation verify oci://${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-local \
               --repo ${{ github.repository }} \
               --signer-workflow ${{ github.repository }}/.github/workflows/postvec-release.yml
             ```
@@ -1700,9 +1701,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "${RELEASE_REF}" --repo "${{ github.repository }}" --draft=false
 
-      # Moving tags last. Until this point `pg18` still points at the previous
-      # release — which is the correct thing for it to do if any step above
-      # failed.
+      # Moving tags last. Until this point `pg18-local` and `pg18-remote` still
+      # point at the previous release — which is the correct thing for them to
+      # do if any step above failed.
       # By digest, from the manifest that was just verified — not by retagging
       # the versioned tag. A tag is a mutable pointer, and this job shares a
       # concurrency group with the recovery workflow precisely because something
@@ -1711,16 +1712,16 @@ jobs:
       #
       # The same helper the recovery workflow uses: every write attempted, every
       # tag then inspected, and the result decided by what the registry holds.
-      # Until this point `pg18` still pointed at the previous release, which is
-      # the correct thing for it to do if anything above failed.
-      # Seven: `pg16`…`pg18-complete` on the database images, `latest` on the
-      # node's image. The same jq the recovery workflow uses.
+      # Until this point `pg18-remote` still pointed at the previous release,
+      # which is the correct thing for it to do if anything above failed.
+      # Seven: `pg16-remote`...`pg18-local` on the database images, `latest`
+      # on the node's image. The same jq the recovery workflow uses.
       - name: Advance the moving tags
         run: |
           jq -r '.images[]
                  | [ (if .variant == "server" then .name + ":latest"
                       else .name + ":pg" + (.pg_major|tostring)
-                           + (if .variant == "complete" then "-complete" else "" end)
+                           + (if .variant == "local" then "-local" else "-remote" end)
                       end),
                      (.name + "@" + .digest),
                      .digest ]

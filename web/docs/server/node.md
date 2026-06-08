@@ -92,7 +92,7 @@ prints the two `install` lines.
 
 The published image is the packages above composed on Debian 12: the node,
 the CLI, ONNX Runtime and the bundled model — the same model bytes the
-complete postvec image runs in-process. It serves MiniLM out of the box:
+local postvec image runs in-process. It serves MiniLM out of the box:
 
 <PgSnippet id="docker-server" />
 

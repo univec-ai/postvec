@@ -1,8 +1,9 @@
 # postvec images from already-built and verified packages. Never compiles.
 #
 #   remote    PostgreSQL + pgvector + postvec. Pins POSTVEC_MODE=grpc
-#             because it has no engine assets.
-#   complete  plus ONNX Runtime and one model. POSTVEC_MODE=grpc still works.
+#             because it has no engine assets. Tag suffix -remote.
+#   local     plus ONNX Runtime and one model. POSTVEC_MODE=embedded
+#             (grpc still works). Tag suffix -local.
 #
 # Built through scripts/build-image.sh. Plain Dockerfile syntax, no
 # BuildKit cache mounts, so any Docker can build it.
@@ -72,11 +73,12 @@ LABEL org.opencontainers.image.title="postvec" \
       org.opencontainers.image.licenses="PostgreSQL" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       ai.univec.postvec.pg-major="${PG_MAJOR}" \
+      ai.univec.postvec.variant="remote" \
       ai.univec.postvec.mode="grpc"
 
-# -------------------------------------------------------------------- complete
+# ---------------------------------------------------------------------- local
 
-FROM remote AS complete
+FROM remote AS local
 
 ARG PG_MAJOR
 ARG POSTVEC_VERSION
@@ -88,15 +90,15 @@ ARG ORT_VERSION
 
 # The same package files an operator would install on a host, so the image's
 # engine assets and the published packages are provably identical content.
-COPY dist/complete/ /tmp/postvec-complete/
+COPY dist/local/ /tmp/postvec-local/
 
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        /tmp/postvec-complete/postvec-onnxruntime_*.deb \
-        /tmp/postvec-complete/postvec-model-*.deb \
-        /tmp/postvec-complete/postvec-extras_*.deb; \
-    rm -rf /tmp/postvec-complete /var/lib/apt/lists/*; \
+        /tmp/postvec-local/postvec-onnxruntime_*.deb \
+        /tmp/postvec-local/postvec-model-*.deb \
+        /tmp/postvec-local/postvec-extras_*.deb; \
+    rm -rf /tmp/postvec-local /var/lib/apt/lists/*; \
     test -d "/opt/postvec/models/${BUNDLED_MODEL_BACKEND}/${BUNDLED_MODEL_NAME}"; \
     ls /opt/postvec/libs/onnxruntime/lib/libonnxruntime.so
 
@@ -111,7 +113,7 @@ ENV POSTVEC_MODE=embedded \
 # can look up in the registry — a package version is a packaging fact and says
 # nothing about which bytes are inside.
 LABEL ai.univec.postvec.mode="embedded" \
-      ai.univec.postvec.variant="complete" \
+      ai.univec.postvec.variant="local" \
       ai.univec.postvec.model-bundle="${BUNDLED_MODEL_NAME}@${BUNDLED_MODEL_REGISTRY_REVISION}" \
       ai.univec.postvec.model-package-version="${BUNDLED_MODEL_PACKAGE_VERSION}" \
       ai.univec.postvec.onnxruntime="${ORT_VERSION}" \

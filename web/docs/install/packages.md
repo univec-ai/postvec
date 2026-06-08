@@ -32,11 +32,11 @@ chosen major. postvec packages come in the next step. On CentOS Stream
 9 or subscribed RHEL 9 it prints the commands and requires
 `--force-untested`.
 
-## 2. Embedded
+## 2. Local (embedded mode)
 
 Extension, CLI, ONNX Runtime and the bundled MiniLM model.
 
-<PgSnippet id="packages-complete" />
+<PgSnippet id="packages-local" />
 
 Default installation directory is `/opt/postvec`. MiniLM is 384-d.
 Embedded mode starts with `postvec setup --embedded`.

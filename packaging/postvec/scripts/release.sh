@@ -183,22 +183,22 @@ if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
     fi
 
     for major in "${PG_MAJORS[@]}"; do
-        for variant in remote "${COMPLETE_IMAGE_VARIANT}"; do
+        for variant in "${REMOTE_IMAGE_VARIANT}" "${LOCAL_IMAGE_VARIANT}"; do
             step "image: PG ${major} ${variant}"
             "${PKG_DIR}/scripts/build-image.sh" \
                 --pg "${major}" --variant "${variant}" --arch "${ARCH}" --load
             if (( ! SKIP_TESTS )); then
                 # The suffix is computed as a statement, not inside a command
-                # substitution: `x="$( [[ … ]] && echo … )"` takes the exit
-                # status of the substitution, so under `set -e` the remote
-                # variant — where the test is false — ends the script here,
+                # substitution: `x="$( [[ ... ]] && echo ... )"` takes the exit
+                # status of the substitution, so under `set -e` a false test
+                # as the last command of the substitution ends the script here,
                 # silently, right after the image it just built said "ready".
-                tag_suffix=""
-                if [[ "${variant}" == "${COMPLETE_IMAGE_VARIANT}" ]]; then
-                    tag_suffix="${COMPLETE_IMAGE_SUFFIX}"
+                tag_suffix="${REMOTE_IMAGE_SUFFIX}"
+                if [[ "${variant}" == "${LOCAL_IMAGE_VARIANT}" ]]; then
+                    tag_suffix="${LOCAL_IMAGE_SUFFIX}"
                 fi
                 tag="${IMAGE_REPOSITORY}:${RELEASE_ID}-pg${major}${tag_suffix}"
-                if [[ "${variant}" == remote ]]; then
+                if [[ "${variant}" == "${REMOTE_IMAGE_VARIANT}" ]]; then
                     # The remote image is only meaningfully tested against a
                     # real engine: the postvec-server image built above, from
                     # this release's own packages.
@@ -212,13 +212,13 @@ if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
                     fi
                 else
                     "${PKG_DIR}/tests/image-smoke-test.sh" \
-                        --variant "${COMPLETE_IMAGE_VARIANT}" "${tag}"
+                        --variant "${LOCAL_IMAGE_VARIANT}" "${tag}"
                     step "image: PG ${major} golden embeddings"
                     "${PKG_DIR}/tests/model-golden-test.sh" "${tag}"
                     if [[ "${major}" == 18 ]]; then
-                        step "image: PV-13 provider gate (complete)"
+                        step "image: PV-13 provider gate (local)"
                         "${PKG_DIR}/tests/provider-e2e-test.sh" --target image \
-                            --variant complete --arch "${ARCH}" "${tag}"
+                            --variant local --arch "${ARCH}" "${tag}"
                     fi
                 fi
             fi

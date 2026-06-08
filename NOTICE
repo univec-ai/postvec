@@ -14,9 +14,9 @@ The published packages and container images embed or depend on third-party
 work under its own terms:
 
 - ONNX Runtime (MIT). Bundled by the `postvec-onnxruntime` package and the
-  complete container image; its license text ships with the bundle.
+  local container image; its license text ships with the bundle.
 - sentence-transformers/all-MiniLM-L6-v2 (Apache License 2.0). The default
-  model bundled by the `postvec-model-*` package and the complete image; its
+  model bundled by the `postvec-model-*` package and the local image; its
   LICENSE travels inside the model archive, and the Debian package renders it
   into /usr/share/doc/<package>/copyright
   (packaging/postvec/model/copyright.in).

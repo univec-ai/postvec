@@ -47,8 +47,8 @@ scripts/build-packages.sh        --distro debian12 --pg 18 --arch amd64
 scripts/verify-package.sh        dist/common/debian12-amd64/*.deb \
                                  dist/noarch/debian12/*.deb \
                                  dist/extension/debian12-pg18-amd64/*.deb
-scripts/build-image.sh --pg 18 --variant complete --load
-tests/image-smoke-test.sh ghcr.io/univec-ai/postvec:0.1.0-1-pg18-complete
+scripts/build-image.sh --pg 18 --variant local --load
+tests/image-smoke-test.sh ghcr.io/univec-ai/postvec:0.1.0-1-pg18-local
 # The node's image, composed from the packages above, and tested on its own —
 # then the remote database image is tested against it.
 scripts/build-server-image.sh --arch amd64 --load
@@ -56,7 +56,7 @@ tests/server-image-test.sh ghcr.io/univec-ai/postvec-server:0.1.0-1
 scripts/build-image.sh --pg 18 --variant remote --load
 tests/image-smoke-test.sh --variant remote \
     --server-image ghcr.io/univec-ai/postvec-server:0.1.0-1 \
-    ghcr.io/univec-ai/postvec:0.1.0-1-pg18
+    ghcr.io/univec-ai/postvec:0.1.0-1-pg18-remote
 scripts/write-release-manifest.sh --expect-distros debian12 \
                                  --expect-majors 18 --expect-arches amd64
 ```
@@ -262,11 +262,11 @@ RPM names follow the PGDG-RPM convention (`postgresql18-postvec`) and depend on
 
 | Image | Mode | Extra content |
 |---|---|---|
-| `<repo>:0.1.0-1-pg18` | `grpc` (pinned — carries no engine assets) | extension, pgvector, CLI |
-| `<repo>:0.1.0-1-pg18-complete` | `embedded` (`grpc` still works) | + ONNX Runtime + the bundled model |
-| `<server repo>:0.1.0-1` | the inference node | `postvec-server`, CLI, ONNX Runtime, the bundled model — from the packages |
+| `<repo>:0.1.0-1-pg18-remote` | `grpc` (pinned - carries no engine assets) | extension, pgvector, CLI |
+| `<repo>:0.1.0-1-pg18-local` | `embedded` (`grpc` still works) | + ONNX Runtime + the bundled model |
+| `<server repo>:0.1.0-1` | the inference node | `postvec-server`, CLI, ONNX Runtime, the bundled model - from the packages |
 
-Moving tags `pg18` / `pg18-complete` also exist. There is deliberately **no
+Moving tags `pg18-remote` / `pg18-local` also exist. There is deliberately **no
 `latest`** on the database images: it hides the PostgreSQL major, and a
 major-version image change cannot upgrade a data directory in place. The node's
 image has no major and no data directory, so its moving tag *is* `latest`.
@@ -288,7 +288,7 @@ A release is `<version>-<packaging revision>` — `0.1.0-1` — everywhere:
 |---|---|
 | git tag | `postvec-v0.1.0-1` |
 | package version | `0.1.0-1+deb12`, `0.1.0-1.el9` |
-| image tag | `0.1.0-1-pg18`, `0.1.0-1-pg18-complete`; `postvec-server:0.1.0-1` |
+| image tag | `0.1.0-1-pg18-remote`, `0.1.0-1-pg18-local`; `postvec-server:0.1.0-1` |
 
 The packaging revision is part of the identity because `PACKAGE_RELEASE` exists
 to allow a rebuild that changes no source — a dependency-metadata fix, say. If
@@ -342,9 +342,10 @@ permission. Only the job that actually moves a tag is protected.
 **Moving-tag writes are serialised across both workflows.** Three operations
 mutate the same seven names — publishing release A, publishing release B, and
 this repair — and the release workflow's own concurrency key includes the ref, so two
-releases can run at once. Whichever finished last would decide where `pg18`
-points, which is how a published release gets moved backwards by an unrelated
-run finishing late. The release workflow's `publish` job and this workflow's
+releases can run at once. Whichever finished last would decide where a
+`pgNN-local` or `pgNN-remote` moving tag points, which is how a published
+release gets moved backwards by an unrelated run finishing late. The release
+workflow's `publish` job and this workflow's
 `advance` job therefore share one job-level concurrency group, keyed by **image
 repository** so a disposable rehearsal never serialises against production.
 
@@ -582,7 +583,7 @@ pass on the reference cell and fail everywhere else:
   PG 18 where a flattened layout coincides;
 - writing the `all` packages into *an* architecture's cell makes them invisible
   to the other architecture — an arm64 install test that finds no model, and an
-  arm64 embedded image that cannot be built.
+  arm64 local image that cannot be built.
 
 `build-packages.sh` removes an `all` package it finds in a `common` cell, so a
 working tree from before the split does not leave a second copy for the release
@@ -951,7 +952,7 @@ The published descriptor lists `execution_providers: ["cuda","cpu"]`. A build
 without the `ort-cuda` feature skips the provider and falls back to CPU, so this
 is a **warning, not a fault** — expect one `CUDA execution provider was
 requested, but the application was not compiled with the 'ort-cuda' feature.
-Skipping.` line per model load in the embedded image's PostgreSQL log. Packaging
+Skipping.` line per model load in the local image's PostgreSQL log. Packaging
 does not edit the archive to silence it.
 
 **The model name is the only compatibility identifier a database has.** Every
@@ -992,7 +993,7 @@ reviewed sequence — not a version bump:
    the current head.
 3. `scripts/build-model-bundle.sh` and **read what landed** — the script prints
    the package identity and the exact file list.
-4. Build a reviewed embedded image and record the new model's goldens **once**:
+4. Build a reviewed local image and record the new model's goldens **once**:
    `tests/model-golden-test.sh --record <image>`. Review the diff, then run the
    ordinary (non-recording) golden test on **every** architecture in the
    release.
@@ -1066,12 +1067,12 @@ project will not pretend otherwise.
 | `tests/image-smoke-test.sh` | Docker, a built image | health, PID 1, published ports, embed → sync → search, remote-mode degradation, persistence, clean SIGTERM, startup failure modes |
 | `tests/node-install-test.sh` | Docker | the inference host: node + runtime + model (+ CLI, or `--without-cli`) on a clean OS with no PostgreSQL, from local files and the distribution archive; nothing PostgreSQL arrives; the packaged configuration serves the packaged model over TLS as the service account; removal keeps configuration, engine root and account |
 | `tests/server-image-test.sh` | Docker, a built postvec-server image | composed of exactly this release's packages, licence and version labels, unprivileged, admin port unexposed, `/ready` only once the model answers, `/config` advertises it, `postvec-server status` and the bundled CLI work inside, clean drain on SIGTERM |
-| `tests/model-golden-test.sh` | Docker, an embedded image | the bundled model still produces the embeddings it was published with |
+| `tests/model-golden-test.sh` | Docker, a local image | the bundled model still produces the embeddings it was published with |
 
 The remote image test needs a real engine to be meaningful:
 `scripts/build-server-image.sh` assembles the **postvec-server** image from
 this release's own packages — the node, the CLI, the same ONNX Runtime and the
-same model bundle the embedded image carries — and `--server-image` makes the
+same model bundle the local image carries — and `--server-image` makes the
 test bring it up on a private network and drive embed → sync → search through
 it. Without one the test *fails* rather than skipping: "the remote image works"
 is not something to assert by omission.

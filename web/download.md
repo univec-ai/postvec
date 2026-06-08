@@ -14,7 +14,7 @@ Publication channels:
 | Channel | What it holds |
 |---|---|
 | [GitHub Releases](https://github.com/univec-ai/postvec/releases) tagged `postvec-v*` | `.deb` / `.rpm` packages (including `postvec-server`), `SHA256SUMS`, Sigstore attestations, `postvec-prerequisites.sh` |
-| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pg16` / `-pg17` / `-pg18`, with or without `-complete`) |
+| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pgNN-local` / `-pgNN-remote`) |
 | [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec-server) `ghcr.io/univec-ai/postvec-server` | The remote inference node (`0.1.0-1`, moving tag `latest`) |
 
 The selector checks GitHub for a published postvec release and links
@@ -35,8 +35,8 @@ planned later.
 | `postvec-model-minilm-l6-v2` | Bundled 384-d model; independently versioned (`2.1.0` = registry revision 2, bundle 1) |
 | `postvec-extras` | Metapackage pinning the runtime + model (not a complete install) |
 | `postvec-server` | `/usr/bin/postvec-server`, its systemd unit and configuration; one per distribution and architecture, no PostgreSQL major |
-| `...-pgNN` image | PostgreSQL + pgvector + postvec + CLI, remote mode |
-| `...-pgNN-complete` image | The above plus ONNX Runtime and MiniLM (both modes) |
+| `...-pgNN-remote` image | PostgreSQL + pgvector + postvec + CLI, remote mode |
+| `...-pgNN-local` image | The above plus ONNX Runtime and MiniLM (both modes) |
 | `postvec-server` image | The node, the CLI, ONNX Runtime and MiniLM, from the packages above |
 
 Debian 12 and Ubuntu 22.04 packages are not interchangeable, even though both

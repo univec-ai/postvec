@@ -12,10 +12,10 @@ instead of re-embedding the source text.
 
 ```console
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postvec \
-  ghcr.io/univec-ai/postvec:pg18-complete
+  ghcr.io/univec-ai/postvec:pg18-local
 ```
 
-No API key, no external service — the complete image carries the inference
+No API key, no external service - the local image carries the inference
 engine and a bundled embedding model in-process:
 
 ```sql

@@ -6,7 +6,7 @@ import { ARCHES, DISTROS, PG_MAJORS, SITE } from "../site";
 const distro = ref<(typeof DISTROS)[number]["id"]>("debian12");
 const pg = ref<(typeof PG_MAJORS)[number]>(18);
 const arch = ref<(typeof ARCHES)[number]["id"]>("amd64");
-const variant = ref<"remote" | "complete">("complete");
+const variant = ref<"remote" | "local">("local");
 
 const selectedDistro = computed(
   () => DISTROS.find((d) => d.id === distro.value) ?? DISTROS[0]
@@ -32,7 +32,7 @@ const files = computed(() => {
       `postvec-model-minilm-l6-v2_${model}${d.tag}_all.deb`,
       `postvec-extras_${postvec}${d.tag}_all.deb`,
     ];
-    return variant.value === "complete" ? [...common, ...extras] : common;
+    return variant.value === "local" ? [...common, ...extras] : common;
   }
   const rpmArch = a.rpm;
   const common = [
@@ -44,7 +44,7 @@ const files = computed(() => {
     `postvec-model-minilm-l6-v2-${model}${d.tag}.noarch.rpm`,
     `postvec-extras-${postvec}${d.tag}.noarch.rpm`,
   ];
-  return variant.value === "complete" ? [...common, ...extras] : common;
+  return variant.value === "local" ? [...common, ...extras] : common;
 });
 
 const releaseBase = computed(
@@ -68,12 +68,12 @@ const verifyCmd = computed(() => {
 });
 
 const imageTag = computed(() => {
-  const suffix = variant.value === "complete" ? "-complete" : "";
+  const suffix = variant.value === "local" ? "-local" : "-remote";
   return `${SITE.ghcr}:${SITE.release}-pg${pg.value}${suffix}`;
 });
 
 const movingTag = computed(() => {
-  const suffix = variant.value === "complete" ? "-complete" : "";
+  const suffix = variant.value === "local" ? "-local" : "-remote";
   return `${SITE.ghcr}:pg${pg.value}${suffix}`;
 });
 
@@ -95,7 +95,7 @@ const serverInstallCmd = computed(() => {
   const ort = `${SITE.onnxRuntimeVersion}-${SITE.packageRelease}`;
   const model = `${SITE.bundledModelVersion}-${SITE.packageRelease}`;
   // The node serves from /opt/postvec, where the runtime and model packages
-  // install — the same three "extras" files the complete payload lists,
+  // install — the same three "extras" files the local payload lists,
   // whichever payload the selector above is showing.
   const extras =
     d.family === "deb"
@@ -230,8 +230,8 @@ function assetUrl(name: string): string | null {
       <label>
         Payload
         <select v-model="variant">
-          <option value="complete">Complete (ONNX + MiniLM; both modes)</option>
-          <option value="remote">Remote only (extension + CLI)</option>
+          <option value="local">Local (ONNX + MiniLM; both modes)</option>
+          <option value="remote">Remote (extension + CLI)</option>
         </select>
       </label>
     </div>

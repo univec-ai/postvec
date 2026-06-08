@@ -30,7 +30,7 @@ which ship in the packages and images that carry them:
 
   * pgvector                — PostgreSQL License (a package dependency, never
                               vendored)
-  * ONNX Runtime            — MIT (postvec-onnxruntime package / embedded image;
+  * ONNX Runtime            — MIT (postvec-onnxruntime package / local image;
                               see /usr/share/doc/postvec-onnxruntime/)
   * bundled embedding model — see the model package's own LICENSE, NOTICE and
                               SOURCE.json under

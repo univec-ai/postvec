@@ -221,20 +221,23 @@ local build you will throw away."
     [[ "${EXTRAS_METAPACKAGE}" =~ ^postvec-[a-z0-9]+(-[a-z0-9]+)*$ ]] \
         || die "versions.env: EXTRAS_METAPACKAGE is not a postvec-* package name (got: ${EXTRAS_METAPACKAGE})"
     case "${EXTRAS_METAPACKAGE}" in
-    *embedded*|*engine*|*complete*)
-        die "versions.env: EXTRAS_METAPACKAGE must not contain embedded, engine, or complete
+    *embedded*|*engine*|*complete*|*local*|*remote*)
+        die "versions.env: EXTRAS_METAPACKAGE must not contain embedded, engine, complete, local or remote
 (got: ${EXTRAS_METAPACKAGE})
-embedded is the inference mode; complete is the all-in-one image suffix; the
-add-on package is extras, not a one-shot install."
+embedded is the inference mode; local and remote are the PostgreSQL image
+variants; the add-on package is extras, not a one-shot install."
         ;;
     esac
 
-    # Public tag suffix and Dockerfile target for the image that *includes*
-    # those extras. Different word from EXTRAS_METAPACKAGE on purpose: that
-    # image is a complete container; the package is not a complete install.
-    COMPLETE_IMAGE_VARIANT=complete
-    COMPLETE_IMAGE_SUFFIX=-complete
-    export COMPLETE_IMAGE_VARIANT COMPLETE_IMAGE_SUFFIX
+    # Public tag suffixes and Dockerfile targets for the two PostgreSQL
+    # images. Different words from EXTRAS_METAPACKAGE on purpose: those
+    # images are containers; the package is not a complete install.
+    LOCAL_IMAGE_VARIANT=local
+    LOCAL_IMAGE_SUFFIX=-local
+    REMOTE_IMAGE_VARIANT=remote
+    REMOTE_IMAGE_SUFFIX=-remote
+    export LOCAL_IMAGE_VARIANT LOCAL_IMAGE_SUFFIX
+    export REMOTE_IMAGE_VARIANT REMOTE_IMAGE_SUFFIX
 
     # The inference node's image: the `variant` the manifest records it under,
     # and the one moving tag it has. `latest` is fine here and deliberately

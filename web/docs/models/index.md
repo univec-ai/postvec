@@ -88,7 +88,7 @@ descriptors, but performs no engine load and no SQL refresh.
 
 ## Bundled model
 
-The extras package and the complete image ship `sentence-transformers-all-minilm-l6-v2`
+The extras package and the local image ship `sentence-transformers-all-minilm-l6-v2`
 (384-d). It is package-owned, so `model rm` leaves it in place.
 
 ## Model revisions

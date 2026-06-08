@@ -30,7 +30,7 @@ model="${POSTVEC_EMBEDDED_MODELS:-}"
 if [[ "${mode}" == embedded && -z "${model}" ]]; then
     echo "unhealthy: POSTVEC_EMBEDDED_MODELS is unset in an embedded-mode container;" >&2
     echo "  the image sets it from the model it bundles, so this container was" >&2
-    echo "  started with it cleared or is not a postvec embedded image" >&2
+    echo "  started with it cleared or is not a postvec local image" >&2
     exit 1
 fi
 # An idle worker writes one beat per postvec.heartbeat_interval_ms

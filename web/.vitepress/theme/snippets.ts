@@ -7,7 +7,7 @@ export type Tokens = {
   version: string;
   vol: string;
   image: string;
-  imageComplete: string;
+  imageLocal: string;
   imageMoving: string;
   imageMovingRemote: string;
   imageServer: string;
@@ -40,10 +40,10 @@ export function tokens(pg: PgMajor): Tokens {
     release: SITE.release,
     version: SITE.version,
     vol: pg === 18 ? "/var/lib/postgresql" : "/var/lib/postgresql/data",
-    image: `${SITE.ghcr}:${SITE.release}-pg${pg}`,
-    imageComplete: `${SITE.ghcr}:${SITE.release}-pg${pg}-complete`,
-    imageMoving: `${SITE.ghcr}:pg${pg}-complete`,
-    imageMovingRemote: `${SITE.ghcr}:pg${pg}`,
+    image: `${SITE.ghcr}:${SITE.release}-pg${pg}-remote`,
+    imageLocal: `${SITE.ghcr}:${SITE.release}-pg${pg}-local`,
+    imageMoving: `${SITE.ghcr}:pg${pg}-local`,
+    imageMovingRemote: `${SITE.ghcr}:pg${pg}-remote`,
     imageServer: `${SITE.ghcrServer}:${SITE.release}`,
     imageServerMoving: `${SITE.ghcrServer}:latest`,
     serverdeb: `postvec-server_${SITE.release}+deb12_amd64.deb`,
@@ -93,7 +93,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         "  -e POSTGRES_USER=app \\",
         "  -e POSTGRES_DB=app \\",
         "  -p 127.0.0.1:5433:5432 \\",
-        `  ${t.imageComplete}`,
+        `  ${t.imageLocal}`,
       ].join("\n"),
   },
 
@@ -106,7 +106,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         "  -e POSTGRES_DB=app \\",
         `  -v postvec-data:${t.vol} \\`,
         "  -p 127.0.0.1:5432:5432 \\",
-        `  ${t.imageComplete}`,
+        `  ${t.imageLocal}`,
       ].join("\n"),
   },
 
@@ -119,7 +119,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         "  -e POSTGRES_DB=app \\",
         `  -v postvec-data:${t.vol} \\`,
         "  -p 127.0.0.1:5432:5432 \\",
-        `  ${t.imageComplete}`,
+        `  ${t.imageLocal}`,
       ].join("\n"),
   },
 
@@ -134,7 +134,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         '  -v "$PWD/providers.d:/etc/postvec/providers.d:ro" \\',
         `  -v postvec-data:${t.vol} \\`,
         "  -p 127.0.0.1:5432:5432 \\",
-        `  ${t.imageComplete}`,
+        `  ${t.imageLocal}`,
       ].join("\n"),
   },
 
@@ -155,16 +155,16 @@ export const SNIPPETS: Record<string, SnippetDef> = {
 
   "docker-pull": {
     lang: "bash",
-    render: (t) => `docker pull ${t.imageComplete}`,
+    render: (t) => `docker pull ${t.imageLocal}`,
   },
 
   "docker-tags": {
     lang: "text",
     render: (t) =>
       [
-        `Pinned, embedded:  ${t.imageComplete}`,
+        `Pinned, local:     ${t.imageLocal}`,
         `Pinned, remote:    ${t.image}`,
-        `Moving, embedded:  ${t.imageMoving}`,
+        `Moving, local:     ${t.imageMoving}`,
         `Moving, remote:    ${t.imageMovingRemote}`,
         `Pinned, node:      ${t.imageServer}`,
         `Moving, node:      ${t.imageServerMoving}`,
@@ -249,7 +249,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
       ].join("\n"),
   },
 
-  "packages-complete": {
+  "packages-local": {
     lang: "bash",
     families: [
       {

@@ -152,7 +152,7 @@ SOURCE_MODEL_DIR="${SOURCE_ROOT}/models/${BACKEND}/${INSTALLED_NAME}"
 # `postvec model pull` installs deactivated by design: the descriptor's
 # `enabled` field is the operator's persistent power switch, and `postvec
 # model activate` is the only sanctioned way to flip it. The bundled model is
-# the one the complete image must serve at startup, so packaging makes the
+# the one the local image must serve at startup, so packaging makes the
 # same explicit choice an operator would — through the CLI, which updates the
 # receipt's recorded hash with it, so the verification below still proves
 # "archive bytes plus exactly this one recorded flip".

@@ -56,7 +56,7 @@ file_env POSTVEC_SHARED_PRELOAD_LIBRARIES ""
 # `${VAR-default}`, not `${VAR:-default}`: an *empty* POSTVEC_MODE is user
 # error and must say so, not quietly become grpc. Compose renders an
 # undefined interpolation as the empty string, so `POSTVEC_MODE: "${MODE}"`
-# with MODE unset would otherwise disable the engine a complete image was
+# with MODE unset would otherwise disable the engine a local image was
 # built around — silently, and only visibly as "search returns FTS only".
 #
 # The unset fallback stays grpc rather than following the extension's own
@@ -104,12 +104,12 @@ postvec_args=(
 
 if [[ "${mode}" == embedded ]]; then
     root="${POSTVEC_PATH:-/opt/postvec}"
-    # Fail fast on image corruption: an embedded image whose engine assets are
+    # Fail fast on image corruption: a local image whose engine assets are
     # missing can never become healthy, and saying so now is far better than a
     # server that starts, retries every 30 seconds and queues jobs forever.
     [[ -d "${root}/models" ]] || fatal "no model directory under ${root}
 This image was built without engine assets, or ${root} was shadowed by a mount.
-Use a *-complete image tag, or set POSTVEC_MODE=grpc to use remote inference."
+Use a *-local image tag, or set POSTVEC_MODE=grpc to use remote inference."
     compgen -G "${root}/libs/**/libonnxruntime.so*" >/dev/null 2>&1 \
         || compgen -G "${root}/libs/*/lib/libonnxruntime.so*" >/dev/null 2>&1 \
         || fatal "no ONNX Runtime under ${root}/libs — the engine could not load a model"

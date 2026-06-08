@@ -1,7 +1,7 @@
 # Point the moving image tags at a published release, and prove all seven
 # landed.
 #
-# The release workflow advances `pg16`…`pg18-complete` on the database images
+# The release workflow advances `pg16-remote`...`pg18-local` on the database images
 # and `latest` on the postvec-server image as its last act, after the GitHub
 # release is public. Those are seven separate registry writes with no
 # transaction around them: a failure part-way leaves some advanced and some
@@ -176,12 +176,12 @@ jobs:
           while IFS=$'\t' read -r name tag digest variant major; do
             versioned="${name}:${tag}"
             # `latest` for the node's image (no PostgreSQL major to hide);
-            # `pg<N>[-complete]` for the database images.
+            # `pg<N>-remote` / `pg<N>-local` for the database images.
             if [ "${variant}" = server ]; then
               moving="${name}:latest"
             else
-              suffix=""
-              [ "${variant}" = complete ] && suffix="-complete"
+              suffix="-remote"
+              [ "${variant}" = local ] && suffix="-local"
               moving="${name}:pg${major}${suffix}"
             fi
 
@@ -239,7 +239,8 @@ jobs:
     timeout-minutes: 30
     # **Shared with postvec-release's `publish` job.** Three operations mutate
     # the same seven moving tags — publishing release A, publishing release B,
-    # and this repair — and whichever finished last would decide where `pg18` points,
+    # and this repair — and whichever finished last would decide where a moving
+    # `pgNN-local` or `pgNN-remote` tag points,
     # which is how users get moved backwards. One group per image repository
     # serialises them without coupling production to a disposable rehearsal.
     concurrency:
