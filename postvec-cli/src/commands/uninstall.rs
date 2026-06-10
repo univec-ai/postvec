@@ -1157,15 +1157,27 @@ fn leftover_provider_files(settings: &SettingsSnapshot) -> Option<String> {
             ))
         }
     };
-    if files.is_empty() {
+    let keys = crate::commands::provider::sibling_key_files(&dir);
+    if files.is_empty() && keys.is_empty() {
         return None;
     }
-    Some(format!(
-        "{} still holds {} provider connector file(s) with API credentials; they were not \
-         removed — delete them yourself once no other host needs them",
+    let mut note = format!(
+        "{} still holds {} provider connector file(s) with API credentials",
         dir.display(),
         files.len()
-    ))
+    );
+    if !keys.is_empty() {
+        note.push_str(&format!(
+            " and {} key file(s) beside it ({})",
+            keys.len(),
+            keys.iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    note.push_str("; they were not removed — delete them yourself once no other host needs them");
+    Some(note)
 }
 
 /// Per-database preflight summary: what exists and what will be torn down.
@@ -1571,6 +1583,23 @@ postvec.http_endpoints = 'https://192.0.2.2:22222'
         assert!(note.contains("1 provider connector file"), "{note}");
         assert!(note.contains("were not removed"), "{note}");
         assert!(providers.join("openai.toml").exists());
+
+        // A copied login key lives beside providers.d, not in it: named,
+        // and still on disk.
+        let keys = dir.path().join("keys");
+        std::fs::create_dir(&keys).expect("mkdir");
+        std::fs::write(keys.join("univec.key"), "uv_secret").expect("write");
+        let note = leftover_provider_files(&embedded).expect("a report");
+        assert!(
+            note.contains("1 key file(s)") && note.contains("univec.key"),
+            "{note}"
+        );
+        assert!(keys.join("univec.key").exists());
+        // Key files alone are still a report.
+        std::fs::remove_file(providers.join("openai.toml")).expect("rm");
+        assert!(leftover_provider_files(&embedded).is_some());
+        std::fs::remove_file(keys.join("univec.key")).expect("rm");
+        std::fs::write(providers.join("openai.toml"), "provider = 'openai'\n").expect("write");
 
         // grpc clusters keep their provider files on the postvec-server nodes.
         let remote = settings(&[

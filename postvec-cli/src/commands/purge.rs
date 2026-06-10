@@ -806,6 +806,15 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
                     uncertain.push(format!("{problem}; the providers directory was left alone"))
                 }
             }
+            // `<root>/keys/`: operator key files, and the login key
+            // `provider add univec --api-key-from-login` copied there. The
+            // standing rule for key files applies: report, retain.
+            for key in crate::commands::provider::sibling_key_files(dir) {
+                notes.push(format!(
+                    "{} is a provider key file and was left alone",
+                    key.display()
+                ));
+            }
             prune.push(dir.clone());
             if let Some(parent) = dir.parent() {
                 // `/etc/postvec` exists only for providers.d.
@@ -1677,6 +1686,7 @@ mod tests {
         let providers = r.providers_dir.clone().unwrap();
         touch(&providers.join("openai.toml"));
         touch(&providers.join("bedrock.key"));
+        touch(&providers.parent().unwrap().join("keys/univec.key"));
         touch(&r.state_dir.join("clusters/18-main.json"));
         touch(&r.state_dir.join("auth.json"));
         touch(&r.pkglibdir.join("postvec.so"));
@@ -1776,6 +1786,7 @@ mod tests {
             "opt/postvec/models/.postvec.lock",
             "opt/postvec/libs",
             "etc/postvec/providers.d/bedrock.key",
+            "etc/postvec/keys/univec.key",
             "usr/lib/postgresql/18/lib/postvec.so",
             "usr/share/postgresql/18/extension/postvec.control",
             "usr/share/postgresql/18/extension/postvec--0.1.0.sql",
@@ -1813,6 +1824,10 @@ mod tests {
         let notes = plan.all_notes().join("\n");
         assert!(
             notes.contains("bedrock.key") && notes.contains("left alone"),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("keys/univec.key") && notes.contains("provider key file"),
             "{notes}"
         );
         assert!(

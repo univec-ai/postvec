@@ -152,6 +152,24 @@ pub fn validate_provider_name(name: &str, flag: &str) -> Result<()> {
     Ok(())
 }
 
+/// Regular files in `<providers.d parent>/keys/` — where `provider add
+/// univec --api-key-from-login` copies the login key and where operator
+/// key files conventionally live. Teardown reports them and retains them.
+pub fn sibling_key_files(providers_dir: &Path) -> Vec<PathBuf> {
+    let Some(keys) = providers_dir.parent().map(|p| p.join("keys")) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&keys)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
+        .collect();
+    files.sort();
+    files
+}
+
 /// `<DIR>/providers.d`, or `<DIR>` itself when it already is one.
 pub fn providers_dir_from_path(dir: &Path) -> PathBuf {
     if dir.file_name().is_some_and(|name| name == "providers.d") {
