@@ -185,43 +185,67 @@ pub struct ProviderAddArgs {
     pub name: Option<String>,
 
     /// Provider model id (e.g. text-embedding-3-small). Repeatable.
-    #[arg(
-        long = "model",
-        value_name = "ID",
-        required_unless_present = "convert_source",
-        conflicts_with = "convert_source"
-    )]
+    /// Required for every type but univec, where no selector at all adds
+    /// every embed model in UniVec's public catalogue.
+    #[arg(long = "model", value_name = "ID")]
     pub models: Vec<String>,
 
-    /// univec only: add a hosted CONVERTER entry instead of embed models —
-    /// this is the provider-side id of the SOURCE vector space. Requires
-    /// --convert-target, --source-model, --target-model and --source-dim.
-    /// postvec.migrate(strategy => 'convert') and postvec.convert() route
-    /// through the entry; it serves no embedding.
-    #[arg(long, value_name = "ID")]
+    /// univec only: add the hosted converter SRC:DST from UniVec's
+    /// catalogue (both are UniVec public model names; dimensions are
+    /// discovered). Repeatable. postvec.migrate(strategy => 'convert') and
+    /// postvec.convert() route through it; it serves no embedding.
+    #[arg(long, value_name = "SRC:DST")]
+    pub convert: Vec<String>,
+
+    /// univec only: every catalogue converter INTO this model. Repeatable.
+    #[arg(long, value_name = "MODEL")]
+    pub convert_to: Vec<String>,
+
+    /// univec only: every catalogue converter OUT OF this model. Repeatable.
+    #[arg(long, value_name = "MODEL")]
+    pub convert_from: Vec<String>,
+
+    /// univec only: every converter in the catalogue.
+    #[arg(long)]
+    pub all_converters: bool,
+
+    /// univec only: copy the key `postvec login` stored (or POSTVEC_API_KEY)
+    /// into <providers root>/keys/univec.key and use it for hosted
+    /// inference. Interactive runs offer this; scripts must ask for it.
+    #[arg(long, conflicts_with_all = ["api_key_file", "api_key_env", "key_stdin"])]
+    pub api_key_from_login: bool,
+
+    /// univec only: skip the catalogue fetch. Every dimension must then
+    /// come from --dim or the verification probe.
+    #[arg(long)]
+    pub no_catalog: bool,
+
+    /// univec, manual converter entry (when the catalogue is unreachable or
+    /// the pair is not listed yet): the provider-side id of the SOURCE
+    /// space. Requires --convert-target, --source-model, --target-model and
+    /// --source-dim.
+    #[arg(long, value_name = "ID", hide = true)]
     pub convert_source: Option<String>,
 
-    /// Converter only: the provider-side id of the TARGET vector space.
-    #[arg(long, value_name = "ID")]
+    /// Manual converter only: the provider-side id of the TARGET space.
+    #[arg(long, value_name = "ID", hide = true)]
     pub convert_target: Option<String>,
 
-    /// Converter only: the postvec-side public name of the SOURCE space —
-    /// what a bound column's `model` says (the resolver's vocabulary, not
-    /// the provider's).
-    #[arg(long, value_name = "NAME")]
+    /// Manual converter only: the postvec-side public name of the SOURCE
+    /// space — what a bound column's `model` says.
+    #[arg(long, value_name = "NAME", hide = true)]
     pub source_model: Option<String>,
 
-    /// Converter only: the postvec-side public name of the TARGET space —
-    /// what postvec.migrate() is called with.
-    #[arg(long, value_name = "NAME")]
+    /// Manual converter only: the postvec-side public name of the TARGET
+    /// space — what postvec.migrate() is called with.
+    #[arg(long, value_name = "NAME", hide = true)]
     pub target_model: Option<String>,
 
-    /// Converter only: the SOURCE space's dimension (--dim is the target's;
-    /// the verification probe measures it when omitted).
-    #[arg(long, value_name = "N")]
+    /// Manual converter only: the SOURCE space's dimension.
+    #[arg(long, value_name = "N", hide = true)]
     pub source_dim: Option<u32>,
 
-    /// Converter only: the entry's public name. Default:
+    /// Single converter only: the entry's public name. Default:
     /// univec-convert-<source-model>-to-<target-model>.
     #[arg(long, value_name = "NAME")]
     pub converter_name: Option<String>,
@@ -294,6 +318,45 @@ pub struct ProviderLsArgs {
     /// selected cluster's providers path.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
+
+    /// List what a provider OFFERS (its remote catalogue) instead of what
+    /// is configured. With no PROVIDER: every configured file's connector,
+    /// plus univec. Works without a cluster; unauthenticated where the
+    /// provider allows it (UniVec does). Providers that publish no
+    /// dimensions say so instead of listing.
+    #[arg(long)]
+    pub available: bool,
+
+    /// With --available: one provider (a file stem or a connector type).
+    #[arg(value_name = "PROVIDER", requires = "available")]
+    pub provider: Option<String>,
+
+    /// With --available: only this kind of entry.
+    #[arg(long, value_enum, requires = "available")]
+    pub kind: Option<ListedKind>,
+
+    /// With --available: only converters INTO this model.
+    #[arg(long, value_name = "MODEL", requires = "available")]
+    pub to: Option<String>,
+
+    /// With --available: only converters OUT OF this model.
+    #[arg(long, value_name = "MODEL", requires = "available")]
+    pub from: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ListedKind {
+    Embed,
+    Convert,
+}
+
+impl From<ListedKind> for providers::listing::ListedKind {
+    fn from(kind: ListedKind) -> Self {
+        match kind {
+            ListedKind::Embed => providers::listing::ListedKind::Embed,
+            ListedKind::Convert => providers::listing::ListedKind::Convert,
+        }
+    }
 }
 
 #[derive(Debug, Args, Clone)]

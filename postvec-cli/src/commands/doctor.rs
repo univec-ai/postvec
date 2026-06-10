@@ -89,7 +89,7 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
     // its engine; it runs only under --deep, and only observes.
     let registry = collect::registry_probe(args.deep, context.timeout).await;
 
-    let results = collect::evaluate(
+    let mut results = collect::evaluate(
         &context,
         &snapshot,
         &facts,
@@ -99,6 +99,16 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
         args.deep,
         args.tls == TlsPolicy::Strict,
     );
+    // The one other network probe, --deep only, best effort: 2 s, no retry.
+    if args.deep && snapshot.settings.mode() == Some(crate::cli::Mode::Embedded) {
+        results.extend(
+            checks::provider::catalogue_notes(
+                &snapshot.settings.providers_path(),
+                std::time::Duration::from_secs(2),
+            )
+            .await,
+        );
+    }
 
     let report = Report {
         schema_version: SCHEMA_VERSION,

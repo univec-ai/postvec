@@ -18,6 +18,10 @@
 #   E  slow/trickling response → deadline, bounded retries, bounded RSS
 #   F  connector reload + key rotation (key A → key B, no restart)
 #   G  in-flight crash of the serving process + recovery
+#   H  hosted conversion: `provider add univec --convert-to` discovers the
+#      route from the mock's catalogue (no dims on the command line, one
+#      convert probe, no embed probe), `provider ls --available` shows it
+#      configured, migrate(strategy => 'convert') converts through it
 #
 # Speed knobs (all SIGHUP; recorded in the output): max_retries=2,
 # retry_backoff_ms=500, job_visibility_timeout_ms=5000, poll_interval_ms=1000,
@@ -117,7 +121,7 @@ mock_state() { # <field>
 }
 
 start_mock() {
-    docker exec -d "${SRV}" python3 /provider-mock.py "${MOCK_PORT}"
+    docker exec -d "${SRV}" python3 /provider-mock.py "${MOCK_PORT}" "${BUNDLED_MODEL_NAME}"
     wait_for "the provider mock answers /healthz" 30 mock_healthy
 }
 
@@ -385,6 +389,34 @@ provider_add() { # runs the shipped CLI, WITH the live verification probe
     fi
 }
 
+# Catalogue discovery: no --source-dim/--dim, no --no-verify. A convert-only
+# add needs no --acknowledge-in-use (no text egress; migrate()'s NOTICE is
+# the consent moment), on every target kind.
+provider_add_univec() {
+    local common=(--convert-to "${BUNDLED_MODEL_NAME}"
+                  --api-key-file "$(provider_key_path)"
+                  --base-url "http://127.0.0.1:${MOCK_PORT}" --yes)
+    if [[ "${TARGET}" == package ]]; then
+        docker exec "${DB}" postvec provider add univec \
+            --pg-config "${BIN}/pg_config" --config-dir /etc/postvec-test/conf.d "${common[@]}"
+    elif (( EMBEDDED )); then
+        docker exec "${DB}" postvec provider add univec --path /etc/postvec "${common[@]}"
+    else
+        docker exec "${SRV}" postvec provider add univec --path /opt/postvec "${common[@]}"
+    fi
+}
+
+provider_ls_available_univec() {
+    if [[ "${TARGET}" == package ]]; then
+        docker exec "${DB}" postvec provider ls --available univec \
+            --pg-config "${BIN}/pg_config" --config-dir /etc/postvec-test/conf.d
+    elif (( EMBEDDED )); then
+        docker exec "${DB}" postvec provider ls --available univec --path /etc/postvec
+    else
+        docker exec "${SRV}" postvec provider ls --available univec --path /opt/postvec
+    fi
+}
+
 # ----------------------------------------------------------------- scenarios
 
 apply_speed_knobs() {
@@ -607,6 +639,71 @@ scenario_G_crash_recovery() {
         || bad "queue=$(queue_count) after recovery"
 }
 
+converter_cached()   { [[ "$(dbsql "SELECT count(*) FROM postvec.models WHERE name LIKE 'univec-convert-%'")" == 1 ]]; }
+convert_filled_is()  { [[ "$(dbsql "SELECT count(*) FROM e2e_convert WHERE body_semantic IS NOT NULL")" == "$1" ]]; }
+migration_state_is() { [[ "$(dbsql "SELECT state FROM postvec.migration_status($1)")" == "$2" ]]; }
+
+scenario_H_hosted_conversion() {
+    step "H. hosted conversion: catalogue discovery, then migrate(strategy => 'convert')"
+    # The key file holds KEYB since F; the mock requires it since F/G.
+    mockctl "{\"reset\": true, \"require_bearer\": \"${KEYB}\"}"
+    local out status=0
+    out="$(provider_add_univec 2>&1)" || status=$?
+    if (( status == 0 )) || { (( status == 3 )) && grep -q "models serve now" <<<"${out}"; }; then
+        ok "provider add univec --convert-to ${BUNDLED_MODEL_NAME} discovered the route"
+    else
+        bad "provider add univec exited ${status}: $(tail -3 <<<"${out}")"
+        return
+    fi
+    grep -q "catalogue: 0 embed, 1 convert added" <<<"${out}" \
+        && ok "the summary line names the discovered converter" \
+        || bad "no catalogue summary in: $(tail -3 <<<"${out}")"
+    [[ "$(mock_state catalog_requests)" -ge 1 ]] \
+        && ok "GET /v1/models was consulted" \
+        || bad "the catalogue was never fetched"
+    [[ "$(mock_state converts)" == 1 && "$(mock_state requests)" == 0 ]] \
+        && ok "exactly one convert probe and no embed probe for a convert-only add" \
+        || bad "probes: converts=$(mock_state converts) embeds=$(mock_state requests)"
+    [[ "$(mock_state auth_failures)" == 0 ]] \
+        && ok "the identity check and the probe carried the key file's key" \
+        || bad "$(mock_state auth_failures) request(s) carried the wrong credential"
+    provider_ls_available_univec 2>&1 | grep -q "yes (univec-convert-" \
+        && ok "provider ls --available shows the route as configured" \
+        || bad "provider ls --available does not show the configured route"
+
+    dbsql "SELECT postvec.refresh_models()" >/dev/null 2>&1 || true
+    wait_for "the converter to reach the model cache" 30 converter_cached \
+        && ok "the hosted converter is served and cached" \
+        || { bad "the converter never reached postvec.models"; return; }
+    dbsql "CREATE TABLE e2e_convert (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, body text NOT NULL);
+           SELECT postvec.enable('e2e_convert','body', model => '${PROV_MODEL}');
+           INSERT INTO e2e_convert(body) VALUES
+             ('stored vectors move between spaces'),
+             ('the hosted route converts them');" >/dev/null
+    wait_for "both rows to embed through the mock" 60 convert_filled_is 2 \
+        || { bad "only $(dbsql 'SELECT count(*) FROM e2e_convert WHERE body_semantic IS NOT NULL')/2 rows embedded"; return; }
+    local mid via
+    mid="$(dbsql "SELECT postvec.migrate('e2e_convert','body', new_model => '${BUNDLED_MODEL_NAME}', strategy => 'convert')")"
+    [[ -n "${mid}" ]] && ok "migrate(strategy => 'convert') accepted (id ${mid})" \
+                      || { bad "migrate() returned nothing"; return; }
+    via="$(dbsql "SELECT resolved_via->>'model' FROM postvec.migration_status(${mid})")"
+    [[ "${via}" == univec-convert-* ]] \
+        && ok "resolved_via names the hosted converter (${via})" \
+        || bad "resolved_via is '${via}'"
+    wait_for "the migration to reach awaiting_finalize" 120 migration_state_is "${mid}" awaiting_finalize \
+        || { bad "migration state: $(dbsql "SELECT state || ' ' || coalesce(error,'') FROM postvec.migration_status(${mid})")"; return; }
+    dbsql "SELECT postvec.migration_finalize(${mid})" >/dev/null
+    migration_state_is "${mid}" done \
+        && ok "migration finalized" \
+        || bad "state after finalize: $(dbsql "SELECT state FROM postvec.migration_status(${mid})")"
+    [[ "$(dbsql "SELECT DISTINCT vector_dims(body_semantic) FROM e2e_convert")" == 384 ]] \
+        && ok "stored vectors are now in the 384-dimensional target space" \
+        || bad "unexpected vector width: $(dbsql 'SELECT DISTINCT vector_dims(body_semantic) FROM e2e_convert')"
+    [[ "$(mock_state converts)" -ge 2 ]] \
+        && ok "the migration converted through /v1/convert" \
+        || bad "no conversion request beyond the probe (converts=$(mock_state converts))"
+}
+
 final_asserts() {
     step "final state"
     dead_is 2 \
@@ -652,6 +749,7 @@ scenario_D_oversized
 scenario_E_trickle
 scenario_F_key_rotation
 scenario_G_crash_recovery
+scenario_H_hosted_conversion
 final_asserts
 
 printf '\n%d passed, %d failed\n' "${passed}" "${failed}"

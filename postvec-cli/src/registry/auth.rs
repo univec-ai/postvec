@@ -133,28 +133,35 @@ pub fn resolve(api_key_file: Option<&Path>) -> Result<Option<Credential>> {
         }));
     }
     let store = store_path()?;
-    match owned::read_regular_file(&store)? {
-        Some(content) => {
-            check_store_permissions(&store)?;
-            let parsed: StoreFile = serde_json::from_str(&content).map_err(|e| {
-                CliError::precondition(format!("{} is malformed: {e}", store.display()))
-                    .with_fix("run `postvec logout` and log in again")
-            })?;
-            if parsed.schema_version != STORE_SCHEMA_VERSION {
-                return Err(CliError::precondition(format!(
-                    "{} has schema_version {}, this postvec-cli understands {STORE_SCHEMA_VERSION}",
-                    store.display(),
-                    parsed.schema_version
-                ))
-                .with_fix("upgrade postvec-cli"));
-            }
-            Ok(Some(Credential {
-                key: validate_key_shape(&parsed.api_key)?,
-                source: CredentialSource::Store,
-            }))
-        }
-        None => Ok(None),
+    let euid = unsafe { libc::geteuid() };
+    Ok(read_private_store(&store, euid)?.map(|key| Credential {
+        key,
+        source: CredentialSource::Store,
+    }))
+}
+
+/// The key in a store file, provided the store is still private to `owner`:
+/// a regular file (no symlink), 0600, owned by that uid. `Ok(None)` when
+/// there is no store. `provider add univec` reads the invoking user's store
+/// through this as root, so the owner is a parameter, not the effective uid.
+pub fn read_private_store(store: &Path, owner: u32) -> Result<Option<String>> {
+    let Some(content) = owned::read_regular_file(store)? else {
+        return Ok(None);
+    };
+    check_store_permissions(store, owner)?;
+    let parsed: StoreFile = serde_json::from_str(&content).map_err(|e| {
+        CliError::precondition(format!("{} is malformed: {e}", store.display()))
+            .with_fix("run `postvec logout` and log in again")
+    })?;
+    if parsed.schema_version != STORE_SCHEMA_VERSION {
+        return Err(CliError::precondition(format!(
+            "{} has schema_version {}, this postvec-cli understands {STORE_SCHEMA_VERSION}",
+            store.display(),
+            parsed.schema_version
+        ))
+        .with_fix("upgrade postvec-cli"));
     }
+    Ok(Some(validate_key_shape(&parsed.api_key)?))
 }
 
 /// A stored credential is only used when the store is still private: a
@@ -164,10 +171,16 @@ pub fn resolve(api_key_file: Option<&Path>) -> Result<Option<Credential>> {
 /// rather than silently continuing to expose a long-lived key.
 /// `--api-key-file` stays more flexible on purpose: container secret
 /// mounts are often group-readable by design.
-pub fn check_store_permissions(store: &Path) -> Result<()> {
+pub fn check_store_permissions(store: &Path, owner: u32) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let meta = std::fs::symlink_metadata(store)
         .map_err(|e| CliError::precondition(format!("cannot stat {}: {e}", store.display())))?;
+    if !meta.is_file() {
+        return Err(CliError::precondition(format!(
+            "{} is not a regular file; refusing to use the stored key",
+            store.display()
+        )));
+    }
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
         return Err(CliError::precondition(format!(
@@ -179,10 +192,9 @@ pub fn check_store_permissions(store: &Path) -> Result<()> {
             store.display()
         )));
     }
-    let euid = unsafe { libc::geteuid() };
-    if meta.uid() != euid {
+    if meta.uid() != owner {
         return Err(CliError::precondition(format!(
-            "{} is owned by uid {}, not the effective user (uid {euid})",
+            "{} is owned by uid {}, not uid {owner}",
             store.display(),
             meta.uid()
         ))

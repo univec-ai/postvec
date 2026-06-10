@@ -20,6 +20,8 @@ pub struct Mock {
     pub url: String,
     /// Bodies of the requests the server has received, in arrival order.
     pub requests: Arc<Mutex<Vec<String>>>,
+    /// `METHOD /path` of every request, in arrival order ([`routes`] only).
+    pub paths: Arc<Mutex<Vec<String>>>,
     /// Body bytes written by [`flood`], for asserting where a bounded reader
     /// gave up. `None` for every other server shape.
     flooded: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -38,6 +40,16 @@ impl Mock {
 
     pub fn request_count(&self) -> usize {
         self.requests.lock().unwrap().len()
+    }
+
+    /// How many requests hit `path` ([`routes`] servers only).
+    pub fn path_count(&self, path: &str) -> usize {
+        self.paths
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.split_whitespace().nth(1) == Some(path))
+            .count()
     }
 
     /// Body bytes a [`flood`] server managed to write before the client
@@ -123,6 +135,7 @@ pub async fn spawn(responses: Vec<(u16, String)>) -> Mock {
     Mock {
         url,
         requests,
+        paths: Arc::new(Mutex::new(Vec::new())),
         flooded: None,
     }
 }
@@ -203,6 +216,7 @@ pub async fn flood(status: u16) -> Mock {
     Mock {
         url,
         requests,
+        paths: Arc::new(Mutex::new(Vec::new())),
         flooded: Some(written),
     }
 }
@@ -265,6 +279,112 @@ pub async fn truncated(body: &str) -> Mock {
     Mock {
         url,
         requests,
+        paths: Arc::new(Mutex::new(Vec::new())),
+        flooded: None,
+    }
+}
+
+/// One canned answer for a `(method, path)`, optionally gated on a bearer.
+#[derive(Clone)]
+pub struct Route {
+    pub method: &'static str,
+    pub path: &'static str,
+    pub status: u16,
+    pub body: String,
+    /// `Some(key)`: answer 401 unless `Authorization: Bearer key` is sent.
+    pub bearer: Option<String>,
+}
+
+impl Route {
+    pub fn new(method: &'static str, path: &'static str, status: u16, body: &str) -> Self {
+        Self {
+            method,
+            path,
+            status,
+            body: body.to_string(),
+            bearer: None,
+        }
+    }
+}
+
+/// A server that dispatches on method + path (404 otherwise), records the
+/// request line of every request in [`Mock::paths`], and the body in
+/// [`Mock::requests`]. For tests that drive several routes of one API in
+/// one process — the canned queue above cannot tell them apart.
+pub async fn routes(routes: Vec<Route>) -> Mock {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{}", addr);
+    let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let paths = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (reqs, seen) = (Arc::clone(&requests), Arc::clone(&paths));
+
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let mut buf = [0u8; 8192];
+            let mut data = Vec::new();
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                data.extend_from_slice(&buf[..n]);
+                if let Some(pos) = find(&data, b"\r\n\r\n") {
+                    if data.len() - (pos + 4) >= content_length(&data[..pos]) {
+                        break;
+                    }
+                }
+            }
+            let (head, body) = match find(&data, b"\r\n\r\n") {
+                Some(pos) => (
+                    String::from_utf8_lossy(&data[..pos]).to_string(),
+                    String::from_utf8_lossy(&data[pos + 4..]).to_string(),
+                ),
+                None => (String::new(), String::new()),
+            };
+            let mut words = head.split_whitespace();
+            let (method, path) = (
+                words.next().unwrap_or("").to_string(),
+                words.next().unwrap_or("").to_string(),
+            );
+            let authorized = |route: &Route| {
+                route.bearer.as_ref().is_none_or(|key| {
+                    head.lines().any(|l| {
+                        l.trim()
+                            .eq_ignore_ascii_case(&format!("authorization: bearer {key}"))
+                    })
+                })
+            };
+            seen.lock().unwrap().push(format!("{method} {path}"));
+            reqs.lock().unwrap().push(body);
+            let (status, payload) =
+                match routes.iter().find(|r| r.method == method && r.path == path) {
+                    Some(route) if authorized(route) => (route.status, route.body.clone()),
+                    Some(_) => (
+                        401,
+                        r#"{"error":{"message":"invalid api key"}}"#.to_string(),
+                    ),
+                    None => (404, r#"{"error":{"message":"no such path"}}"#.to_string()),
+                };
+            let resp = format!(
+                "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+            let _ = socket.flush().await;
+        }
+    });
+
+    Mock {
+        url,
+        requests,
+        paths,
         flooded: None,
     }
 }

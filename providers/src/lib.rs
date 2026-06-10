@@ -18,6 +18,7 @@ pub mod catalog;
 pub mod config;
 #[cfg(feature = "wire")]
 pub mod gateway;
+pub mod listing;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing;

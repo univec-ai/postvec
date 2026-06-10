@@ -9,6 +9,7 @@ pub mod add;
 pub mod ls;
 pub mod rm;
 pub mod test;
+pub mod univec;
 
 use crate::cli::Cli;
 use crate::cli::Mode;

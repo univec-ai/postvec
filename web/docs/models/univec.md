@@ -21,23 +21,60 @@ Embed and converter entries are independent. They can share one
 
 The API key stays in `providers.d` on the inference host.
 
-## Add a hosted embedding model
+## See what UniVec offers
 
-The CLI creates an embed entry, sends one verification request and measures
-the model's native dimension:
+UniVec publishes its catalogue at `GET https://api.univec.ai/v1/models`, no
+key needed. `provider ls --available` lists it, with each entry's kind and
+dimensions, and marks what your `providers.d` already configures:
 
 ```bash
-sudo postvec provider add univec --model baai-bge-m3
+postvec provider ls --available univec
+postvec provider ls --available univec --to baai-bge-m3     # converters into bge-m3
+postvec provider ls --available univec --kind embed --format json
+```
+
+::::: tip Expected
+```text
+univec  (https://api.univec.ai, public catalogue, 18 embed, 98 convert)
+  name                                   kind     dim         configured
+  baai-bge-m3                            embed    1024        yes (univec-baai-bge-m3)
+  snowflake-arctic-embed-l-v2.0          embed    1024        no
+  snowflake-arctic-embed-l-v2.0 -> baai-bge-m3   convert  1024->1024  no   cos 0.933
+```
+:::::
+
+Only UniVec can be listed this way: it is the one provider whose model list
+states dimensions. For every other connector the command says so and points
+at `--model`.
+
+## Add hosted embedding models
+
+Paste a key and the CLI does the rest. With no model flags it adds every
+embed model in the catalogue, with dimensions and sequence lengths taken
+from the catalogue, and no converters:
+
+```bash
+sudo postvec provider add univec                        # every embed model
+sudo postvec provider add univec --model baai-bge-m3    # one of them
 postvec provider ls
 sudo postvec doctor --database app
 ```
 
+Before anything is billed, the command proves the key with the free
+registry route (a wrong key stops there). It then makes **one** paid embed
+request against the cheapest model it is adding, checks the measured width
+against the catalogue, writes the connector file, reloads the inference host
+and refreshes `postvec.models`. A model not in the catalogue is still
+accepted with `--model`; its dimension is measured instead.
+
 The model id becomes `univec-baai-bge-m3` in SQL. `provider_model_id` keeps
-the id accepted by the UniVec API.
+the id accepted by the UniVec API. The prefix is deliberate: a column bound
+to a local `baai-bge-m3` is not captured by adding the hosted one.
 
 ::::: tip Expected
 `provider ls` reports `univec-baai-bge-m3` as `served`, and the model appears
-in `postvec.models` after the refresh performed by `provider add`.
+in `postvec.models` after the refresh performed by `provider add`. The
+summary line reads `catalogue: 18 embed, 0 convert added, 0 already present`.
 :::::
 
 Bind a column with the normal SQL surface:
@@ -57,26 +94,30 @@ applies the corresponding model prompt when the model defines one.
 
 ## Configure hosted conversion
 
-Use converter mode to add a `kind = "convert"` entry to `univec.toml`:
+Conversion routes are opt-in, one flag. Name the model you are migrating to
+and every catalogue converter into it is added, or name one pair:
 
 ```bash
-sudo postvec provider add univec \
-  --convert-source snowflake-arctic-embed-l-v2.0 \
-  --convert-target baai-bge-m3 \
-  --source-model snowflake-arctic-embed-l-v2.0 \
-  --target-model baai-bge-m3 \
-  --source-dim 1024 \
+sudo postvec provider add univec --convert-to baai-bge-m3
+sudo postvec provider add univec --convert snowflake-arctic-embed-l-v2.0:baai-bge-m3 \
   --converter-name univec-convert-snowflake-to-bge-m3
+sudo postvec provider add univec --convert-from snowflake-arctic-embed-l-v2.0
+sudo postvec provider add univec --all-converters
 ```
 
-The command sends one vector through the conversion API, measures the target
-dimension, writes the connector file, reloads the inference host and refreshes
-`postvec.models`. Pass `--dim` to check a known target dimension. With
-`--no-verify`, `--dim` is required.
+Source and target names, both dimensions and both name vocabularies come
+from the catalogue. The command checks that a converter's stated widths
+agree with the listed embed models of the same names, sends **one** vector
+through the conversion API for one of the routes it adds (no embed request
+for a convert-only add), writes the connector file, reloads the inference
+host and refreshes `postvec.models`. Selectors combine; a selection nothing
+matches is refused with the catalogue's actual targets or sources listed.
 
-This example exposes a direct Snowflake Arctic to BGE-M3 conversion. The
-target remains a local `baai-bge-m3` model after migration. The command writes
-this model entry:
+The single-pair example exposes a direct Snowflake Arctic to BGE-M3
+conversion. The target remains a local `baai-bge-m3` model after migration:
+`--convert-to` adds no embed model, and search after `migrate()` still needs
+a local embed of the target (or a bridge). The command writes this model
+entry:
 
 ```toml
 # /etc/postvec/providers.d/univec.toml
@@ -105,6 +146,22 @@ The two name pairs have different jobs:
 Use the exact public model names and dimensions for the pair. A mismatch is a
 whole-file load error, or a request-time dimension error if the declared
 dimension and the provider response disagree.
+
+### Manual entries
+
+When the catalogue is unreachable, or for a model UniVec has not listed yet,
+the explicit flags still work (hidden from `--help`):
+
+```bash
+sudo postvec provider add univec --no-catalog --model my-model --dim 1024 --no-verify
+sudo postvec provider add univec \
+  --convert-source snowflake-arctic-embed-l-v2.0 --convert-target baai-bge-m3 \
+  --source-model snowflake-arctic-embed-l-v2.0 --target-model baai-bge-m3 \
+  --source-dim 1024
+```
+
+`--dim` is then the target dimension; the probe measures it when omitted,
+and `--no-verify` requires it.
 
 Keep the file at `0600` in its existing `0700` directory. Reload the embedded
 host and refresh the database cache only after a hand edit:
@@ -190,9 +247,9 @@ local inference engine and uses local models. Load a local converter
 when embed-bridge is required.
 
 When several direct converters declare the same source and target, postvec
-selects the first converter name in lexical order. `migration_status()` shows
-the chosen name in `resolved_via`. Avoid duplicate pairs unless that ordering
-is intentional.
+prefers a local converter, then the first hosted one by name.
+`migration_status()` shows the chosen name in `resolved_via`. Avoid duplicate
+pairs unless that ordering is intentional.
 
 ## Credentials, billing and failures
 
@@ -203,9 +260,16 @@ API key:
 - `provider add univec` makes billable inference requests from the inference
   host.
 
+`provider add univec` can reuse the `postvec login` key. An interactive run
+that finds one offers it (default no); scripts opt in with
+`--api-key-from-login`. The key is **copied** to `/etc/postvec/keys/univec.key`
+(or `<server-root>/keys/univec.key`) and referenced from the connector file,
+so `postvec logout` does not remove a serving key.
+
 A key with a zero spending limit can read the private model catalogue but
 cannot serve hosted embeddings or conversions. UniVec returns HTTP 402 when
-the account has no available credit. postvec classifies 401, 402 and 403 as
+the account has no available credit; `provider add` says so after the free
+identity check passes and the billed probe fails. postvec classifies 401, 402 and 403 as
 configuration failures. Queue work retries up to `postvec.max_retries`, then
 moves to `postvec.jobs_dead`. Migrations keep retrying configuration failures.
 

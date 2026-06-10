@@ -44,6 +44,15 @@ A bound column sends its source text to the provider on every insert and
 update, and `search()` sends the query text. A migration through a hosted
 UniVec converter sends the stored vectors instead.
 
+## See what a provider offers
+
+`postvec provider ls --available [PROVIDER]` asks the provider's own model
+list instead of reading `providers.d`. UniVec publishes kinds and dimensions,
+so its catalogue lists in full, unauthenticated, with your configured
+entries marked. No other supported provider states embedding dimensions;
+for those the command prints why it cannot list and points at `--model`.
+See [UniVec hosted models](/docs/models/univec).
+
 ## 1. Add a provider
 
 Writes `/etc/postvec/providers.d/openai.toml`, probes the key and reloads

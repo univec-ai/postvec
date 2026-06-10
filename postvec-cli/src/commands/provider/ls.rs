@@ -53,6 +53,9 @@ struct LsDocument {
 }
 
 pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exit> {
+    if args.available {
+        return run_available(cli, &args, output).await;
+    }
     let target = resolve_target(cli, args.path.as_deref(), output, false).await?;
     let dir = target.dir().to_path_buf();
 
@@ -240,4 +243,276 @@ pub fn provider_files(
     }
     files.sort();
     Ok(files)
+}
+
+// ---- `provider ls --available`: what a provider OFFERS ---------------------
+
+#[derive(Serialize)]
+struct AvailableModel {
+    #[serde(flatten)]
+    listed: providers::listing::ListedModel,
+    /// Joined against the directory by the same identity `route_models()`
+    /// uses; `None` when no directory was resolvable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configured: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configured_name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AvailableProvider {
+    name: String,
+    provider: String,
+    base_url: String,
+    /// `entries` | `needs_key` | `unsupported` | `failed`.
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    models: Vec<AvailableModel>,
+}
+
+#[derive(Serialize)]
+struct AvailableDocument {
+    schema_version: u32,
+    command: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    available: bool,
+    providers: Vec<AvailableProvider>,
+}
+
+/// One catalogue to ask: a configured file (its connector and `base_url`
+/// override), or a bare connector type against its default endpoint.
+struct Source {
+    name: String,
+    provider: String,
+    base_url: Option<String>,
+    doc: Option<ProviderFileDoc>,
+}
+
+async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Result<Exit> {
+    use providers::listing::{self, ListedKind, Listing};
+
+    let wanted = args
+        .provider
+        .as_deref()
+        .map(|p| providers::catalog::canonical_provider(&p.to_lowercase()));
+    // A directory is optional: the catalogue needs only the network, the
+    // same way `model ls --available` works with no engine root.
+    let target = resolve_target(cli, args.path.as_deref(), output, false)
+        .await
+        .ok();
+    let mut sources: Vec<Source> = Vec::new();
+    if let Some(target) = &target {
+        // Per FILE, not per connector type: two univec files with different
+        // base URLs are two catalogues.
+        for path in provider_files(target.dir()).map_err(crate::error::CliError::precondition)? {
+            let Ok(Some(doc)) = ProviderFileDoc::load(&path) else {
+                continue;
+            };
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let provider =
+                providers::catalog::canonical_provider(doc.provider_type().unwrap_or(""));
+            if wanted
+                .as_ref()
+                .is_some_and(|w| *w != stem && *w != provider)
+            {
+                continue;
+            }
+            sources.push(Source {
+                name: stem,
+                base_url: doc
+                    .value
+                    .get("base_url")
+                    .and_then(toml::Value::as_str)
+                    .map(str::to_string),
+                provider,
+                doc: Some(doc),
+            });
+        }
+    }
+    // Nothing configured for the request: the named connector, or UniVec —
+    // the one catalogue the tree exists to promote, and it costs nothing.
+    let bare = wanted.clone().unwrap_or_else(|| "univec".to_string());
+    if sources.is_empty() || (wanted.is_none() && !sources.iter().any(|s| s.provider == bare)) {
+        if !providers::config::SUPPORTED_PROVIDERS.contains(&bare.as_str()) {
+            return Err(crate::error::CliError::usage(format!(
+                "unknown provider {bare:?}: name a configured file or one of {}",
+                providers::config::SUPPORTED_PROVIDERS.join(", ")
+            )));
+        }
+        sources.push(Source {
+            name: bare.clone(),
+            provider: bare,
+            base_url: None,
+            doc: None,
+        });
+    }
+
+    let mut providers_out = Vec::new();
+    let mut failures = Vec::new();
+    for source in sources {
+        let configured: Option<std::collections::BTreeMap<String, String>> =
+            target.as_ref().map(|_| {
+                source
+                    .doc
+                    .as_ref()
+                    .map(|doc| {
+                        doc.descriptors()
+                            .into_iter()
+                            .map(|d| {
+                                let key = match &d.provider_source_id {
+                                    Some(src) => format!("{src}->{}", d.provider_model_id),
+                                    None => d.provider_model_id.clone(),
+                                };
+                                (key, d.name)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+        let base_url = source
+            .base_url
+            .clone()
+            .unwrap_or_else(|| default_base_url(&source.provider).to_string());
+        let (outcome, reason, models) = match listing::list_models(
+            &source.provider,
+            source.base_url.as_deref(),
+            cli.timeout,
+            true,
+        )
+        .await
+        {
+            Ok(Listing::Entries(models)) => ("entries", None, models),
+            Ok(Listing::NeedsKey { route }) => (
+                "needs_key",
+                Some(format!("{route} needs a key")),
+                Vec::new(),
+            ),
+            Ok(Listing::Unsupported { reason }) => ("unsupported", Some(reason), Vec::new()),
+            Err(e) => {
+                failures.push(format!("{}: {e}", source.name));
+                ("failed", Some(e.to_string()), Vec::new())
+            }
+        };
+        let models = models
+            .into_iter()
+            .filter(|m| args.kind.is_none_or(|k| ListedKind::from(k) == m.kind))
+            .filter(|m| {
+                args.to
+                    .as_deref()
+                    .is_none_or(|t| m.kind == ListedKind::Convert && m.provider_model_id == t)
+            })
+            .filter(|m| {
+                args.from
+                    .as_deref()
+                    .is_none_or(|f| m.source.as_ref().is_some_and(|(s, _)| s == f))
+            })
+            .map(|listed| {
+                let key = match &listed.source {
+                    Some((src, _)) => format!("{src}->{}", listed.provider_model_id),
+                    None => listed.provider_model_id.clone(),
+                };
+                let name = configured.as_ref().and_then(|c| c.get(&key).cloned());
+                AvailableModel {
+                    configured: configured.as_ref().map(|_| name.is_some()),
+                    configured_name: name,
+                    listed,
+                }
+            })
+            .collect();
+        providers_out.push(AvailableProvider {
+            name: source.name,
+            provider: source.provider,
+            base_url,
+            outcome,
+            reason,
+            models,
+        });
+    }
+
+    if output.is_json() {
+        output.show_document(
+            &AvailableDocument {
+                schema_version: crate::checks::SCHEMA_VERSION,
+                command: "provider ls",
+                target: target.as_ref().map(|t| t.label()),
+                available: true,
+                providers: providers_out,
+            },
+            "",
+        )?;
+    } else {
+        for p in &providers_out {
+            let embeds = p
+                .models
+                .iter()
+                .filter(|m| m.listed.kind == ListedKind::Embed)
+                .count();
+            match &p.reason {
+                Some(reason) => output.progress(&format!(
+                    "{}  ({}, cannot list: {reason})",
+                    p.name, p.base_url
+                )),
+                None => output.progress(&format!(
+                    "{}  ({}, public catalogue, {embeds} embed, {} convert)",
+                    p.name,
+                    p.base_url,
+                    p.models.len() - embeds
+                )),
+            }
+            if !p.models.is_empty() {
+                output.progress(&format!(
+                    "  {:<52} {:<8} {:<11} configured",
+                    "name", "kind", "dim"
+                ));
+            }
+            for m in &p.models {
+                let (name, dim) = match &m.listed.source {
+                    Some((src, sd)) => (
+                        format!("{src} -> {}", m.listed.provider_model_id),
+                        format!("{sd}->{}", m.listed.dim),
+                    ),
+                    None => (m.listed.provider_model_id.clone(), m.listed.dim.to_string()),
+                };
+                let configured = match (m.configured, &m.configured_name) {
+                    (Some(true), Some(as_name)) => format!("yes ({as_name})"),
+                    (Some(_), _) => "no".to_string(),
+                    (None, _) => "?".to_string(),
+                };
+                let quality = m
+                    .listed
+                    .quality
+                    .map(|q| format!("   cos {q:.3}"))
+                    .unwrap_or_default();
+                output.progress(&format!(
+                    "  {name:<52} {:<8} {dim:<11} {configured}{quality}",
+                    m.listed.kind.label()
+                ));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(Exit::Success)
+    } else {
+        Err(crate::error::CliError::precondition(format!(
+            "listing failed for {}",
+            failures.join("; ")
+        )))
+    }
+}
+
+fn default_base_url(provider: &str) -> &'static str {
+    match provider {
+        "univec" => providers::univec::DEFAULT_UNIVEC_BASE_URL,
+        "openai" => providers::openai::DEFAULT_OPENAI_BASE_URL,
+        "openrouter" => providers::openrouter::DEFAULT_OPENROUTER_BASE_URL,
+        "mistral" => providers::mistral::DEFAULT_MISTRAL_BASE_URL,
+        "google" => providers::gemini::DEFAULT_GEMINI_BASE_URL,
+        "cohere" => providers::cohere::DEFAULT_COHERE_BASE_URL,
+        _ => "(derived from --region)",
+    }
 }

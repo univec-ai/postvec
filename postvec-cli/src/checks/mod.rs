@@ -184,6 +184,7 @@ pub const CHECK_ORDER: &[&str] = &[
     "provider.file",
     "provider.key-source",
     "provider.served",
+    "provider.catalogue",
     // model store (postvec model …)
     "models.receipts",
     "models.unactivated",

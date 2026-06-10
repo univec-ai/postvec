@@ -319,11 +319,15 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
 /// `convert-bridge` row (a remote node may still advertise one) is inert
 /// here, and a chain that would need one is `NoConvertPath` — the fix is a
 /// direct converter (or `strategy => 'reembed'`), not a chain.
+/// A local converter wins over a provider-backed one for the same pair
+/// (`raw->'extra'->>'provider'` is what discovery stamps on gateway rows):
+/// a migration must not silently pick the billable, vector-egress route
+/// over a converter the operator pulled to disk. Then lexical order.
 pub(crate) fn resolve_convert(source: &str, target: &str) -> Result<String, PvError> {
     let direct = spi_opt_string(
         "SELECT name FROM postvec.models
           WHERE model_type = 'convert' AND source_model = $1 AND target_model = $2
-          ORDER BY name LIMIT 1",
+          ORDER BY (raw->'extra'->>'provider') IS NOT NULL, name LIMIT 1",
         &[source.into(), target.into()],
     )?;
     direct.ok_or_else(|| PvError::NoConvertPath {
@@ -910,6 +914,35 @@ mod tests {
             ),
             other => panic!("expected NoEmbedPath, got {other:?}"),
         }
+    }
+
+    /// Two direct converters for one pair, the hosted one sorting FIRST by
+    /// name: the local one must still win. Same-prefix names would pass on
+    /// the old lexical order and prove nothing.
+    #[pg_test]
+    fn convert_resolution_prefers_local() {
+        load_provider_fixture();
+        let models = discovery::parse_config(
+            r#"{ "success": true, "data": { "models": [
+              { "name": "a-hosted-convert", "status": "provider", "provider": "univec",
+                "provider_file": "univec", "provider_model_id": "x", "provider_endpoint": "0",
+                "configuration": { "enabled": true, "params": {
+                  "model_type": "convert", "source_model": "model-p", "target_model": "model-q",
+                  "source_dim": 8, "target_dim": 8 } } },
+              { "name": "z-local-convert", "status": "local",
+                "configuration": { "enabled": true, "params": {
+                  "model_type": "convert", "source_model": "model-p", "target_model": "model-q",
+                  "source_dim": 8, "target_dim": 8 } } }
+            ] } }"#,
+        )
+        .expect("fixture parses");
+        upsert_models(&models).expect("upsert works");
+        assert_eq!(resolve_convert("model-p", "model-q").unwrap(), "z-local-convert");
+        // Positive control: with only hosted routes, lexical order applies.
+        assert_eq!(
+            resolve_convert("snowflake-arctic-embed-l-v2.0", "ext2-model").unwrap(),
+            "univec-convert-snow-to-ext2"
+        );
     }
 
     /// Chained hops never resolve — two-hop conversion went away with the

@@ -183,10 +183,11 @@ not take part in `embed-bridge` execution.
   drops it.
 - A loaded local model keeps a colliding name, in `/config` and on the
   embed or convert path.
-- The directory is bounded as a whole: at most 32 connector files, 256
+- The directory is bounded as a whole: at most 32 connector files, 512
   provider models and 256 total `max_concurrent` across every file. A
-  single file is at most 256 KiB and a referenced secret at most
-  16 KiB. Breaking a directory-wide ceiling fails the whole scan.
+  single file holds at most 256 `[[models]]` entries (one whole UniVec
+  catalogue with headroom), is at most 256 KiB, and a referenced secret at
+  most 16 KiB. Breaking a directory-wide ceiling fails the whole scan.
 
 `provider add` and `provider rm` validate the directory as it would be
 after the write. A file the host would skip as a whole is refused

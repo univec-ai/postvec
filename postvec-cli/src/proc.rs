@@ -162,6 +162,40 @@ fn group_list(name: &CStr, gid: u32) -> Vec<u32> {
     }
 }
 
+/// The home directory of a local account, from the passwd database — not
+/// from `$HOME`, which `sudo` rewrites to root's.
+pub fn home_dir(name: &str) -> Result<PathBuf> {
+    let c_name = CString::new(name)
+        .map_err(|_| CliError::internal(format!("account name {name:?} contains NUL")))?;
+    let mut buf = vec![0i8; 1024];
+    loop {
+        let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = unsafe {
+            libc::getpwnam_r(
+                c_name.as_ptr(),
+                &mut passwd,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE && buf.len() < 64 * 1024 {
+            buf.resize(buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || result.is_null() || passwd.pw_dir.is_null() {
+            return Err(CliError::precondition(format!(
+                "no local account named {name:?}"
+            )));
+        }
+        let dir = unsafe { CStr::from_ptr(passwd.pw_dir) }
+            .to_string_lossy()
+            .into_owned();
+        return Ok(PathBuf::from(dir));
+    }
+}
+
 pub fn current_uid() -> u32 {
     unsafe { libc::getuid() }
 }

@@ -32,7 +32,12 @@ pub const DEFAULT_MAX_BATCH: usize = 96;
 /// semaphore and widens the hosts' ingress gate, so it must not be
 /// operator-unbounded.
 const MAX_MAX_CONCURRENT: usize = 64;
-const MAX_MODELS_PER_FILE: usize = 64;
+/// Public because `provider add univec` materialises a catalogue selection
+/// into one file and refuses an over-ceiling selection as a whole, naming
+/// the flags that narrow it. Sized so one file holds UniVec's whole
+/// catalogue (116 entries on 2026-09-03) with headroom; a hostile-input
+/// bound, not a capacity measurement.
+pub const MAX_MODELS_PER_FILE: usize = 256;
 const MAX_NAME_BYTES: usize = 128;
 /// A `provider_model_id` goes into a request body and, for Bedrock, into a
 /// signed URL path.
@@ -53,7 +58,7 @@ const MAX_DIM: u32 = 16_000;
 /// well-formed files are a thousand times the heap, the semaphores and the
 /// ingress width.
 const MAX_PROVIDER_FILES: usize = 32;
-const MAX_TOTAL_MODELS: usize = 256;
+const MAX_TOTAL_MODELS: usize = 512;
 /// Sum of every file's `max_concurrent`. Both hosts add this to their tower
 /// ingress limit, and each in-flight provider call may hold a bounded
 /// response body, so this is the multiplier on the feature's whole memory
@@ -2224,6 +2229,36 @@ max_tokens = 8191
     /// file; these bound the process. Every one of them fails the *whole*
     /// scan rather than half-applying, so a snapshot is never built from a
     /// directory that broke a ceiling.
+    /// The ceilings hold a whole UniVec catalogue: 256 converter entries in
+    /// one file, under the byte ceiling; 257 refused; 512 across the
+    /// directory, 513 refused.
+    #[test]
+    fn the_model_ceilings_hold_a_whole_catalogue() {
+        let file = |prefix: &str, n: usize| {
+            let mut body = String::from("provider = \"univec\"\napi_key = \"k\"\n");
+            for i in 0..n {
+                body += &format!(
+                    "\n[[models]]\nname = \"univec-convert-{prefix}{i}-to-target\"\nkind = \"convert\"\n\
+                     provider_model_id = \"target\"\nprovider_source_id = \"{prefix}{i}\"\n\
+                     source_model = \"{prefix}{i}\"\ntarget_model = \"target\"\nsource_dim = 1024\ndim = 1024\n"
+                );
+            }
+            body
+        };
+        assert!(validate_str(&file("s", MAX_MODELS_PER_FILE), "f").is_ok());
+        assert!((file("s", MAX_MODELS_PER_FILE).len() as u64) < MAX_FILE_BYTES);
+        let refused = validate_str(&file("s", MAX_MODELS_PER_FILE + 1), "f").unwrap_err();
+        assert!(refused.contains("per-file ceiling"), "{refused}");
+
+        let dir = private_tempdir();
+        write_mode(dir.path(), "a.toml", &file("a", 256), 0o600);
+        write_mode(dir.path(), "b.toml", &file("b", 256), 0o600);
+        assert_eq!(load_dir(dir.path()).unwrap().providers.len(), 2);
+        write_mode(dir.path(), "c.toml", &file("c", 1), 0o600);
+        let refused = load_dir(dir.path()).unwrap_err();
+        assert!(refused.contains("in total"), "{refused}");
+    }
+
     #[test]
     fn the_directory_is_bounded_as_a_whole_not_only_per_file() {
         let dir = private_tempdir();

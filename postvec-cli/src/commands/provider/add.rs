@@ -2,7 +2,10 @@
 //!
 //! Write (or extend) one providers.d file, verify the key with one live
 //! single-input embed per model (opt-out `--no-verify` — the probe costs a
-//! paid API call), and nudge the running host to reload.
+//! paid API call), and nudge the running host to reload. For `univec`,
+//! names, kinds and dimensions come from the public catalogue instead
+//! (`super::univec`), and the probe proves the key plus one added route per
+//! kind rather than measuring every entry.
 //!
 //! Two gates run before anything is written:
 //!
@@ -16,7 +19,8 @@
 
 use super::{
     columns_bound_to, read_secret_file, reload_host, require_private_secret_file,
-    resolve_doc_secret, resolve_target, validate_provider_name, ProviderFileDoc, ProviderTarget,
+    resolve_doc_secret, resolve_target, univec, validate_provider_name, write_secret_file,
+    ProviderFileDoc, ProviderTarget,
 };
 use crate::cli::{Cli, ProviderAddArgs};
 use crate::error::{CliError, Exit, Result};
@@ -29,10 +33,17 @@ use std::time::Instant;
 /// Where the key for this file comes from — written to the TOML verbatim
 /// as a *source*, with the inline variant being the only one that stores a
 /// value (in the 0600 file; documented as the least preferred).
-enum KeySpec {
+pub(super) enum KeySpec {
     File(PathBuf),
     Env(String),
     Inline(String),
+    /// univec: the `postvec login` key, copied into `path` at apply time
+    /// and referenced as `api_key_file` — never inline, so it cannot
+    /// silently outlive a `logout`.
+    Login {
+        key: String,
+        path: PathBuf,
+    },
     /// The existing file already carries one and no new source was given.
     Existing,
 }
@@ -91,15 +102,21 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             model_ids.push(id);
         }
     }
-    // Converter mode (`--convert-source`): one hosted converter entry
-    // instead of embed models. Validated as a unit here so a partial flag
-    // set fails with one message naming the full set; clap already refuses
-    // `--model` beside it.
+    // Manual converter mode (`--convert-source`): one hosted converter
+    // entry with every name and dimension spelled out. Validated as a unit
+    // here so a partial flag set fails with one message naming the full
+    // set; `Selectors::from_args` refuses `--model` and the catalogue
+    // selectors beside it.
     let converter = converter_new_model(&args, &canonical)?;
-    if args.dim.is_some() && converter.is_none() && model_ids.len() != 1 {
+    let selectors =
+        univec::Selectors::from_args(&args, &canonical, converter.is_some(), model_ids.len())?;
+    if args.dim.is_some()
+        && converter.is_none()
+        && (model_ids.len() + selectors.convert.len() != 1 || selectors.bulk())
+    {
         return Err(CliError::usage(
-            "--dim applies to exactly one --model; add models with different dimensions in \
-             separate runs",
+            "--dim applies to exactly one --model or --convert; add models with different \
+             dimensions in separate runs",
         ));
     }
 
@@ -152,14 +169,73 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         })
         .unwrap_or_default();
 
+    // ---- The key source ----
+    // Before the catalogue: an interactive run's prompt order is key, then
+    // discovery progress — not the other way round.
+    let key = resolve_key_spec(&args, &canonical, target.dir(), existing.is_some(), output)?;
+    if let KeySpec::File(path) = &key {
+        require_private_secret_file(path)?;
+    }
+    if let KeySpec::Env(var) = &key {
+        output.note(&format!(
+            "{var} must be present in the POSTMASTER's environment (or the postvec-server \
+             unit's) — the inference host resolves it, not this shell; container images use \
+             the POSTVEC_*/_FILE secret pattern"
+        ));
+    }
+
+    // Read the effective values *from the document*, not from the flags: a
+    // rerun that adds a model to an existing file with a custom `base_url`
+    // does not repeat `--base-url`, and everything downstream — the
+    // catalogue, the probe, the privacy scan — has to reason about the
+    // endpoint that will serve, not the one the command line mentioned.
+    let recorded = |field: &str| {
+        existing.as_ref().and_then(|doc| {
+            doc.value
+                .get(field)
+                .and_then(toml::Value::as_str)
+                .map(str::to_string)
+        })
+    };
+    let effective_base_url = args.base_url.clone().or_else(|| recorded("base_url"));
+    let effective_region = args.region.clone().or_else(|| recorded("region"));
+    let base_url_changes = args.base_url.is_some() && args.base_url != recorded("base_url");
+    let region_changes = args.region.is_some() && args.region != recorded("region");
+
+    // ---- UniVec's catalogue ----
+    // Unauthenticated and free, so a dry run fetches it too. `None` means
+    // "not consulted": another connector, --no-catalog, or unreachable
+    // with selectors that can do without it.
+    let catalogue: Option<Vec<providers::listing::ListedModel>> =
+        if canonical == "univec" && !args.no_catalog {
+            let required = selectors.needs_catalogue(model_ids.len(), converter.is_some());
+            univec::fetch_catalogue(effective_base_url.as_deref(), cli.timeout, required, output)
+                .await?
+        } else {
+            None
+        };
+    if let Some(catalogue) = &catalogue {
+        if selectors.needs_catalogue(model_ids.len(), converter.is_some()) && !selectors.bulk() {
+            // No selector at all: every embed model UniVec lists. Converters
+            // are pair-specific migration routes and stay opt-in.
+            model_ids = catalogue
+                .iter()
+                .filter(|m| m.kind == providers::listing::ListedKind::Embed)
+                .map(|m| m.provider_model_id.clone())
+                .collect();
+        }
+    }
+
     // The descriptors this run adds: skip ids the file already declares.
     let mut new_models: Vec<NewModel> = Vec::new();
+    let mut already_present = 0usize;
     for id in &model_ids {
         if already_declared.iter().any(|(_, existing)| existing == id) {
             output.note(&format!(
                 "{id} is already declared in {}",
                 file_path.display()
             ));
+            already_present += 1;
             continue;
         }
         let public_name = catalog::public_name(&typed, id);
@@ -184,21 +260,61 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             )));
         }
         let known = catalog::lookup(&canonical, id);
+        let listed = catalogue
+            .as_deref()
+            .and_then(|c| providers::listing::embed(c, id));
+        if catalogue.is_some() && listed.is_none() {
+            output.note(&format!(
+                "{id} is not in UniVec's catalogue; the probe will measure its dimension"
+            ));
+        }
+        if let (Some(listed), Some(dim)) = (listed, args.dim) {
+            if dim != listed.dim {
+                return Err(CliError::usage(format!(
+                    "--dim {dim} disagrees with UniVec's catalogue, which lists {id} at \
+                     {} dimensions; drop --dim",
+                    listed.dim
+                )));
+            }
+        }
         new_models.push(NewModel {
             id: id.clone(),
             placeholder_dim: providers::config::placeholder_dim(&canonical, id),
             public_name,
-            dim: args.dim.or(known.map(|k| k.dim)),
-            max_tokens: known.map(|k| k.max_tokens),
+            dim: args.dim.or(listed.map(|l| l.dim)).or(known.map(|k| k.dim)),
+            max_tokens: listed
+                .and_then(|l| l.sequence_len)
+                .or(known.map(|k| k.max_tokens)),
             max_batch: known.map(|k| k.max_batch),
+            catalogued: listed.is_some(),
             convert: None,
         });
     }
-    if let Some(converter) = converter {
-        // A rerun with the same route is a no-op note, exactly like an
-        // embed id the file already declares; the same name with a
-        // DIFFERENT route is a refusal — which entry wins would decide what
-        // a migration converts through.
+    // Converters: the manual entry, or the catalogue selection. A rerun
+    // with the same route is a no-op note, exactly like an embed id the
+    // file already declares; the same name with a DIFFERENT route is a
+    // refusal — which entry wins would decide what a migration converts
+    // through.
+    let mut converters: Vec<NewModel> = converter.into_iter().collect();
+    if let Some(catalogue) = &catalogue {
+        for listed in selectors.converters(catalogue)? {
+            let mut model =
+                univec::converter_model(listed, catalogue, args.converter_name.as_deref())?;
+            if let Some(dim) = args.dim {
+                if dim != model.dim.unwrap_or(dim) {
+                    return Err(CliError::usage(format!(
+                        "--dim {dim} disagrees with UniVec's catalogue, which lists {} at {} \
+                         dimensions; drop --dim",
+                        model.public_name,
+                        model.dim.unwrap_or(0)
+                    )));
+                }
+                model.dim = Some(dim);
+            }
+            converters.push(model);
+        }
+    }
+    for converter in converters {
         let prospective_route = converter_route_id(&converter);
         let existing_route = existing_for_probe.as_ref().and_then(|doc| {
             doc.descriptors()
@@ -207,11 +323,14 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
                 .map(|d| d.route_model_id())
         });
         match existing_route {
-            Some(route) if route == prospective_route => output.note(&format!(
-                "{} is already declared in {}",
-                converter.public_name,
-                file_path.display()
-            )),
+            Some(route) if route == prospective_route => {
+                output.note(&format!(
+                    "{} is already declared in {}",
+                    converter.public_name,
+                    file_path.display()
+                ));
+                already_present += 1;
+            }
             Some(_) => {
                 return Err(CliError::precondition(format!(
                     "public name {:?} is already declared in {} with a different route; give \
@@ -233,18 +352,16 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             None => new_models.push(converter),
         }
     }
-
-    // ---- The key source ----
-    let key = resolve_key_spec(&args, existing.is_some(), output)?;
-    if let KeySpec::File(path) = &key {
-        require_private_secret_file(path)?;
-    }
-    if let KeySpec::Env(var) = &key {
-        output.note(&format!(
-            "{var} must be present in the POSTMASTER's environment (or the postvec-server \
-             unit's) — the inference host resolves it, not this shell; container images use \
-             the POSTVEC_*/_FILE secret pattern"
-        ));
+    // A selection over the per-file ceiling is refused as a whole, never
+    // truncated; the loader would refuse the file anyway, but its message
+    // cannot name the flags that narrow a catalogue selection.
+    if already_declared.len() + new_models.len() > providers::config::MAX_MODELS_PER_FILE {
+        return Err(CliError::precondition(format!(
+            "{} entries would exceed the {} per-file ceiling",
+            already_declared.len() + new_models.len(),
+            providers::config::MAX_MODELS_PER_FILE
+        ))
+        .with_fix("narrow the selection with --convert-to / --convert-from / --model, or write a second file with --name"));
     }
 
     // ---- Whether a verification probe will run ----
@@ -283,23 +400,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     }
 
     // ---- What this run actually changes ----
-    // Read the effective values *from the document*, not from the flags: a
-    // rerun that adds a model to an existing file with a custom `base_url`
-    // does not repeat `--base-url`, and everything downstream — the probe,
-    // the privacy scan — has to reason about the endpoint that will serve,
-    // not the one the command line mentioned.
-    let recorded = |field: &str| {
-        existing.as_ref().and_then(|doc| {
-            doc.value
-                .get(field)
-                .and_then(toml::Value::as_str)
-                .map(str::to_string)
-        })
-    };
-    let effective_base_url = args.base_url.clone().or_else(|| recorded("base_url"));
-    let effective_region = args.region.clone().or_else(|| recorded("region"));
-    let base_url_changes = args.base_url.is_some() && args.base_url != recorded("base_url");
-    let region_changes = args.region.is_some() && args.region != recorded("region");
     // Moving base_url or region on an existing file is a recipient change:
     // same public names, different destination. The privacy gate must
     // cover those names, not only newly added models. A brand-new file is
@@ -309,7 +409,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // text goes to the same place. It does change what the host will do, so
     // it is worth *verifying*, but it must not demand a privacy
     // acknowledgement — over-prompting is how a gate stops being read.
-    let credential_changes = matches!(key, KeySpec::File(_) | KeySpec::Env(_) | KeySpec::Inline(_));
+    let credential_changes = !matches!(key, KeySpec::Existing);
 
     // ---- Privacy gate + plan ----
     // Text-egress names only: a converter's own name never binds a column
@@ -543,6 +643,42 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             .filter(|(name, _)| !existing_converters.contains(name))
             .cloned()
             .collect();
+        // UniVec: prove the key for free before anything is billed. A
+        // 401/403 stops here; an outage of that route does not.
+        if canonical == "univec" {
+            univec::identity_check(effective_base_url.as_deref(), &secret, cli.timeout, output)
+                .await?;
+        }
+        // Catalogue-sourced entries have their dimensions; the probe's job
+        // is to prove the key and that one added route of each kind
+        // serves — one billed call per kind, against something THIS run
+        // adds (the cheapest embed among them), never a catalogue member
+        // outside the selection. A width that disagrees with the catalogue
+        // is refused, not patched.
+        if let Some(model) = new_models
+            .iter()
+            .filter(|m| m.catalogued && m.convert.is_none())
+            .min_by_key(|m| m.max_tokens.unwrap_or(u32::MAX))
+        {
+            let measured = super::probe_one(&config, &model.id, None, cli.timeout).await?;
+            catalogue_agrees(&model.public_name, model.dim, measured)?;
+            output.progress(&format!(
+                "{}: verified ({measured} dimensions)",
+                model.public_name
+            ));
+        }
+        if let Some(model) = new_models
+            .iter()
+            .find(|m| m.catalogued && m.convert.is_some())
+        {
+            let descriptor = probe_descriptor(model).expect("a converter");
+            let measured = super::probe_convert_one(&config, &descriptor, cli.timeout).await?;
+            catalogue_agrees(&model.public_name, model.dim, measured)?;
+            output.progress(&format!(
+                "{}: verified ({measured} target dimensions)",
+                model.public_name
+            ));
+        }
         for (id, public_name, declared) in probe_targets(
             &new_models,
             &already_embed,
@@ -567,9 +703,9 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             }
         }
 
-        // The new converter entry, always. Its measured target dimension
+        // The manual converter entry, always. Its measured target dimension
         // patches an omitted --dim, exactly like an embed probe's.
-        for model in new_models.iter_mut() {
+        for model in new_models.iter_mut().filter(|m| !m.catalogued) {
             let Some(descriptor) = probe_descriptor(model) else {
                 continue;
             };
@@ -628,6 +764,13 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             doc.set_model_dim(&model.public_name, dim)?;
         }
     }
+    if let KeySpec::Login { key, path } = &key {
+        write_secret_file(path, key.as_bytes(), target.owner())?;
+        journal.record(format!(
+            "copied the postvec login key to {} (0600); `postvec logout` does not remove it",
+            path.display()
+        ));
+    }
     doc.write(target.owner())?;
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
@@ -670,6 +813,26 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         )
     });
 
+    if catalogue.is_some() {
+        let embeds = new_models.iter().filter(|m| m.convert.is_none()).count();
+        journal.record(format!(
+            "catalogue: {embeds} embed, {} convert added, {already_present} already present",
+            new_models.len() - embeds
+        ));
+        if !selectors.any() {
+            journal.record(
+                "conversion routes are opt-in: `postvec provider add univec --convert-to <target>`"
+                    .to_string(),
+            );
+        } else if embeds == 0 {
+            journal.record(
+                "search after migrate() still needs a local embed model of the target (or a bridge); \
+                 a converter serves no embedding"
+                    .to_string(),
+            );
+        }
+    }
+
     reload_host(&target, cli.timeout, &mut journal).await;
     // The host now serves the model; the databases do not know it exists.
     // `enable()` resolves through `postvec.models`, so without this the
@@ -689,30 +852,46 @@ fn scanned_note_needed(public_names: &[String]) -> bool {
 }
 
 /// One descriptor this run is adding.
-struct NewModel {
+pub(super) struct NewModel {
     /// The provider-side id: an embed model's own, a converter's TARGET.
-    id: String,
-    public_name: String,
+    pub id: String,
+    pub public_name: String,
     /// An embed model's width; a converter's TARGET width.
-    dim: Option<u32>,
+    pub dim: Option<u32>,
     /// Stands in for `dim` during pre-probe validation only.
-    placeholder_dim: u32,
-    max_tokens: Option<u32>,
-    max_batch: Option<usize>,
+    pub placeholder_dim: u32,
+    pub max_tokens: Option<u32>,
+    pub max_batch: Option<usize>,
+    /// Dimensions came from UniVec's catalogue: the probe proves the key
+    /// and one route per kind rather than measuring every entry.
+    pub catalogued: bool,
     /// `Some` makes this a `kind = "convert"` entry.
-    convert: Option<ConvertSpec>,
+    pub convert: Option<ConvertSpec>,
 }
 
-/// The converter half of a `--convert-source` run.
-struct ConvertSpec {
+/// The converter half of a converter entry.
+pub(super) struct ConvertSpec {
     /// Provider-side id of the SOURCE space.
-    provider_source_id: String,
+    pub provider_source_id: String,
     /// Postvec-side public name of the source space (the resolver's
     /// vocabulary — what a bound column's `model` says).
-    source_model: String,
+    pub source_model: String,
     /// Postvec-side public name of the target space.
-    target_model: String,
-    source_dim: u32,
+    pub target_model: String,
+    pub source_dim: u32,
+}
+
+/// A catalogue dimension the probe contradicts is a refusal with both
+/// numbers; patching would write what the catalogue denies.
+fn catalogue_agrees(name: &str, declared: Option<u32>, measured: u32) -> Result<()> {
+    match declared {
+        Some(declared) if declared != measured => Err(CliError::precondition(format!(
+            "{name}: UniVec's catalogue lists {declared} dimensions but the probe measured \
+             {measured}; nothing was written"
+        ))
+        .with_fix("retry later, or add the entry manually with --no-catalog and --dim")),
+        _ => Ok(()),
+    }
 }
 
 /// The `--convert-*` flags as one converter entry, or `None` when the run
@@ -723,8 +902,7 @@ fn converter_new_model(args: &ProviderAddArgs, canonical: &str) -> Result<Option
         || args.convert_target.is_some()
         || args.source_model.is_some()
         || args.target_model.is_some()
-        || args.source_dim.is_some()
-        || args.converter_name.is_some();
+        || args.source_dim.is_some();
     if !any {
         return Ok(None);
     }
@@ -769,6 +947,7 @@ fn converter_new_model(args: &ProviderAddArgs, canonical: &str) -> Result<Option
         dim: args.dim,
         max_tokens: None,
         max_batch: None,
+        catalogued: false,
         convert: Some(ConvertSpec {
             provider_source_id,
             source_model,
@@ -873,8 +1052,9 @@ fn probe_targets(
     let mut targets: Vec<(String, String, Option<u32>)> = new_models
         .iter()
         // Converter entries have their own probe; an embed call cannot
-        // verify them and would be billed for the wrong thing.
-        .filter(|m| m.convert.is_none())
+        // verify them and would be billed for the wrong thing. Catalogued
+        // embeds are covered by the one-per-kind probe.
+        .filter(|m| m.convert.is_none() && !m.catalogued)
         .map(|m| (m.id.clone(), m.public_name.clone(), m.dim))
         .collect();
     if !connector_changed {
@@ -900,7 +1080,13 @@ fn probe_targets(
 /// Which key source this run records. No flag + an existing keyed file keeps
 /// the existing source; no flag + a TTY prompts hidden; no flag otherwise is
 /// a usage error naming the three sources.
-fn resolve_key_spec(args: &ProviderAddArgs, file_exists: bool, output: &Output) -> Result<KeySpec> {
+fn resolve_key_spec(
+    args: &ProviderAddArgs,
+    canonical: &str,
+    providers_dir: &std::path::Path,
+    file_exists: bool,
+    output: &Output,
+) -> Result<KeySpec> {
     if let Some(path) = &args.api_key_file {
         let path = crate::validate::absolute_path(path, "--api-key-file")?;
         return Ok(KeySpec::File(path));
@@ -916,18 +1102,28 @@ fn resolve_key_spec(args: &ProviderAddArgs, file_exists: bool, output: &Output) 
             .map_err(|e| CliError::apply(format!("cannot read the key from stdin: {e}")))?;
         return non_empty_key(raw);
     }
-    if file_exists {
+    if file_exists && !args.api_key_from_login {
         return Ok(KeySpec::Existing);
+    }
+    if canonical == "univec" {
+        if let Some(spec) = univec::login_key_offer(args, providers_dir, output)? {
+            return Ok(spec);
+        }
     }
     if crate::proc::is_stdin_tty() && !output.is_json() {
         let raw = crate::proc::read_hidden_line("Provider API key (hidden): ")
             .map_err(|e| CliError::apply(format!("cannot read the key: {e}")))?;
         return non_empty_key(raw);
     }
-    Err(CliError::usage(
+    Err(CliError::usage(format!(
         "no key source: pass --api-key-file FILE (recommended), --api-key-env VAR, or \
-         --key-stdin — a key is never accepted as a command-line value",
-    ))
+         --key-stdin{} — a key is never accepted as a command-line value",
+        if canonical == "univec" {
+            ", or --api-key-from-login"
+        } else {
+            ""
+        }
+    )))
 }
 
 fn non_empty_key(raw: String) -> Result<KeySpec> {
@@ -966,6 +1162,10 @@ fn apply_key_spec(table: &mut toml::map::Map<String, toml::Value>, canonical: &s
             clear(table);
             table.insert(inline.into(), toml::Value::String(value.clone()));
         }
+        KeySpec::Login { path, .. } => {
+            clear(table);
+            table.insert(file.into(), toml::Value::String(path.display().to_string()));
+        }
         KeySpec::Existing => {}
     }
 }
@@ -975,7 +1175,7 @@ fn apply_key_spec(table: &mut toml::map::Map<String, toml::Value>, canonical: &s
 /// `Existing` re-resolves whatever the file records.
 fn probe_secret(key: &KeySpec, existing: Option<&ProviderFileDoc>) -> Result<String> {
     match key {
-        KeySpec::Inline(value) => Ok(value.clone()),
+        KeySpec::Inline(value) | KeySpec::Login { key: value, .. } => Ok(value.clone()),
         KeySpec::File(path) => read_secret_file(path),
         KeySpec::Env(var) => std::env::var(var).map_err(|_| {
             CliError::precondition(format!(

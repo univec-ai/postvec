@@ -46,7 +46,7 @@ database session. Read-only model commands do not need it:
 |---|---|
 | Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm`, `provider add` / `rm` |
 | Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` and cluster-targeted `provider add` / `rm` / `test` |
-| Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show`, `provider ls` |
+| Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show`, `provider ls`, `provider ls --available` |
 
 `sudo postvec ...` covers the first two at once: the parent keeps root
 for the filesystem and a child drops to the cluster owner for database
@@ -155,10 +155,12 @@ provider add TYPE --model ID... [--name STEM] [--path DIR]
             [--api-key-file FILE | --api-key-env VAR | --key-stdin]
             [--base-url URL] [--region REGION] [--dim N] [--no-verify]
             [--acknowledge-in-use] [--dry-run] [--yes]
-provider add univec --convert-source ID --convert-target ID
-            --source-model NAME --target-model NAME --source-dim N
-            [--converter-name NAME] [--dim N] [common add options]
+provider add univec [--model ID...] [--convert SRC:DST...] [--convert-to MODEL...]
+            [--convert-from MODEL...] [--all-converters] [--converter-name NAME]
+            [--api-key-from-login] [--no-catalog] [common add options]
 provider ls [--path DIR]
+provider ls --available [PROVIDER] [--kind embed|convert] [--to MODEL]
+            [--from MODEL] [--path DIR]
 provider test NAME [--model ID] [--path DIR]
 provider rm NAME [--model ID] [--path DIR] [--acknowledge-in-use]
             [--dry-run] [--yes]
@@ -183,11 +185,26 @@ be probed from the CLI; use `--no-verify` and confirm with `provider ls` plus
 a first write. The plan is shown before the probe, so declining it costs no
 API call.
 
-Converter mode is available only with `univec`. `--convert-source` and
-`--convert-target` are provider-side ids. `--source-model` and
-`--target-model` are the public names used by postvec route resolution.
-`--source-dim` is always required. See
+`univec` discovers models from UniVec's public catalogue. With no selector
+it adds every embed model; `--convert SRC:DST`, `--convert-to`,
+`--convert-from` and `--all-converters` add converters, and they combine.
+Dimensions come from the catalogue, so `--no-verify` needs no `--dim` for
+listed models; the probe proves the key and one added route per kind. A
+selection over the 256-entry per-file ceiling is refused whole.
+`--api-key-from-login` copies the `postvec login` key into
+`<root>/keys/univec.key`. `--no-catalog` skips discovery. The manual
+converter flags (`--convert-source`, `--convert-target`, `--source-model`,
+`--target-model`, `--source-dim`) remain for an unlisted pair. See
 [UniVec hosted models](/docs/models/univec).
+
+`provider ls --available` lists what a provider offers. With no PROVIDER it
+asks every configured file's connector plus `univec`; PROVIDER is a file
+stem or connector type. It needs no cluster. The JSON document has
+`available: true` and one `providers[]` entry per file with `outcome`
+(`entries`, `needs_key`, `unsupported` or `failed`), `reason` when not
+`entries`, and `models[]` carrying `provider_model_id`, `kind`, `dim`,
+`source`, `sequence_len`, `quality`, `configured` and `configured_name`.
+A failed listing exits non-zero after the other providers are shown.
 
 `--path DIR` manages `DIR/providers.d` as files, with no cluster in scope.
 `DIR` must already exist, and new files inherit its owner. That is how a

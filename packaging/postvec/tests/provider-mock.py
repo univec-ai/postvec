@@ -14,6 +14,15 @@ text always embeds identically, and a query sharing words with a document has
 genuinely higher cosine similarity, which is what makes the search-ranking
 assertion an assertion.
 
+It is also a minimal UniVec (aphex) for `provider add univec` discovery:
+    GET  /v1/models              -> the public catalogue (one embed model,
+                                    one converter from the OpenAI mock model
+                                    into CONVERT_TARGET, argv[2])
+    POST /v1/convert             -> {"success": true, "data": {"embeddings"}}
+                                    at the converter's target dimension
+    GET  /v1/registry/index.json -> the free identity check: 200 when the
+                                    bearer matches, 401 otherwise
+
 Control interface (never reached by the code under test):
     GET  /healthz          -> 200 once serving
     GET  /control          -> JSON state {requests, started, in_flight,
@@ -22,6 +31,7 @@ Control interface (never reached by the code under test):
         {"mode": "success" | "oversized" | "trickle" | "hold"}
         {"statuses": [429, 500]}   # per-request status queue, then success
         {"require_bearer": "key"}  # 401 anything else; "" disables
+        {"catalog": "ok" | "empty" | "500"}   # what GET /v1/models answers
         {"reset": true}            # zero the counters
         {"release": true}          # release every held request
 
@@ -35,8 +45,28 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+CONVERT_TARGET = sys.argv[2] if len(sys.argv) > 2 else "sentence-transformers-all-minilm-l6-v2"
+SOURCE_MODEL = "openai-text-embedding-3-small"   # the mock's own public name in postvec
+
+
+def catalogue():
+    """The aphex `PublicModelView` shape, dims matching this mock's vectors."""
+    return [
+        {"name": "mock-embed", "modelType": "embed", "executionProvider": "cpu",
+         "targetModel": "mock-embed", "targetDim": 1536, "sequenceLen": 512},
+        {"name": f"convert-{SOURCE_MODEL}-to-{CONVERT_TARGET}", "modelType": "convert",
+         "executionProvider": "cpu", "sourceModel": SOURCE_MODEL, "sourceDim": 1536,
+         "targetModel": CONVERT_TARGET, "targetDim": 384,
+         "eval": {"cosine_mean": 0.91}},
+        {"name": "embed-bridge", "modelType": "embed-bridge", "executionProvider": "cpu"},
+    ]
+
+
 STATE = {
     "requests": 0,        # total /v1/embeddings requests received
+    "converts": 0,        # total /v1/convert requests received
+    "catalog_requests": 0,
+    "catalog": "ok",
     "started": 0,         # requests that began processing (incl. held)
     "in_flight": 0,       # currently blocked "hold" requests
     "auth_failures": 0,
@@ -62,6 +92,15 @@ def vector_for(text: str, dim: int):
     return [round(c / norm, 6) for c in v]
 
 
+def fold(vector, dim):
+    """Deterministic conversion: fold the input onto `dim`, L2-normalise."""
+    out = [0.0] * dim
+    for i, c in enumerate(vector):
+        out[i % dim] += float(c)
+    norm = sum(c * c for c in out) ** 0.5 or 1.0
+    return [round(c / norm, 6) for c in out]
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -83,9 +122,33 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- control -----------------------------------------------------------
 
+    def _bearer_ok(self):
+        with LOCK:
+            required = STATE["require_bearer"]
+        if required and self.headers.get("Authorization") != f"Bearer {required}":
+            with LOCK:
+                STATE["auth_failures"] += 1
+            return False
+        return True
+
     def do_GET(self):
         if self.path == "/healthz":
             self._json(200, {"ok": True})
+            return
+        if self.path == "/v1/models":
+            with LOCK:
+                STATE["catalog_requests"] += 1
+                mode = STATE["catalog"]
+            if mode == "500":
+                self._json(500, {"success": False, "error": "catalogue unavailable"})
+            else:
+                self._json(200, {"success": True, "data": [] if mode == "empty" else catalogue()})
+            return
+        if self.path == "/v1/registry/index.json":
+            if self._bearer_ok():
+                self._json(200, {"channel": "authenticated", "models": []})
+            else:
+                self._json(401, {"error": {"message": "invalid api key"}})
             return
         if self.path == "/control":
             with LOCK:
@@ -103,7 +166,10 @@ class Handler(BaseHTTPRequestHandler):
             directive = json.loads(body or b"{}")
             with LOCK:
                 if directive.get("reset"):
-                    STATE.update(requests=0, started=0, auth_failures=0, statuses=[])
+                    STATE.update(requests=0, converts=0, catalog_requests=0, started=0,
+                                 auth_failures=0, statuses=[])
+                if "catalog" in directive:
+                    STATE["catalog"] = directive["catalog"]
                 if "mode" in directive:
                     STATE["mode"] = directive["mode"]
                     if directive["mode"] == "hold":
@@ -115,6 +181,23 @@ class Handler(BaseHTTPRequestHandler):
             if directive.get("release"):
                 RELEASE.set()
             self._json(200, {"ok": True})
+            return
+
+        if self.path == "/v1/convert":
+            with LOCK:
+                STATE["converts"] += 1
+            if not self._bearer_ok():
+                self._json(401, {"error": {"message": "invalid api key"}})
+                return
+            request = json.loads(body or b"{}")
+            route = next((m for m in catalogue() if m["modelType"] == "convert"
+                          and m["sourceModel"] == request.get("source_model")
+                          and m["targetModel"] == request.get("target_model")), None)
+            if route is None:
+                self._json(404, {"success": False, "error": "no such converter"})
+                return
+            out = [fold(v, route["targetDim"]) for v in request.get("embeddings", [])]
+            self._json(200, {"success": True, "data": {"embeddings": out}})
             return
 
         if self.path != "/v1/embeddings":

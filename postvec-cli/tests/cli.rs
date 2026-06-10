@@ -2434,3 +2434,618 @@ fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledg
     let output = rm(&["--acknowledge-in-use"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
 }
+
+// ---- `provider add univec` discovery, `provider ls --available` ----------
+//
+// A path-aware mock aphex on loopback serves the four routes the flow uses:
+// the public catalogue, the free identity check, and the two billed probes.
+// Every test counts requests per route, so "no billed call" claims are
+// checked against a mock that can observe one (positive controls below).
+
+mod univec_discovery {
+    use super::*;
+    use providers::testing::{routes, Mock, Route};
+
+    /// Two embeds (dims 3 and 4), three converters, one bridge entry.
+    const CATALOGUE: &str = r#"{"success":true,"data":[
+      {"name":"cheap","modelType":"embed","executionProvider":"cpu","targetModel":"cheap","targetDim":3,"sequenceLen":256},
+      {"name":"big","modelType":"embed","executionProvider":"cpu","targetModel":"big","targetDim":4,"sequenceLen":8192},
+      {"name":"convert-src-to-big","modelType":"convert","sourceModel":"src","targetModel":"big","sourceDim":1536,"targetDim":4,"eval":{"cosine_mean":0.9}},
+      {"name":"convert-other-to-big","modelType":"convert","sourceModel":"other","targetModel":"big","sourceDim":8,"targetDim":4},
+      {"name":"convert-src-to-cheap","modelType":"convert","sourceModel":"src","targetModel":"cheap","sourceDim":1536,"targetDim":3},
+      {"name":"embed-bridge","modelType":"embed-bridge","restrictedTargets":["x"]}
+    ]}"#;
+    const KEY: &str = "uv_test_login_key_value";
+    const EMBED_3: &str = r#"{"data":[{"embedding":[0.1,0.2,0.3],"index":0}]}"#;
+    const EMBED_4: &str = r#"{"data":[{"embedding":[0.1,0.2,0.3,0.4],"index":0}]}"#;
+    const CONVERT_4: &str = r#"{"success":true,"data":{"embeddings":[[0.1,0.2,0.3,0.4]]}}"#;
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime")
+    }
+
+    fn mock(
+        rt: &tokio::runtime::Runtime,
+        catalogue: (u16, &str),
+        embed: &str,
+        identity: (u16, &str),
+    ) -> Mock {
+        rt.block_on(routes(vec![
+            Route::new("GET", "/v1/models", catalogue.0, catalogue.1),
+            Route::new("POST", "/v1/embeddings", 200, embed),
+            Route::new("POST", "/v1/convert", 200, CONVERT_4),
+            Route {
+                bearer: Some(KEY.to_string()),
+                ..Route::new("GET", "/v1/registry/index.json", identity.0, identity.1)
+            },
+        ]))
+    }
+
+    fn standard(rt: &tokio::runtime::Runtime) -> Mock {
+        mock(rt, (200, CATALOGUE), EMBED_3, (200, "{}"))
+    }
+
+    fn add(mock: &Mock, root: &std::path::Path, extra: &[&str]) -> Output {
+        let mut args = vec!["provider", "add", "univec"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[
+            "--base-url",
+            &mock.url,
+            "--path",
+            root.to_str().unwrap(),
+            "--acknowledge-in-use",
+            "--yes",
+        ]);
+        // A rerun on an existing file passes no key source (the file's
+        // own is reused, so nothing counts as a credential change).
+        if !extra
+            .iter()
+            .any(|a| a.starts_with("--api-key") || *a == "--existing-key")
+        {
+            args.extend_from_slice(&["--api-key-env", "POSTVEC_UNIVEC_TEST_KEY"]);
+        }
+        args.retain(|a| *a != "--existing-key");
+        Command::new(binary())
+            .args(&args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PATH")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
+            .env_remove("POSTVEC_API_KEY")
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_UNIVEC_TEST_KEY", KEY)
+            .output()
+            .expect("run postvec")
+    }
+
+    fn text(output: &Output) -> String {
+        format!("{}{}", stdout(output), stderr(output))
+    }
+
+    fn file(root: &std::path::Path) -> String {
+        std::fs::read_to_string(root.join("providers.d/univec.toml")).unwrap_or_default()
+    }
+
+    /// Scenarios 1, 8 and the `--no-verify` rule: the zero-argument add
+    /// materialises every catalogue embed with catalogue dims and
+    /// `max_tokens`, bills exactly one embed against the cheapest ADDED
+    /// model, and a rerun spends nothing.
+    #[test]
+    fn a_zero_argument_add_writes_every_embed_and_bills_one_probe() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let out = add(&mock, root.path(), &[]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let body = file(root.path());
+        for line in [
+            "name = \"univec-cheap\"",
+            "provider_model_id = \"cheap\"",
+            "dim = 3",
+            "max_tokens = 256",
+            "name = \"univec-big\"",
+            "dim = 4",
+            "max_tokens = 8192",
+        ] {
+            assert!(body.contains(line), "missing {line}:\n{body}");
+        }
+        assert!(
+            !body.contains("kind = \"convert\""),
+            "no converters by default:\n{body}"
+        );
+        assert_eq!(mock.path_count("/v1/embeddings"), 1, "one billed embed");
+        assert_eq!(mock.path_count("/v1/convert"), 0);
+        assert_eq!(
+            mock.path_count("/v1/registry/index.json"),
+            1,
+            "the free identity check ran"
+        );
+        assert!(
+            mock.last_request().contains("\"model\":\"cheap\""),
+            "the cheapest added embed is probed: {}",
+            mock.last_request()
+        );
+        let t = text(&out);
+        assert!(
+            t.contains("catalogue: 2 embed, 0 convert added, 0 already present"),
+            "{t}"
+        );
+        assert!(t.contains("--convert-to"), "the opt-in hint:\n{t}");
+
+        // Rerun: already present, zero new upstream calls.
+        let out = add(&mock, root.path(), &["--existing-key"]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        assert!(text(&out).contains("already declared"), "{}", text(&out));
+        assert_eq!(mock.path_count("/v1/embeddings"), 1);
+        assert_eq!(mock.path_count("/v1/registry/index.json"), 1);
+
+        // `--no-verify` with catalogue dims does not demand --dim.
+        let fresh = provider_root();
+        let out = add(&mock, fresh.path(), &["--no-verify"]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        assert!(file(fresh.path()).contains("dim = 4"));
+        assert_eq!(
+            mock.path_count("/v1/embeddings"),
+            1,
+            "--no-verify spent nothing"
+        );
+    }
+
+    /// Scenarios 2 and 10: a convert-only add writes both vocabularies from
+    /// the catalogue, bills one convert probe and no embed probe.
+    #[test]
+    fn convert_to_adds_every_route_into_the_target_with_one_convert_probe() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let out = add(&mock, root.path(), &["--convert-to", "big"]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let body = file(root.path());
+        for line in [
+            "name = \"univec-convert-src-to-big\"",
+            "name = \"univec-convert-other-to-big\"",
+            "kind = \"convert\"",
+            "provider_source_id = \"src\"",
+            "source_model = \"src\"",
+            "target_model = \"big\"",
+            "source_dim = 1536",
+            "source_dim = 8",
+            "dim = 4",
+        ] {
+            assert!(body.contains(line), "missing {line}:\n{body}");
+        }
+        assert!(!body.contains("univec-convert-src-to-cheap"), "{body}");
+        assert_eq!(mock.path_count("/v1/registry/index.json"), 1);
+        assert_eq!(
+            mock.path_count("/v1/embeddings"),
+            0,
+            "convert-only: no embed probe"
+        );
+        assert_eq!(mock.path_count("/v1/convert"), 1);
+        let t = text(&out);
+        assert!(t.contains("catalogue: 0 embed, 2 convert added"), "{t}");
+        assert!(t.contains("local embed model of the target"), "{t}");
+
+        // The union: --model plus a single --convert with a custom name,
+        // one billed call of each kind.
+        let fresh = provider_root();
+        let out = add(
+            &mock,
+            fresh.path(),
+            &[
+                "--model",
+                "cheap",
+                "--convert",
+                "other:big",
+                "--converter-name",
+                "route-x",
+            ],
+        );
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let body = file(fresh.path());
+        assert!(
+            body.contains("name = \"route-x\"") && body.contains("name = \"univec-cheap\""),
+            "{body}"
+        );
+        assert_eq!(
+            (
+                mock.path_count("/v1/embeddings"),
+                mock.path_count("/v1/convert")
+            ),
+            (1, 2)
+        );
+    }
+
+    /// Scenarios 3 and 9: selections the catalogue cannot satisfy are
+    /// refused before anything is written, naming the way out.
+    #[test]
+    fn unlisted_selections_are_refused_with_the_fallback_named() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let out = add(&mock, root.path(), &["--convert", "a:b"]);
+        assert_ne!(code(&out), 0);
+        assert!(text(&out).contains("--convert-source"), "{}", text(&out));
+        let out = add(&mock, root.path(), &["--convert-to", "nowhere"]);
+        assert_ne!(code(&out), 0);
+        assert!(
+            text(&out).contains("targets are: big, cheap"),
+            "{}",
+            text(&out)
+        );
+        assert!(!root.path().join("providers.d/univec.toml").exists());
+        assert_eq!(
+            mock.path_count("/v1/embeddings") + mock.path_count("/v1/convert"),
+            0
+        );
+    }
+
+    /// Scenario 4: a dead catalogue stops a run that needs it and only
+    /// warns a run that named its models.
+    #[test]
+    fn an_unreachable_catalogue_fails_only_selections_that_need_it() {
+        let rt = runtime();
+        let mock = mock(&rt, (500, r#"{"error":"down"}"#), EMBED_3, (200, "{}"));
+        let root = provider_root();
+        let out = add(&mock, root.path(), &[]);
+        assert_ne!(code(&out), 0);
+        assert!(text(&out).contains("/v1/models"), "{}", text(&out));
+        let out = add(
+            &mock,
+            root.path(),
+            &["--model", "x", "--dim", "3", "--no-verify"],
+        );
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        assert!(text(&out).contains("unreachable"), "{}", text(&out));
+        assert!(file(root.path()).contains("univec-x"));
+        // --no-catalog + --no-verify still needs --dim: nothing supplied one.
+        let out = add(
+            &mock,
+            root.path(),
+            &["--no-catalog", "--model", "y", "--no-verify"],
+        );
+        assert_eq!(code(&out), 2, "{}", text(&out));
+        assert!(text(&out).contains("--dim"), "{}", text(&out));
+    }
+
+    /// Scenarios 5, 6 and 11: `ls --available` per file, joined against
+    /// what is configured, and honest about connectors that cannot list.
+    #[test]
+    fn ls_available_lists_per_file_and_names_what_cannot_list() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let other = standard(&rt);
+        let root = provider_root();
+        assert_eq!(
+            code(&add(
+                &mock,
+                root.path(),
+                &["--model", "cheap", "--convert", "src:big", "--no-verify"]
+            )),
+            0
+        );
+        let out = add(
+            &other,
+            root.path(),
+            &["--name", "univec-staging", "--model", "big", "--no-verify"],
+        );
+        assert_eq!(code(&out), 0, "{}", text(&out));
+
+        let root_arg = root.path().to_str().unwrap();
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "univec",
+            "--path",
+            root_arg,
+        ]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let t = text(&out);
+        assert!(t.contains("yes (univec-cheap)"), "{t}");
+        assert!(t.contains("yes (univec-convert-src-to-big)"), "{t}");
+        assert!(t.contains("cos 0.900"), "{t}");
+        assert!(
+            t.contains("univec-staging"),
+            "two files, two catalogues:\n{t}"
+        );
+
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "--path",
+            root_arg,
+            "--format",
+            "json",
+            "--to",
+            "big",
+        ]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        let providers = doc["providers"].as_array().unwrap();
+        assert_eq!(providers.len(), 2, "{doc}");
+        assert!(providers.iter().all(|p| p["outcome"] == "entries"), "{doc}");
+        let main = providers.iter().find(|p| p["name"] == "univec").unwrap();
+        let models = main["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2, "--to big: {doc}");
+        assert!(
+            models
+                .iter()
+                .any(|m| m["configured"] == true
+                    && m["configured_name"] == "univec-convert-src-to-big"),
+            "{doc}"
+        );
+
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "openai",
+            "--path",
+            root_arg,
+            "--format",
+            "json",
+        ]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        assert_eq!(doc["providers"][0]["outcome"], "unsupported", "{doc}");
+        assert!(
+            doc["providers"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("--model"),
+            "{doc}"
+        );
+        // Filters need --available; a listing failure is a named error.
+        assert_eq!(
+            code(&run(&["provider", "ls", "--to", "big", "--path", root_arg])),
+            2
+        );
+        let dead = rt.block_on(routes(vec![Route::new("GET", "/v1/models", 503, "{}")]));
+        let out = run(&[
+            "provider",
+            "add",
+            "univec",
+            "--name",
+            "dead",
+            "--model",
+            "m",
+            "--dim",
+            "3",
+            "--no-verify",
+            "--base-url",
+            &dead.url,
+            "--path",
+            root_arg,
+            "--api-key-env",
+            "X",
+            "--acknowledge-in-use",
+            "--yes",
+        ]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let out = run(&["provider", "ls", "--available", "dead", "--path", root_arg]);
+        assert_ne!(code(&out), 0);
+        assert!(
+            text(&out).contains("listing failed for dead"),
+            "{}",
+            text(&out)
+        );
+    }
+
+    /// Scenario 7: a converter whose stated width contradicts the listed
+    /// embed of the same name is refused with both numbers.
+    #[test]
+    fn a_catalogue_that_contradicts_itself_is_refused() {
+        let rt = runtime();
+        let contradicting = CATALOGUE.replace(
+            r#""targetModel":"cheap","targetDim":3,"sequenceLen":256"#,
+            r#""targetModel":"cheap","targetDim":9,"sequenceLen":256"#,
+        );
+        let mock = mock(&rt, (200, &contradicting), EMBED_3, (200, "{}"));
+        let root = provider_root();
+        let out = add(&mock, root.path(), &["--convert", "src:cheap"]);
+        assert_ne!(code(&out), 0);
+        let t = text(&out);
+        assert!(
+            t.contains('9') && t.contains("target dimension of 3"),
+            "{t}"
+        );
+        assert_eq!(mock.path_count("/v1/convert"), 0);
+    }
+
+    /// Scenario 12: the free identity check. A 401 stops the run before a
+    /// billed call; a 500 on that route is a warning and the probe decides.
+    #[test]
+    fn the_identity_check_stops_a_bad_key_and_tolerates_an_outage() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--base-url",
+                &mock.url,
+                "--path",
+                root.path().to_str().unwrap(),
+                "--api-key-env",
+                "WRONG",
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env_remove("POSTVEC_API_KEY")
+            .env("NO_COLOR", "1")
+            .env("WRONG", "uv_not_the_registered_key")
+            .output()
+            .unwrap();
+        assert_ne!(code(&out), 0);
+        assert!(text(&out).contains("nothing was billed"), "{}", text(&out));
+        assert_eq!(
+            mock.path_count("/v1/embeddings"),
+            0,
+            "refused before the billed probe"
+        );
+        assert!(!root.path().join("providers.d/univec.toml").exists());
+        // Positive control on the same mock: the right key is billed once.
+        assert_eq!(code(&add(&mock, root.path(), &[])), 0);
+        assert_eq!(mock.path_count("/v1/embeddings"), 1);
+
+        let flaky = mock_with_identity(&rt, (500, "{}"));
+        let fresh = provider_root();
+        let out = add(&flaky, fresh.path(), &[]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        assert!(text(&out).contains("answered 500"), "{}", text(&out));
+        assert_eq!(flaky.path_count("/v1/embeddings"), 1);
+    }
+
+    fn mock_with_identity(rt: &tokio::runtime::Runtime, identity: (u16, &str)) -> Mock {
+        mock(rt, (200, CATALOGUE), EMBED_3, identity)
+    }
+
+    /// Scenario 13: the probe contradicting the catalogue is a refusal,
+    /// never a silent patch; and `--dim` cannot override the catalogue.
+    #[test]
+    fn a_probe_that_disagrees_with_the_catalogue_is_refused() {
+        let rt = runtime();
+        let mock = mock(&rt, (200, CATALOGUE), EMBED_4, (200, "{}"));
+        let root = provider_root();
+        // Only `cheap` (3) is added, so `cheap` is probed and measures 4.
+        let out = add(&mock, root.path(), &["--model", "cheap"]);
+        assert_ne!(code(&out), 0);
+        let t = text(&out);
+        assert!(t.contains("lists 3") && t.contains("measured 4"), "{t}");
+        assert!(!root.path().join("providers.d/univec.toml").exists());
+        assert_eq!(mock.path_count("/v1/embeddings"), 1, "the probe did run");
+        let out = add(&mock, root.path(), &["--model", "big", "--dim", "5"]);
+        assert_eq!(code(&out), 2, "{}", text(&out));
+        assert!(text(&out).contains("lists big at 4"), "{}", text(&out));
+        // The same catalogue with a probe that agrees with `big`.
+        let out = add(&mock, root.path(), &["--model", "big"]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+    }
+
+    /// The login-key reuse, scripted: the key is COPIED into keys/univec.key
+    /// (0600) and referenced, never written inline; without a credential the
+    /// flag is a usage error.
+    #[test]
+    fn api_key_from_login_copies_the_stored_key_into_a_referenced_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                root.path().to_str().unwrap(),
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_API_KEY", KEY)
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let key_file = root.path().join("keys/univec.key");
+        assert_eq!(std::fs::read_to_string(&key_file).unwrap(), KEY);
+        assert_eq!(
+            std::fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let body = file(root.path());
+        assert!(
+            body.contains(&format!("api_key_file = \"{}\"", key_file.display())),
+            "{body}"
+        );
+        assert!(!body.contains("api_key = "), "never inline:\n{body}");
+        assert!(
+            text(&out).contains("copied the postvec login key"),
+            "{}",
+            text(&out)
+        );
+        assert_eq!(mock.path_count("/v1/embeddings"), 1);
+
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                root.path().to_str().unwrap(),
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env_remove("POSTVEC_API_KEY")
+            .env(
+                "XDG_CONFIG_HOME",
+                root.path().join("nostore").to_str().unwrap(),
+            )
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 2, "{}", text(&out));
+        assert!(
+            text(&out).contains("--api-key-from-login"),
+            "{}",
+            text(&out)
+        );
+        // Other connectors do not get the flag.
+        assert_eq!(
+            code(&run(&[
+                "provider",
+                "add",
+                "openai",
+                "--model",
+                "m",
+                "--api-key-from-login",
+                "--path",
+                root.path().to_str().unwrap(),
+                "--yes"
+            ])),
+            2
+        );
+    }
+
+    /// The manual converter flags stay usable and hidden; the selectors
+    /// are documented; a bare `provider add univec` is accepted by clap.
+    #[test]
+    fn help_shows_the_selectors_and_hides_the_manual_flags() {
+        let help = stdout(&run(&["provider", "add", "--help"]));
+        for flag in [
+            "--convert <SRC:DST>",
+            "--convert-to",
+            "--convert-from",
+            "--all-converters",
+            "--api-key-from-login",
+            "--no-catalog",
+        ] {
+            assert!(help.contains(flag), "missing {flag}:\n{help}");
+        }
+        assert!(!help.contains("--convert-source"), "{help}");
+        assert!(stdout(&run(&["provider", "ls", "--help"])).contains("--available"));
+        // Reaches run(): the refusal is about the missing root, not clap.
+        assert_ne!(
+            code(&run(&[
+                "provider",
+                "add",
+                "univec",
+                "--path",
+                "/nonexistent-root",
+                "--yes"
+            ])),
+            2
+        );
+    }
+}

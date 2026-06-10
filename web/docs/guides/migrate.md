@@ -167,9 +167,12 @@ direct route. The migration sends every stored vector to UniVec.
 {"kind":"direct","model":"univec-convert-snowflake-to-bge-m3"}
 ```
 
+`sudo postvec provider add univec --convert-to <target>` adds every hosted
+route into the target from UniVec's catalogue.
+
 A hosted converter is eligible only as a direct route. If more than one direct
-converter has the same source and target, postvec selects the first converter
-name in lexical order.
+converter has the same source and target, postvec prefers a local converter,
+then the first hosted one by name.
 
 ## Abort
 

@@ -409,6 +409,65 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
     out
 }
 
+/// `doctor --deep` only: configured univec entries that UniVec's current
+/// catalogue no longer lists. One attempt per base URL, short timeout, no
+/// retry; an unreachable catalogue produces nothing. A note (PASS), never a
+/// warning — the catalogue does not model removals reliably, and `--strict`
+/// must not trip on a UniVec blip. Ordinary `doctor` never opens this socket.
+pub async fn catalogue_notes(dir: &Path, timeout: std::time::Duration) -> Vec<CheckResult> {
+    use providers::listing::{self, ListedModel, Listing};
+    let mut catalogues: std::collections::BTreeMap<String, Vec<ListedModel>> = Default::default();
+    let mut out = Vec::new();
+    for path in crate::commands::provider::ls::provider_files(dir).unwrap_or_default() {
+        let Ok(Some(doc)) = crate::commands::provider::ProviderFileDoc::load(&path) else {
+            continue;
+        };
+        if doc.provider_type() != Some("univec") {
+            continue;
+        }
+        let base = doc
+            .value
+            .get("base_url")
+            .and_then(toml::Value::as_str)
+            .map(str::to_string);
+        let key = base.clone().unwrap_or_default();
+        if !catalogues.contains_key(&key) {
+            match listing::list_models("univec", base.as_deref(), timeout, false).await {
+                Ok(Listing::Entries(models)) => catalogues.insert(key.clone(), models),
+                _ => continue,
+            };
+        }
+        let catalogue = &catalogues[&key];
+        let missing: Vec<String> = doc
+            .descriptors()
+            .into_iter()
+            .filter(|d| match &d.provider_source_id {
+                Some(src) => listing::converter(catalogue, src, &d.provider_model_id).is_none(),
+                None => listing::embed(catalogue, &d.provider_model_id).is_none(),
+            })
+            .map(|d| d.name)
+            .collect();
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        out.push(CheckResult::pass(
+            "provider.catalogue",
+            format!("provider:{stem}"),
+            if missing.is_empty() {
+                "every entry is in UniVec's current catalogue".to_string()
+            } else {
+                format!(
+                    "not in UniVec's current catalogue: {}; `postvec provider test {stem}` tells \
+                     whether they still serve",
+                    missing.join(", ")
+                )
+            },
+        ));
+    }
+    out
+}
+
 /// The grpc-mode note: provider files live on the server nodes; this host
 /// has nothing to check unless `--path` points somewhere.
 pub fn grpc_note() -> CheckResult {
@@ -442,6 +501,50 @@ mod tests {
             .iter()
             .find(|c| c.id == id && c.scope == scope)
             .unwrap_or_else(|| panic!("no {id} in scope {scope}: {checks:#?}"))
+    }
+
+    /// Present entries pass quietly; a vanished one is a PASS-level note
+    /// naming it; an unreachable catalogue yields no check at all.
+    #[tokio::test]
+    async fn catalogue_notes_name_vanished_entries_and_never_warn() {
+        let mock = providers::testing::always(
+            200,
+            r#"{"success":true,"data":[{"name":"kept","modelType":"embed","targetDim":4}]}"#,
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        write_mode(
+            dir.path(),
+            "univec.toml",
+            &format!(
+                "provider = \"univec\"\napi_key = \"k\"\nbase_url = \"{}\"\n\n[[models]]\n\
+                 name = \"univec-kept\"\nprovider_model_id = \"kept\"\ndim = 4\n\n[[models]]\n\
+                 name = \"univec-gone\"\nprovider_model_id = \"gone\"\ndim = 4\n",
+                mock.url
+            ),
+            0o600,
+        );
+        let notes = catalogue_notes(dir.path(), std::time::Duration::from_secs(2)).await;
+        assert_eq!(notes.len(), 1, "{notes:#?}");
+        assert_eq!(notes[0].status, CheckStatus::Pass);
+        assert!(
+            notes[0].summary.contains("univec-gone") && !notes[0].summary.contains("univec-kept"),
+            "{}",
+            notes[0].summary
+        );
+
+        let dead = providers::testing::always(503, "{}").await;
+        write_mode(
+            dir.path(),
+            "univec.toml",
+            &format!("provider = \"univec\"\napi_key = \"k\"\nbase_url = \"{}\"\n\n[[models]]\nname = \"n\"\nprovider_model_id = \"n\"\ndim = 4\n", dead.url),
+            0o600,
+        );
+        assert!(
+            catalogue_notes(dir.path(), std::time::Duration::from_secs(2))
+                .await
+                .is_empty()
+        );
     }
 
     #[test]
