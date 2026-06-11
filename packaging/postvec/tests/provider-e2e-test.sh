@@ -55,6 +55,7 @@ need docker
 need python3
 
 MOCK_PORT=8099
+BUNDLED_MODEL_DIM=384   # overwritten by start_mock from postvec.models
 PROV_MODEL="openai-text-embedding-3-small"
 KEYA="pv-e2e-alpha-$$-$RANDOM"
 KEYB="pv-e2e-bravo-$$-$RANDOM"
@@ -120,8 +121,18 @@ mock_state() { # <field>
         | python3 -c "import json,sys; print(json.load(sys.stdin)['$1'])"
 }
 
+# The bundled model's width, from the cluster's own model cache — the mock's
+# catalogue advertises the converter at that dimension, so scenario H follows
+# the bundle rather than a hard-coded number.
+bundled_model_dim() {
+    dbsql "SELECT target_dim FROM postvec.models WHERE name = '${BUNDLED_MODEL_NAME}'" 2>/dev/null
+}
+
 start_mock() {
-    docker exec -d "${SRV}" python3 /provider-mock.py "${MOCK_PORT}" "${BUNDLED_MODEL_NAME}"
+    local dim
+    dim="$(bundled_model_dim)"; [[ "${dim}" =~ ^[0-9]+$ ]] || dim=384
+    BUNDLED_MODEL_DIM="${dim}"
+    docker exec -d "${SRV}" python3 /provider-mock.py "${MOCK_PORT}" "${BUNDLED_MODEL_NAME}" "${dim}"
     wait_for "the provider mock answers /healthz" 30 mock_healthy
 }
 
@@ -696,8 +707,8 @@ scenario_H_hosted_conversion() {
     migration_state_is "${mid}" done \
         && ok "migration finalized" \
         || bad "state after finalize: $(dbsql "SELECT state FROM postvec.migration_status(${mid})")"
-    [[ "$(dbsql "SELECT DISTINCT vector_dims(body_semantic) FROM e2e_convert")" == 384 ]] \
-        && ok "stored vectors are now in the 384-dimensional target space" \
+    [[ "$(dbsql "SELECT DISTINCT vector_dims(body_semantic) FROM e2e_convert")" == "${BUNDLED_MODEL_DIM}" ]] \
+        && ok "stored vectors are now in the ${BUNDLED_MODEL_DIM}-dimensional target space" \
         || bad "unexpected vector width: $(dbsql 'SELECT DISTINCT vector_dims(body_semantic) FROM e2e_convert')"
     [[ "$(mock_state converts)" -ge 2 ]] \
         && ok "the migration converted through /v1/convert" \

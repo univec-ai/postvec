@@ -279,6 +279,8 @@ struct AvailableDocument {
     target: Option<String>,
     available: bool,
     providers: Vec<AvailableProvider>,
+    /// One line per `failed` provider; non-empty makes the exit a failure.
+    errors: Vec<String>,
 }
 
 /// One catalogue to ask: a configured file (its connector and `base_url`
@@ -303,17 +305,47 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
         .await
         .ok();
     let mut sources: Vec<Source> = Vec::new();
+    // A file (or directory) that cannot be read is a named `failed` result,
+    // not a skipped one: a request for `univec-staging` must not degrade
+    // into a bare-connector lookup because its file is malformed.
+    let mut broken: Vec<AvailableProvider> = Vec::new();
+    let mut failures = Vec::new();
+    let failed = |name: String, at: String, reason: String| AvailableProvider {
+        name,
+        provider: String::new(),
+        base_url: at,
+        outcome: "failed",
+        reason: Some(reason),
+        models: Vec::new(),
+    };
     if let Some(target) = &target {
         // Per FILE, not per connector type: two univec files with different
         // base URLs are two catalogues.
-        for path in provider_files(target.dir()).map_err(crate::error::CliError::precondition)? {
-            let Ok(Some(doc)) = ProviderFileDoc::load(&path) else {
-                continue;
-            };
+        let files = match provider_files(target.dir()) {
+            Ok(files) => files,
+            Err(problem) => {
+                failures.push(problem.clone());
+                let dir = target.dir().display().to_string();
+                broken.push(failed(dir.clone(), dir, problem));
+                Vec::new()
+            }
+        };
+        for path in files {
             let stem = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
+            let doc = match ProviderFileDoc::load(&path) {
+                Ok(Some(doc)) => doc,
+                Ok(None) => continue,
+                Err(e) => {
+                    if wanted.as_ref().is_none_or(|w| *w == stem) {
+                        failures.push(format!("{stem}: {e}"));
+                        broken.push(failed(stem, path.display().to_string(), e.to_string()));
+                    }
+                    continue;
+                }
+            };
             let provider =
                 providers::catalog::canonical_provider(doc.provider_type().unwrap_or(""));
             if wanted
@@ -337,7 +369,10 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
     // Nothing configured for the request: the named connector, or UniVec —
     // the one catalogue the tree exists to promote, and it costs nothing.
     let bare = wanted.clone().unwrap_or_else(|| "univec".to_string());
-    if sources.is_empty() || (wanted.is_none() && !sources.iter().any(|s| s.provider == bare)) {
+    let named_file_is_broken = broken.iter().any(|b| Some(&b.name) == wanted.as_ref());
+    if (sources.is_empty() && !named_file_is_broken)
+        || (wanted.is_none() && !sources.iter().any(|s| s.provider == bare))
+    {
         if !providers::config::SUPPORTED_PROVIDERS.contains(&bare.as_str()) {
             return Err(crate::error::CliError::usage(format!(
                 "unknown provider {bare:?}: name a configured file or one of {}",
@@ -352,8 +387,7 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
         });
     }
 
-    let mut providers_out = Vec::new();
-    let mut failures = Vec::new();
+    let mut providers_out = broken;
     for source in sources {
         let configured: Option<std::collections::BTreeMap<String, String>> =
             target.as_ref().map(|_| {
@@ -442,6 +476,7 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
                 target: target.as_ref().map(|t| t.label()),
                 available: true,
                 providers: providers_out,
+                errors: failures.clone(),
             },
             "",
         )?;
@@ -495,13 +530,15 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
             }
         }
     }
+    // One document, one exit: a failed provider is in the output above,
+    // never a second error envelope after it.
     if failures.is_empty() {
         Ok(Exit::Success)
     } else {
-        Err(crate::error::CliError::precondition(format!(
-            "listing failed for {}",
-            failures.join("; ")
-        )))
+        if !output.is_json() {
+            output.progress(&format!("! listing failed for {}", failures.join("; ")));
+        }
+        Ok(Exit::Failure)
     }
 }
 

@@ -46,20 +46,33 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CONVERT_TARGET = sys.argv[2] if len(sys.argv) > 2 else "sentence-transformers-all-minilm-l6-v2"
+CONVERT_TARGET_DIM = int(sys.argv[3]) if len(sys.argv) > 3 else 384   # the bundled model's width
 SOURCE_MODEL = "openai-text-embedding-3-small"   # the mock's own public name in postvec
 
 
 def catalogue():
-    """The aphex `PublicModelView` shape, dims matching this mock's vectors."""
+    """The aphex `PublicModelView` shape, dims matching this mock's vectors.
+
+    `mock-embed-v2` is an alias SKU: aphex permits `name != targetModel`, and
+    resolves an embeddings request's `model` as the TARGET name. The CLI must
+    therefore request `mock-embed`, never `mock-embed-v2` (see do_POST)."""
     return [
         {"name": "mock-embed", "modelType": "embed", "executionProvider": "cpu",
          "targetModel": "mock-embed", "targetDim": 1536, "sequenceLen": 512},
+        {"name": "mock-embed-v2", "modelType": "embed", "executionProvider": "cpu",
+         "targetModel": "mock-embed", "targetDim": 1536, "sequenceLen": 512},
         {"name": f"convert-{SOURCE_MODEL}-to-{CONVERT_TARGET}", "modelType": "convert",
          "executionProvider": "cpu", "sourceModel": SOURCE_MODEL, "sourceDim": 1536,
-         "targetModel": CONVERT_TARGET, "targetDim": 384,
+         "targetModel": CONVERT_TARGET, "targetDim": CONVERT_TARGET_DIM,
          "eval": {"cosine_mean": 0.91}},
         {"name": "embed-bridge", "modelType": "embed-bridge", "executionProvider": "cpu"},
     ]
+
+
+def alias_skus():
+    """Catalogue `name`s that are NOT request ids (name != targetModel)."""
+    return {m["name"] for m in catalogue()
+            if m["modelType"] == "embed" and m["name"] != m["targetModel"]}
 
 
 STATE = {
@@ -270,6 +283,10 @@ class Handler(BaseHTTPRequestHandler):
             # fall through to a success response (the client may be long gone)
 
         request = json.loads(body or b"{}")
+        if request.get("model") in alias_skus():
+            # What aphex does with an alias SKU name in `model`.
+            self._json(404, {"error": {"message": "model not found", "code": "model_not_found"}})
+            return
         inputs = request.get("input", [])
         if isinstance(inputs, str):
             inputs = [inputs]

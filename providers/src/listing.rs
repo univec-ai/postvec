@@ -171,59 +171,123 @@ async fn univec(base: &str, timeout: Duration, retries: bool) -> Result<Listing,
             })
         }
     };
-    Ok(Listing::Entries(decode_univec(models)))
+    decode_univec(models)
+        .map(Listing::Entries)
+        .map_err(|message| EmbeddingError::Api {
+            status: 200,
+            message: format!("UniVec's catalogue violates its contract: {message}"),
+        })
 }
 
-fn decode_univec(models: Vec<PublicModel>) -> Vec<ListedModel> {
-    let mut out: Vec<ListedModel> = models
-        .into_iter()
-        .filter_map(|m| match m.model_type.as_str() {
-            "embed" => match m.target_dim {
-                Some(dim) => Some(ListedModel {
-                    provider_model_id: m.name,
-                    kind: ListedKind::Embed,
-                    dim,
-                    source: None,
-                    sequence_len: m.sequence_len,
-                    quality: None,
-                }),
-                None => {
-                    log::warn!(
-                        "univec catalogue: embed {:?} states no dimension; skipped",
-                        m.name
-                    );
-                    None
-                }
+/// pgvector's ceiling; a stated width outside `1..=MAX_DIM` is a broken row.
+const MAX_DIM: u32 = 16_000;
+
+/// Decode the catalogue, failing closed on a broken row of a kind postvec
+/// understands. Unknown `modelType`s (bridges, future kinds) are ignored:
+/// that is the forward-compatibility rule. But an `embed` without
+/// `targetModel`/`targetDim`, a `convert` missing a model or width, a width
+/// outside pgvector's range, or two rows that give one identity conflicting
+/// widths is a contract violation — dropping it would let a zero-selector
+/// add report success over a partial catalogue. Identical duplicates
+/// (aliases: two `name`s with one `targetModel`) collapse to one entry.
+///
+/// An embed's request id is `targetModel`, not `name`: aphex resolves the
+/// `model` of an embeddings request as the semantic target, and permits
+/// `name != targetModel` for an alias SKU.
+fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
+    let mut out: Vec<ListedModel> = Vec::new();
+    for (index, m) in models.into_iter().enumerate() {
+        let row = || format!("catalogue row {index} ({})", safe_name(&m.name));
+        let width = |field: &str, value: Option<u32>| -> Result<u32, String> {
+            match value {
+                Some(d) if (1..=MAX_DIM).contains(&d) => Ok(d),
+                Some(d) => Err(format!("{}: {field} {d} is outside 1..={MAX_DIM}", row())),
+                None => Err(format!("{}: {field} is missing", row())),
+            }
+        };
+        let entry = match m.model_type.as_str() {
+            "embed" => ListedModel {
+                dim: width("targetDim", m.target_dim)?,
+                provider_model_id: m
+                    .target_model
+                    .clone()
+                    .ok_or_else(|| format!("{}: targetModel is missing", row()))?,
+                kind: ListedKind::Embed,
+                source: None,
+                sequence_len: m.sequence_len,
+                quality: None,
             },
-            "convert" => match (m.source_model, m.source_dim, m.target_model, m.target_dim) {
-                (Some(source), Some(source_dim), Some(target), Some(dim)) => Some(ListedModel {
-                    provider_model_id: target,
-                    kind: ListedKind::Convert,
-                    dim,
-                    source: Some((source, source_dim)),
-                    sequence_len: None,
-                    quality: m
-                        .eval
+            "convert" => ListedModel {
+                dim: width("targetDim", m.target_dim)?,
+                provider_model_id: m
+                    .target_model
+                    .clone()
+                    .ok_or_else(|| format!("{}: targetModel is missing", row()))?,
+                kind: ListedKind::Convert,
+                source: Some((
+                    m.source_model
+                        .clone()
+                        .ok_or_else(|| format!("{}: sourceModel is missing", row()))?,
+                    width("sourceDim", m.source_dim)?,
+                )),
+                sequence_len: None,
+                quality: m
+                    .eval
+                    .as_ref()
+                    .and_then(|e| e.get("cosine_mean"))
+                    .and_then(serde_json::Value::as_f64),
+            },
+            _ => continue,
+        };
+        match out.iter().find(|e| {
+            e.kind == entry.kind
+                && e.provider_model_id == entry.provider_model_id
+                && e.source.as_ref().map(|(s, _)| s) == entry.source.as_ref().map(|(s, _)| s)
+        }) {
+            None => out.push(entry),
+            Some(existing)
+                if existing.dim == entry.dim
+                    && existing.source.as_ref().map(|(_, d)| d)
+                        == entry.source.as_ref().map(|(_, d)| d) => {}
+            Some(existing) => {
+                return Err(format!(
+                    "{}: {} {} is listed twice with different dimensions ({}{} and {}{})",
+                    row(),
+                    entry.kind.label(),
+                    safe_name(&entry.provider_model_id),
+                    existing
+                        .source
                         .as_ref()
-                        .and_then(|e| e.get("cosine_mean"))
-                        .and_then(serde_json::Value::as_f64),
-                }),
-                _ => {
-                    log::warn!(
-                        "univec catalogue: converter {:?} is missing a model or dimension; skipped",
-                        m.name
-                    );
-                    None
-                }
-            },
-            // Bridges and any future type: not something a providers.d
-            // entry can describe.
-            _ => None,
-        })
-        .collect();
+                        .map(|(_, d)| format!("{d}->"))
+                        .unwrap_or_default(),
+                    existing.dim,
+                    entry
+                        .source
+                        .as_ref()
+                        .map(|(_, d)| format!("{d}->"))
+                        .unwrap_or_default(),
+                    entry.dim
+                ))
+            }
+        }
+    }
     out.sort_by(|a, b| {
         (a.kind, &a.provider_model_id, &a.source).cmp(&(b.kind, &b.provider_model_id, &b.source))
     });
+    Ok(out)
+}
+
+/// A catalogue name as it may appear in a message: the model-name charset
+/// only, bounded — upstream text never reaches a log verbatim.
+fn safe_name(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+        .take(64)
+        .collect();
+    if out.is_empty() {
+        out.push('?');
+    }
     out
 }
 
@@ -282,6 +346,10 @@ mod tests {
     const LIVE: &str = include_str!("../tests/fixtures/univec-models.json");
 
     fn decode(body: &str) -> Vec<ListedModel> {
+        try_decode(body).unwrap()
+    }
+
+    fn try_decode(body: &str) -> Result<Vec<ListedModel>, String> {
         let envelope: Envelope = serde_json::from_str(body).unwrap();
         decode_univec(envelope.data.unwrap())
     }
@@ -339,53 +407,105 @@ mod tests {
         }
     }
 
+    /// The request id is `targetModel`; an alias SKU whose `name` differs
+    /// collapses onto the same identity, and the probe must carry the
+    /// target name.
     #[test]
-    fn degenerate_entries_are_dropped_and_unknown_types_ignored() {
+    fn an_alias_sku_resolves_to_its_target_model() {
         let models = decode(
             r#"{"success":true,"data":[
-              {"name":"no-dim","modelType":"embed"},
-              {"name":"ok","modelType":"embed","targetDim":4},
-              {"name":"half","modelType":"convert","sourceModel":"a","targetModel":"b"},
-              {"name":"c","modelType":"convert","sourceModel":"a","sourceDim":4,"targetModel":"ok","targetDim":4},
+              {"name":"internal-v2","modelType":"embed","targetModel":"stable","targetDim":4,"sequenceLen":512},
+              {"name":"stable","modelType":"embed","targetModel":"stable","targetDim":4,"sequenceLen":512}
+            ]}"#,
+        );
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].provider_model_id, "stable");
+        assert!(embed(&models, "internal-v2").is_none());
+    }
+
+    /// Unknown kinds are ignored; a broken row of a known kind fails the
+    /// whole decode with the row named — never a silent subset.
+    #[test]
+    fn malformed_known_rows_fail_closed_and_unknown_kinds_are_ignored() {
+        let ok = decode(
+            r#"{"success":true,"data":[
+              {"name":"ok","modelType":"embed","targetModel":"ok","targetDim":4},
               {"name":"future","modelType":"quantum-embed","targetDim":9},
               {"name":"bridge","modelType":"embed-bridge","restrictedTargets":["x"]}
             ]}"#,
         );
-        assert_eq!(models.len(), 2);
-        assert!(embed(&models, "ok").is_some());
-        assert!(converter(&models, "a", "ok").is_some());
+        assert_eq!(ok.len(), 1);
         assert!(decode(r#"{"success":true,"data":[]}"#).is_empty());
+
+        let err =
+            |rows: &str| try_decode(&format!(r#"{{"success":true,"data":[{rows}]}}"#)).unwrap_err();
+        let e = err(r#"{"name":"no dim <b>","modelType":"embed","targetModel":"x"}"#);
+        assert!(
+            e.contains("row 0 (nodimb)") && e.contains("targetDim is missing"),
+            "{e}"
+        );
+        let e = err(r#"{"name":"no target","modelType":"embed","targetDim":4}"#);
+        assert!(e.contains("targetModel is missing"), "{e}");
+        let e = err(r#"{"name":"zero","modelType":"embed","targetModel":"z","targetDim":0}"#);
+        assert!(e.contains("outside 1..=16000"), "{e}");
+        let e = err(
+            r#"{"name":"huge","modelType":"convert","sourceModel":"a","sourceDim":99999,"targetModel":"b","targetDim":4}"#,
+        );
+        assert!(e.contains("sourceDim 99999"), "{e}");
+        let e = err(
+            r#"{"name":"half","modelType":"convert","sourceModel":"a","targetModel":"b","targetDim":4}"#,
+        );
+        assert!(e.contains("sourceDim is missing"), "{e}");
+        // Conflicting widths for one identity; identical repeats collapse.
+        let e = err(
+            r#"{"name":"a","modelType":"embed","targetModel":"a","targetDim":4},
+               {"name":"a2","modelType":"embed","targetModel":"a","targetDim":8}"#,
+        );
+        assert!(e.contains("row 1 (a2)") && e.contains("4 and 8"), "{e}");
+        let e = err(
+            r#"{"name":"c","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4},
+               {"name":"c2","modelType":"convert","sourceModel":"s","sourceDim":9,"targetModel":"t","targetDim":4}"#,
+        );
+        assert!(e.contains("8->4 and 9->4"), "{e}");
+        let same = decode(
+            r#"{"success":true,"data":[
+              {"name":"c","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4},
+              {"name":"c-again","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4}
+            ]}"#,
+        );
+        assert_eq!(same.len(), 1);
         let envelope: Envelope = serde_json::from_str(r#"{"success":false,"error":"x"}"#).unwrap();
         assert!(!envelope.success && envelope.data.is_none());
     }
 
     #[test]
     fn converter_dims_are_checked_against_listed_embeds() {
+        let conv = |s: &str, sd: u32, t: &str, td: u32| ListedModel {
+            provider_model_id: t.into(),
+            kind: ListedKind::Convert,
+            dim: td,
+            source: Some((s.into(), sd)),
+            sequence_len: None,
+            quality: None,
+        };
         let models = decode(
             r#"{"success":true,"data":[
-              {"name":"s","modelType":"embed","targetDim":8},
-              {"name":"t","modelType":"embed","targetDim":4},
+              {"name":"s","modelType":"embed","targetModel":"s","targetDim":8},
+              {"name":"t","modelType":"embed","targetModel":"t","targetDim":4},
               {"name":"c1","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4},
-              {"name":"c2","modelType":"convert","sourceModel":"s","sourceDim":9,"targetModel":"t","targetDim":4},
-              {"name":"c3","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":5},
               {"name":"c4","modelType":"convert","sourceModel":"unlisted","sourceDim":3,"targetModel":"elsewhere","targetDim":2}
             ]}"#,
         );
-        let with_source_dim = |n: u32| {
-            models
-                .iter()
-                .find(|m| m.source.as_ref().is_some_and(|(_, d)| *d == n))
-                .unwrap()
-        };
-        let c1 = converter(&models, "s", "t").unwrap();
-        check_converter_dims(&models, c1).unwrap();
-        let err = check_converter_dims(&models, with_source_dim(9)).unwrap_err();
+        check_converter_dims(&models, converter(&models, "s", "t").unwrap()).unwrap();
+        let err = check_converter_dims(&models, &conv("s", 9, "t", 4)).unwrap_err();
         assert!(err.contains('9') && err.contains("8-dimensional"), "{err}");
-        let c3 = models.iter().find(|m| m.dim == 5).unwrap();
-        let err = check_converter_dims(&models, c3).unwrap_err();
+        let err = check_converter_dims(&models, &conv("s", 8, "t", 5)).unwrap_err();
         assert!(err.contains('5') && err.contains("4-dimensional"), "{err}");
-        let c4 = converter(&models, "unlisted", "elsewhere").unwrap();
-        check_converter_dims(&models, c4).unwrap();
+        check_converter_dims(
+            &models,
+            converter(&models, "unlisted", "elsewhere").unwrap(),
+        )
+        .unwrap();
     }
 
     /// Every connector answers without a network call when it cannot list.

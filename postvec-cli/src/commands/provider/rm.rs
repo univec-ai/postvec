@@ -454,6 +454,20 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         // operator took away.
         super::sync_directory(target.dir(), &file_path)?;
         journal.record(format!("removed {}", file_path.display()));
+        // A key `provider add --api-key-from-login` copied beside providers.d
+        // is retained like every operator key file — but named, so the
+        // credential does not outlive the connector unnoticed.
+        let copied_key = target
+            .dir()
+            .parent()
+            .map(|root| root.join("keys").join(format!("{}.key", args.name)));
+        if let Some(key) = copied_key.filter(|k| k.is_file()) {
+            journal.record(format!(
+                "{} was retained (a key file is never removed by this command); delete it once \
+                 no other host needs it",
+                key.display()
+            ));
+        }
     } else {
         let id_or_name = args.model.as_deref().expect("partial removal has --model");
         let (removed, remaining) = doc.remove_model(id_or_name);

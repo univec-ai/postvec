@@ -192,7 +192,8 @@ Dimensions come from the catalogue, so `--no-verify` needs no `--dim` for
 listed models; the probe proves the key and one added route per kind. A
 selection over the 256-entry per-file ceiling is refused whole.
 `--api-key-from-login` copies the `postvec login` key into
-`<root>/keys/univec.key`. `--no-catalog` skips discovery. The manual
+`<root>/keys/<NAME>.key` (one per connector file; never over a different
+existing key). `--no-catalog` skips discovery. The manual
 converter flags (`--convert-source`, `--convert-target`, `--source-model`,
 `--target-model`, `--source-dim`) remain for an unlisted pair. See
 [UniVec hosted models](/docs/models/univec).
@@ -200,11 +201,13 @@ converter flags (`--convert-source`, `--convert-target`, `--source-model`,
 `provider ls --available` lists what a provider offers. With no PROVIDER it
 asks every configured file's connector plus `univec`; PROVIDER is a file
 stem or connector type. It needs no cluster. The JSON document has
-`available: true` and one `providers[]` entry per file with `outcome`
+`available: true`, one `providers[]` entry per file with `outcome`
 (`entries`, `needs_key`, `unsupported` or `failed`), `reason` when not
-`entries`, and `models[]` carrying `provider_model_id`, `kind`, `dim`,
-`source`, `sequence_len`, `quality`, `configured` and `configured_name`.
-A failed listing exits non-zero after the other providers are shown.
+`entries`, `models[]` carrying `provider_model_id`, `kind`, `dim`,
+`source`, `sequence_len`, `quality`, `configured` and `configured_name`,
+and `errors[]`. A configured file that cannot be read or parsed is a
+`failed` entry too. Any `failed` entry makes the exit code 1 after every
+provider is shown; there is never a second error document.
 
 `--path DIR` manages `DIR/providers.d` as files, with no cluster in scope.
 `DIR` must already exist, and new files inherit its owner. That is how a

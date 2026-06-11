@@ -416,7 +416,8 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
 /// must not trip on a UniVec blip. Ordinary `doctor` never opens this socket.
 pub async fn catalogue_notes(dir: &Path, timeout: std::time::Duration) -> Vec<CheckResult> {
     use providers::listing::{self, ListedModel, Listing};
-    let mut catalogues: std::collections::BTreeMap<String, Vec<ListedModel>> = Default::default();
+    let mut catalogues: std::collections::BTreeMap<String, Result<Vec<ListedModel>, String>> =
+        Default::default();
     let mut out = Vec::new();
     for path in crate::commands::provider::ls::provider_files(dir).unwrap_or_default() {
         let Ok(Some(doc)) = crate::commands::provider::ProviderFileDoc::load(&path) else {
@@ -431,13 +432,35 @@ pub async fn catalogue_notes(dir: &Path, timeout: std::time::Duration) -> Vec<Ch
             .and_then(toml::Value::as_str)
             .map(str::to_string);
         let key = base.clone().unwrap_or_default();
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
         if !catalogues.contains_key(&key) {
-            match listing::list_models("univec", base.as_deref(), timeout, false).await {
-                Ok(Listing::Entries(models)) => catalogues.insert(key.clone(), models),
-                _ => continue,
-            };
+            let fetched =
+                match listing::list_models("univec", base.as_deref(), timeout, false).await {
+                    Ok(Listing::Entries(models)) => Ok(models),
+                    Ok(other) => Err(format!("{other:?}")),
+                    Err(e) => Err(e.to_string()),
+                };
+            catalogues.insert(key.clone(), fetched);
         }
-        let catalogue = &catalogues[&key];
+        let catalogue = match &catalogues[&key] {
+            Ok(models) => models,
+            // Attempted and unavailable: visible as an informational SKIP
+            // (not required, so `--strict` does not trip on a UniVec blip).
+            Err(reason) => {
+                out.push(CheckResult::skip(
+                    "provider.catalogue",
+                    format!("provider:{stem}"),
+                    format!(
+                        "UniVec's catalogue could not be fetched ({reason}); entries were not \
+                         compared"
+                    ),
+                ));
+                continue;
+            }
+        };
         let missing: Vec<String> = doc
             .descriptors()
             .into_iter()
@@ -447,10 +470,6 @@ pub async fn catalogue_notes(dir: &Path, timeout: std::time::Duration) -> Vec<Ch
             })
             .map(|d| d.name)
             .collect();
-        let stem = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
         out.push(CheckResult::pass(
             "provider.catalogue",
             format!("provider:{stem}"),
@@ -509,7 +528,7 @@ mod tests {
     async fn catalogue_notes_name_vanished_entries_and_never_warn() {
         let mock = providers::testing::always(
             200,
-            r#"{"success":true,"data":[{"name":"kept","modelType":"embed","targetDim":4}]}"#,
+            r#"{"success":true,"data":[{"name":"kept","modelType":"embed","targetModel":"kept","targetDim":4}]}"#,
         )
         .await;
         let dir = tempfile::tempdir().unwrap();
@@ -540,10 +559,14 @@ mod tests {
             &format!("provider = \"univec\"\napi_key = \"k\"\nbase_url = \"{}\"\n\n[[models]]\nname = \"n\"\nprovider_model_id = \"n\"\ndim = 4\n", dead.url),
             0o600,
         );
+        let notes = catalogue_notes(dir.path(), std::time::Duration::from_secs(2)).await;
+        assert_eq!(notes.len(), 1, "{notes:#?}");
+        assert_eq!(notes[0].status, CheckStatus::Skip);
+        assert!(!notes[0].required, "a UniVec outage must not fail --strict");
         assert!(
-            catalogue_notes(dir.path(), std::time::Duration::from_secs(2))
-                .await
-                .is_empty()
+            notes[0].summary.contains("could not be fetched"),
+            "{}",
+            notes[0].summary
         );
     }
 

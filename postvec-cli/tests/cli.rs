@@ -2449,6 +2449,7 @@ mod univec_discovery {
     /// Two embeds (dims 3 and 4), three converters, one bridge entry.
     const CATALOGUE: &str = r#"{"success":true,"data":[
       {"name":"cheap","modelType":"embed","executionProvider":"cpu","targetModel":"cheap","targetDim":3,"sequenceLen":256},
+      {"name":"cheap-sku-v2","modelType":"embed","executionProvider":"cpu","targetModel":"cheap","targetDim":3,"sequenceLen":256},
       {"name":"big","modelType":"embed","executionProvider":"cpu","targetModel":"big","targetDim":4,"sequenceLen":8192},
       {"name":"convert-src-to-big","modelType":"convert","sourceModel":"src","targetModel":"big","sourceDim":1536,"targetDim":4,"eval":{"cosine_mean":0.9}},
       {"name":"convert-other-to-big","modelType":"convert","sourceModel":"other","targetModel":"big","sourceDim":8,"targetDim":4},
@@ -2555,6 +2556,10 @@ mod univec_discovery {
         assert!(
             !body.contains("kind = \"convert\""),
             "no converters by default:\n{body}"
+        );
+        assert!(
+            !body.contains("cheap-sku-v2"),
+            "an alias SKU collapses onto its targetModel:\n{body}"
         );
         assert_eq!(mock.path_count("/v1/embeddings"), 1, "one billed embed");
         assert_eq!(mock.path_count("/v1/convert"), 0);
@@ -2680,6 +2685,64 @@ mod univec_discovery {
         assert_eq!(
             mock.path_count("/v1/embeddings") + mock.path_count("/v1/convert"),
             0
+        );
+    }
+
+    /// A catalogue that breaks its contract (a known kind missing a
+    /// dimension) is refused whole — even for a `--model` add that could
+    /// have fallen back — with the row named, nothing written, nothing billed.
+    #[test]
+    fn a_catalogue_that_breaks_its_contract_is_refused_whole() {
+        let rt = runtime();
+        let broken = CATALOGUE.replace(
+            r#""targetModel":"big","targetDim":4,"sequenceLen":8192"#,
+            r#""targetModel":"big","sequenceLen":8192"#,
+        );
+        let mock = mock(&rt, (200, &broken), EMBED_3, (200, "{}"));
+        let root = provider_root();
+        for extra in [&[][..], &["--model", "cheap"][..]] {
+            let out = add(&mock, root.path(), extra);
+            assert_ne!(code(&out), 0, "{}", text(&out));
+            let t = text(&out);
+            assert!(
+                t.contains("violates its contract") && t.contains("targetDim is missing"),
+                "{t}"
+            );
+        }
+        assert!(!root.path().join("providers.d/univec.toml").exists());
+        assert_eq!(
+            mock.path_count("/v1/embeddings") + mock.path_count("/v1/registry/index.json"),
+            0
+        );
+        // A configured file pointing at the broken catalogue: `ls --available`
+        // names the row (a bare lookup would go to the real API).
+        assert_eq!(
+            code(&add(
+                &mock,
+                root.path(),
+                &["--no-catalog", "--model", "x", "--dim", "3", "--no-verify"]
+            )),
+            0
+        );
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "univec",
+            "--path",
+            root.path().to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        assert_ne!(code(&out), 0);
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        assert_eq!(doc["providers"][0]["outcome"], "failed", "{doc}");
+        assert!(
+            doc["providers"][0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("targetDim"),
+            "{doc}"
         );
     }
 
@@ -2836,6 +2899,118 @@ mod univec_discovery {
         );
     }
 
+    /// A configured file that cannot be loaded is a named `failed` result
+    /// in both formats, the other files still list, and a request for that
+    /// stem does not degrade into a bare-connector lookup.
+    #[test]
+    fn ls_available_names_a_malformed_configured_file() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        assert_eq!(
+            code(&add(
+                &mock,
+                root.path(),
+                &["--model", "cheap", "--no-verify"]
+            )),
+            0
+        );
+        let providers_d = root.path().join("providers.d");
+        std::fs::write(
+            providers_d.join("univec-staging.toml"),
+            "provider = \"univec\"\nnot toml at all [[[",
+        )
+        .unwrap();
+        set_mode(&providers_d.join("univec-staging.toml"), 0o600);
+        std::os::unix::fs::symlink(
+            providers_d.join("univec.toml"),
+            providers_d.join("linked.toml"),
+        )
+        .unwrap();
+        let root_arg = root.path().to_str().unwrap();
+
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "--path",
+            root_arg,
+            "--format",
+            "json",
+        ]);
+        assert_ne!(code(&out), 0, "{}", text(&out));
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        let by = |name: &str| {
+            doc["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["name"] == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {name} in {doc}"))
+        };
+        assert_eq!(by("univec")["outcome"], "entries");
+        assert_eq!(by("univec-staging")["outcome"], "failed");
+        assert!(
+            by("univec-staging")["reason"]
+                .as_str()
+                .unwrap()
+                .contains("parse"),
+            "{doc}"
+        );
+        assert_eq!(by("linked")["outcome"], "failed");
+        assert!(
+            by("linked")["reason"].as_str().unwrap().contains("symlink"),
+            "{doc}"
+        );
+
+        // Naming the broken stem: one failed result, no bare lookup.
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "univec-staging",
+            "--path",
+            root_arg,
+        ]);
+        assert_ne!(code(&out), 0);
+        let t = text(&out);
+        assert!(
+            t.contains("univec-staging") && t.contains("cannot list"),
+            "{t}"
+        );
+        assert!(
+            !t.contains("public catalogue"),
+            "must not fall back to the bare connector:\n{t}"
+        );
+
+        // An unreadable directory is a failed result too (not as root).
+        if unsafe { libc::geteuid() } != 0 {
+            set_mode(&providers_d, 0o000);
+            let out = run(&[
+                "provider",
+                "ls",
+                "--available",
+                "--path",
+                root_arg,
+                "--format",
+                "json",
+            ]);
+            set_mode(&providers_d, 0o700);
+            assert_ne!(code(&out), 0);
+            let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+            assert!(
+                doc["providers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p["outcome"] == "failed"
+                        && p["reason"].as_str().unwrap().contains("scan")),
+                "{doc}"
+            );
+        }
+    }
+
     /// Scenario 7: a converter whose stated width contradicts the listed
     /// embed of the same name is refused with both numbers.
     #[test]
@@ -2895,12 +3070,24 @@ mod univec_discovery {
         assert_eq!(code(&add(&mock, root.path(), &[])), 0);
         assert_eq!(mock.path_count("/v1/embeddings"), 1);
 
-        let flaky = mock_with_identity(&rt, (500, "{}"));
+        for (status, expect) in [(500, "answered 500"), (429, "answered 429")] {
+            let flaky = mock_with_identity(&rt, (status, "{}"));
+            let fresh = provider_root();
+            let out = add(&flaky, fresh.path(), &[]);
+            assert_eq!(code(&out), 0, "{}", text(&out));
+            assert!(text(&out).contains(expect), "{}", text(&out));
+            assert_eq!(flaky.path_count("/v1/embeddings"), 1);
+        }
+        // Route absent (a front without the registry feature): best effort.
+        let absent = rt.block_on(routes(vec![
+            Route::new("GET", "/v1/models", 200, CATALOGUE),
+            Route::new("POST", "/v1/embeddings", 200, EMBED_3),
+        ]));
         let fresh = provider_root();
-        let out = add(&flaky, fresh.path(), &[]);
+        let out = add(&absent, fresh.path(), &[]);
         assert_eq!(code(&out), 0, "{}", text(&out));
-        assert!(text(&out).contains("answered 500"), "{}", text(&out));
-        assert_eq!(flaky.path_count("/v1/embeddings"), 1);
+        assert!(text(&out).contains("answered 404"), "{}", text(&out));
+        assert_eq!(absent.path_count("/v1/embeddings"), 1);
     }
 
     fn mock_with_identity(rt: &tokio::runtime::Runtime, identity: (u16, &str)) -> Mock {
@@ -2973,7 +3160,91 @@ mod univec_discovery {
             "{}",
             text(&out)
         );
+        assert!(
+            text(&out).contains(&format!("create {}", key_file.display())),
+            "the plan names the key file:\n{}",
+            text(&out)
+        );
         assert_eq!(mock.path_count("/v1/embeddings"), 1);
+
+        // A second connector file gets its own key file, never the first's.
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--name",
+                "univec-staging",
+                "--convert-to",
+                "big",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                root.path().to_str().unwrap(),
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_API_KEY", KEY)
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let staging_key = root.path().join("keys/univec-staging.key");
+        assert!(staging_key.is_file());
+        assert!(
+            std::fs::read_to_string(root.path().join("providers.d/univec-staging.toml"))
+                .unwrap()
+                .contains("univec-staging.key")
+        );
+
+        // An existing key file with a different key is never replaced.
+        std::fs::write(&staging_key, "uv_someone_elses_key").unwrap();
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--name",
+                "univec-staging",
+                "--convert-to",
+                "big",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                root.path().to_str().unwrap(),
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_API_KEY", KEY)
+            .output()
+            .unwrap();
+        assert_ne!(code(&out), 0);
+        assert!(text(&out).contains("different key"), "{}", text(&out));
+        assert_eq!(
+            std::fs::read_to_string(&staging_key).unwrap(),
+            "uv_someone_elses_key"
+        );
+
+        // `rm` retains the copied key and says so by name.
+        let out = run(&[
+            "provider",
+            "rm",
+            "univec",
+            "--path",
+            root.path().to_str().unwrap(),
+            "--acknowledge-in-use",
+            "--yes",
+        ]);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        assert!(
+            text(&out).contains("univec.key") && text(&out).contains("retained"),
+            "{}",
+            text(&out)
+        );
+        assert!(key_file.is_file());
 
         let out = Command::new(binary())
             .args([

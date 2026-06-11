@@ -60,12 +60,17 @@ postvec provider ls
 sudo postvec doctor --database app
 ```
 
-Before anything is billed, the command proves the key with the free
-registry route (a wrong key stops there). It then makes **one** paid embed
-request against the cheapest model it is adding, checks the measured width
-against the catalogue, writes the connector file, reloads the inference host
-and refreshes `postvec.models`. A model not in the catalogue is still
-accepted with `--model`; its dimension is measured instead.
+Before anything is billed, the command tries an unbilled identity check
+against the registry route: a 401 or 403 stops it with nothing spent. That
+check is best-effort — a front without the route, or an outage, is only a
+warning, and a failed inference request is not billed either. It then makes
+**one** paid embed request against the cheapest model it is adding, checks
+the measured width against the catalogue, writes the connector file, reloads
+the inference host and refreshes `postvec.models`. A model not in the
+catalogue is still accepted with `--model`; its dimension is measured
+instead. A catalogue that breaks its contract (an entry of a known kind with
+a missing or contradictory dimension) is refused whole, with the row named;
+nothing is written or billed.
 
 The model id becomes `univec-baai-bge-m3` in SQL. `provider_model_id` keeps
 the id accepted by the UniVec API. The prefix is deliberate: a column bound
@@ -262,9 +267,15 @@ API key:
 
 `provider add univec` can reuse the `postvec login` key. An interactive run
 that finds one offers it (default no); scripts opt in with
-`--api-key-from-login`. The key is **copied** to `/etc/postvec/keys/univec.key`
-(or `<server-root>/keys/univec.key`) and referenced from the connector file,
-so `postvec logout` does not remove a serving key.
+`--api-key-from-login`. The key is **copied** to
+`/etc/postvec/keys/<name>.key` (or `<server-root>/keys/<name>.key`, one per
+connector file, `univec.key` by default) and referenced from the connector
+file, so `postvec logout` does not remove a serving key and two connector
+files never share one credential. An existing key file holding a different
+key is never replaced. `POSTVEC_API_KEY` wins over stored logins; when
+root's store and the invoking user's store hold different keys, an
+interactive run asks which and a scripted run refuses. A dedicated
+inference key keeps billing and rotation separate from downloads.
 
 A key with a zero spending limit can read the private model catalogue but
 cannot serve hosted embeddings or conversions. UniVec returns HTTP 402 when

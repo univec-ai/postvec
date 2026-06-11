@@ -167,6 +167,12 @@ pub async fn fetch_catalogue(
         Ok(other) => Err(CliError::internal(format!(
             "univec listing answered {other:?}"
         ))),
+        // A catalogue that answered but breaks its contract is not an
+        // outage to work around: nothing is written or billed.
+        Err(e @ providers::EmbeddingError::Api { status: 200, .. }) => Err(CliError::precondition(
+            e.to_string(),
+        )
+        .with_fix("report the row to UniVec; --no-catalog with explicit --dim bypasses discovery")),
         Err(e) if required => Err(CliError::precondition(format!(
             "cannot fetch UniVec's catalogue from {}/v1/models: {e}",
             base_url.unwrap_or(providers::univec::DEFAULT_UNIVEC_BASE_URL)
@@ -220,32 +226,67 @@ pub(super) fn converter_model(
 
 // ---- The login-key offer --------------------------------------------------
 
-/// A stored UniVec credential this run could copy: `POSTVEC_API_KEY`, the
-/// effective user's store, or — under `sudo` — the invoking user's own
-/// store, read as root from that user's home (`sudo` resets `$HOME`).
-fn stored_credential(output: &Output) -> Option<(String, String)> {
+/// Every stored UniVec credential this run could copy, as `(key, source)`:
+/// `POSTVEC_API_KEY`, the effective user's store, and — under `sudo` —
+/// the invoking user's own store, read as root from that user's passwd
+/// home (`sudo` resets `$HOME`). A malformed store is a note, not a stop.
+fn stored_credentials(output: &Output) -> Vec<(String, String)> {
     use crate::registry::auth;
+    let mut found = Vec::new();
     match auth::resolve(None) {
-        Ok(Some(c)) => return Some((c.key, c.source.to_string())),
+        Ok(Some(c)) => found.push((c.key, c.source.to_string())),
         Ok(None) => {}
         Err(e) => output.note(&format!("stored credential not usable: {e}")),
     }
-    if !crate::proc::is_root() {
-        return None;
-    }
-    let user = std::env::var("SUDO_USER")
+    let sudo_user = std::env::var("SUDO_USER")
         .ok()
-        .filter(|u| !u.is_empty() && u != "root")?;
-    let account = crate::proc::OsAccount::lookup(&user).ok()?;
-    let home = crate::proc::home_dir(&user).ok()?;
-    let store = home.join(".config/postvec/auth.json");
-    match auth::read_private_store(&store, account.uid) {
-        Ok(Some(key)) => Some((key, format!("{}'s postvec login", user))),
-        Ok(None) => None,
-        Err(e) => {
-            output.note(&format!("{}: {e}", store.display()));
-            None
+        .filter(|u| crate::proc::is_root() && !u.is_empty() && u != "root");
+    if let Some(user) = sudo_user {
+        let store = crate::proc::home_dir(&user).map(|home| home.join(".config/postvec/auth.json"));
+        if let (Ok(account), Ok(store)) = (crate::proc::OsAccount::lookup(&user), store) {
+            match auth::read_private_store(&store, account.uid) {
+                Ok(Some(key)) => found.push((key, format!("{user}'s postvec login"))),
+                Ok(None) => {}
+                Err(e) => output.note(&format!("{}: {e}", store.display())),
+            }
         }
+    }
+    found
+}
+
+/// Which credential to offer. `POSTVEC_API_KEY` wins outright (it is an
+/// explicit choice for this run); otherwise root's store and the invoking
+/// user's store are peers, and two different keys are an ambiguity the
+/// operator resolves — interactively by picking, in a script by naming a
+/// source — never by precedence.
+enum Choice {
+    None,
+    One(String, String),
+    Ambiguous(Vec<(String, String)>),
+}
+
+fn choose(found: Vec<(String, String)>) -> Choice {
+    let env = crate::registry::auth::API_KEY_ENV;
+    if let Some(hit) = found.iter().find(|(_, source)| source == env) {
+        return Choice::One(hit.0.clone(), hit.1.clone());
+    }
+    let mut distinct: Vec<(String, String)> = Vec::new();
+    for (key, source) in found {
+        match distinct.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, sources)) => {
+                sources.push_str(" and ");
+                sources.push_str(&source);
+            }
+            None => distinct.push((key, source)),
+        }
+    }
+    match distinct.len() {
+        0 => Choice::None,
+        1 => {
+            let (key, source) = distinct.remove(0);
+            Choice::One(key, source)
+        }
+        _ => Choice::Ambiguous(distinct),
     }
 }
 
@@ -254,34 +295,61 @@ fn stored_credential(output: &Output) -> Option<(String, String)> {
 /// non-interactive one needs `--api-key-from-login`.
 pub(super) fn login_key_offer(
     args: &ProviderAddArgs,
+    stem: &str,
     providers_dir: &Path,
     output: &Output,
 ) -> Result<Option<KeySpec>> {
-    let path = key_path(providers_dir);
-    if args.api_key_from_login {
-        let (key, source) = stored_credential(output).ok_or_else(|| {
-            CliError::usage(
+    let path = key_path(providers_dir, stem);
+    let interactive = crate::proc::is_stdin_tty() && !output.is_json();
+    if !args.api_key_from_login && !interactive {
+        return Ok(None);
+    }
+    let masked = crate::registry::auth::masked_key;
+    let (key, source) =
+        match choose(stored_credentials(output)) {
+            Choice::None if args.api_key_from_login => return Err(CliError::usage(
                 "--api-key-from-login: no stored credential (POSTVEC_API_KEY, or `postvec login`)",
-            )
-        })?;
+            )),
+            Choice::None => return Ok(None),
+            Choice::One(key, source) => (key, source),
+            Choice::Ambiguous(choices) if !interactive => {
+                let listed: Vec<String> = choices
+                    .iter()
+                    .map(|(key, source)| format!("{} from {source}", masked(key)))
+                    .collect();
+                return Err(CliError::usage(format!(
+                    "--api-key-from-login: two different stored keys ({}); set POSTVEC_API_KEY to \
+                 the one to use, or `postvec logout` the other",
+                    listed.join(", ")
+                )));
+            }
+            Choice::Ambiguous(choices) => {
+                eprintln!("Two different UniVec keys are stored:");
+                for (i, (key, source)) in choices.iter().enumerate() {
+                    eprintln!("  {}. {} from {source}", i + 1, masked(key));
+                }
+                eprint!("Use which for hosted inference? [1-{}/N] ", choices.len());
+                let answer = crate::plan::read_line()?;
+                match answer.trim().parse::<usize>() {
+                    Ok(n) if (1..=choices.len()).contains(&n) => choices[n - 1].clone(),
+                    _ => return Ok(None),
+                }
+            }
+        };
+    refuse_foreign_key_file(&path, &key)?;
+    if args.api_key_from_login {
         output.note(&format!(
             "using the key from {source}; copied to {}",
             path.display()
         ));
         return Ok(Some(KeySpec::Login { key, path }));
     }
-    if !crate::proc::is_stdin_tty() || output.is_json() {
-        return Ok(None);
-    }
-    let Some((key, source)) = stored_credential(output) else {
-        return Ok(None);
-    };
     eprintln!(
         "Found a UniVec key from {source} ({}). Use it for hosted inference too?\n\
          It will be billed from this host. A key created with a $0 spending limit (the login \
-         prompt's advice for downloads) fails with 402; mint a separate inference key at \
-         {} if so.",
-        crate::registry::auth::masked_key(&key),
+         prompt's advice for downloads) fails with 402; a dedicated inference key from {} \
+         keeps billing and rotation separate.",
+        masked(&key),
         crate::registry::urls::DASHBOARD_URL
     );
     eprint!("Copy it to {}? [y/N] ", path.display());
@@ -292,14 +360,34 @@ pub(super) fn login_key_offer(
     Ok(None)
 }
 
-/// `<providers root>/keys/univec.key`: beside providers.d, where operator
-/// key files conventionally live (`/etc/postvec/keys`, `<server-root>/keys`).
-fn key_path(providers_dir: &Path) -> PathBuf {
+/// The copy never overwrites a key file it did not write: an existing file
+/// with a different key is somebody's, and rotating it through this offer
+/// would rotate every connector that references it. Same content is a
+/// no-op rewrite, which is fine.
+fn refuse_foreign_key_file(path: &Path, key: &str) -> Result<()> {
+    match std::fs::read_to_string(path) {
+        Ok(existing) if existing.trim() != key => Err(CliError::precondition(format!(
+            "{} already exists with a different key; refusing to replace it",
+            path.display()
+        ))
+        .with_fix(
+            "reference it with --api-key-file, or move it aside if it is stale; this command \
+             never rotates a key file it did not create",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// `<providers root>/keys/<stem>.key`: beside providers.d, where operator
+/// key files conventionally live (`/etc/postvec/keys`, `<server-root>/keys`),
+/// one per connector file so `univec.toml` and `--name univec-staging`
+/// never share (and rotate) one credential.
+fn key_path(providers_dir: &Path, stem: &str) -> PathBuf {
     providers_dir
         .parent()
         .unwrap_or(providers_dir)
         .join("keys")
-        .join("univec.key")
+        .join(format!("{stem}.key"))
 }
 
 // ---- The free identity check ----------------------------------------------
@@ -516,14 +604,72 @@ mod tests {
     }
 
     #[test]
-    fn the_login_key_lands_beside_providers_d() {
+    fn the_login_key_lands_beside_providers_d_one_per_stem() {
         assert_eq!(
-            key_path(Path::new("/etc/postvec/providers.d")),
+            key_path(Path::new("/etc/postvec/providers.d"), "univec"),
             PathBuf::from("/etc/postvec/keys/univec.key")
         );
         assert_eq!(
-            key_path(Path::new("/var/lib/postvec-server/providers.d")),
-            PathBuf::from("/var/lib/postvec-server/keys/univec.key")
+            key_path(
+                Path::new("/var/lib/postvec-server/providers.d"),
+                "univec-staging"
+            ),
+            PathBuf::from("/var/lib/postvec-server/keys/univec-staging.key")
         );
+    }
+
+    /// Precedence: the environment wins; equal stores agree; different
+    /// stores are an ambiguity, never a silent pick.
+    #[test]
+    fn credential_precedence_is_env_then_agreement_then_ambiguity() {
+        let env = crate::registry::auth::API_KEY_ENV.to_string();
+        let k = |key: &str, source: &str| (key.to_string(), source.to_string());
+        assert!(matches!(choose(vec![]), Choice::None));
+        match choose(vec![
+            k("uv_root_key_00000", "the credential store"),
+            k("uv_env_key_000000", &env),
+        ]) {
+            Choice::One(key, source) => {
+                assert_eq!((key.as_str(), source), ("uv_env_key_000000", env.clone()))
+            }
+            _ => panic!("env must win"),
+        }
+        match choose(vec![
+            k("uv_same_key_00000", "the credential store"),
+            k("uv_same_key_00000", "amx's postvec login"),
+        ]) {
+            Choice::One(key, source) => {
+                assert_eq!(key, "uv_same_key_00000");
+                assert!(source.contains("and"), "{source}");
+            }
+            _ => panic!("equal keys agree"),
+        }
+        match choose(vec![
+            k("uv_root_key_00000", "the credential store"),
+            k("uv_user_key_00000", "amx's postvec login"),
+        ]) {
+            Choice::Ambiguous(choices) => assert_eq!(choices.len(), 2),
+            _ => panic!("different keys are ambiguous"),
+        }
+    }
+
+    #[test]
+    fn a_foreign_key_file_is_never_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("univec.key");
+        assert!(
+            refuse_foreign_key_file(&path, "uv_new_key_0000000").is_ok(),
+            "absent is fine"
+        );
+        std::fs::write(&path, "uv_new_key_0000000\n").unwrap();
+        assert!(
+            refuse_foreign_key_file(&path, "uv_new_key_0000000").is_ok(),
+            "same content is fine"
+        );
+        std::fs::write(&path, "uv_other_key_00000").unwrap();
+        let err = refuse_foreign_key_file(&path, "uv_new_key_0000000")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("different key"), "{err}");
     }
 }

@@ -172,7 +172,14 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // ---- The key source ----
     // Before the catalogue: an interactive run's prompt order is key, then
     // discovery progress — not the other way round.
-    let key = resolve_key_spec(&args, &canonical, target.dir(), existing.is_some(), output)?;
+    let key = resolve_key_spec(
+        &args,
+        &canonical,
+        &stem,
+        target.dir(),
+        existing.is_some(),
+        output,
+    )?;
     if let KeySpec::File(path) = &key {
         require_private_secret_file(path)?;
     }
@@ -497,6 +504,15 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // front moves, a Bedrock deployment changes region). Without these two
     // terms the plan would be a no-op and the flag would be dropped in
     // silence.
+    // The copied login key is its own step: a credential file appearing
+    // (or being rewritten) is something the operator confirms by name.
+    if let KeySpec::Login { path, .. } = &key {
+        plan.push(PlanStep::WriteConfig {
+            path: path.clone(),
+            before_sha256: path.exists().then(|| "existing".to_string()),
+            after_sha256: "copied login key".to_string(),
+        });
+    }
     if !new_models.is_empty() || credential_changes || endpoint_changes {
         plan.push(PlanStep::WriteConfig {
             path: file_path.clone(),
@@ -1083,6 +1099,7 @@ fn probe_targets(
 fn resolve_key_spec(
     args: &ProviderAddArgs,
     canonical: &str,
+    stem: &str,
     providers_dir: &std::path::Path,
     file_exists: bool,
     output: &Output,
@@ -1106,7 +1123,7 @@ fn resolve_key_spec(
         return Ok(KeySpec::Existing);
     }
     if canonical == "univec" {
-        if let Some(spec) = univec::login_key_offer(args, providers_dir, output)? {
+        if let Some(spec) = univec::login_key_offer(args, stem, providers_dir, output)? {
             return Ok(spec);
         }
     }
