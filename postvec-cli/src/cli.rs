@@ -210,10 +210,18 @@ pub struct ProviderAddArgs {
     pub all_converters: bool,
 
     /// univec only: copy the key `postvec login` stored (or POSTVEC_API_KEY)
-    /// into <providers root>/keys/univec.key and use it for hosted
-    /// inference. Interactive runs offer this; scripts must ask for it.
+    /// into <providers root>/keys/<stem>.key and use it for hosted
+    /// inference. Interactive runs offer this; scripts must ask for it. An
+    /// existing file holding a different key is refused.
     #[arg(long, conflicts_with_all = ["api_key_file", "api_key_env", "key_stdin"])]
     pub api_key_from_login: bool,
+
+    /// With --api-key-from-login: rotate a key file this command copied
+    /// earlier for this connector (it must be referenced by this stem's
+    /// file and by no other). The new key is verified before the old one
+    /// is replaced.
+    #[arg(long, requires = "api_key_from_login")]
+    pub replace_copied_key: bool,
 
     /// univec only: skip the catalogue fetch. Every dimension must then
     /// come from --dim or the verification probe.

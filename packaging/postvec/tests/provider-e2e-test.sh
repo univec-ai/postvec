@@ -55,7 +55,7 @@ need docker
 need python3
 
 MOCK_PORT=8099
-BUNDLED_MODEL_DIM=384   # overwritten by start_mock from postvec.models
+BUNDLED_MODEL_DIM=""    # set by start_mock from postvec.models; never defaulted
 PROV_MODEL="openai-text-embedding-3-small"
 KEYA="pv-e2e-alpha-$$-$RANDOM"
 KEYB="pv-e2e-bravo-$$-$RANDOM"
@@ -130,7 +130,11 @@ bundled_model_dim() {
 
 start_mock() {
     local dim
-    dim="$(bundled_model_dim)"; [[ "${dim}" =~ ^[0-9]+$ ]] || dim=384
+    dim="$(bundled_model_dim)"
+    # No fallback: a missing or malformed width means the model cache is
+    # broken, and that is a failure, not a MiniLM-shaped coincidence.
+    [[ "${dim}" =~ ^[1-9][0-9]*$ && "${dim}" -le 16000 ]] \
+        || die "postvec.models has no usable target_dim for ${BUNDLED_MODEL_NAME} (got '${dim}')"
     BUNDLED_MODEL_DIM="${dim}"
     docker exec -d "${SRV}" python3 /provider-mock.py "${MOCK_PORT}" "${BUNDLED_MODEL_NAME}" "${dim}"
     wait_for "the provider mock answers /healthz" 30 mock_healthy

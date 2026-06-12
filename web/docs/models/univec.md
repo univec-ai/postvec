@@ -272,15 +272,17 @@ that finds one offers it (default no); scripts opt in with
 connector file, `univec.key` by default) and referenced from the connector
 file, so `postvec logout` does not remove a serving key and two connector
 files never share one credential. An existing key file holding a different
-key is never replaced. `POSTVEC_API_KEY` wins over stored logins; when
+key is never replaced; `--replace-copied-key` rotates a key this command
+copied for exactly this connector, verifying the new key before the old one
+goes. `POSTVEC_API_KEY` wins over stored logins; when
 root's store and the invoking user's store hold different keys, an
 interactive run asks which and a scripted run refuses. A dedicated
 inference key keeps billing and rotation separate from downloads.
 
 A key with a zero spending limit can read the private model catalogue but
 cannot serve hosted embeddings or conversions. UniVec returns HTTP 402 when
-the account has no available credit; `provider add` says so after the free
-identity check passes and the billed probe fails. postvec classifies 401, 402 and 403 as
+the account has no available credit; `provider add` says so when the
+identity check passes (or is unavailable) and the billed probe fails. postvec classifies 401, 402 and 403 as
 configuration failures. Queue work retries up to `postvec.max_retries`, then
 moves to `postvec.jobs_dead`. Migrations keep retrying configuration failures.
 

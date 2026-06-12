@@ -40,9 +40,12 @@ pub(super) enum KeySpec {
     /// univec: the `postvec login` key, copied into `path` at apply time
     /// and referenced as `api_key_file` — never inline, so it cannot
     /// silently outlive a `logout`.
+    /// `previous` is the file's old contents under `--replace-copied-key`,
+    /// restored if the connector write fails.
     Login {
         key: String,
         path: PathBuf,
+        previous: Option<String>,
     },
     /// The existing file already carries one and no new source was given.
     Existing,
@@ -210,7 +213,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     let region_changes = args.region.is_some() && args.region != recorded("region");
 
     // ---- UniVec's catalogue ----
-    // Unauthenticated and free, so a dry run fetches it too. `None` means
+    // Unauthenticated and unbilled, so a dry run fetches it too. `None` means
     // "not consulted": another connector, --no-catalog, or unreachable
     // with selectors that can do without it.
     let catalogue: Option<Vec<providers::listing::ListedModel>> =
@@ -659,8 +662,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             .filter(|(name, _)| !existing_converters.contains(name))
             .cloned()
             .collect();
-        // UniVec: prove the key for free before anything is billed. A
-        // 401/403 stops here; an outage of that route does not.
+        // UniVec: a best-effort unbilled identity check before anything is
+        // billed. A 401/403 stops here; anything else defers to the probe.
         if canonical == "univec" {
             univec::identity_check(effective_base_url.as_deref(), &secret, cli.timeout, output)
                 .await?;
@@ -780,14 +783,38 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             doc.set_model_dim(&model.public_name, dim)?;
         }
     }
-    if let KeySpec::Login { key, path } = &key {
+    if let KeySpec::Login {
+        key,
+        path,
+        previous,
+    } = &key
+    {
         write_secret_file(path, key.as_bytes(), target.owner())?;
         journal.record(format!(
-            "copied the postvec login key to {} (0600); `postvec logout` does not remove it",
+            "{} the postvec login key {} {} (0600); `postvec logout` does not remove it",
+            if previous.is_some() {
+                "rotated"
+            } else {
+                "copied"
+            },
+            if previous.is_some() { "in" } else { "to" },
             path.display()
         ));
+        if let (Some(old), Err(e)) = (previous, doc.write(target.owner())) {
+            // The connector still says the old key; put it back.
+            write_secret_file(path, old.as_bytes(), target.owner())?;
+            return Err(e);
+        }
     }
-    doc.write(target.owner())?;
+    if !matches!(
+        key,
+        KeySpec::Login {
+            previous: Some(_),
+            ..
+        }
+    ) {
+        doc.write(target.owner())?;
+    }
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
         let shape = match &model.convert {

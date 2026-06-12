@@ -181,6 +181,12 @@ async fn univec(base: &str, timeout: Duration, retries: bool) -> Result<Listing,
 
 /// pgvector's ceiling; a stated width outside `1..=MAX_DIM` is a broken row.
 const MAX_DIM: u32 = 16_000;
+/// A stated `sequenceLen` outside this is a broken row too.
+const MAX_SEQUENCE_LEN: u32 = 1 << 20;
+/// A model identifier goes into request bodies, derived public names and
+/// terminal output: printable ASCII only, bounded (the loader's own
+/// `provider_model_id` ceiling is 256 bytes; `univec-` is prepended).
+const MAX_ID_BYTES: usize = 200;
 
 /// Decode the catalogue, failing closed on a broken row of a kind postvec
 /// understands. Unknown `modelType`s (bridges, future kinds) are ignored:
@@ -205,29 +211,45 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
                 None => Err(format!("{}: {field} is missing", row())),
             }
         };
+        let ident = |field: &str, value: &Option<String>| -> Result<String, String> {
+            match value {
+                Some(id)
+                    if !id.is_empty()
+                        && id.len() <= MAX_ID_BYTES
+                        && id.bytes().all(|b| b.is_ascii_graphic()) =>
+                {
+                    Ok(id.clone())
+                }
+                Some(_) => Err(format!(
+                    "{}: {field} is not a printable identifier of 1..={MAX_ID_BYTES} bytes",
+                    row()
+                )),
+                None => Err(format!("{}: {field} is missing", row())),
+            }
+        };
         let entry = match m.model_type.as_str() {
             "embed" => ListedModel {
                 dim: width("targetDim", m.target_dim)?,
-                provider_model_id: m
-                    .target_model
-                    .clone()
-                    .ok_or_else(|| format!("{}: targetModel is missing", row()))?,
+                provider_model_id: ident("targetModel", &m.target_model)?,
                 kind: ListedKind::Embed,
                 source: None,
-                sequence_len: m.sequence_len,
+                sequence_len: match m.sequence_len {
+                    Some(n) if !(1..=MAX_SEQUENCE_LEN).contains(&n) => {
+                        return Err(format!(
+                            "{}: sequenceLen {n} is outside 1..={MAX_SEQUENCE_LEN}",
+                            row()
+                        ))
+                    }
+                    other => other,
+                },
                 quality: None,
             },
             "convert" => ListedModel {
                 dim: width("targetDim", m.target_dim)?,
-                provider_model_id: m
-                    .target_model
-                    .clone()
-                    .ok_or_else(|| format!("{}: targetModel is missing", row()))?,
+                provider_model_id: ident("targetModel", &m.target_model)?,
                 kind: ListedKind::Convert,
                 source: Some((
-                    m.source_model
-                        .clone()
-                        .ok_or_else(|| format!("{}: sourceModel is missing", row()))?,
+                    ident("sourceModel", &m.source_model)?,
                     width("sourceDim", m.source_dim)?,
                 )),
                 sequence_len: None,
@@ -239,7 +261,11 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
             },
             _ => continue,
         };
-        match out.iter().find(|e| {
+        // One semantic identity may be listed under several SKU names, but
+        // every operational fact must agree: widths and `sequenceLen`
+        // (persisted as `max_tokens`). `quality` is display-only, so a
+        // disagreement blanks it rather than refusing.
+        match out.iter_mut().find(|e| {
             e.kind == entry.kind
                 && e.provider_model_id == entry.provider_model_id
                 && e.source.as_ref().map(|(s, _)| s) == entry.source.as_ref().map(|(s, _)| s)
@@ -248,7 +274,21 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
             Some(existing)
                 if existing.dim == entry.dim
                     && existing.source.as_ref().map(|(_, d)| d)
-                        == entry.source.as_ref().map(|(_, d)| d) => {}
+                        == entry.source.as_ref().map(|(_, d)| d) =>
+            {
+                if existing.sequence_len != entry.sequence_len {
+                    return Err(format!(
+                        "{}: embed {} is listed twice with different sequenceLen ({:?} and {:?})",
+                        row(),
+                        safe_name(&entry.provider_model_id),
+                        existing.sequence_len,
+                        entry.sequence_len
+                    ));
+                }
+                if existing.quality != entry.quality {
+                    existing.quality = None;
+                }
+            }
             Some(existing) => {
                 return Err(format!(
                     "{}: {} {} is listed twice with different dimensions ({}{} and {}{})",
@@ -469,11 +509,61 @@ mod tests {
         assert!(e.contains("8->4 and 9->4"), "{e}");
         let same = decode(
             r#"{"success":true,"data":[
-              {"name":"c","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4},
-              {"name":"c-again","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4}
+              {"name":"c","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4,"eval":{"cosine_mean":0.9}},
+              {"name":"c-again","modelType":"convert","sourceModel":"s","sourceDim":8,"targetModel":"t","targetDim":4,"eval":{"cosine_mean":0.8}}
             ]}"#,
         );
         assert_eq!(same.len(), 1);
+        assert_eq!(
+            same[0].quality, None,
+            "disagreeing display metadata is blanked"
+        );
+        // Operational metadata must agree across aliases.
+        let e = err(
+            r#"{"name":"a","modelType":"embed","targetModel":"a","targetDim":4,"sequenceLen":512},
+               {"name":"a2","modelType":"embed","targetModel":"a","targetDim":4,"sequenceLen":256}"#,
+        );
+        assert!(
+            e.contains("different sequenceLen") && e.contains("512") && e.contains("256"),
+            "{e}"
+        );
+        let e = err(
+            r#"{"name":"z","modelType":"embed","targetModel":"z","targetDim":4,"sequenceLen":0}"#,
+        );
+        assert!(e.contains("sequenceLen 0"), "{e}");
+        let e = err(
+            r#"{"name":"z","modelType":"embed","targetModel":"z","targetDim":4,"sequenceLen":9999999}"#,
+        );
+        assert!(e.contains("sequenceLen 9999999"), "{e}");
+        // Identifiers are untrusted structured input: empty, overlong,
+        // whitespace, control characters and escapes are refused.
+        for bad in [
+            "",
+            "has space",
+            "new\nline",
+            "tab\there",
+            "esc\u{001b}[31m",
+            "ünïcode",
+        ] {
+            let rows = format!(
+                r#"{{"name":"x","modelType":"embed","targetModel":{},"targetDim":4}}"#,
+                serde_json::to_string(bad).unwrap()
+            );
+            let e = err(&rows);
+            assert!(
+                e.contains("targetModel is not a printable identifier"),
+                "{bad:?}: {e}"
+            );
+        }
+        let long = "a".repeat(201);
+        let e = err(&format!(
+            r#"{{"name":"x","modelType":"convert","sourceModel":"{long}","sourceDim":4,"targetModel":"t","targetDim":4}}"#
+        ));
+        assert!(
+            e.contains("sourceModel is not a printable identifier"),
+            "{e}"
+        );
+        assert!(decode(&format!(r#"{{"success":true,"data":[{{"name":"x","modelType":"embed","targetModel":"{}","targetDim":4}}]}}"#, "a".repeat(200))).len() == 1);
         let envelope: Envelope = serde_json::from_str(r#"{"success":false,"error":"x"}"#).unwrap();
         assert!(!envelope.success && envelope.data.is_none());
     }

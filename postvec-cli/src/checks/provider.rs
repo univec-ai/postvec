@@ -411,8 +411,8 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
 
 /// `doctor --deep` only: configured univec entries that UniVec's current
 /// catalogue no longer lists. One attempt per base URL, short timeout, no
-/// retry; an unreachable catalogue produces nothing. A note (PASS), never a
-/// warning — the catalogue does not model removals reliably, and `--strict`
+/// retry; an unreachable catalogue is a non-required SKIP naming the
+/// reason. Otherwise a note (PASS), never a warning — the catalogue does not model removals reliably, and `--strict`
 /// must not trip on a UniVec blip. Ordinary `doctor` never opens this socket.
 pub async fn catalogue_notes(dir: &Path, timeout: std::time::Duration) -> Vec<CheckResult> {
     use providers::listing::{self, ListedModel, Listing};

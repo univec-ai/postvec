@@ -193,7 +193,12 @@ listed models; the probe proves the key and one added route per kind. A
 selection over the 256-entry per-file ceiling is refused whole.
 `--api-key-from-login` copies the `postvec login` key into
 `<root>/keys/<NAME>.key` (one per connector file; never over a different
-existing key). `--no-catalog` skips discovery. The manual
+existing key — `--replace-copied-key` rotates one this command copied for
+that connector). The listing document reports a configured file that cannot
+be read as `failed` with a `file` field; an explicit `--path`,
+`--database-url`, `--cluster` or `POSTVEC_PROVIDERS_PATH` that cannot be
+honoured is an error, while an implicit cluster that is not there lists the
+catalogue with `configured_state_unavailable` set. `--no-catalog` skips discovery. The manual
 converter flags (`--convert-source`, `--convert-target`, `--source-model`,
 `--target-model`, `--source-dim`) remain for an unlisted pair. See
 [UniVec hosted models](/docs/models/univec).

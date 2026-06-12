@@ -2952,6 +2952,40 @@ mod univec_discovery {
         assert_eq!(by("univec")["outcome"], "entries");
         assert_eq!(by("univec-staging")["outcome"], "failed");
         assert!(
+            by("univec-staging")["file"]
+                .as_str()
+                .unwrap()
+                .ends_with("univec-staging.toml"),
+            "{doc}"
+        );
+        assert!(
+            by("univec-staging").get("provider").is_none()
+                && by("univec-staging").get("base_url").is_none(),
+            "no type-confusing fields: {doc}"
+        );
+        assert!(doc["errors"].as_array().unwrap().len() >= 2, "{doc}");
+        // A type-filtered query still reports the unclassifiable file.
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "openai",
+            "--path",
+            root_arg,
+            "--format",
+            "json",
+        ]);
+        assert_ne!(code(&out), 0);
+        let filtered: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        assert!(
+            filtered["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == "univec-staging" && p["outcome"] == "failed"),
+            "{filtered}"
+        );
+        assert!(
             by("univec-staging")["reason"]
                 .as_str()
                 .unwrap()
@@ -3009,6 +3043,46 @@ mod univec_discovery {
                 "{doc}"
             );
         }
+    }
+
+    /// An explicit target that cannot be honoured is an error, never a
+    /// silent catalogue-only listing.
+    #[test]
+    fn ls_available_propagates_an_explicit_target_failure() {
+        let out = run(&[
+            "provider",
+            "ls",
+            "--available",
+            "univec",
+            "--path",
+            "/nonexistent-providers-root",
+        ]);
+        assert_ne!(code(&out), 0);
+        assert!(
+            text(&out).contains("not an existing directory"),
+            "{}",
+            text(&out)
+        );
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "ls",
+                "--available",
+                "univec",
+                "--format",
+                "json",
+            ])
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("POSTVEC_PROVIDERS_PATH", "/nonexistent-providers-root")
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap();
+        assert_ne!(code(&out), 0);
+        assert!(
+            !stdout(&out).contains("\"available\": true"),
+            "no document on an explicit failure:\n{}",
+            stdout(&out)
+        );
     }
 
     /// Scenario 7: a converter whose stated width contradicts the listed
@@ -3228,6 +3302,45 @@ mod univec_discovery {
             "uv_someone_elses_key"
         );
 
+        // An unsafe destination is refused before any request, billed or
+        // not, and nothing is written.
+        let blocked = provider_root();
+        std::fs::create_dir_all(blocked.path().join("keys/univec.key")).unwrap();
+        let before = (
+            mock.path_count("/v1/embeddings"),
+            mock.path_count("/v1/registry/index.json"),
+            mock.path_count("/v1/models"),
+        );
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                blocked.path().to_str().unwrap(),
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_API_KEY", KEY)
+            .output()
+            .unwrap();
+        assert_ne!(code(&out), 0);
+        assert!(text(&out).contains("not a regular file"), "{}", text(&out));
+        assert!(!blocked.path().join("providers.d/univec.toml").exists());
+        assert_eq!(
+            (
+                mock.path_count("/v1/embeddings"),
+                mock.path_count("/v1/registry/index.json"),
+                mock.path_count("/v1/models")
+            ),
+            before,
+            "nothing was requested"
+        );
+
         // `rm` retains the copied key and says so by name.
         let out = run(&[
             "provider",
@@ -3283,6 +3396,88 @@ mod univec_discovery {
                 "--api-key-from-login",
                 "--path",
                 root.path().to_str().unwrap(),
+                "--yes"
+            ])),
+            2
+        );
+    }
+
+    /// Rotation of a copied key: refused by default, allowed with
+    /// `--replace-copied-key` only for a file this stem alone references,
+    /// with the new key verified before the old one goes.
+    #[test]
+    fn replace_copied_key_rotates_only_this_connectors_own_copy() {
+        const KEY2: &str = "uv_rotated_key_value_2";
+        let rt = runtime();
+        let mock = rt.block_on(routes(vec![
+            Route::new("GET", "/v1/models", 200, CATALOGUE),
+            Route::new("POST", "/v1/embeddings", 200, EMBED_3),
+            Route::new("POST", "/v1/convert", 200, CONVERT_4),
+            Route::new("GET", "/v1/registry/index.json", 200, "{}"),
+        ]));
+        let root = provider_root();
+        let root_arg = root.path().to_str().unwrap().to_string();
+        let add = |extra: &[&str], key: &str| {
+            let mut args = vec![
+                "provider",
+                "add",
+                "univec",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                &root_arg,
+                "--acknowledge-in-use",
+                "--yes",
+            ];
+            args.extend_from_slice(extra);
+            Command::new(binary())
+                .args(&args)
+                .env("NO_COLOR", "1")
+                .env("POSTVEC_API_KEY", key)
+                .output()
+                .unwrap()
+        };
+        assert_eq!(code(&add(&["--model", "cheap"], KEY)), 0);
+        let key_file = root.path().join("keys/univec.key");
+        assert_eq!(std::fs::read_to_string(&key_file).unwrap(), KEY);
+
+        let out = add(&["--convert-to", "big"], KEY2);
+        assert_ne!(code(&out), 0);
+        assert!(
+            text(&out).contains("--replace-copied-key"),
+            "{}",
+            text(&out)
+        );
+        assert_eq!(std::fs::read_to_string(&key_file).unwrap(), KEY);
+
+        // A sibling referencing the same file blocks rotation.
+        let sibling = root.path().join("providers.d/univec-staging.toml");
+        std::fs::write(&sibling, format!("provider = \"univec\"\napi_key_file = \"{}\"\n\n[[models]]\nname = \"s\"\nprovider_model_id = \"s\"\ndim = 3\n", key_file.display())).unwrap();
+        set_mode(&sibling, 0o600);
+        let out = add(&["--convert-to", "big", "--replace-copied-key"], KEY2);
+        assert_ne!(code(&out), 0);
+        assert!(text(&out).contains("also referenced by"), "{}", text(&out));
+        std::fs::remove_file(&sibling).unwrap();
+
+        let out = add(&["--convert-to", "big", "--replace-copied-key"], KEY2);
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let t = text(&out);
+        assert!(
+            t.contains(&format!("rewrite {}", key_file.display())) && t.contains("rotated"),
+            "{t}"
+        );
+        assert_eq!(std::fs::read_to_string(&key_file).unwrap(), KEY2);
+        assert!(file(root.path()).contains("univec-convert-src-to-big"));
+        // Without the flag, the flag is a usage error on its own.
+        assert_eq!(
+            code(&run(&[
+                "provider",
+                "add",
+                "univec",
+                "--replace-copied-key",
+                "--path",
+                &root_arg,
                 "--yes"
             ])),
             2

@@ -262,8 +262,14 @@ struct AvailableModel {
 #[derive(Serialize)]
 struct AvailableProvider {
     name: String,
-    provider: String,
-    base_url: String,
+    /// Absent for a configured file that could not be classified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
+    /// The configured file (or directory) a `failed` outcome is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
     /// `entries` | `needs_key` | `unsupported` | `failed`.
     outcome: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,6 +284,9 @@ struct AvailableDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     target: Option<String>,
     available: bool,
+    /// Why the `configured` join is absent, when no directory was resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configured_state_unavailable: Option<String>,
     providers: Vec<AvailableProvider>,
     /// One line per `failed` provider; non-empty makes the exit a failure.
     errors: Vec<String>,
@@ -299,21 +308,38 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
         .provider
         .as_deref()
         .map(|p| providers::catalog::canonical_provider(&p.to_lowercase()));
-    // A directory is optional: the catalogue needs only the network, the
-    // same way `model ls --available` works with no engine root.
-    let target = resolve_target(cli, args.path.as_deref(), output, false)
-        .await
-        .ok();
+    // A directory is optional — the catalogue needs only the network, the
+    // same way `model ls --available` works with no engine root — but only
+    // when nothing was *asked for*. An explicit --path, --database-url,
+    // --cluster or POSTVEC_PROVIDERS_PATH that cannot be honoured is an
+    // error, not a silent degrade to `configured: ?`.
+    let explicit = args.path.is_some()
+        || cli.database_url.is_some()
+        || cli.cluster.is_some()
+        || std::env::var_os(crate::config::PROVIDERS_PATH_ENV).is_some_and(|v| !v.is_empty());
+    let (target, unavailable) = match resolve_target(cli, args.path.as_deref(), output, false).await
+    {
+        Ok(target) => (Some(target), None),
+        Err(e) if explicit => return Err(e),
+        Err(e) => {
+            output.note(&format!(
+                "no providers directory in scope ({e}); listing the catalogue without the \
+                     configured-state join"
+            ));
+            (None, Some(e.to_string()))
+        }
+    };
     let mut sources: Vec<Source> = Vec::new();
     // A file (or directory) that cannot be read is a named `failed` result,
     // not a skipped one: a request for `univec-staging` must not degrade
     // into a bare-connector lookup because its file is malformed.
     let mut broken: Vec<AvailableProvider> = Vec::new();
     let mut failures = Vec::new();
-    let failed = |name: String, at: String, reason: String| AvailableProvider {
+    let failed = |name: String, file: String, reason: String| AvailableProvider {
         name,
-        provider: String::new(),
-        base_url: at,
+        provider: None,
+        base_url: None,
+        file: Some(file),
         outcome: "failed",
         reason: Some(reason),
         models: Vec::new(),
@@ -338,11 +364,11 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
             let doc = match ProviderFileDoc::load(&path) {
                 Ok(Some(doc)) => doc,
                 Ok(None) => continue,
+                // Unclassifiable, so it may be the connector a type filter
+                // asked about: always reported.
                 Err(e) => {
-                    if wanted.as_ref().is_none_or(|w| *w == stem) {
-                        failures.push(format!("{stem}: {e}"));
-                        broken.push(failed(stem, path.display().to_string(), e.to_string()));
-                    }
+                    failures.push(format!("{stem}: {e}"));
+                    broken.push(failed(stem, path.display().to_string(), e.to_string()));
                     continue;
                 }
             };
@@ -460,8 +486,9 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
             .collect();
         providers_out.push(AvailableProvider {
             name: source.name,
-            provider: source.provider,
-            base_url,
+            provider: Some(source.provider),
+            base_url: Some(base_url),
+            file: None,
             outcome,
             reason,
             models,
@@ -475,6 +502,7 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
                 command: "provider ls",
                 target: target.as_ref().map(|t| t.label()),
                 available: true,
+                configured_state_unavailable: unavailable,
                 providers: providers_out,
                 errors: failures.clone(),
             },
@@ -487,15 +515,18 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
                 .iter()
                 .filter(|m| m.listed.kind == ListedKind::Embed)
                 .count();
+            let at = p
+                .base_url
+                .clone()
+                .or_else(|| p.file.clone())
+                .unwrap_or_default();
             match &p.reason {
-                Some(reason) => output.progress(&format!(
-                    "{}  ({}, cannot list: {reason})",
-                    p.name, p.base_url
-                )),
+                Some(reason) => {
+                    output.progress(&format!("{}  ({at}, cannot list: {reason})", p.name))
+                }
                 None => output.progress(&format!(
-                    "{}  ({}, public catalogue, {embeds} embed, {} convert)",
+                    "{}  ({at}, public catalogue, {embeds} embed, {} convert)",
                     p.name,
-                    p.base_url,
                     p.models.len() - embeds
                 )),
             }
