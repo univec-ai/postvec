@@ -30,6 +30,13 @@ pub enum PlanStep {
         before_sha256: Option<String>,
         after_sha256: String,
     },
+    /// `provider add`: the exact billed verification this run will make,
+    /// stated before confirmation.
+    VerifyProviders {
+        provider: String,
+        embed_probes: usize,
+        convert_probes: usize,
+    },
     RemoveConfig {
         path: PathBuf,
     },
@@ -180,6 +187,14 @@ impl PlanStep {
             PlanStep::CreateExtension { database } => {
                 format!("install the postvec extension in {database:?}")
             }
+            PlanStep::VerifyProviders {
+                provider,
+                embed_probes,
+                convert_probes,
+            } => format!(
+                "verify against {provider} with {embed_probes} billed embed probe(s) and \
+                 {convert_probes} billed convert probe(s)"
+            ),
             PlanStep::WriteConfig {
                 path,
                 before_sha256,
@@ -469,7 +484,9 @@ impl Plan {
         self.steps.iter().all(|step| {
             matches!(
                 step,
-                PlanStep::AcknowledgeInUse { .. } | PlanStep::AcknowledgeProviderPrivacy { .. }
+                PlanStep::AcknowledgeInUse { .. }
+                    | PlanStep::AcknowledgeProviderPrivacy { .. }
+                    | PlanStep::VerifyProviders { .. }
             )
         })
     }

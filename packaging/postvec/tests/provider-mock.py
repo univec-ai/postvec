@@ -20,7 +20,7 @@ It is also a minimal UniVec (aphex) for `provider add univec` discovery:
                                     into CONVERT_TARGET, argv[2])
     POST /v1/convert             -> {"success": true, "data": {"embeddings"}}
                                     at the converter's target dimension
-    GET  /v1/registry/index.json -> the free identity check: 200 when the
+    GET  /v1/registry/index.json -> the best-effort unbilled identity check: 200 when the
                                     bearer matches, 401 otherwise
 
 Control interface (never reached by the code under test):

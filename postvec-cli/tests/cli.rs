@@ -2438,7 +2438,7 @@ fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledg
 // ---- `provider add univec` discovery, `provider ls --available` ----------
 //
 // A path-aware mock aphex on loopback serves the four routes the flow uses:
-// the public catalogue, the free identity check, and the two billed probes.
+// the public catalogue, the best-effort identity check, and the two billed probes.
 // Every test counts requests per route, so "no billed call" claims are
 // checked against a mock that can observe one (positive controls below).
 
@@ -2566,7 +2566,7 @@ mod univec_discovery {
         assert_eq!(
             mock.path_count("/v1/registry/index.json"),
             1,
-            "the free identity check ran"
+            "the unbilled identity check ran"
         );
         assert!(
             mock.last_request().contains("\"model\":\"cheap\""),
@@ -2577,6 +2577,12 @@ mod univec_discovery {
         assert!(
             t.contains("catalogue: 2 embed, 0 convert added, 0 already present"),
             "{t}"
+        );
+        assert!(
+            t.contains(
+                "verify against univec with 1 billed embed probe(s) and 0 billed convert probe(s)"
+            ),
+            "the plan states the cost:\n{t}"
         );
         assert!(t.contains("--convert-to"), "the opt-in hint:\n{t}");
 
@@ -3106,7 +3112,7 @@ mod univec_discovery {
         assert_eq!(mock.path_count("/v1/convert"), 0);
     }
 
-    /// Scenario 12: the free identity check. A 401 stops the run before a
+    /// Scenario 12: the best-effort identity check. A 401 stops the run before a
     /// billed call; a 500 on that route is a warning and the probe decides.
     #[test]
     fn the_identity_check_stops_a_bad_key_and_tolerates_an_outage() {
@@ -3241,6 +3247,44 @@ mod univec_discovery {
         );
         assert_eq!(mock.path_count("/v1/embeddings"), 1);
 
+        // The identical rerun is a real no-op: no plan, no request of any kind.
+        let before = (
+            mock.path_count("/v1/embeddings"),
+            mock.path_count("/v1/registry/index.json"),
+        );
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                root.path().to_str().unwrap(),
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_API_KEY", KEY)
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        assert!(text(&out).contains("nothing to do"), "{}", text(&out));
+        assert_eq!(
+            (
+                mock.path_count("/v1/embeddings"),
+                mock.path_count("/v1/registry/index.json")
+            ),
+            before,
+            "an identical rerun spends nothing"
+        );
+        assert!(
+            !text(&out).contains("billed"),
+            "no verification step in a no-op plan:\n{}",
+            text(&out)
+        );
+
         // A second connector file gets its own key file, never the first's.
         let out = Command::new(binary())
             .args([
@@ -3306,6 +3350,7 @@ mod univec_discovery {
         // not, and nothing is written.
         let blocked = provider_root();
         std::fs::create_dir_all(blocked.path().join("keys/univec.key")).unwrap();
+        set_mode(&blocked.path().join("keys"), 0o700);
         let before = (
             mock.path_count("/v1/embeddings"),
             mock.path_count("/v1/registry/index.json"),
@@ -3460,12 +3505,50 @@ mod univec_discovery {
         assert!(text(&out).contains("also referenced by"), "{}", text(&out));
         std::fs::remove_file(&sibling).unwrap();
 
+        let (embeds_before, converts_before) = (
+            mock.path_count("/v1/embeddings"),
+            mock.path_count("/v1/convert"),
+        );
+        // A dry run states the same counts and sends nothing.
+        let dry = add(
+            &["--convert-to", "big", "--replace-copied-key", "--dry-run"],
+            KEY2,
+        );
+        assert_eq!(code(&dry), 0, "{}", text(&dry));
+        assert!(
+            text(&dry).contains("1 billed embed probe(s) and 1 billed convert probe(s)"),
+            "{}",
+            text(&dry)
+        );
+        assert_eq!(
+            (
+                mock.path_count("/v1/embeddings"),
+                mock.path_count("/v1/convert")
+            ),
+            (embeds_before, converts_before)
+        );
         let out = add(&["--convert-to", "big", "--replace-copied-key"], KEY2);
         assert_eq!(code(&out), 0, "{}", text(&out));
         let t = text(&out);
         assert!(
             t.contains(&format!("rewrite {}", key_file.display())) && t.contains("rotated"),
             "{t}"
+        );
+        // A key rotation re-verifies ONE representative existing embed (the
+        // file has one) plus the one-per-kind probe for what was added, and
+        // the plan said so before confirmation.
+        assert!(
+            t.contains(
+                "verify against univec with 1 billed embed probe(s) and 1 billed convert probe(s)"
+            ),
+            "{t}"
+        );
+        assert_eq!(
+            (
+                mock.path_count("/v1/embeddings"),
+                mock.path_count("/v1/convert")
+            ),
+            (embeds_before + 1, converts_before + 1)
         );
         assert_eq!(std::fs::read_to_string(&key_file).unwrap(), KEY2);
         assert!(file(root.path()).contains("univec-convert-src-to-big"));

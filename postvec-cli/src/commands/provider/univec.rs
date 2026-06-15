@@ -297,6 +297,8 @@ pub(super) fn login_key_offer(
     args: &ProviderAddArgs,
     stem: &str,
     providers_dir: &Path,
+    existing: Option<&super::ProviderFileDoc>,
+    owner: Option<super::FileOwner>,
     output: &Output,
 ) -> Result<Option<KeySpec>> {
     let path = key_path(providers_dir, stem);
@@ -336,17 +338,42 @@ pub(super) fn login_key_offer(
                 }
             }
         };
-    let previous =
-        preflight_key_destination(&path, &key, args.replace_copied_key, providers_dir, stem)?;
+    let destination = preflight_key_destination(
+        &path,
+        &key,
+        args.replace_copied_key,
+        providers_dir,
+        stem,
+        owner,
+    )?;
+    // Already the connector's key source, byte for byte: a real no-op, not
+    // a credential change that re-verifies the file.
+    if destination == Destination::Identical
+        && existing.is_some_and(|doc| {
+            doc.value.get("api_key_file").and_then(toml::Value::as_str)
+                == Some(path.display().to_string().as_str())
+        })
+    {
+        output.note(&format!(
+            "the connector already references the stored key at {}; nothing to change",
+            path.display()
+        ));
+        return Ok(Some(KeySpec::Existing));
+    }
+    let verb = match &destination {
+        Destination::Absent => "copied to",
+        Destination::Identical => "already at",
+        Destination::Rotate(_) => "rotated in",
+    };
     if args.api_key_from_login {
         output.note(&format!(
-            "using the key from {source}; copied to {}",
+            "using the key from {source}; {verb} {}",
             path.display()
         ));
         return Ok(Some(KeySpec::Login {
             key,
             path,
-            previous,
+            destination,
         }));
     }
     eprintln!(
@@ -357,44 +384,73 @@ pub(super) fn login_key_offer(
         masked(&key),
         crate::registry::urls::DASHBOARD_URL
     );
-    eprint!("Copy it to {}? [y/N] ", path.display());
+    eprint!("Use it ({verb} {})? [y/N] ", path.display());
     let answer = crate::plan::read_line()?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
         return Ok(Some(KeySpec::Login {
             key,
             path,
-            previous,
+            destination,
         }));
     }
     Ok(None)
 }
 
-/// The destination, checked before anything is spent: the same shape rules
-/// `write_secret_file` applies at apply time (regular file, no symlink, one
-/// link, private mode), plus a bounded, non-following read. Only an absent
-/// path or a safe file with identical contents proceeds silently. A safe
-/// file with a *different* key is somebody's — replacing it would rotate
-/// every connector that references it — unless `--replace-copied-key`
-/// proves this stem's connector is its only referent; the old contents are
-/// returned so a failed apply can put them back.
+/// What preflight found at `keys/<stem>.key`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Destination {
+    Absent,
+    /// A safe file already holding the selected key: nothing to write.
+    Identical,
+    /// `--replace-copied-key`: the complete old contents, for rollback.
+    Rotate(String),
+}
+
+/// A copied key file is a token; anything larger is not one.
+const MAX_KEY_BYTES: u64 = 16 * 1024;
+
+/// The destination, checked before anything is spent, under the same rules
+/// `write_secret_file` / `ensure_private_dir` apply at apply time — so
+/// apply cannot refuse what preflight passed. The deepest existing ancestor
+/// is validated as a directory chain nobody else can rewrite (the same
+/// predicate, nothing created). An existing file must be a regular,
+/// singly-linked, private file; it is opened without following links and
+/// the *descriptor* is checked for type, links, mode and identity; a body
+/// over [`MAX_KEY_BYTES`] or not UTF-8 is refused, never truncated. Only
+/// absent, or safe-and-identical, proceeds silently. A safe file with a
+/// different key is somebody's — replacing it would rotate every connector
+/// that references it — unless `--replace-copied-key` proves, by file
+/// identity rather than path spelling, that this stem's connector is its
+/// only referent; that inventory fails closed on any unreadable file.
 fn preflight_key_destination(
     path: &Path,
     key: &str,
     replace: bool,
     providers_dir: &Path,
     stem: &str,
-) -> Result<Option<String>> {
+    owner: Option<super::FileOwner>,
+) -> Result<Destination> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     let shape = |problem: String| {
         CliError::precondition(format!("{}: {problem}", path.display())).with_fix(
-            "the copied login key needs a plain, private, singly-linked file there (or no file); \
-             move whatever is in the way aside, or pass --api-key-file to reference a key of \
-             your own",
+            "the copied login key needs a plain, private, singly-linked file there (or no file) \
+             under a directory chain only its owner can write; move whatever is in the way \
+             aside, or pass --api-key-file to reference a key of your own",
         )
     };
+    // The chain the file hangs from (or will), before the file itself.
+    let mut anchor = path.parent();
+    while let Some(candidate) = anchor {
+        if candidate.exists() || std::fs::symlink_metadata(candidate).is_ok() {
+            providers::config::validate_directory(candidate, owner.map(|o| o.uid))
+                .map_err(shape)?;
+            break;
+        }
+        anchor = candidate.parent();
+    }
     let meta = match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Destination::Absent),
         Err(e) => return Err(shape(format!("cannot stat: {e}"))),
         Ok(meta) => meta,
     };
@@ -404,22 +460,53 @@ fn preflight_key_destination(
     if !meta.is_file() {
         return Err(shape("is not a regular file".to_string()));
     }
-    if meta.nlink() != 1 {
-        return Err(shape(format!("has {} hard links", meta.nlink())));
-    }
-    let mode = meta.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
-        return Err(shape(format!("is readable by other users (mode {mode:o})")));
-    }
-    let mut existing = String::new();
-    std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
-        .and_then(|f| f.take(16 * 1024).read_to_string(&mut existing))
+        .map_err(|e| shape(format!("cannot open: {e}")))?;
+    // Everything below is about the descriptor, not the path.
+    let opened = file
+        .metadata()
+        .map_err(|e| shape(format!("cannot stat the opened file: {e}")))?;
+    if (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
+        return Err(shape("changed while being checked".to_string()));
+    }
+    if !opened.is_file() {
+        return Err(shape("is not a regular file".to_string()));
+    }
+    if opened.nlink() != 1 {
+        return Err(shape(format!("has {} hard links", opened.nlink())));
+    }
+    let mode = opened.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(shape(format!("is readable by other users (mode {mode:o})")));
+    }
+    if let Some(expected) = owner.map(|o| o.uid) {
+        if crate::proc::is_root() && opened.uid() != expected {
+            return Err(shape(format!(
+                "is owned by uid {}, not the inference account (uid {expected})",
+                opened.uid()
+            )));
+        }
+    }
+    if opened.len() > MAX_KEY_BYTES {
+        return Err(shape(format!(
+            "is larger than {MAX_KEY_BYTES} bytes; not a key file"
+        )));
+    }
+    let mut raw = Vec::new();
+    file.take(MAX_KEY_BYTES + 1)
+        .read_to_end(&mut raw)
         .map_err(|e| shape(format!("cannot read: {e}")))?;
+    if raw.len() as u64 > MAX_KEY_BYTES {
+        return Err(shape(format!(
+            "is larger than {MAX_KEY_BYTES} bytes; not a key file"
+        )));
+    }
+    let existing = String::from_utf8(raw).map_err(|_| shape("is not UTF-8 text".to_string()))?;
     if existing.trim() == key {
-        return Ok(None);
+        return Ok(Destination::Identical);
     }
     if !replace {
         return Err(CliError::precondition(format!(
@@ -431,38 +518,47 @@ fn preflight_key_destination(
              --replace-copied-key to rotate a key this command copied for this connector",
         ));
     }
-    // Rotation: this stem's connector must reference exactly this file, and
-    // no other connector may.
-    let references = |doc_path: &Path| {
-        super::ProviderFileDoc::load(doc_path)
-            .ok()
-            .flatten()
-            .and_then(|doc| doc.value.get("api_key_file")?.as_str().map(PathBuf::from))
-            == Some(path.to_path_buf())
+    // Rotation: this stem's connector must reference exactly this file (by
+    // identity, so `..` and symlinked directories cannot hide a referent),
+    // and no other connector may. Anything that cannot be read is a refusal.
+    let identity = (opened.dev(), opened.ino());
+    let referents = |doc_path: &Path| -> Result<bool> {
+        let Some(doc) = super::ProviderFileDoc::load(doc_path)? else {
+            return Ok(false);
+        };
+        Ok(doc
+            .value
+            .get("api_key_file")
+            .and_then(toml::Value::as_str)
+            .and_then(|p| std::fs::metadata(p).ok())
+            .is_some_and(|m| (m.dev(), m.ino()) == identity))
     };
-    if !references(&providers_dir.join(format!("{stem}.toml"))) {
-        return Err(CliError::precondition(format!(
-            "--replace-copied-key: {}/{stem}.toml does not reference {}, so it is not a key \
-             this command copied for that connector",
+    let refuse = |problem: String| {
+        CliError::precondition(format!("--replace-copied-key: {problem}"))
+            .with_fix("nothing was written or sent; fix what this names and rerun")
+    };
+    if !referents(&providers_dir.join(format!("{stem}.toml")))? {
+        return Err(refuse(format!(
+            "{}/{stem}.toml does not reference {}, so it is not a key this command copied \
+             for that connector",
             providers_dir.display(),
             path.display()
         )));
     }
-    let others: Vec<String> = super::ls::provider_files(providers_dir)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|p| p.file_stem().is_some_and(|s| s != stem) && references(p))
-        .map(|p| p.display().to_string())
-        .collect();
+    let mut others = Vec::new();
+    for sibling in super::ls::provider_files(providers_dir).map_err(refuse)? {
+        if sibling.file_stem().is_some_and(|s| s != stem) && referents(&sibling)? {
+            others.push(sibling.display().to_string());
+        }
+    }
     if !others.is_empty() {
-        return Err(CliError::precondition(format!(
-            "--replace-copied-key: {} is also referenced by {}; rotating it would rotate those \
-             connectors too",
+        return Err(refuse(format!(
+            "{} is also referenced by {}; rotating it would rotate those connectors too",
             path.display(),
             others.join(", ")
         )));
     }
-    Ok(Some(existing))
+    Ok(Destination::Rotate(existing))
 }
 
 /// `<providers root>/keys/<stem>.key`: beside providers.d, where operator
@@ -741,80 +837,126 @@ mod tests {
         }
     }
 
-    /// Every unsafe destination shape is refused before anything is
-    /// spent; only absent, or safe-and-identical, proceeds.
+    /// Every unsafe destination shape — and an unsafe chain above an absent
+    /// destination — is refused before anything is spent; only absent, or
+    /// safe-and-identical, proceeds. Rotation inventory fails closed.
     #[test]
-    fn the_key_destination_is_preflighted_for_shape_and_content() {
+    fn the_key_destination_is_preflighted_for_shape_chain_and_content() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let providers = dir.path().join("providers.d");
         std::fs::create_dir(&providers).unwrap();
+        std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700)).unwrap();
         let keys = dir.path().join("keys");
-        std::fs::create_dir(&keys).unwrap();
         let path = keys.join("univec.key");
         let key = "uv_new_key_0000000";
-        let check =
-            |replace: bool| preflight_key_destination(&path, key, replace, &providers, "univec");
+        let check = |replace: bool| {
+            preflight_key_destination(&path, key, replace, &providers, "univec", None)
+        };
         let refused = |what: &str| {
             let err = check(false)
                 .err()
                 .map(|e| e.to_string())
                 .unwrap_or_default();
             assert!(err.contains(what), "expected {what:?} in {err:?}");
+        };
+        let not_root = unsafe { libc::geteuid() } != 0;
+
+        // The chain above an ABSENT destination.
+        assert_eq!(check(false).unwrap(), Destination::Absent);
+        std::fs::write(&keys, "a file where keys/ should be").unwrap();
+        refused("not a directory");
+        std::fs::remove_file(&keys).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &keys).unwrap();
+        refused("symlink");
+        std::fs::remove_file(&keys).unwrap();
+        std::fs::create_dir(&keys).unwrap();
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o777)).unwrap();
+        refused("writable");
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(check(false).unwrap(), Destination::Absent);
+
+        // The destination itself.
+        let reset = || {
             let _ = std::fs::remove_dir_all(&path);
             let _ = std::fs::remove_file(&path);
         };
-        assert!(check(false).unwrap().is_none(), "absent is fine");
-
         std::fs::create_dir(&path).unwrap();
-        refused("not a regular file");
-        let elsewhere = keys.join("real.key");
-        std::fs::write(&elsewhere, key).unwrap();
-        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o600)).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+        refused("is not a regular file");
+        reset();
+        let real = keys.join("real.key");
+        std::fs::write(&real, key).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
         refused("symlink");
-        std::fs::hard_link(&elsewhere, &path).unwrap();
+        reset();
+        std::fs::hard_link(&real, &path).unwrap();
         refused("hard links");
-        std::fs::remove_file(&elsewhere).unwrap();
+        reset();
+        std::fs::remove_file(&real).unwrap();
         std::fs::write(&path, [0xff, 0xfe, b'x']).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        refused("cannot read");
+        refused("not UTF-8");
+        std::fs::write(&path, "x".repeat(16 * 1024 + 1)).unwrap();
+        refused("larger than");
         std::fs::write(&path, key).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         refused("readable by other users");
-        if unsafe { libc::geteuid() } != 0 {
-            std::fs::write(&path, key).unwrap();
+        if not_root {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            refused("cannot read");
+            refused("cannot open");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-
         std::fs::write(&path, format!("{key}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(check(false).unwrap().is_none(), "same content is fine");
+        assert_eq!(check(false).unwrap(), Destination::Identical);
 
+        // A different key: refused without --replace-copied-key, and the
+        // rotation inventory must prove sole ownership by identity.
         std::fs::write(&path, "uv_other_key_00000").unwrap();
         let err = check(false).unwrap_err().to_string();
         assert!(err.contains("different key"), "{err}");
-        // Rotation needs proof of sole ownership by this stem.
         let err = check(true).unwrap_err().to_string();
         assert!(err.contains("does not reference"), "{err}");
-        let toml = |stem: &str| {
+        let toml = |stem: &str, referenced: &str| {
+            let file = providers.join(format!("{stem}.toml"));
             std::fs::write(
-                providers.join(format!("{stem}.toml")),
-                format!(
-                    "provider = \"univec\"\napi_key_file = \"{}\"\n",
-                    path.display()
-                ),
+                &file,
+                format!("provider = \"univec\"\napi_key_file = \"{referenced}\"\n"),
             )
-            .unwrap()
+            .unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+            file
         };
-        toml("univec");
-        assert_eq!(check(true).unwrap().as_deref(), Some("uv_other_key_00000"));
-        toml("univec-staging");
+        toml("univec", &path.display().to_string());
+        assert_eq!(
+            check(true).unwrap(),
+            Destination::Rotate("uv_other_key_00000".into())
+        );
+        // A sibling naming the same file through `..` is still a referent.
+        let alias = format!("{}/../keys/univec.key", providers.display());
+        let staging = toml("univec-staging", &alias);
         let err = check(true).unwrap_err().to_string();
         assert!(
             err.contains("also referenced by") && err.contains("univec-staging"),
             "{err}"
         );
+        // An unreadable or malformed sibling is a refusal, not "no sibling".
+        std::fs::write(&staging, "provider = [[[").unwrap();
+        let err = check(true).unwrap_err().to_string();
+        assert!(
+            err.contains("univec-staging") && err.contains("parse"),
+            "{err}"
+        );
+        std::fs::remove_file(&staging).unwrap();
+        if not_root {
+            std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let err = check(true).unwrap_err().to_string();
+            std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(err.contains("scan") || err.contains("cannot"), "{err}");
+        }
     }
 }

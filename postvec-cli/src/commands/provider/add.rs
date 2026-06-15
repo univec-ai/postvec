@@ -40,12 +40,12 @@ pub(super) enum KeySpec {
     /// univec: the `postvec login` key, copied into `path` at apply time
     /// and referenced as `api_key_file` — never inline, so it cannot
     /// silently outlive a `logout`.
-    /// `previous` is the file's old contents under `--replace-copied-key`,
-    /// restored if the connector write fails.
+    /// `destination` is what preflight found there; it drives the plan step,
+    /// the write and the rollback.
     Login {
         key: String,
         path: PathBuf,
-        previous: Option<String>,
+        destination: univec::Destination,
     },
     /// The existing file already carries one and no new source was given.
     Existing,
@@ -180,7 +180,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         &canonical,
         &stem,
         target.dir(),
-        existing.is_some(),
+        existing.as_ref(),
+        target.owner(),
         output,
     )?;
     if let KeySpec::File(path) = &key {
@@ -401,13 +402,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             }));
         }
     }
-    if args.dry_run && !args.no_verify && !new_models.is_empty() {
-        output.note(
-            "--dry-run: the verification embed was not sent. The real run makes one live \
-             call per model, which the provider bills, and measures any dimension the \
-             built-in catalog does not know",
-        );
-    }
 
     // ---- What this run actually changes ----
     // Moving base_url or region on an existing file is a recipient change:
@@ -509,12 +503,23 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // silence.
     // The copied login key is its own step: a credential file appearing
     // (or being rewritten) is something the operator confirms by name.
-    if let KeySpec::Login { path, .. } = &key {
-        plan.push(PlanStep::WriteConfig {
-            path: path.clone(),
-            before_sha256: path.exists().then(|| "existing".to_string()),
-            after_sha256: "copied login key".to_string(),
-        });
+    if let KeySpec::Login {
+        path, destination, ..
+    } = &key
+    {
+        match destination {
+            univec::Destination::Identical => {}
+            univec::Destination::Absent => plan.push(PlanStep::WriteConfig {
+                path: path.clone(),
+                before_sha256: None,
+                after_sha256: "copied login key".to_string(),
+            }),
+            univec::Destination::Rotate(_) => plan.push(PlanStep::WriteConfig {
+                path: path.clone(),
+                before_sha256: Some("existing".to_string()),
+                after_sha256: "rotated login key".to_string(),
+            }),
+        }
     }
     if !new_models.is_empty() || credential_changes || endpoint_changes {
         plan.push(PlanStep::WriteConfig {
@@ -572,6 +577,75 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
              nothing from it until that changes",
             file_path.display()
         ));
+    }
+
+    // ---- What the verification will bill, stated before confirmation ----
+    // New catalogued entries: one probe per kind. Other new entries: one
+    // each. A rotated key: one representative existing embed and one
+    // existing converter — the key is account-wide, so one call per kind
+    // proves it. A moved endpoint: every existing entry, because every route
+    // changed. The plan states the exact counts.
+    let already_embed: Vec<(String, String)> = already_declared
+        .iter()
+        .filter(|(name, _)| !existing_converters.contains(name))
+        .cloned()
+        .collect();
+    let existing_convert_descriptors: Vec<providers::config::ModelDescriptor> = existing_for_probe
+        .as_ref()
+        .map(|doc| {
+            doc.descriptors()
+                .into_iter()
+                .filter(|d| d.kind == providers::config::ModelKind::Convert)
+                .collect()
+        })
+        .unwrap_or_default();
+    let (reverify_embeds, reverify_converts): (
+        Vec<(String, String)>,
+        Vec<providers::config::ModelDescriptor>,
+    ) = if endpoint_changes {
+        (already_embed.clone(), existing_convert_descriptors.clone())
+    } else if credential_changes {
+        (
+            already_embed.iter().take(1).cloned().collect(),
+            existing_convert_descriptors
+                .iter()
+                .take(1)
+                .cloned()
+                .collect(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let embed_probes = usize::from(
+        new_models
+            .iter()
+            .any(|m| m.catalogued && m.convert.is_none()),
+    ) + new_models
+        .iter()
+        .filter(|m| !m.catalogued && m.convert.is_none())
+        .count()
+        + reverify_embeds.len();
+    let convert_probes = usize::from(
+        new_models
+            .iter()
+            .any(|m| m.catalogued && m.convert.is_some()),
+    ) + new_models
+        .iter()
+        .filter(|m| !m.catalogued && m.convert.is_some())
+        .count()
+        + reverify_converts.len();
+    if !args.no_verify && !plan.is_noop() && embed_probes + convert_probes > 0 {
+        plan.push(PlanStep::VerifyProviders {
+            provider: canonical.clone(),
+            embed_probes,
+            convert_probes,
+        });
+        if args.dry_run {
+            output.note(&format!(
+                "--dry-run: the verification embed was not sent. The real run makes {embed_probes} billed embed \
+                 probe(s) and {convert_probes} billed convert probe(s) before writing"
+            ));
+        }
     }
 
     output.show_plan(&plan);
@@ -657,11 +731,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         // Embed probes only: a converter cannot answer an embed call, so
         // converter entries — the new one and any the file already declares
         // — go through the convert probe below instead.
-        let already_embed: Vec<(String, String)> = already_declared
-            .iter()
-            .filter(|(name, _)| !existing_converters.contains(name))
-            .cloned()
-            .collect();
         // UniVec: a best-effort unbilled identity check before anything is
         // billed. A 401/403 stops here; anything else defers to the probe.
         if canonical == "univec" {
@@ -698,12 +767,9 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
                 model.public_name
             ));
         }
-        for (id, public_name, declared) in probe_targets(
-            &new_models,
-            &already_embed,
-            existing_for_probe.as_ref(),
-            credential_changes || endpoint_changes,
-        ) {
+        for (id, public_name, declared) in
+            probe_targets(&new_models, &reverify_embeds, existing_for_probe.as_ref())
+        {
             let measured = super::probe_one(&config, &id, declared, cli.timeout).await?;
             match declared {
                 Some(declared) if declared != measured => {
@@ -747,28 +813,15 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
                 }
             }
         }
-        // Every already-declared converter too, when the connector itself
-        // changed — the same rule as the embed re-probe list, for the same
-        // reason: a rotated key or moved endpoint changes what every entry
-        // in the file does.
-        if credential_changes || endpoint_changes {
-            if let Some(doc) = existing_for_probe.as_ref() {
-                for descriptor in doc
-                    .descriptors()
-                    .into_iter()
-                    .filter(|d| d.kind == providers::config::ModelKind::Convert)
-                {
-                    let measured =
-                        super::probe_convert_one(&config, &descriptor, cli.timeout).await?;
-                    if measured != descriptor.dim {
-                        return Err(CliError::precondition(format!(
-                            "{}: the probe returned {measured} target dimensions but the file \
-                             declares {}; the conversion route no longer produces what the \
-                             file says",
-                            descriptor.name, descriptor.dim
-                        )));
-                    }
-                }
+        // Existing converters the policy above selected for re-verification.
+        for descriptor in &reverify_converts {
+            let measured = super::probe_convert_one(&config, descriptor, cli.timeout).await?;
+            if measured != descriptor.dim {
+                return Err(CliError::precondition(format!(
+                    "{}: the probe returned {measured} target dimensions but the file declares \
+                     {}; the conversion route no longer produces what the file says",
+                    descriptor.name, descriptor.dim
+                )));
             }
         }
     }
@@ -783,36 +836,38 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             doc.set_model_dim(&model.public_name, dim)?;
         }
     }
+    // The key file first, then the connector; if the connector write fails
+    // the key file goes back to what preflight found — a new file is
+    // removed, a rotated one restored byte for byte, an identical one was
+    // never touched. A rollback that itself fails is reported alongside.
     if let KeySpec::Login {
         key,
         path,
-        previous,
+        destination,
     } = &key
     {
-        write_secret_file(path, key.as_bytes(), target.owner())?;
+        let (verb, prep) = match destination {
+            univec::Destination::Absent => ("copied", "to"),
+            univec::Destination::Rotate(_) => ("rotated", "in"),
+            univec::Destination::Identical => ("kept", "at"),
+        };
+        if *destination != univec::Destination::Identical {
+            write_secret_file(path, key.as_bytes(), target.owner())?;
+        }
         journal.record(format!(
-            "{} the postvec login key {} {} (0600); `postvec logout` does not remove it",
-            if previous.is_some() {
-                "rotated"
-            } else {
-                "copied"
-            },
-            if previous.is_some() { "in" } else { "to" },
+            "{verb} the postvec login key {prep} {} (0600); `postvec logout` does not remove it",
             path.display()
         ));
-        if let (Some(old), Err(e)) = (previous, doc.write(target.owner())) {
-            // The connector still says the old key; put it back.
-            write_secret_file(path, old.as_bytes(), target.owner())?;
-            return Err(e);
+        if let Err(e) = doc.write(target.owner()) {
+            return Err(match rollback_key(path, destination, target.owner()) {
+                Ok(()) => e,
+                Err(r) => CliError::apply(format!(
+                    "{e}; and restoring {} afterwards failed too: {r}",
+                    path.display()
+                )),
+            });
         }
-    }
-    if !matches!(
-        key,
-        KeySpec::Login {
-            previous: Some(_),
-            ..
-        }
-    ) {
+    } else {
         doc.write(target.owner())?;
     }
     journal.record(format!("wrote {} (0600)", file_path.display()));
@@ -922,6 +977,23 @@ pub(super) struct ConvertSpec {
     /// Postvec-side public name of the target space.
     pub target_model: String,
     pub source_dim: u32,
+}
+
+/// Undo the key-file write after a failed connector write.
+fn rollback_key(
+    path: &std::path::Path,
+    destination: &univec::Destination,
+    owner: Option<super::FileOwner>,
+) -> Result<()> {
+    match destination {
+        univec::Destination::Identical => Ok(()),
+        univec::Destination::Absent => {
+            std::fs::remove_file(path)
+                .map_err(|e| CliError::apply(format!("cannot remove {}: {e}", path.display())))?;
+            super::sync_directory(path.parent().unwrap_or(path), path)
+        }
+        univec::Destination::Rotate(old) => write_secret_file(path, old.as_bytes(), owner),
+    }
 }
 
 /// A catalogue dimension the probe contradicts is a refusal with both
@@ -1082,15 +1154,13 @@ fn model_entry(model: &NewModel) -> toml::Value {
     toml::Value::Table(entry)
 }
 
-/// Models that get a live verification call.
-///
-/// Always the ones being added. If the connector itself changed (key or
-/// endpoint), every model the file already declares too.
+/// Models that get a live verification call: the uncatalogued ones being
+/// added, plus `reverify` — the existing entries the connector-change
+/// policy selected (all on an endpoint move, one on a key rotation).
 fn probe_targets(
     new_models: &[NewModel],
-    already_declared: &[(String, String)],
+    reverify: &[(String, String)],
     existing: Option<&ProviderFileDoc>,
-    connector_changed: bool,
 ) -> Vec<(String, String, Option<u32>)> {
     let mut targets: Vec<(String, String, Option<u32>)> = new_models
         .iter()
@@ -1100,9 +1170,6 @@ fn probe_targets(
         .filter(|m| m.convert.is_none() && !m.catalogued)
         .map(|m| (m.id.clone(), m.public_name.clone(), m.dim))
         .collect();
-    if !connector_changed {
-        return targets;
-    }
     let declared_dim = |name: &str| -> Option<u32> {
         existing?
             .value
@@ -1114,7 +1181,7 @@ fn probe_targets(
             .as_integer()
             .and_then(|d| u32::try_from(d).ok())
     };
-    for (public_name, id) in already_declared {
+    for (public_name, id) in reverify {
         targets.push((id.clone(), public_name.clone(), declared_dim(public_name)));
     }
     targets
@@ -1128,7 +1195,8 @@ fn resolve_key_spec(
     canonical: &str,
     stem: &str,
     providers_dir: &std::path::Path,
-    file_exists: bool,
+    existing: Option<&ProviderFileDoc>,
+    owner: Option<super::FileOwner>,
     output: &Output,
 ) -> Result<KeySpec> {
     if let Some(path) = &args.api_key_file {
@@ -1146,11 +1214,13 @@ fn resolve_key_spec(
             .map_err(|e| CliError::apply(format!("cannot read the key from stdin: {e}")))?;
         return non_empty_key(raw);
     }
-    if file_exists && !args.api_key_from_login {
+    if existing.is_some() && !args.api_key_from_login {
         return Ok(KeySpec::Existing);
     }
     if canonical == "univec" {
-        if let Some(spec) = univec::login_key_offer(args, stem, providers_dir, output)? {
+        if let Some(spec) =
+            univec::login_key_offer(args, stem, providers_dir, existing, owner, output)?
+        {
             return Ok(spec);
         }
     }
@@ -1273,6 +1343,36 @@ fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed connector write puts the key file back to what preflight
+    /// found: removed when it was absent, restored byte for byte when it was
+    /// rotated, untouched when it was identical.
+    #[test]
+    fn a_failed_connector_write_rolls_the_key_file_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let keys = dir.path().join("keys");
+        std::fs::create_dir(&keys).unwrap();
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = keys.join("univec.key");
+
+        write_secret_file(&path, b"uv_new", None).unwrap();
+        rollback_key(&path, &univec::Destination::Absent, None).unwrap();
+        assert!(!path.exists(), "a created file is removed");
+
+        write_secret_file(&path, b"uv_new", None).unwrap();
+        rollback_key(
+            &path,
+            &univec::Destination::Rotate("uv_old_complete".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "uv_old_complete");
+
+        rollback_key(&path, &univec::Destination::Identical, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "uv_old_complete");
+    }
 
     #[test]
     fn key_specs_write_the_right_fields_per_type() {

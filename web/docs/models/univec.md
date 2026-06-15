@@ -274,7 +274,10 @@ file, so `postvec logout` does not remove a serving key and two connector
 files never share one credential. An existing key file holding a different
 key is never replaced; `--replace-copied-key` rotates a key this command
 copied for exactly this connector, verifying the new key before the old one
-goes. `POSTVEC_API_KEY` wins over stored logins; when
+goes and restoring it if the write fails. Rerunning with the same copied key
+changes nothing and sends nothing. The plan states how many billed probes a
+run makes: one per kind added, and on a key rotation one existing embed and
+one existing converter. `POSTVEC_API_KEY` wins over stored logins; when
 root's store and the invoking user's store hold different keys, an
 interactive run asks which and a scripted run refuses. A dedicated
 inference key keeps billing and rotation separate from downloads.

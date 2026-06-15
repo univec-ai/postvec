@@ -227,10 +227,24 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
                 None => Err(format!("{}: {field} is missing", row())),
             }
         };
+        // What postvec would write: every recognised row must become a
+        // valid descriptor, or `ls --available` advertises what
+        // `provider add` cannot materialise.
+        let materialisable = |what: &str, name: &str| -> Result<(), String> {
+            crate::catalog::validate_public_name(name)
+                .map_err(|e| format!("{}: {what}: {e}", row()))
+        };
         let entry = match m.model_type.as_str() {
             "embed" => ListedModel {
                 dim: width("targetDim", m.target_dim)?,
-                provider_model_id: ident("targetModel", &m.target_model)?,
+                provider_model_id: {
+                    let id = ident("targetModel", &m.target_model)?;
+                    materialisable(
+                        "derived public name",
+                        &crate::catalog::public_name("univec", &id),
+                    )?;
+                    id
+                },
                 kind: ListedKind::Embed,
                 source: None,
                 sequence_len: match m.sequence_len {
@@ -244,21 +258,30 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
                 },
                 quality: None,
             },
-            "convert" => ListedModel {
-                dim: width("targetDim", m.target_dim)?,
-                provider_model_id: ident("targetModel", &m.target_model)?,
-                kind: ListedKind::Convert,
-                source: Some((
-                    ident("sourceModel", &m.source_model)?,
-                    width("sourceDim", m.source_dim)?,
-                )),
-                sequence_len: None,
-                quality: m
-                    .eval
-                    .as_ref()
-                    .and_then(|e| e.get("cosine_mean"))
-                    .and_then(serde_json::Value::as_f64),
-            },
+            "convert" => {
+                // Both names are written verbatim as resolver model names,
+                // and the derived converter name has its own ceiling.
+                let target = ident("targetModel", &m.target_model)?;
+                let source = ident("sourceModel", &m.source_model)?;
+                materialisable("targetModel as a resolver name", &target)?;
+                materialisable("sourceModel as a resolver name", &source)?;
+                materialisable(
+                    "derived converter name",
+                    &format!("univec-convert-{source}-to-{target}"),
+                )?;
+                ListedModel {
+                    dim: width("targetDim", m.target_dim)?,
+                    provider_model_id: target,
+                    kind: ListedKind::Convert,
+                    source: Some((source, width("sourceDim", m.source_dim)?)),
+                    sequence_len: None,
+                    quality: m
+                        .eval
+                        .as_ref()
+                        .and_then(|e| e.get("cosine_mean"))
+                        .and_then(serde_json::Value::as_f64),
+                }
+            }
             _ => continue,
         };
         // One semantic identity may be listed under several SKU names, but
@@ -563,7 +586,49 @@ mod tests {
             e.contains("sourceModel is not a printable identifier"),
             "{e}"
         );
-        assert!(decode(&format!(r#"{{"success":true,"data":[{{"name":"x","modelType":"embed","targetModel":"{}","targetDim":4}}]}}"#, "a".repeat(200))).len() == 1);
+        // Materialisable: the derived `univec-<id>` must fit the resolver's
+        // 128-byte ceiling; converter names are resolver names verbatim.
+        let embed_of = |id: &str| {
+            format!(
+                r#"{{"success":true,"data":[{{"name":"x","modelType":"embed","targetModel":"{id}","targetDim":4}}]}}"#
+            )
+        };
+        assert_eq!(
+            decode(&embed_of(&"a".repeat(121))).len(),
+            1,
+            "7 + 121 = 128"
+        );
+        let e = try_decode(&embed_of(&"a".repeat(122))).unwrap_err();
+        assert!(
+            e.contains("derived public name") && e.contains("128"),
+            "{e}"
+        );
+        let conv = |s: &str, t: &str| {
+            format!(
+                r#"{{"name":"c","modelType":"convert","sourceModel":"{s}","sourceDim":4,"targetModel":"{t}","targetDim":4}}"#
+            )
+        };
+        for (s, t, what) in [
+            ("Upper-Case", "t", "sourceModel as a resolver name"),
+            ("s", "org/model:v1", "targetModel as a resolver name"),
+            (
+                &"s".repeat(60) as &str,
+                &"t".repeat(60) as &str,
+                "derived converter name",
+            ),
+        ] {
+            let e = err(&conv(s, t));
+            assert!(e.contains(what), "{s}/{t}: {e}");
+        }
+        // 15 + 55 + 4 + 54 = 128: the boundary is inclusive.
+        assert_eq!(
+            decode(&format!(
+                r#"{{"success":true,"data":[{}]}}"#,
+                conv(&"s".repeat(55), &"t".repeat(54))
+            ))
+            .len(),
+            1
+        );
         let envelope: Envelope = serde_json::from_str(r#"{"success":false,"error":"x"}"#).unwrap();
         assert!(!envelope.success && envelope.data.is_none());
     }
