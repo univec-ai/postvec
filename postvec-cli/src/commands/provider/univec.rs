@@ -510,12 +510,7 @@ fn preflight_key_destination(
             "is larger than {MAX_KEY_BYTES} bytes; not a key file"
         )));
     }
-    let approved = super::ApprovedFile {
-        dev: opened.dev(),
-        ino: opened.ino(),
-        len: opened.len(),
-        sha256: super::sha256(&raw),
-    };
+    let approved = super::ApprovedFile::capture(&opened, &raw);
     let existing = String::from_utf8(raw).map_err(|_| shape("is not UTF-8 text".to_string()))?;
     if existing.trim() == key {
         return Ok(Destination::Identical(approved));

@@ -279,9 +279,11 @@ changes nothing and sends nothing. The plan states how many billable probe
 attempts a run makes: one per kind added, and on a key rotation one existing
 embed and one existing converter (UniVec keys are account-wide; other
 connectors re-verify every route). A rotated or copied key is installed only
-if the destination is still exactly what the check saw, and it is kept if
-the connector write reached disk but the directory sync failed, so the two
-files never disagree. `POSTVEC_API_KEY` wins over stored logins; when
+if the destination is still exactly what the check saw, including its mode,
+owner and link count. Once a key is in place it is undone only if the
+connector write never reached disk and the file is still the one this
+command installed; otherwise the key is kept, the connector is written to
+match, and the run says exactly what to check. `POSTVEC_API_KEY` wins over stored logins; when
 root's store and the invoking user's store hold different keys, an
 interactive run asks which and a scripted run refuses. A dedicated
 inference key keeps billing and rotation separate from downloads.

@@ -798,11 +798,11 @@ pub fn write_secret_file(
     body: &[u8],
     owner: Option<FileOwner>,
 ) -> std::result::Result<(), WriteError> {
-    let (dir, tmp) = stage_secret_file(path, body, owner).map_err(WriteError::uncommitted)?;
+    let (dir, tmp, _) = stage_secret_file(path, body, owner).map_err(WriteError::uncommitted)?;
     if let Err(e) = std::fs::rename(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
+        let residue = discard_staged(&tmp);
         return Err(WriteError::uncommitted(CliError::apply(format!(
-            "cannot move {} into place: {e}",
+            "cannot move {} into place: {e}{residue}",
             tmp.display()
         ))));
     }
@@ -847,25 +847,47 @@ pub enum InstallGuard {
     /// The destination must still be absent (`RENAME_NOREPLACE`).
     NoReplace,
     /// The destination must still be exactly the approved file: same
-    /// identity, length and digest. Exchanged atomically, verified, and
-    /// exchanged back if it is not.
+    /// identity, security metadata, length and digest. Exchanged
+    /// atomically, verified, and exchanged back if it is not.
     Exact(ApprovedFile),
 }
 
-/// A file as preflight approved it.
+/// A file as an inspection approved it: identity, the whole security
+/// predicate preflight applied, and content. Nothing weaker than this
+/// decides whether a later step may touch the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovedFile {
     pub dev: u64,
     pub ino: u64,
     pub len: u64,
     pub sha256: [u8; 32],
+    /// Permission bits (`& 0o777`).
+    pub mode: u32,
+    pub uid: u32,
 }
 
 impl ApprovedFile {
-    /// Whether `path` (opened without following links) is still this file.
+    /// The predicate over an opened descriptor and its bytes.
+    pub fn capture(meta: &std::fs::Metadata, raw: &[u8]) -> Self {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            sha256: sha256(raw),
+            mode: meta.permissions().mode() & 0o777,
+            uid: meta.uid(),
+        }
+    }
+
+    /// Whether `path` (opened without following links) is still this
+    /// file: same identity, still a regular singly-linked private file
+    /// with the approved mode and owner, same length and digest. Any
+    /// change — a `chmod`, a `chown`, an added hard link, an edit — makes
+    /// it a file this command did not approve.
     pub fn still_is(&self, path: &Path) -> Result<bool> {
         use std::io::Read;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let file = match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -883,7 +905,13 @@ impl ApprovedFile {
         let meta = file
             .metadata()
             .map_err(|e| CliError::apply(format!("cannot stat {}: {e}", path.display())))?;
-        if (meta.dev(), meta.ino(), meta.len()) != (self.dev, self.ino, self.len) {
+        let same = meta.is_file()
+            && meta.nlink() == 1
+            && (meta.dev(), meta.ino(), meta.len()) == (self.dev, self.ino, self.len)
+            && meta.permissions().mode() & 0o777 == self.mode
+            && self.mode & 0o077 == 0
+            && meta.uid() == self.uid;
+        if !same {
             return Ok(false);
         }
         let mut raw = Vec::new();
@@ -899,19 +927,71 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }
 
+/// Where an install left the filesystem when it failed. A caller that
+/// manages a second file needs every one of these distinctions: whether
+/// the new key is at its destination, whether that is durable, and whether
+/// credential material is sitting in a sibling temp file.
+#[derive(Debug)]
+pub enum InstallState {
+    /// The destination is exactly as it was. `residue` names a staged
+    /// copy of the new secret that could not be removed.
+    NotApplied { residue: Option<PathBuf> },
+    /// The new secret is at the destination. `durable` is false when the
+    /// directory sync failed; `displaced` names the previous file if it
+    /// could not be removed (rotation) or exchanged back.
+    Applied {
+        installed: ApprovedFile,
+        durable: bool,
+        displaced: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug)]
+pub struct InstallError {
+    pub state: InstallState,
+    pub error: CliError,
+}
+
+impl From<InstallError> for CliError {
+    fn from(e: InstallError) -> Self {
+        e.error
+    }
+}
+
+/// Remove a staged temp file, describing it in the message if that fails
+/// so credential material never lingers unannounced.
+fn discard_staged(tmp: &Path) -> String {
+    match std::fs::remove_file(tmp) {
+        Ok(()) => String::new(),
+        Err(e) => format!(
+            "; the staged copy at {} could not be removed ({e}) and holds the secret — remove it by hand",
+            tmp.display()
+        ),
+    }
+}
+
 /// [`write_secret_file`] bound to the state a preflight approved: the
 /// destination is taken over only if it is still absent, or still exactly
 /// the approved file. Nothing between preflight and this call — an
 /// operator, the inference account, another tool — can make this command
-/// replace a file it never inspected.
+/// replace a file it never inspected. Returns the approval token of the
+/// installed file, which is what any later rollback must be bound to.
+// The error carries the installed file's token on purpose: a caller must
+// be able to bind a rollback to it. Boxing it would only move the bytes.
+#[allow(clippy::result_large_err)]
 pub fn install_secret_file(
     path: &Path,
     body: &[u8],
     owner: Option<FileOwner>,
     guard: &InstallGuard,
-) -> std::result::Result<(), WriteError> {
+) -> std::result::Result<ApprovedFile, InstallError> {
     use std::ffi::CString;
-    let (dir, tmp) = stage_secret_file(path, body, owner).map_err(WriteError::uncommitted)?;
+    let not_applied = |error: CliError, residue: Option<PathBuf>| InstallError {
+        state: InstallState::NotApplied { residue },
+        error,
+    };
+    let (dir, tmp, installed) =
+        stage_secret_file(path, body, owner).map_err(|e| not_applied(e, None))?;
     let c = |p: &Path| CString::new(p.as_os_str().as_encoded_bytes()).expect("no NUL in a path");
     let (c_tmp, c_path) = (c(&tmp), c(path));
     let rename = |flags: libc::c_uint, from: &CString, to: &CString| -> std::io::Result<()> {
@@ -930,10 +1010,14 @@ pub fn install_secret_file(
             Err(std::io::Error::last_os_error())
         }
     };
-    let discard = |tmp: &Path, error: CliError| {
-        let _ = std::fs::remove_file(tmp);
-        WriteError::uncommitted(error)
+    let discard = |tmp: &Path, message: String| {
+        let residue = discard_staged(tmp);
+        not_applied(
+            CliError::precondition(format!("{}: {message}{residue}", path.display())),
+            (!residue.is_empty()).then(|| tmp.to_path_buf()),
+        )
     };
+    let mut displaced = None;
     match guard {
         InstallGuard::NoReplace => {
             if let Err(e) = rename(libc::RENAME_NOREPLACE, &c_tmp, &c_path) {
@@ -942,10 +1026,7 @@ pub fn install_secret_file(
                 } else {
                     format!("cannot move into place: {e}")
                 };
-                return Err(discard(
-                    &tmp,
-                    CliError::precondition(format!("{}: {why}", path.display())),
-                ));
+                return Err(discard(&tmp, why));
             }
         }
         InstallGuard::Exact(approved) => {
@@ -953,10 +1034,10 @@ pub fn install_secret_file(
             // the approved file, exchange back: the destination is exactly
             // as it was, and nothing of ours is in place.
             if let Err(e) = rename(libc::RENAME_EXCHANGE, &c_tmp, &c_path) {
-                return Err(discard(&tmp, CliError::precondition(format!(
-                    "{}: cannot exchange into place ({e}); it may have been removed since it was checked",
-                    path.display()
-                ))));
+                return Err(discard(
+                    &tmp,
+                    format!("cannot exchange into place ({e}); it may have been removed since it was checked"),
+                ));
             }
             match approved.still_is(&tmp) {
                 Ok(true) => {}
@@ -966,28 +1047,83 @@ pub fn install_secret_file(
                         Err(e) => e.to_string(),
                     };
                     return Err(match rename(libc::RENAME_EXCHANGE, &c_tmp, &c_path) {
-                        Ok(()) => discard(&tmp, CliError::precondition(format!("{}: {problem}", path.display()))),
-                        Err(e) => WriteError::committed(CliError::apply(format!(
-                            "{}: {problem}; and exchanging it back failed too ({e}): the original is at {}",
-                            path.display(),
-                            tmp.display()
-                        ))),
+                        Ok(()) => discard(&tmp, problem),
+                        // The candidate is at the destination and the
+                        // displaced file beside it: applied, with residue.
+                        Err(e) => InstallError {
+                            state: InstallState::Applied {
+                                installed,
+                                durable: sync_directory(&dir, path).is_ok(),
+                                displaced: Some(tmp.clone()),
+                            },
+                            error: CliError::apply(format!(
+                                "{}: {problem}; and exchanging it back failed too ({e}): the new key \
+                                 is in place and the previous file is at {}",
+                                path.display(),
+                                tmp.display()
+                            )),
+                        },
                     });
                 }
             }
-            let _ = std::fs::remove_file(&tmp);
+            // The displaced old key. Failing to remove it is not a
+            // success: credential material would stay at a predictable
+            // sibling path.
+            if let Err(e) = std::fs::remove_file(&tmp) {
+                displaced = Some((tmp.clone(), e));
+            }
         }
     }
-    sync_directory(&dir, path).map_err(WriteError::committed)
+    let durable = sync_directory(&dir, path);
+    match (displaced, durable) {
+        (None, Ok(())) => Ok(installed),
+        (displaced, durable) => {
+            let mut message = format!("{} is in place", path.display());
+            if let Some((tmp, e)) = &displaced {
+                message.push_str(&format!(
+                    ", but the previous key could not be removed from {} ({e}) — remove it by hand",
+                    tmp.display()
+                ));
+            }
+            if let Err(e) = &durable {
+                message.push_str(&format!("; {e}"));
+            }
+            Err(InstallError {
+                state: InstallState::Applied {
+                    installed,
+                    durable: durable.is_ok(),
+                    displaced: displaced.map(|(tmp, _)| tmp),
+                },
+                error: CliError::apply(message),
+            })
+        }
+    }
+}
+
+/// Remove `path` only if it is still exactly `installed` — the file this
+/// invocation put there — and sync the directory. A changed file is left
+/// alone and reported as retained.
+pub fn remove_if_still(path: &Path, installed: &ApprovedFile) -> Result<()> {
+    if !installed.still_is(path)? {
+        return Err(CliError::apply(format!(
+            "{} is no longer the file this command installed; left in place",
+            path.display()
+        )));
+    }
+    std::fs::remove_file(path)
+        .map_err(|e| CliError::apply(format!("cannot remove {}: {e}", path.display())))?;
+    sync_directory(path.parent().unwrap_or(path), path)
 }
 
 /// The staged half of [`write_secret_file`]: the destination's shape
-/// checks and a private, synced temp file beside it. Returns `(dir, tmp)`.
+/// checks and a private, synced temp file beside it. Returns `(dir, tmp,
+/// token)`, the token describing the staged file as it will be once it
+/// carries the destination's name (a rename keeps the inode).
 fn stage_secret_file(
     path: &Path,
     body: &[u8],
     owner: Option<FileOwner>,
-) -> Result<(PathBuf, PathBuf)> {
+) -> Result<(PathBuf, PathBuf, ApprovedFile)> {
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
@@ -1043,7 +1179,7 @@ fn stage_secret_file(
     // this order: content, then metadata, then one sync that covers both.
     // Doing chmod/chown by path after the sync left a window where the file
     // could be replaced, and left the metadata unsynced.
-    let prepared = (|| -> std::io::Result<()> {
+    let prepared = (|| -> std::io::Result<std::fs::Metadata> {
         file.write_all(body)?;
         file.flush()?;
         // The `mode` on OpenOptions is masked by the umask, so set it again.
@@ -1053,17 +1189,21 @@ fn stage_secret_file(
         }
         // The rename is only atomic with respect to a crash if the data and
         // the metadata are on disk first.
-        file.sync_all()
+        file.sync_all()?;
+        file.metadata()
     })();
     drop(file);
-    if let Err(e) = prepared {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(CliError::apply(format!(
-            "cannot write {}: {e}",
-            tmp.display()
-        )));
-    }
-    Ok((dir.to_path_buf(), tmp))
+    let meta = match prepared {
+        Ok(meta) => meta,
+        Err(e) => {
+            let residue = discard_staged(&tmp);
+            return Err(CliError::apply(format!(
+                "cannot write {}: {e}{residue}",
+                tmp.display()
+            )));
+        }
+    };
+    Ok((dir.to_path_buf(), tmp, ApprovedFile::capture(&meta, body)))
 }
 
 /// Flush the directory after a rename or removal.
@@ -1678,70 +1818,98 @@ mod tests {
 
     /// The guarded install takes the destination only in the state preflight
     /// approved: a file that appeared is never replaced; a file that was
-    /// swapped for another safe one is never replaced and is left exactly
-    /// where it was; the approved file itself is.
+    /// swapped, edited in place, re-permissioned or hard-linked is never
+    /// replaced and is left exactly where it was; the approved file itself
+    /// is. The returned token binds a later rollback the same way.
     #[test]
     fn a_guarded_install_never_replaces_what_preflight_did_not_see() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().join("k.key");
+        let entries = || std::fs::read_dir(dir.path()).unwrap().count();
+        let refused = |guard: &InstallGuard, expect: &str| {
+            let err = install_secret_file(&path, b"two", None, guard).unwrap_err();
+            assert!(
+                matches!(err.state, InstallState::NotApplied { residue: None }),
+                "{err:?}"
+            );
+            assert!(err.error.to_string().contains(expect), "{err:?}");
+            assert_eq!(entries(), 1, "no temp file left");
+        };
 
         // NoReplace: absent → installed; present → refused, intact.
-        install_secret_file(&path, b"one", None, &InstallGuard::NoReplace).unwrap();
+        let token = install_secret_file(&path, b"one", None, &InstallGuard::NoReplace).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"one");
-        let err = install_secret_file(&path, b"two", None, &InstallGuard::NoReplace).unwrap_err();
         assert!(
-            !err.committed && err.error.to_string().contains("appeared"),
-            "{err:?}"
+            token.still_is(&path).unwrap(),
+            "the token describes the installed file"
         );
+        refused(&InstallGuard::NoReplace, "appeared");
         assert_eq!(std::fs::read(&path).unwrap(), b"one");
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            1,
-            "no temp file left"
-        );
 
-        // Exact: the approved file is replaced…
-        let meta = std::fs::metadata(&path).unwrap();
-        let approved = ApprovedFile {
-            dev: meta.dev(),
-            ino: meta.ino(),
-            len: meta.len(),
-            sha256: sha256(b"one"),
-        };
-        // …but not after it was swapped for another safe file.
+        // Exact: not after a swap, an edit, a chmod or an extra link…
+        // (A swap for a file with the same bytes, mode and owner that
+        // happens to reuse the inode is indistinguishable, and replacing it
+        // is equivalent; the swap here carries different bytes.)
+        let exact = InstallGuard::Exact(token.clone());
         std::fs::remove_file(&path).unwrap();
-        write_secret_file(&path, b"one", None).unwrap();
-        let err = install_secret_file(&path, b"two", None, &InstallGuard::Exact(approved.clone()))
-            .unwrap_err();
-        assert!(
-            !err.committed && err.error.to_string().contains("changed since"),
-            "{err:?}"
-        );
+        write_secret_file(&path, b"uno", None).unwrap();
+        refused(&exact, "changed since");
         assert_eq!(
             std::fs::read(&path).unwrap(),
-            b"one",
+            b"uno",
             "the substitute is untouched"
         );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        let meta = std::fs::metadata(&path).unwrap();
-        let approved = ApprovedFile {
-            dev: meta.dev(),
-            ino: meta.ino(),
-            len: meta.len(),
-            sha256: sha256(b"one"),
-        };
-        // Same identity, different content: still refused.
-        std::fs::write(&path, b"one-edited").unwrap();
-        let err = install_secret_file(&path, b"two", None, &InstallGuard::Exact(approved.clone()))
-            .unwrap_err();
-        assert!(!err.committed, "{err:?}");
-        assert_eq!(std::fs::read(&path).unwrap(), b"one-edited");
         std::fs::write(&path, b"one").unwrap();
-        install_secret_file(&path, b"two", None, &InstallGuard::Exact(approved)).unwrap();
+        let token = install_secret_file(
+            &path,
+            b"one",
+            None,
+            &InstallGuard::Exact(ApprovedFile::capture(
+                &std::fs::metadata(&path).unwrap(),
+                b"one",
+            )),
+        )
+        .unwrap();
+        let exact = InstallGuard::Exact(token.clone());
+        std::fs::write(&path, b"one-edited").unwrap();
+        refused(&exact, "changed since");
+        std::fs::write(&path, b"one").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        refused(&exact, "changed since");
+        assert!(
+            !token.still_is(&path).unwrap(),
+            "a chmod fails the predicate"
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.path().join("k.link");
+        std::fs::hard_link(&path, &link).unwrap();
+        assert!(
+            !token.still_is(&path).unwrap(),
+            "an added link fails the predicate"
+        );
+        let err = install_secret_file(&path, b"two", None, &exact).unwrap_err();
+        assert!(
+            matches!(err.state, InstallState::NotApplied { .. }),
+            "{err:?}"
+        );
+        std::fs::remove_file(&link).unwrap();
+        // …but the approved file itself is replaced, leaving no residue.
+        assert!(token.still_is(&path).unwrap());
+        let rotated = install_secret_file(&path, b"two", None, &exact).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert!(rotated.still_is(&path).unwrap());
+        assert_eq!(entries(), 1);
+
+        // A guarded removal: refuses a changed file, removes the installed one.
+        std::fs::write(&path, b"two-edited").unwrap();
+        let err = remove_if_still(&path, &rotated).unwrap_err().to_string();
+        assert!(err.contains("left in place"), "{err}");
+        assert!(path.exists());
+        std::fs::write(&path, b"two").unwrap();
+        remove_if_still(&path, &rotated).unwrap();
+        assert!(!path.exists());
     }
     use std::os::unix::fs::PermissionsExt;
 
