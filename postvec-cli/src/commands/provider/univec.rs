@@ -348,7 +348,7 @@ pub(super) fn login_key_offer(
     )?;
     // Already the connector's key source, byte for byte: a real no-op, not
     // a credential change that re-verifies the file.
-    if destination == Destination::Identical
+    if matches!(destination, Destination::Identical(_))
         && existing.is_some_and(|doc| {
             doc.value.get("api_key_file").and_then(toml::Value::as_str)
                 == Some(path.display().to_string().as_str())
@@ -362,8 +362,8 @@ pub(super) fn login_key_offer(
     }
     let verb = match &destination {
         Destination::Absent => "copied to",
-        Destination::Identical => "already at",
-        Destination::Rotate(_) => "rotated in",
+        Destination::Identical(_) => "already at",
+        Destination::Rotate { .. } => "rotated in",
     };
     if args.api_key_from_login {
         output.note(&format!(
@@ -400,14 +400,20 @@ pub(super) fn login_key_offer(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Destination {
     Absent,
-    /// A safe file already holding the selected key: nothing to write.
-    Identical,
-    /// `--replace-copied-key`: the complete old contents, for rollback.
-    Rotate(String),
+    /// A safe file already holding the selected key: nothing to write, but
+    /// apply still checks it is the same file.
+    Identical(super::ApprovedFile),
+    /// `--replace-copied-key`: the approved file (replaced only if it still
+    /// is that file) and its complete old contents, for rollback.
+    Rotate {
+        approved: super::ApprovedFile,
+        old: String,
+    },
 }
 
-/// A copied key file is a token; anything larger is not one.
-const MAX_KEY_BYTES: u64 = 16 * 1024;
+/// A copied key file is a token; anything larger is not one — the same
+/// bound `validate_key_shape` applies to a key before it is ever written.
+const MAX_KEY_BYTES: u64 = crate::registry::auth::MAX_KEY_BYTES as u64;
 
 /// The destination, checked before anything is spent, under the same rules
 /// `write_secret_file` / `ensure_private_dir` apply at apply time — so
@@ -504,9 +510,15 @@ fn preflight_key_destination(
             "is larger than {MAX_KEY_BYTES} bytes; not a key file"
         )));
     }
+    let approved = super::ApprovedFile {
+        dev: opened.dev(),
+        ino: opened.ino(),
+        len: opened.len(),
+        sha256: super::sha256(&raw),
+    };
     let existing = String::from_utf8(raw).map_err(|_| shape("is not UTF-8 text".to_string()))?;
     if existing.trim() == key {
-        return Ok(Destination::Identical);
+        return Ok(Destination::Identical(approved));
     }
     if !replace {
         return Err(CliError::precondition(format!(
@@ -526,12 +538,19 @@ fn preflight_key_destination(
         let Some(doc) = super::ProviderFileDoc::load(doc_path)? else {
             return Ok(false);
         };
-        Ok(doc
-            .value
-            .get("api_key_file")
-            .and_then(toml::Value::as_str)
-            .and_then(|p| std::fs::metadata(p).ok())
-            .is_some_and(|m| (m.dev(), m.ino()) == identity))
+        let Some(referenced) = doc.value.get("api_key_file").and_then(toml::Value::as_str) else {
+            return Ok(false);
+        };
+        // Only "there is no such file" means "not this key"; any other
+        // failure to resolve the reference leaves ownership unproved.
+        match std::fs::metadata(referenced) {
+            Ok(m) => Ok((m.dev(), m.ino()) == identity),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(CliError::precondition(format!(
+                "--replace-copied-key: cannot resolve {referenced} referenced by {}: {e}",
+                doc_path.display()
+            ))),
+        }
     };
     let refuse = |problem: String| {
         CliError::precondition(format!("--replace-copied-key: {problem}"))
@@ -558,7 +577,10 @@ fn preflight_key_destination(
             others.join(", ")
         )));
     }
-    Ok(Destination::Rotate(existing))
+    Ok(Destination::Rotate {
+        approved,
+        old: existing,
+    })
 }
 
 /// `<providers root>/keys/<stem>.key`: beside providers.d, where operator
@@ -912,7 +934,7 @@ mod tests {
         }
         std::fs::write(&path, format!("{key}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(check(false).unwrap(), Destination::Identical);
+        assert!(matches!(check(false).unwrap(), Destination::Identical(_)));
 
         // A different key: refused without --replace-copied-key, and the
         // rotation inventory must prove sole ownership by identity.
@@ -932,9 +954,8 @@ mod tests {
             file
         };
         toml("univec", &path.display().to_string());
-        assert_eq!(
-            check(true).unwrap(),
-            Destination::Rotate("uv_other_key_00000".into())
+        assert!(
+            matches!(check(true).unwrap(), Destination::Rotate { old, .. } if old == "uv_other_key_00000")
         );
         // A sibling naming the same file through `..` is still a referent.
         let alias = format!("{}/../keys/univec.key", providers.display());
@@ -944,6 +965,21 @@ mod tests {
             err.contains("also referenced by") && err.contains("univec-staging"),
             "{err}"
         );
+        // A sibling whose reference cannot be RESOLVED (not merely absent)
+        // is a refusal too: ownership was not proved.
+        if not_root {
+            let hidden = dir.path().join("hidden");
+            std::fs::create_dir(&hidden).unwrap();
+            let staging2 = toml("univec-other", &hidden.join("k.key").display().to_string());
+            std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let err = check(true).unwrap_err().to_string();
+            std::fs::set_permissions(&hidden, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::remove_file(&staging2).unwrap();
+            assert!(
+                err.contains("cannot resolve") && err.contains("univec-other"),
+                "{err}"
+            );
+        }
         // An unreadable or malformed sibling is a refusal, not "no sibling".
         std::fs::write(&staging, "provider = [[[").unwrap();
         let err = check(true).unwrap_err().to_string();

@@ -194,9 +194,12 @@ selection over the 256-entry per-file ceiling is refused whole.
 `--api-key-from-login` copies the `postvec login` key into
 `<root>/keys/<NAME>.key` (one per connector file; never over a different
 existing key — `--replace-copied-key` rotates one this command copied for
-that connector). The plan carries a `verify against univec with N billed
-embed probe(s) and M billed convert probe(s)` step (JSON: `VerifyProviders`)
-before confirmation. The listing document reports a configured file that cannot
+that connector). The plan carries a `verify against univec with N billable
+embed probe attempt(s) and M billable convert probe attempt(s)` step (JSON
+`kind: "verify-providers"`, fields `embed_probes` and `convert_probes`)
+before confirmation. Attempts, not charges: UniVec debits only a successful
+inference. A key rotation on `univec` re-verifies one existing entry per
+kind; on every other connector it re-verifies every existing route. The listing document reports a configured file that cannot
 be read as `failed` with a `file` field; an explicit `--path`,
 `--database-url`, `--cluster` or `POSTVEC_PROVIDERS_PATH` that cannot be
 honoured is an error, while an implicit cluster that is not there lists the

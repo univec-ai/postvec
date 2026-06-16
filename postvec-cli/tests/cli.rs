@@ -930,7 +930,7 @@ fn provider_add_dry_run_makes_no_provider_call_and_writes_nothing() {
     );
     let text = format!("{}{}", stdout(&output), stderr(&output));
     assert!(
-        text.contains("verification embed was not sent"),
+        text.contains("verification requests were not sent"),
         "the dry run must say the probe was skipped:\n{text}"
     );
 }
@@ -2580,7 +2580,7 @@ mod univec_discovery {
         );
         assert!(
             t.contains(
-                "verify against univec with 1 billed embed probe(s) and 0 billed convert probe(s)"
+                "verify against univec with 1 billable embed probe attempt(s) and 0 billable convert probe attempt(s)"
             ),
             "the plan states the cost:\n{t}"
         );
@@ -3247,7 +3247,7 @@ mod univec_discovery {
         );
         assert_eq!(mock.path_count("/v1/embeddings"), 1);
 
-        // The identical rerun is a real no-op: no plan, no request of any kind.
+        // The identical rerun is a real no-op: no plan, no identity or billable request.
         let before = (
             mock.path_count("/v1/embeddings"),
             mock.path_count("/v1/registry/index.json"),
@@ -3516,7 +3516,9 @@ mod univec_discovery {
         );
         assert_eq!(code(&dry), 0, "{}", text(&dry));
         assert!(
-            text(&dry).contains("1 billed embed probe(s) and 1 billed convert probe(s)"),
+            text(&dry).contains(
+                "1 billable embed probe attempt(s) and 1 billable convert probe attempt(s)"
+            ),
             "{}",
             text(&dry)
         );
@@ -3539,7 +3541,7 @@ mod univec_discovery {
         // the plan said so before confirmation.
         assert!(
             t.contains(
-                "verify against univec with 1 billed embed probe(s) and 1 billed convert probe(s)"
+                "verify against univec with 1 billable embed probe attempt(s) and 1 billable convert probe attempt(s)"
             ),
             "{t}"
         );
@@ -3565,6 +3567,97 @@ mod univec_discovery {
             ])),
             2
         );
+    }
+
+    /// A credential change on any OTHER connector still re-verifies every
+    /// existing route: the one-representative rule is UniVec's account-wide
+    /// key contract, not a general one.
+    #[test]
+    fn a_non_univec_key_change_reverifies_every_route() {
+        let rt = runtime();
+        let mock = rt.block_on(providers::testing::always(
+            200,
+            r#"{"data":[{"embedding":[0.1,0.2],"index":0}]}"#,
+        ));
+        let root = provider_root();
+        let root_arg = root.path().to_str().unwrap();
+        let add = |extra: &[&str], env: &str| {
+            let mut args = vec!["provider", "add", "openai"];
+            args.extend_from_slice(extra);
+            args.extend_from_slice(&[
+                "--api-key-env",
+                env,
+                "--base-url",
+                &mock.url,
+                "--path",
+                root_arg,
+                "--acknowledge-in-use",
+                "--yes",
+            ]);
+            Command::new(binary())
+                .args(&args)
+                .env("NO_COLOR", "1")
+                .env(env, "not-a-real-key")
+                .output()
+                .unwrap()
+        };
+        assert_eq!(
+            code(&add(&["--model", "a", "--dim", "2", "--no-verify"], "K1")),
+            0
+        );
+        assert_eq!(
+            code(&add(&["--model", "b", "--dim", "2", "--no-verify"], "K1")),
+            0
+        );
+        let before = mock.request_count();
+        // Naming an already-declared model adds nothing; only the key changes.
+        let out = add(&["--model", "a"], "K2");
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        assert!(
+            text(&out).contains("2 billable embed probe attempt(s)"),
+            "{}",
+            text(&out)
+        );
+        assert_eq!(mock.request_count(), before + 2, "every existing route");
+    }
+
+    /// A selected key over the copied-file bound is refused before any
+    /// request, verified or not.
+    #[test]
+    fn an_oversized_selected_key_is_refused_before_anything_is_sent() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let huge = format!("uv_{}", "x".repeat(17 * 1024));
+        for extra in [&[][..], &["--no-verify"][..]] {
+            let mut args = vec![
+                "provider",
+                "add",
+                "univec",
+                "--api-key-from-login",
+                "--base-url",
+                &mock.url,
+                "--path",
+                root.path().to_str().unwrap(),
+                "--acknowledge-in-use",
+                "--yes",
+            ];
+            args.extend_from_slice(extra);
+            let out = Command::new(binary())
+                .args(&args)
+                .env("NO_COLOR", "1")
+                .env("POSTVEC_API_KEY", &huge)
+                .output()
+                .unwrap();
+            assert_eq!(code(&out), 2, "{}", text(&out));
+            assert!(text(&out).contains("longer than"), "{}", text(&out));
+        }
+        assert_eq!(
+            mock.request_count(),
+            0,
+            "zero catalogue, identity and billable requests"
+        );
+        assert!(!root.path().join("keys").exists());
     }
 
     /// The manual converter flags stay usable and hidden; the selectors

@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const API_KEY_ENV: &str = "POSTVEC_API_KEY";
+/// A key is a token; a copied key file is read under this same bound.
+pub const MAX_KEY_BYTES: usize = 16 * 1024;
 const ROOT_STORE: &str = "/var/lib/postvec/auth.json";
 const STORE_SCHEMA_VERSION: u32 = 1;
 
@@ -94,6 +96,12 @@ pub fn validate_key_shape(raw: &str) -> Result<String> {
     }
     if key.len() < 12 {
         return Err(CliError::usage("the API key is too short to be valid"));
+    }
+    // The bound every file this CLI writes a key into is later read under.
+    if key.len() > MAX_KEY_BYTES {
+        return Err(CliError::usage(format!(
+            "the API key is longer than {MAX_KEY_BYTES} bytes; that is not a key"
+        )));
     }
     if !key.starts_with("uv_") {
         return Err(CliError::usage(
@@ -269,6 +277,8 @@ mod tests {
         assert!(validate_key_shape("sk_notunivec_key").is_err());
         assert!(validate_key_shape("uv_abc def ghij").is_err());
         assert!(validate_key_shape("uv_abc\ndefghij").is_err());
+        assert!(validate_key_shape(&format!("uv_{}", "x".repeat(MAX_KEY_BYTES))).is_err());
+        assert!(validate_key_shape(&format!("uv_{}", "x".repeat(MAX_KEY_BYTES - 3))).is_ok());
         assert_eq!(
             validate_key_shape("  uv_abcdefghijklmnop\n").unwrap(),
             "uv_abcdefghijklmnop"

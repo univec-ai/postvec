@@ -508,13 +508,13 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     } = &key
     {
         match destination {
-            univec::Destination::Identical => {}
+            univec::Destination::Identical(_) => {}
             univec::Destination::Absent => plan.push(PlanStep::WriteConfig {
                 path: path.clone(),
                 before_sha256: None,
                 after_sha256: "copied login key".to_string(),
             }),
-            univec::Destination::Rotate(_) => plan.push(PlanStep::WriteConfig {
+            univec::Destination::Rotate { .. } => plan.push(PlanStep::WriteConfig {
                 path: path.clone(),
                 before_sha256: Some("existing".to_string()),
                 after_sha256: "rotated login key".to_string(),
@@ -604,7 +604,10 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         Vec<providers::config::ModelDescriptor>,
     ) = if endpoint_changes {
         (already_embed.clone(), existing_convert_descriptors.clone())
-    } else if credential_changes {
+    } else if credential_changes && canonical == "univec" {
+        // UniVec keys are account-wide (aphex), so one call per kind proves
+        // a rotated key. No other connector documents that contract —
+        // project- or model-restricted keys exist — so they keep every route.
         (
             already_embed.iter().take(1).cloned().collect(),
             existing_convert_descriptors
@@ -613,6 +616,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
                 .cloned()
                 .collect(),
         )
+    } else if credential_changes {
+        (already_embed.clone(), existing_convert_descriptors.clone())
     } else {
         (Vec::new(), Vec::new())
     };
@@ -642,8 +647,9 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         });
         if args.dry_run {
             output.note(&format!(
-                "--dry-run: the verification embed was not sent. The real run makes {embed_probes} billed embed \
-                 probe(s) and {convert_probes} billed convert probe(s) before writing"
+                "--dry-run: the verification requests were not sent. The real run makes \
+                 {embed_probes} billable embed probe attempt(s) and {convert_probes} billable \
+                 convert probe attempt(s) before writing"
             ));
         }
     }
@@ -836,40 +842,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             doc.set_model_dim(&model.public_name, dim)?;
         }
     }
-    // The key file first, then the connector; if the connector write fails
-    // the key file goes back to what preflight found — a new file is
-    // removed, a rotated one restored byte for byte, an identical one was
-    // never touched. A rollback that itself fails is reported alongside.
-    if let KeySpec::Login {
-        key,
-        path,
-        destination,
-    } = &key
-    {
-        let (verb, prep) = match destination {
-            univec::Destination::Absent => ("copied", "to"),
-            univec::Destination::Rotate(_) => ("rotated", "in"),
-            univec::Destination::Identical => ("kept", "at"),
-        };
-        if *destination != univec::Destination::Identical {
-            write_secret_file(path, key.as_bytes(), target.owner())?;
-        }
-        journal.record(format!(
-            "{verb} the postvec login key {prep} {} (0600); `postvec logout` does not remove it",
-            path.display()
-        ));
-        if let Err(e) = doc.write(target.owner()) {
-            return Err(match rollback_key(path, destination, target.owner()) {
-                Ok(()) => e,
-                Err(r) => CliError::apply(format!(
-                    "{e}; and restoring {} afterwards failed too: {r}",
-                    path.display()
-                )),
-            });
-        }
-    } else {
-        doc.write(target.owner())?;
-    }
+    commit(&doc, &key, target.owner(), &mut journal)?;
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
         let shape = match &model.convert {
@@ -979,20 +952,105 @@ pub(super) struct ConvertSpec {
     pub source_dim: u32,
 }
 
-/// Undo the key-file write after a failed connector write.
+/// The two-file commit: the key file (bound to the state preflight
+/// approved), then the connector. A connector write that fails *before*
+/// its rename leaves nothing of ours in place, so the key file goes back
+/// to what preflight found — removed, restored byte for byte, or untouched.
+/// A failure *after* the rename (the directory sync) is a durability doubt
+/// over a connector that already references the key: the key stays, and
+/// the run ends incomplete naming the sync, never with a connector pointing
+/// at a file this command just removed.
+fn commit(
+    doc: &ProviderFileDoc,
+    key: &KeySpec,
+    owner: Option<super::FileOwner>,
+    journal: &mut ApplyJournal,
+) -> Result<()> {
+    let KeySpec::Login {
+        key: value,
+        path,
+        destination,
+    } = key
+    else {
+        doc.write(owner)?;
+        return Ok(());
+    };
+    let (verb, prep) = match destination {
+        univec::Destination::Absent => {
+            super::install_secret_file(
+                path,
+                value.as_bytes(),
+                owner,
+                &super::InstallGuard::NoReplace,
+            )?;
+            ("copied", "to")
+        }
+        univec::Destination::Rotate { approved, .. } => {
+            super::install_secret_file(
+                path,
+                value.as_bytes(),
+                owner,
+                &super::InstallGuard::Exact(approved.clone()),
+            )?;
+            ("rotated", "in")
+        }
+        univec::Destination::Identical(approved) => {
+            if !approved.still_is(path)? {
+                return Err(CliError::precondition(format!(
+                    "{} changed since it was checked; rerun",
+                    path.display()
+                )));
+            }
+            ("kept", "at")
+        }
+    };
+    journal.record(format!(
+        "{verb} the postvec login key {prep} {} (0600); `postvec logout` does not remove it",
+        path.display()
+    ));
+    match doc.write(owner) {
+        Ok(()) => Ok(()),
+        Err(super::WriteError {
+            committed: false,
+            error,
+        }) => Err(match rollback_key(path, destination, owner) {
+            Ok(()) => error,
+            Err(r) => CliError::apply(format!(
+                "{error}; and restoring {} afterwards failed too: {r}",
+                path.display()
+            )),
+        }),
+        Err(super::WriteError {
+            committed: true,
+            error,
+        }) => {
+            journal.incomplete(format!(
+                "{error}; {} was kept so the connector it references stays consistent — \
+                 confirm both files survived (sync the directory, or reboot-test) before \
+                 relying on them",
+                path.display()
+            ));
+            Ok(())
+        }
+    }
+}
+
+/// Undo the key-file write after a connector write that never committed.
 fn rollback_key(
     path: &std::path::Path,
     destination: &univec::Destination,
     owner: Option<super::FileOwner>,
 ) -> Result<()> {
     match destination {
-        univec::Destination::Identical => Ok(()),
+        univec::Destination::Identical(_) => Ok(()),
         univec::Destination::Absent => {
             std::fs::remove_file(path)
                 .map_err(|e| CliError::apply(format!("cannot remove {}: {e}", path.display())))?;
             super::sync_directory(path.parent().unwrap_or(path), path)
         }
-        univec::Destination::Rotate(old) => write_secret_file(path, old.as_bytes(), owner),
+        univec::Destination::Rotate { old, .. } => {
+            write_secret_file(path, old.as_bytes(), owner).map_err(CliError::from)
+        }
     }
 }
 
@@ -1245,6 +1303,12 @@ fn non_empty_key(raw: String) -> Result<KeySpec> {
     if key.is_empty() {
         return Err(CliError::usage("the key is empty"));
     }
+    if key.len() > crate::registry::auth::MAX_KEY_BYTES {
+        return Err(CliError::usage(format!(
+            "the key is longer than {} bytes; that is not a key",
+            crate::registry::auth::MAX_KEY_BYTES
+        )));
+    }
     Ok(KeySpec::Inline(key))
 }
 
@@ -1344,34 +1408,98 @@ fn finish(
 mod tests {
     use super::*;
 
-    /// A failed connector write puts the key file back to what preflight
-    /// found: removed when it was absent, restored byte for byte when it was
-    /// rotated, untouched when it was identical.
+    /// The two-file commit against real failures: a connector write that
+    /// cannot even stage (read-only providers.d) rolls the key back for
+    /// every destination state; the post-rename sync failure is the
+    /// `committed: true` branch, which keeps the key and ends incomplete.
     #[test]
-    fn a_failed_connector_write_rolls_the_key_file_back() {
+    fn a_connector_write_that_never_committed_rolls_the_key_back() {
         use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root ignores the read-only directory this relies on
+        }
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let providers = dir.path().join("providers.d");
+        std::fs::create_dir(&providers).unwrap();
         let keys = dir.path().join("keys");
         std::fs::create_dir(&keys).unwrap();
         std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = keys.join("univec.key");
+        let doc = ProviderFileDoc {
+            path: providers.join("univec.toml"),
+            value: toml::from_str(&format!(
+                "provider = \"univec\"\napi_key_file = \"{}\"\n\n[[models]]\nname = \"m\"\n\
+                 provider_model_id = \"m\"\ndim = 4\n",
+                path.display()
+            ))
+            .unwrap(),
+        };
+        let approved_of = |bytes: &[u8]| {
+            use std::os::unix::fs::MetadataExt;
+            let m = std::fs::metadata(&path).unwrap();
+            super::super::ApprovedFile {
+                dev: m.dev(),
+                ino: m.ino(),
+                len: m.len(),
+                sha256: super::super::sha256(bytes),
+            }
+        };
+        std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let login = |destination: univec::Destination| KeySpec::Login {
+            key: "uv_new_key_0000000".into(),
+            path: path.clone(),
+            destination,
+        };
+        let mut journal = ApplyJournal::default();
 
-        write_secret_file(&path, b"uv_new", None).unwrap();
-        rollback_key(&path, &univec::Destination::Absent, None).unwrap();
-        assert!(!path.exists(), "a created file is removed");
-
-        write_secret_file(&path, b"uv_new", None).unwrap();
-        rollback_key(
-            &path,
-            &univec::Destination::Rotate("uv_old_complete".into()),
+        // Absent: the created key is removed again.
+        let err = commit(
+            &doc,
+            &login(univec::Destination::Absent),
             None,
+            &mut journal,
         )
-        .unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "uv_old_complete");
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot create"), "{err}");
+        assert!(!path.exists(), "the created key was rolled back");
 
-        rollback_key(&path, &univec::Destination::Identical, None).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "uv_old_complete");
+        // Rotate: the old bytes come back.
+        write_secret_file(&path, b"uv_old_complete_key", None).unwrap();
+        let approved = approved_of(b"uv_old_complete_key");
+        let err = commit(
+            &doc,
+            &login(univec::Destination::Rotate {
+                approved,
+                old: "uv_old_complete_key".into(),
+            }),
+            None,
+            &mut journal,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot create"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "uv_old_complete_key"
+        );
+
+        // Identical: untouched.
+        std::fs::write(&path, "uv_new_key_0000000").unwrap();
+        let approved = approved_of(b"uv_new_key_0000000");
+        let err = commit(
+            &doc,
+            &login(univec::Destination::Identical(approved)),
+            None,
+            &mut journal,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot create"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "uv_new_key_0000000"
+        );
+        assert!(journal.incomplete.is_empty());
+        std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]

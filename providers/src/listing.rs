@@ -334,6 +334,41 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
             }
         }
     }
+    // Set-wide: every derived public name must be unique across the whole
+    // file `provider add` would write, no converter may map a space onto
+    // itself, and every converter's widths must agree with the listed embeds
+    // — whether or not it is ever selected, because `ls --available` shows
+    // the set as a whole.
+    let mut names: std::collections::BTreeMap<String, String> = Default::default();
+    for e in &out {
+        let (name, what) = match &e.source {
+            None => (
+                crate::catalog::public_name("univec", &e.provider_model_id),
+                format!("embed {}", safe_name(&e.provider_model_id)),
+            ),
+            Some((source, _)) => (
+                format!("univec-convert-{source}-to-{}", e.provider_model_id),
+                format!(
+                    "converter {} -> {}",
+                    safe_name(source),
+                    safe_name(&e.provider_model_id)
+                ),
+            ),
+        };
+        if let Some(prev) = names.insert(name.clone(), what.clone()) {
+            return Err(format!(
+                "{prev} and {what} would both be named {name} in a provider file"
+            ));
+        }
+        if let Some((source, _)) = &e.source {
+            if *source == e.provider_model_id {
+                return Err(format!("{what} maps a space onto itself"));
+            }
+        }
+    }
+    for c in out.iter().filter(|m| m.kind == ListedKind::Convert) {
+        check_converter_dims(&out, c)?;
+    }
     out.sort_by(|a, b| {
         (a.kind, &a.provider_model_id, &a.source).cmp(&(b.kind, &b.provider_model_id, &b.source))
     });
@@ -608,6 +643,15 @@ mod tests {
                 r#"{{"name":"c","modelType":"convert","sourceModel":"{s}","sourceDim":4,"targetModel":"{t}","targetDim":4}}"#
             )
         };
+        let conv2 = |s: &str, t: &str| {
+            format!(
+                r#"{{"name":"c-{s}-{t}","modelType":"convert","sourceModel":"{s}","sourceDim":4,"targetModel":"{t}","targetDim":4}}"#
+            )
+        };
+        let embed_row_dim = |id: &str, d: u32| {
+            format!(r#"{{"name":"{id}","modelType":"embed","targetModel":"{id}","targetDim":{d}}}"#)
+        };
+        let embed_row = |id: &str| embed_row_dim(id, 4);
         for (s, t, what) in [
             ("Upper-Case", "t", "sourceModel as a resolver name"),
             ("s", "org/model:v1", "targetModel as a resolver name"),
@@ -620,6 +664,34 @@ mod tests {
             let e = err(&conv(s, t));
             assert!(e.contains(what), "{s}/{t}: {e}");
         }
+        // Set-wide: derived names must be unique, no self-mapping converter,
+        // and every converter must agree with the listed embeds.
+        let pair = |a: &str, b: &str| format!(r#"{{"success":true,"data":[{a},{b}]}}"#);
+        let e = try_decode(&pair(&embed_row("a/b"), &embed_row("a:b"))).unwrap_err();
+        assert!(e.contains("would both be named univec-a-b"), "{e}");
+        let e = try_decode(&pair(&embed_row("A-B"), &embed_row("a-b"))).unwrap_err();
+        assert!(e.contains("would both be named"), "{e}");
+        let e = try_decode(&pair(&conv2("a-to-b", "c"), &conv2("a", "b-to-c"))).unwrap_err();
+        assert!(
+            e.contains("would both be named univec-convert-a-to-b-to-c"),
+            "{e}"
+        );
+        let e = try_decode(&pair(&embed_row("convert-a-to-b"), &conv2("a", "b"))).unwrap_err();
+        assert!(
+            e.contains("would both be named univec-convert-a-to-b"),
+            "{e}"
+        );
+        let e = err(&conv2("same", "same"));
+        assert!(e.contains("maps a space onto itself"), "{e}");
+        let e = try_decode(&pair(
+            &embed_row_dim("s", 8),
+            r#"{"name":"c","modelType":"convert","sourceModel":"s","sourceDim":9,"targetModel":"t","targetDim":4}"#,
+        ))
+        .unwrap_err();
+        assert!(
+            e.contains("8-dimensional"),
+            "unselected converters are checked too: {e}"
+        );
         // 15 + 55 + 4 + 54 = 128: the boundary is inclusive.
         assert_eq!(
             decode(&format!(

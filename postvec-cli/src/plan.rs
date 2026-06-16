@@ -192,8 +192,8 @@ impl PlanStep {
                 embed_probes,
                 convert_probes,
             } => format!(
-                "verify against {provider} with {embed_probes} billed embed probe(s) and \
-                 {convert_probes} billed convert probe(s)"
+                "verify against {provider} with {embed_probes} billable embed probe attempt(s) \
+                 and {convert_probes} billable convert probe attempt(s)"
             ),
             PlanStep::WriteConfig {
                 path,
