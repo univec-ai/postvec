@@ -672,11 +672,20 @@ impl ProviderFileDoc {
     /// command composing the file is the last place that can still stop it,
     /// and running the host's rules rather than restating them is what keeps
     /// there being one rulebook. No secret is resolved to reach the verdict.
+    // The error carries residue and sync state a two-file commit must
+    // inspect; boxing it would only move the bytes.
+    #[allow(clippy::result_large_err)]
     pub fn write(&self, owner: Option<FileOwner>) -> std::result::Result<(), WriteError> {
-        let body = self.body().map_err(WriteError::uncommitted)?;
+        let clean = |error: CliError| WriteError {
+            committed: false,
+            residue: None,
+            sync_error: None,
+            error,
+        };
+        let body = self.body().map_err(clean)?;
         let label = self.path.display().to_string();
         providers::config::validate_str(&body, &label).map_err(|problem| {
-            WriteError::uncommitted(
+            clean(
                 CliError::precondition(format!(
                     "the resulting {label} is one the inference host would refuse: {problem}"
                 ))
@@ -793,46 +802,61 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
 ///   rename. `sync_all().ok()` meant "atomic" described only the rename and
 ///   not the data: a crash could leave a file this command already reported
 ///   as written.
+// Same reason as `ProviderFileDoc::write`: the error is the state record.
+#[allow(clippy::result_large_err)]
 pub fn write_secret_file(
     path: &Path,
     body: &[u8],
     owner: Option<FileOwner>,
 ) -> std::result::Result<(), WriteError> {
-    let staged =
-        stage_secret_file(path, body, owner).map_err(|e| WriteError::uncommitted(e.error))?;
-    if let Err(e) = std::fs::rename(&staged.tmp, path) {
+    let staged = stage_secret_file(path, body, owner).map_err(|e| WriteError {
+        committed: false,
+        residue: e.residue,
+        sync_error: e.sync_error,
+        error: e.error,
+    })?;
+    if let Err(e) = failpoint("write-rename").and_then(|()| std::fs::rename(&staged.tmp, path)) {
         let cleanup = discard_staged(&staged.dir, &staged.tmp);
-        return Err(WriteError::uncommitted(CliError::apply(format!(
-            "cannot move {} into place: {e}{cleanup}",
-            staged.tmp.display()
-        ))));
+        return Err(WriteError {
+            committed: false,
+            error: CliError::apply(format!(
+                "cannot move {} into place: {e}{cleanup}",
+                staged.tmp.display()
+            )),
+            residue: cleanup.residue_path(),
+            sync_error: cleanup.sync_error,
+        });
     }
-    sync_directory(&staged.dir, path).map_err(WriteError::committed)
+    sync_after("write-sync", &staged.dir, path).map_err(|e| WriteError {
+        committed: true,
+        residue: None,
+        sync_error: None,
+        error: e,
+    })
 }
 
-/// A failed secret-file write, with the one fact a caller undoing a
-/// multi-file change needs: whether the new content is already in place.
-/// A directory sync that fails *after* the rename is a durability doubt,
-/// not an unchanged file — rolling a sibling back at that point would leave
-/// the two files describing different states.
+/// A failed secret-file write, with everything a caller undoing a
+/// multi-file change needs. `committed`: the new content is already in
+/// place (a directory sync that fails *after* the rename is a durability
+/// doubt, not an unchanged file — rolling a sibling back at that point
+/// would leave the two files describing different states). When not
+/// committed, `residue` names a staged copy of the content — which may
+/// hold an inline API key — that could not be removed, and `sync_error`
+/// a cleanup whose removal is visible but not crash-durable. Only
+/// `{ committed: false, residue: None, sync_error: None }` means "exactly
+/// as it was, durably".
 #[derive(Debug)]
 pub struct WriteError {
     pub committed: bool,
+    pub residue: Option<PathBuf>,
+    pub sync_error: Option<CliError>,
     pub error: CliError,
 }
 
 impl WriteError {
-    fn uncommitted(error: CliError) -> Self {
-        Self {
-            committed: false,
-            error,
-        }
-    }
-    fn committed(error: CliError) -> Self {
-        Self {
-            committed: true,
-            error,
-        }
+    /// Nothing changed, durably: an ordinary error is the whole story.
+    pub fn is_clean(&self) -> bool {
+        !self.committed && self.residue.is_none() && self.sync_error.is_none()
     }
 }
 
@@ -977,19 +1001,21 @@ struct StageError {
     error: CliError,
 }
 
-/// The outcome of removing a credential-bearing temp file: what is left,
-/// and whether the removal reached disk.
+/// The outcome of removing a credential-bearing temp file: what is left
+/// (with the unlink error that left it), and whether the removal reached
+/// disk.
 struct Cleanup {
-    residue: Option<PathBuf>,
+    residue: Option<(PathBuf, std::io::Error)>,
     sync_error: Option<CliError>,
 }
 
 impl Cleanup {
     fn describe(&self) -> String {
         let mut out = String::new();
-        if let Some(residue) = &self.residue {
+        if let Some((residue, cause)) = &self.residue {
             out.push_str(&format!(
-                "; the staged copy at {} could not be removed and holds the secret — remove it by hand",
+                "; the staged copy at {} could not be removed ({cause}) and holds the secret — \
+                 remove it by hand",
                 residue.display()
             ));
         }
@@ -997,6 +1023,10 @@ impl Cleanup {
             out.push_str(&format!("; {e}"));
         }
         out
+    }
+
+    fn residue_path(&self) -> Option<PathBuf> {
+        self.residue.as_ref().map(|(p, _)| p.clone())
     }
 }
 
@@ -1011,33 +1041,91 @@ impl std::fmt::Display for Cleanup {
 /// reappear after a crash.
 fn discard_staged(dir: &Path, tmp: &Path) -> Cleanup {
     match failpoint("stage-cleanup").and_then(|()| std::fs::remove_file(tmp)) {
+        // Gone (by us, or already): the directory state is what must be
+        // durable now.
         Ok(()) => Cleanup {
             residue: None,
             sync_error: sync_after("sync", dir, tmp).err(),
         },
-        Err(_) => Cleanup {
-            residue: Some(tmp.to_path_buf()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Cleanup {
+            residue: None,
+            sync_error: sync_after("sync", dir, tmp).err(),
+        },
+        Err(e) => Cleanup {
+            residue: Some((tmp.to_path_buf(), e)),
             sync_error: None,
         },
     }
 }
 
-// Test-only fault injection at the named transitions of the key install.
-// Production builds compile `failpoint` to `Ok(())`.
-#[cfg(test)]
-thread_local! {
-    static FAILPOINT: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) };
+// Fault injection at the named transitions of the two-file commit, as a
+// set of `(point, occurrence)`: the N-th call of `point` fails. Selected
+// from a test (`set_failpoints`) or, in debug builds only, from
+// `POSTVEC_FAILPOINTS="point:N,point:N"` so the command-level path can be
+// driven through the real binary. Release builds compile the whole thing
+// to `Ok(())`: there is no way to fail a production install from outside.
+#[cfg(debug_assertions)]
+mod failpoints {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    thread_local! {
+        static ARMED: RefCell<Vec<(String, usize)>> = const { RefCell::new(Vec::new()) };
+        static SEEN: RefCell<BTreeMap<String, usize>> = const { RefCell::new(BTreeMap::new()) };
+        static LOADED: RefCell<bool> = const { RefCell::new(false) };
+    }
+
+    #[cfg(test)]
+    pub fn arm(points: Vec<(String, usize)>) {
+        ARMED.with(|a| *a.borrow_mut() = points);
+        SEEN.with(|s| s.borrow_mut().clear());
+        LOADED.with(|l| *l.borrow_mut() = true);
+    }
+
+    fn load_env_once() {
+        if LOADED.with(|l| std::mem::replace(&mut *l.borrow_mut(), true)) {
+            return;
+        }
+        let armed = std::env::var("POSTVEC_FAILPOINTS")
+            .ok()
+            .into_iter()
+            .flat_map(|v| v.split(',').map(str::to_string).collect::<Vec<_>>())
+            .filter_map(|spec| {
+                let (name, nth) = spec.split_once(':').unwrap_or((&spec, "1"));
+                Some((name.trim().to_string(), nth.trim().parse().ok()?))
+            })
+            .collect();
+        ARMED.with(|a| *a.borrow_mut() = armed);
+    }
+
+    pub fn hit(name: &str) -> bool {
+        load_env_once();
+        let nth = SEEN.with(|s| {
+            let mut seen = s.borrow_mut();
+            let n = seen.entry(name.to_string()).or_insert(0);
+            *n += 1;
+            *n
+        });
+        ARMED.with(|a| a.borrow().iter().any(|(p, n)| p == name && *n == nth))
+    }
 }
 
+/// Arm a set of `(point, occurrence)` failures for this thread (tests).
+#[cfg(test)]
+pub(crate) fn set_failpoints(points: &[(&str, usize)]) {
+    failpoints::arm(points.iter().map(|(p, n)| (p.to_string(), *n)).collect());
+}
+
+/// Arm one point's first occurrence, or clear everything with `None`.
 #[cfg(test)]
 pub(crate) fn set_failpoint(name: Option<&'static str>) {
-    FAILPOINT.with(|f| *f.borrow_mut() = name);
+    set_failpoints(&name.map(|n| vec![(n, 1)]).unwrap_or_default());
 }
 
 fn failpoint(name: &str) -> std::io::Result<()> {
-    #[cfg(test)]
+    #[cfg(debug_assertions)]
     {
-        if FAILPOINT.with(|f| *f.borrow() == Some(name)) {
+        if failpoints::hit(name) {
             return Err(std::io::Error::other(format!("injected failure at {name}")));
         }
     }
@@ -1109,7 +1197,7 @@ pub fn install_secret_file(
         InstallError {
             error: CliError::precondition(format!("{}: {message}{cleanup}", path.display())),
             state: InstallState::NotApplied {
-                residue: cleanup.residue,
+                residue: cleanup.residue_path(),
                 sync_error: cleanup.sync_error,
             },
         }
@@ -1302,7 +1390,7 @@ fn stage_secret_file(
             let cleanup = discard_staged(dir, &tmp);
             return Err(StageError {
                 error: CliError::apply(format!("cannot write {}: {e}{cleanup}", tmp.display())),
-                residue: cleanup.residue,
+                residue: cleanup.residue_path(),
                 sync_error: cleanup.sync_error,
             });
         }
@@ -2137,6 +2225,145 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
+
+        // The rename and exchange transitions themselves: nothing applied,
+        // the candidate removed and that removal synced.
+        if let Some(t) = tmp_of() {
+            std::fs::remove_file(t).unwrap();
+        }
+        let _ = std::fs::remove_file(&path);
+        set_failpoint(Some("rename"));
+        let err = install(&InstallGuard::NoReplace, b"new").unwrap_err();
+        assert!(
+            matches!(
+                err.state,
+                InstallState::NotApplied {
+                    residue: None,
+                    sync_error: None
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(!path.exists() && tmp_of().is_none());
+        let token = reset(b"old");
+        set_failpoint(Some("exchange"));
+        let err = install(&InstallGuard::Exact(token.clone()), b"new").unwrap_err();
+        assert!(
+            matches!(
+                err.state,
+                InstallState::NotApplied {
+                    residue: None,
+                    sync_error: None
+                }
+            ),
+            "{err:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        assert!(tmp_of().is_none());
+
+        // Compound: exchange-back fails AND the directory sync fails —
+        // applied, displaced named, the sync error kept alongside.
+        let token = reset(b"old");
+        std::fs::write(&path, b"old-edited").unwrap();
+        set_failpoints(&[("exchange-back", 1), ("sync", 1)]);
+        let err = install(&InstallGuard::Exact(token.clone()), b"new").unwrap_err();
+        match &err.state {
+            InstallState::Applied {
+                displaced: Some(d),
+                sync_error: Some(e),
+                ..
+            } => {
+                assert_eq!(std::fs::read(d).unwrap(), b"old-edited");
+                assert!(e.to_string().contains("injected failure at sync"), "{e}");
+                assert!(
+                    err.error.to_string().contains("exchanging it back failed")
+                        && err.error.to_string().contains("injected failure at sync"),
+                    "{err:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // Compound: refusal cleanup fails — the unlink cause is in the
+        // message, and no sync is claimed for a removal that did not happen.
+        let _ = std::fs::remove_file(tmp_of().unwrap());
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, b"blocker").unwrap();
+        set_failpoints(&[("stage-cleanup", 1)]);
+        let err = install(&InstallGuard::NoReplace, b"new").unwrap_err();
+        match &err.state {
+            InstallState::NotApplied {
+                residue: Some(r),
+                sync_error: None,
+            } => {
+                assert!(r.exists());
+                assert!(
+                    err.error
+                        .to_string()
+                        .contains("injected failure at stage-cleanup"),
+                    "{err:?}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_file(tmp_of().unwrap());
+        // The second occurrence of a point, not the first.
+        let token = reset(b"old");
+        std::fs::write(&path, b"old-edited").unwrap();
+        set_failpoints(&[("sync", 2)]);
+        let err = install(&InstallGuard::Exact(token.clone()), b"new").unwrap_err();
+        assert!(
+            matches!(
+                err.state,
+                InstallState::NotApplied {
+                    residue: None,
+                    sync_error: None
+                }
+            ),
+            "first sync passes: {err:?}"
+        );
+        let err = install(&InstallGuard::Exact(token.clone()), b"new").unwrap_err();
+        assert!(
+            matches!(
+                err.state,
+                InstallState::NotApplied {
+                    residue: None,
+                    sync_error: Some(_)
+                }
+            ),
+            "second sync fails: {err:?}"
+        );
+        set_failpoint(None);
+
+        // The plain connector write has its own two points, and carries
+        // its cleanup state exactly like the key install.
+        let connector = dir.path().join("c.toml");
+        set_failpoint(Some("write-rename"));
+        let err = write_secret_file(&connector, b"x", None).unwrap_err();
+        assert!(err.is_clean() && !connector.exists(), "{err:?}");
+        set_failpoints(&[("write-rename", 1), ("stage-cleanup", 1)]);
+        let err = write_secret_file(&connector, b"x", None).unwrap_err();
+        assert!(
+            !err.committed && err.residue.as_ref().is_some_and(|r| r.exists()),
+            "{err:?}"
+        );
+        assert!(
+            err.error
+                .to_string()
+                .contains("injected failure at stage-cleanup"),
+            "{err:?}"
+        );
+        std::fs::remove_file(err.residue.unwrap()).unwrap();
+        set_failpoints(&[("stage-write", 1), ("sync", 1)]);
+        let err = write_secret_file(&connector, b"x", None).unwrap_err();
+        assert!(
+            !err.committed && err.residue.is_none() && err.sync_error.is_some(),
+            "{err:?}"
+        );
+        assert!(!connector.exists());
+        set_failpoint(Some("write-sync"));
+        let err = write_secret_file(&connector, b"x", None).unwrap_err();
+        assert!(err.committed && connector.exists(), "{err:?}");
+        set_failpoint(None);
 
         // Rotation refused cleanly: not applied, destination as it was,
         // candidate removed, removal synced — or the sync error recorded.

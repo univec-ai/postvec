@@ -3660,6 +3660,413 @@ mod univec_discovery {
         assert!(!root.path().join("keys").exists());
     }
 
+    /// The command-level contract of a partial commit, through the real
+    /// binary (debug-build failpoints): a connector that fails before its
+    /// rename after the key was copied exits 3 with a JSON envelope whose
+    /// messages carry the connector error and the kept key, reports nothing
+    /// as written and attempts no reload; a connector whose directory sync
+    /// fails after the rename exits 3, keeps both files, and does reload.
+    #[test]
+    fn a_partial_commit_is_a_structured_exit_3_without_a_reload() {
+        let rt = runtime();
+        let mock = standard(&rt);
+        let add = |root: &std::path::Path, failpoints: &str| {
+            Command::new(binary())
+                .args([
+                    "provider",
+                    "add",
+                    "univec",
+                    "--model",
+                    "cheap",
+                    "--api-key-from-login",
+                    "--base-url",
+                    &mock.url,
+                    "--path",
+                    root.to_str().unwrap(),
+                    "--acknowledge-in-use",
+                    "--yes",
+                    "--format",
+                    "json",
+                ])
+                .env("NO_COLOR", "1")
+                .env("POSTVEC_API_KEY", KEY)
+                .env("POSTVEC_FAILPOINTS", failpoints)
+                .output()
+                .unwrap()
+        };
+        let root = provider_root();
+        let out = add(root.path(), "write-rename:1");
+        assert_eq!(code(&out), 3, "{}", text(&out));
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        let messages = doc["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains("INCOMPLETE") && messages.contains("connector not written"),
+            "{messages}"
+        );
+        assert!(messages.contains("was KEPT"), "{messages}");
+        assert!(
+            !messages.contains("wrote ") && !messages.contains("provider reload"),
+            "nothing written, no reload:\n{messages}"
+        );
+        assert!(doc["applied"].as_array().unwrap().is_empty(), "{doc}");
+        assert!(!root.path().join("providers.d/univec.toml").exists());
+        assert!(root.path().join("keys/univec.key").is_file());
+
+        let root = provider_root();
+        let out = add(root.path(), "write-sync:1");
+        assert_eq!(code(&out), 3, "{}", text(&out));
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        let messages = doc["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains("INCOMPLETE") && messages.contains("injected failure at write-sync"),
+            "{messages}"
+        );
+        assert!(
+            messages.contains("was kept so the connector it references stays consistent"),
+            "{messages}"
+        );
+        assert!(
+            messages.contains("provider reload"),
+            "the usable pair is reloaded:\n{messages}"
+        );
+        assert!(root.path().join("providers.d/univec.toml").is_file());
+        assert!(root.path().join("keys/univec.key").is_file());
+    }
+
+    /// Connector cleanup residue is a structured exit 3 for every key
+    /// source: an identical login key (JSON) and an inline key from stdin
+    /// (human), through the real binary with debug-build failpoints. The
+    /// residue — a staged copy of a connector that holds the inline key —
+    /// is named, nothing is reported as written, and no reload runs.
+    #[test]
+    fn connector_residue_is_a_structured_exit_3_for_every_key_source() {
+        use std::io::Write;
+        use std::process::Stdio;
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let root_arg = root.path().to_str().unwrap().to_string();
+        let residue_of = || {
+            std::fs::read_dir(root.path().join("providers.d"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.to_string_lossy().contains(".postvec.tmp"))
+        };
+
+        // Identical login key: the key is already in place from the first
+        // run; the second run adds a model and its connector rename fails
+        // with the staged copy left behind.
+        let first = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--model",
+                "cheap",
+                "--api-key-from-login",
+                "--no-verify",
+                "--base-url",
+                &mock.url,
+                "--path",
+                &root_arg,
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_API_KEY", KEY)
+            .output()
+            .unwrap();
+        assert_eq!(code(&first), 0, "{}", text(&first));
+        let before = std::fs::read_to_string(root.path().join("providers.d/univec.toml")).unwrap();
+        let out = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--model",
+                "big",
+                "--api-key-from-login",
+                "--no-verify",
+                "--base-url",
+                &mock.url,
+                "--path",
+                &root_arg,
+                "--acknowledge-in-use",
+                "--yes",
+                "--format",
+                "json",
+            ])
+            .env("NO_COLOR", "1")
+            .env("POSTVEC_API_KEY", KEY)
+            .env("POSTVEC_FAILPOINTS", "write-rename:1,stage-cleanup:1")
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 3, "{}", text(&out));
+        let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+        let messages = doc["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            messages.contains("INCOMPLETE")
+                && messages.contains("connector not written")
+                && messages.contains("credential residue"),
+            "{messages}"
+        );
+        assert!(
+            !messages.contains("wrote ") && !messages.contains("provider reload"),
+            "{messages}"
+        );
+        assert!(doc["applied"].as_array().unwrap().is_empty(), "{doc}");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("providers.d/univec.toml")).unwrap(),
+            before,
+            "the connector is unchanged"
+        );
+        assert!(
+            residue_of().is_some(),
+            "the staged copy is where the message says"
+        );
+        std::fs::remove_file(residue_of().unwrap()).unwrap();
+
+        // Inline key from stdin, human output: the staged copy holds that key.
+        let fresh = provider_root();
+        let mut child = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--model",
+                "cheap",
+                "--key-stdin",
+                "--no-verify",
+                "--base-url",
+                &mock.url,
+                "--path",
+                fresh.path().to_str().unwrap(),
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env_remove("POSTVEC_API_KEY")
+            .env("POSTVEC_FAILPOINTS", "write-rename:1,stage-cleanup:1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"uv_inline_stdin_key\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(code(&out), 3, "{}", text(&out));
+        let t = text(&out);
+        assert!(
+            t.contains("INCOMPLETE")
+                && t.contains("credential residue")
+                && t.contains("inline API key"),
+            "{t}"
+        );
+        assert!(
+            !t.contains("wrote ") && !t.contains("provider reload"),
+            "{t}"
+        );
+        let residue = std::fs::read_dir(fresh.path().join("providers.d"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.to_string_lossy().contains(".postvec.tmp"))
+            .expect("residue");
+        assert!(
+            std::fs::read_to_string(&residue)
+                .unwrap()
+                .contains("uv_inline_stdin_key"),
+            "the residue really holds the key"
+        );
+        assert!(!fresh.path().join("providers.d/univec.toml").exists());
+    }
+
+    /// `provider rm --model` rewrites the connector under the same cleanup
+    /// contract as `add`, driven through the real binary with debug-build
+    /// failpoints on a file that carries an INLINE key: (1) rename + cleanup
+    /// failure → exit 3, connector unchanged, residue named with the
+    /// inline-key warning and really holding the key, empty `applied`, no
+    /// reload; (2) staging + cleanup-sync failure → exit 3, durability
+    /// error, no reload; (3) a clean refusal → ordinary error; (4) rename
+    /// then failed directory sync → exit 3, removal recorded, reload
+    /// attempted because the rewritten connector is in place.
+    #[test]
+    fn provider_rm_rewrite_residue_is_a_structured_exit_3() {
+        use std::io::Write;
+        use std::process::Stdio;
+        let rt = runtime();
+        let mock = standard(&rt);
+        let root = provider_root();
+        let root_arg = root.path().to_str().unwrap().to_string();
+        let connector = root.path().join("providers.d/univec.toml");
+        let residue_of = || {
+            std::fs::read_dir(root.path().join("providers.d"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.to_string_lossy().contains(".postvec.tmp"))
+        };
+        // Two models, inline key from stdin.
+        let mut child = Command::new(binary())
+            .args([
+                "provider",
+                "add",
+                "univec",
+                "--model",
+                "cheap",
+                "--model",
+                "big",
+                "--key-stdin",
+                "--no-verify",
+                "--base-url",
+                &mock.url,
+                "--path",
+                &root_arg,
+                "--acknowledge-in-use",
+                "--yes",
+            ])
+            .env("NO_COLOR", "1")
+            .env_remove("POSTVEC_API_KEY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"uv_inline_rm_key_00\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(code(&out), 0, "{}", text(&out));
+        let before = std::fs::read_to_string(&connector).unwrap();
+        assert!(before.contains("uv_inline_rm_key_00"));
+        let rm = |failpoints: &str| {
+            Command::new(binary())
+                .args([
+                    "provider",
+                    "rm",
+                    "univec",
+                    "--model",
+                    "univec-big",
+                    "--path",
+                    &root_arg,
+                    "--acknowledge-in-use",
+                    "--yes",
+                    "--format",
+                    "json",
+                ])
+                .env("NO_COLOR", "1")
+                .env("POSTVEC_FAILPOINTS", failpoints)
+                .output()
+                .unwrap()
+        };
+        let messages_of = |out: &Output| -> (serde_json::Value, String) {
+            let doc: serde_json::Value = serde_json::from_str(&stdout(out)).expect("json");
+            let m = doc["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m.as_str().unwrap())
+                .collect::<Vec<_>>()
+                .join("\n");
+            (doc, m)
+        };
+
+        // (1) rename fails, cleanup fails.
+        let out = rm("write-rename:1,stage-cleanup:1");
+        assert_eq!(code(&out), 3, "{}", text(&out));
+        let (doc, m) = messages_of(&out);
+        assert!(
+            m.contains("INCOMPLETE") && m.contains("connector not rewritten"),
+            "{m}"
+        );
+        assert!(
+            m.contains("credential residue") && m.contains("inline API key"),
+            "{m}"
+        );
+        assert!(
+            !m.contains("removed univec-big") && !m.contains("provider reload"),
+            "{m}"
+        );
+        assert!(doc["applied"].as_array().unwrap().is_empty(), "{doc}");
+        assert_eq!(
+            std::fs::read_to_string(&connector).unwrap(),
+            before,
+            "original connector unchanged"
+        );
+        let residue = residue_of().expect("residue named");
+        assert!(
+            std::fs::read_to_string(&residue)
+                .unwrap()
+                .contains("uv_inline_rm_key_00"),
+            "the warning is factual"
+        );
+        std::fs::remove_file(&residue).unwrap();
+
+        // (2) staging fails, its cleanup sync fails.
+        let out = rm("stage-write:1,sync:1");
+        assert_eq!(code(&out), 3, "{}", text(&out));
+        let (_, m) = messages_of(&out);
+        assert!(
+            m.contains("not crash-durable") && m.contains("injected failure at sync"),
+            "{m}"
+        );
+        assert!(!m.contains("provider reload"), "{m}");
+        assert_eq!(std::fs::read_to_string(&connector).unwrap(), before);
+        assert!(residue_of().is_none());
+
+        // (3) a clean refusal: an ordinary error, nothing partial.
+        let out = rm("write-rename:1");
+        assert_eq!(code(&out), 1, "{}", text(&out));
+        assert!(!text(&out).contains("INCOMPLETE"), "{}", text(&out));
+        assert_eq!(std::fs::read_to_string(&connector).unwrap(), before);
+
+        // (4) rename ok, directory sync fails: rewritten, recorded, reloaded.
+        let out = rm("write-sync:1");
+        assert_eq!(code(&out), 3, "{}", text(&out));
+        let (_, m) = messages_of(&out);
+        assert!(
+            m.contains("written but not confirmed durable")
+                && m.contains("injected failure at write-sync"),
+            "{m}"
+        );
+        assert!(
+            m.contains("removed univec-big") && m.contains("provider reload"),
+            "{m}"
+        );
+        let after = std::fs::read_to_string(&connector).unwrap();
+        assert!(
+            !after.contains("univec-big") && after.contains("univec-cheap"),
+            "{after}"
+        );
+    }
+
     /// The manual converter flags stay usable and hidden; the selectors
     /// are documented; a bare `provider add univec` is accepted by clap.
     #[test]

@@ -472,7 +472,44 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         let id_or_name = args.model.as_deref().expect("partial removal has --model");
         let (removed, remaining) = doc.remove_model(id_or_name);
         debug_assert!(removed, "matched above");
-        doc.write(target.owner())?;
+        // The same cleanup contract as `provider add`: a staged copy of the
+        // connector (which may hold an inline key) that could not be
+        // removed, or a cleanup that is not crash-durable, is a partial
+        // outcome the result carries — never a bare error.
+        match doc.write(target.owner()) {
+            Ok(()) => {}
+            Err(write) if write.is_clean() => return Err(write.error),
+            Err(super::WriteError {
+                committed,
+                residue,
+                sync_error,
+                error,
+            }) => {
+                journal.incomplete(format!(
+                    "{}: {error}",
+                    if committed {
+                        "written but not confirmed durable"
+                    } else {
+                        "connector not rewritten"
+                    }
+                ));
+                if let Some(residue) = residue {
+                    journal.incomplete(format!(
+                        "credential residue: {} is a staged copy of the connector (it may hold an \
+                         inline API key) — remove it by hand",
+                        residue.display()
+                    ));
+                }
+                if let Some(e) = sync_error {
+                    journal.incomplete(format!("not crash-durable: {e}"));
+                }
+                if !committed {
+                    let result = finish(&target, plan, journal, Vec::new(), started, started_at);
+                    output.show_result(&result)?;
+                    return Ok(Exit::from_code(result.exit_code));
+                }
+            }
+        }
         journal.record(format!(
             "removed {id_or_name} from {} ({remaining} model(s) remain)",
             file_path.display()

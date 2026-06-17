@@ -845,7 +845,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // A key that changed without a usable connector beside it is a
     // terminal partial state: nothing is reported as written or served,
     // and no host is asked to reload what is not there.
-    if commit(&doc, &key, target.owner(), &mut journal)? == Commit::KeyOnly {
+    if commit(&doc, &key, target.owner(), &mut journal)? == Commit::Partial {
         let result = finish(&target, plan, journal, Vec::new(), started, started_at);
         output.show_result(&result)?;
         return Ok(Exit::from_code(result.exit_code));
@@ -964,11 +964,12 @@ pub(super) struct ConvertSpec {
 enum Commit {
     /// Key (if any) and connector are both in place.
     Both,
-    /// The key changed but no usable connector was committed. Every fact
-    /// about the key — its state, residue and durability — is in the
-    /// journal's incomplete entries; the caller must not report the
-    /// connector as written nor ask a host to reload.
-    KeyOnly,
+    /// No usable connector was committed and the filesystem is not exactly
+    /// as it was: the key changed, credential residue was left, or a
+    /// cleanup is not crash-durable. Every fact is in the journal's
+    /// incomplete entries; the caller must not report the connector as
+    /// written nor ask a host to reload.
+    Partial,
 }
 
 /// The two-file commit: the key file (bound to the state preflight
@@ -998,8 +999,7 @@ fn commit(
         destination,
     } = key
     else {
-        doc.write(owner)?;
-        return Ok(Commit::Both);
+        return connector_only(doc.write(owner), journal);
     };
     // `Some(token)` once this run has put a file there.
     let mut installed: Option<super::ApprovedFile> = None;
@@ -1024,10 +1024,37 @@ fn commit(
             };
             match super::install_secret_file(path, value.as_bytes(), owner, &guard) {
                 Ok(token) => installed = Some(token),
+                // A clean, durable refusal is an ordinary error. Residue
+                // or sync uncertainty is a partial outcome the result must
+                // carry, exactly like a key that went in.
                 Err(super::InstallError {
-                    state: super::InstallState::NotApplied { .. },
+                    state:
+                        super::InstallState::NotApplied {
+                            residue: None,
+                            sync_error: None,
+                        },
                     error,
                 }) => return Err(error),
+                Err(super::InstallError {
+                    state:
+                        super::InstallState::NotApplied {
+                            residue,
+                            sync_error,
+                        },
+                    error,
+                }) => {
+                    journal.incomplete(format!("key not installed: {error}"));
+                    if let Some(residue) = residue {
+                        journal.incomplete(format!(
+                            "credential residue: {} holds the new key — remove it by hand",
+                            residue.display()
+                        ));
+                    }
+                    if let Some(e) = sync_error {
+                        journal.incomplete(format!("not crash-durable: {e}"));
+                    }
+                    return Ok(Commit::Partial);
+                }
                 Err(super::InstallError {
                     state:
                         super::InstallState::Applied {
@@ -1064,6 +1091,7 @@ fn commit(
         Err(super::WriteError {
             committed: true,
             error,
+            ..
         }) => {
             record_key(journal);
             if let Some(e) = key_error {
@@ -1077,15 +1105,24 @@ fn commit(
             ));
             Ok(Commit::Both)
         }
-        Err(super::WriteError {
-            committed: false,
-            error,
-        }) => {
+        Err(
+            write @ super::WriteError {
+                committed: false, ..
+            },
+        ) => {
             let Some(token) = installed else {
-                // Identical: nothing of ours changed.
-                return Err(error);
+                // Identical: the key is untouched, so the connector's own
+                // cleanup state is the whole outcome.
+                return connector_only(Err(write), journal);
             };
+            let super::WriteError {
+                error,
+                residue,
+                sync_error,
+                ..
+            } = write;
             journal.incomplete(format!("connector not written: {error}"));
+            record_connector_cleanup(journal, residue, sync_error);
             if let Some(e) = key_error {
                 journal.incomplete(e.to_string());
             }
@@ -1094,8 +1131,61 @@ fn commit(
                     Ok(state) | Err(state) => state,
                 },
             );
-            Ok(Commit::KeyOnly)
+            Ok(Commit::Partial)
         }
+    }
+}
+
+/// A connector write with no key of ours in play (a non-login key source,
+/// or a login key already in place): success, a committed-but-unsynced
+/// file, a clean durable failure, or a partial one — a staged copy (which
+/// may hold an inline API key) that could not be removed, or a cleanup
+/// that is not crash-durable. The partial ones end `Commit::Partial`.
+fn connector_only(
+    outcome: std::result::Result<(), super::WriteError>,
+    journal: &mut ApplyJournal,
+) -> Result<Commit> {
+    match outcome {
+        Ok(()) => Ok(Commit::Both),
+        Err(super::WriteError {
+            committed: true,
+            error,
+            ..
+        }) => {
+            journal.incomplete(format!(
+                "{error}; confirm the file survived (sync the directory, or reboot-test) before \
+                 relying on it"
+            ));
+            Ok(Commit::Both)
+        }
+        Err(write) if write.is_clean() => Err(write.error),
+        Err(super::WriteError {
+            error,
+            residue,
+            sync_error,
+            ..
+        }) => {
+            journal.incomplete(format!("connector not written: {error}"));
+            record_connector_cleanup(journal, residue, sync_error);
+            Ok(Commit::Partial)
+        }
+    }
+}
+
+fn record_connector_cleanup(
+    journal: &mut ApplyJournal,
+    residue: Option<PathBuf>,
+    sync_error: Option<CliError>,
+) {
+    if let Some(residue) = residue {
+        journal.incomplete(format!(
+            "credential residue: {} is a staged copy of the connector (it may hold an inline \
+             API key) — remove it by hand",
+            residue.display()
+        ));
+    }
+    if let Some(e) = sync_error {
+        journal.incomplete(format!("not crash-durable: {e}"));
     }
 }
 
@@ -1548,7 +1638,7 @@ mod tests {
                 &mut journal
             )
             .unwrap(),
-            Commit::KeyOnly
+            Commit::Partial
         );
         let t = text(&journal);
         assert!(
@@ -1578,7 +1668,7 @@ mod tests {
                 &mut journal,
             )
             .unwrap(),
-            Commit::KeyOnly
+            Commit::Partial
         );
         assert!(
             text(&journal).contains("previous key was restored"),
@@ -1620,7 +1710,7 @@ mod tests {
             &mut journal,
         );
         super::super::set_failpoint(None);
-        assert_eq!(outcome.unwrap(), Commit::KeyOnly);
+        assert_eq!(outcome.unwrap(), Commit::Partial);
         let t = text(&journal);
         assert!(
             t.contains("injected failure at sync")
@@ -1654,6 +1744,155 @@ mod tests {
             journal.applied.len(),
             1,
             "the key record, with the connector written"
+        );
+    }
+
+    /// A refusal that left credential residue, or whose cleanup is not
+    /// crash-durable, is a partial outcome: `Commit::Partial`, the residue
+    /// and the sync error in the journal, nothing written or reported so.
+    #[test]
+    fn a_refusal_with_residue_or_sync_doubt_is_a_partial_outcome() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let providers = dir.path().join("providers.d");
+        std::fs::create_dir(&providers).unwrap();
+        std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let keys = dir.path().join("keys");
+        std::fs::create_dir(&keys).unwrap();
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = keys.join("univec.key");
+        let doc = ProviderFileDoc {
+            path: providers.join("univec.toml"),
+            value: toml::from_str(&format!(
+                "provider = \"univec\"\napi_key_file = \"{}\"\n\n[[models]]\nname = \"m\"\n\
+                 provider_model_id = \"m\"\ndim = 4\n",
+                path.display()
+            ))
+            .unwrap(),
+        };
+        let login = KeySpec::Login {
+            key: "uv_new_key_0000000".into(),
+            path: path.clone(),
+            destination: univec::Destination::Absent,
+        };
+        // A blocker appeared at the destination; the refusal's cleanup fails.
+        std::fs::write(&path, "blocker").unwrap();
+        super::super::set_failpoint(Some("stage-cleanup"));
+        let mut journal = ApplyJournal::default();
+        let outcome = commit(&doc, &login, None, &mut journal);
+        super::super::set_failpoint(None);
+        assert_eq!(outcome.unwrap(), Commit::Partial);
+        let t = journal.incomplete.join("\n");
+        assert!(
+            t.contains("key not installed") && t.contains("appeared since"),
+            "{t}"
+        );
+        assert!(
+            t.contains("credential residue") && t.contains("postvec.tmp"),
+            "{t}"
+        );
+        assert!(!doc.path.exists() && journal.applied.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "blocker");
+        for entry in std::fs::read_dir(&keys).unwrap().flatten() {
+            if entry.path() != path {
+                std::fs::remove_file(entry.path()).unwrap();
+            }
+        }
+        // The refusal cleanup succeeds but its directory sync fails.
+        super::super::set_failpoint(Some("sync"));
+        let mut journal = ApplyJournal::default();
+        let outcome = commit(&doc, &login, None, &mut journal);
+        super::super::set_failpoint(None);
+        assert_eq!(outcome.unwrap(), Commit::Partial);
+        let t = journal.incomplete.join("\n");
+        assert!(
+            t.contains("not crash-durable") && t.contains("injected failure at sync"),
+            "{t}"
+        );
+        // A clean, durable refusal stays an ordinary error.
+        let mut journal = ApplyJournal::default();
+        let err = commit(&doc, &login, None, &mut journal).unwrap_err();
+        assert!(err.to_string().contains("appeared since"), "{err}");
+        assert!(journal.incomplete.is_empty());
+    }
+
+    /// A connector write that never committed but left residue or an
+    /// unsynced cleanup is `Commit::Partial` for every key source — an
+    /// identical login key and a non-login source alike — with the residue
+    /// and cause in the journal; a clean failure stays an ordinary error.
+    #[test]
+    fn a_connector_refusal_with_residue_is_partial_for_every_key_source() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let providers = dir.path().join("providers.d");
+        std::fs::create_dir(&providers).unwrap();
+        std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let keys = dir.path().join("keys");
+        std::fs::create_dir(&keys).unwrap();
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = keys.join("univec.key");
+        write_secret_file(&path, b"uv_new_key_0000000", None).unwrap();
+        let doc = ProviderFileDoc {
+            path: providers.join("univec.toml"),
+            value: toml::from_str(
+                "provider = \"univec\"\napi_key = \"uv_inline_key_000\"\n\n[[models]]\nname = \"m\"\n\
+                 provider_model_id = \"m\"\ndim = 4\n",
+            )
+            .unwrap(),
+        };
+        let identical = KeySpec::Login {
+            key: "uv_new_key_0000000".into(),
+            path: path.clone(),
+            destination: univec::Destination::Identical(super::super::ApprovedFile::capture(
+                &std::fs::metadata(&path).unwrap(),
+                b"uv_new_key_0000000",
+            )),
+        };
+        let residue_of = || {
+            std::fs::read_dir(&providers)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| p.to_string_lossy().contains(".postvec.tmp"))
+        };
+        for key in [&identical, &KeySpec::Inline("uv_inline_key_000".into())] {
+            // Rename fails and the staged copy cannot be removed: partial,
+            // the residue (holding the inline key) named.
+            super::super::set_failpoints(&[("write-rename", 1), ("stage-cleanup", 1)]);
+            let mut journal = ApplyJournal::default();
+            let outcome = commit(&doc, key, None, &mut journal);
+            super::super::set_failpoint(None);
+            assert_eq!(outcome.unwrap(), Commit::Partial);
+            let t = journal.incomplete.join("\n");
+            assert!(
+                t.contains("connector not written") && t.contains("credential residue"),
+                "{t}"
+            );
+            assert!(t.contains("inline API key"), "{t}");
+            assert!(journal.applied.is_empty() && !doc.path.exists());
+            std::fs::remove_file(residue_of().unwrap()).unwrap();
+            // Staging fails and its cleanup is not crash-durable: partial.
+            super::super::set_failpoints(&[("stage-write", 1), ("sync", 1)]);
+            let mut journal = ApplyJournal::default();
+            let outcome = commit(&doc, key, None, &mut journal);
+            super::super::set_failpoint(None);
+            assert_eq!(outcome.unwrap(), Commit::Partial);
+            assert!(journal.incomplete.join("\n").contains("not crash-durable"));
+            assert!(residue_of().is_none());
+            // A clean, durable failure stays an ordinary error.
+            super::super::set_failpoint(Some("write-rename"));
+            let mut journal = ApplyJournal::default();
+            let err = commit(&doc, key, None, &mut journal).unwrap_err();
+            super::super::set_failpoint(None);
+            assert!(err.to_string().contains("cannot move"), "{err}");
+            assert!(journal.incomplete.is_empty());
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "uv_new_key_0000000",
+            "the identical key is untouched"
         );
     }
 
