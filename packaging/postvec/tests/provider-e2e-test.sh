@@ -124,19 +124,61 @@ mock_state() { # <field>
 # The bundled model's width, from the cluster's own model cache — the mock's
 # catalogue advertises the converter at that dimension, so scenario H follows
 # the bundle rather than a hard-coded number.
+#
+# `missing`  — no cache row yet. The worker writes a heartbeat before the
+#              engine has finished loading, and the first discovery refresh
+#              is delayed up to 15 s; this is a wait, not a failure.
+# `no-dim`   — the row is there but target_dim is NULL/non-positive: the
+#              cache is broken, fail now.
+# otherwise  — a positive width.
 bundled_model_dim() {
-    dbsql "SELECT target_dim FROM postvec.models WHERE name = '${BUNDLED_MODEL_NAME}'" 2>/dev/null
+    dbsql "SELECT coalesce(
+              (SELECT CASE
+                        WHEN target_dim IS NULL OR target_dim <= 0 THEN 'no-dim'
+                        ELSE target_dim::text
+                      END
+                 FROM postvec.models WHERE name = '${BUNDLED_MODEL_NAME}'),
+              'missing')" 2>/dev/null
+}
+
+wait_for_bundled_dim() {
+    local deadline=$(( SECONDS + ${1:-180} )) state
+    while (( SECONDS < deadline )); do
+        # Poke discovery so we do not sit out the worker's 60 s cadence
+        # once the loopback /config is up. Errors while the engine is
+        # still loading are expected and swallowed.
+        dbsql "SELECT postvec.refresh_models()" >/dev/null 2>&1 || true
+        state="$(bundled_model_dim)"
+        case "${state}" in
+        missing|'') ;;
+        no-dim)
+            die "postvec.models has ${BUNDLED_MODEL_NAME} but no usable target_dim"
+            ;;
+        *)
+            if [[ "${state}" =~ ^[1-9][0-9]*$ && "${state}" -le 16000 ]]; then
+                if [[ -n "${MODEL_TARGET_DIM:-}" && "${state}" != "${MODEL_TARGET_DIM}" ]]; then
+                    die "postvec.models.target_dim for ${BUNDLED_MODEL_NAME} is ${state}, bundle facts say ${MODEL_TARGET_DIM}"
+                fi
+                BUNDLED_MODEL_DIM="${state}"
+                return 0
+            fi
+            die "postvec.models has no usable target_dim for ${BUNDLED_MODEL_NAME} (got '${state}')"
+            ;;
+        esac
+        sleep 2
+    done
+    echo "timed out waiting for ${BUNDLED_MODEL_NAME} in postvec.models" >&2
+    echo "  cache: $(dbsql "SELECT coalesce(string_agg(name, ' '), '(none)') FROM postvec.models" 2>&1 | head -2)" >&2
+    return 1
 }
 
 start_mock() {
-    local dim
-    dim="$(bundled_model_dim)"
-    # No fallback: a missing or malformed width means the model cache is
-    # broken, and that is a failure, not a MiniLM-shaped coincidence.
-    [[ "${dim}" =~ ^[1-9][0-9]*$ && "${dim}" -le 16000 ]] \
-        || die "postvec.models has no usable target_dim for ${BUNDLED_MODEL_NAME} (got '${dim}')"
-    BUNDLED_MODEL_DIM="${dim}"
-    docker exec -d "${SRV}" python3 /provider-mock.py "${MOCK_PORT}" "${BUNDLED_MODEL_NAME}" "${dim}"
+    # A restart (scenario G, remote) already measured the width.
+    if [[ -z "${BUNDLED_MODEL_DIM}" ]]; then
+        wait_for_bundled_dim 180 \
+            || die "postvec.models has no usable target_dim for ${BUNDLED_MODEL_NAME} (got '$(bundled_model_dim)')"
+    fi
+    docker exec -d "${SRV}" python3 /provider-mock.py "${MOCK_PORT}" "${BUNDLED_MODEL_NAME}" "${BUNDLED_MODEL_DIM}"
     wait_for "the provider mock answers /healthz" 30 mock_healthy
 }
 
@@ -258,6 +300,7 @@ setup_package() {
         --env "PG_MAJOR=${PG_MAJOR}" \
         --env "POSTVEC_VERSION=${POSTVEC_VERSION}" \
         --env "BUNDLED_MODEL_NAME=${MODEL_NAME}" \
+        --env "BUNDLED_MODEL_TARGET_DIM=${MODEL_TARGET_DIM}" \
         --env "DIST_FAMILY=${DIST_FAMILY}" \
         --env DEBIAN_FRONTEND=noninteractive \
         "${DIST_BASE_IMAGE}" sleep infinity >/dev/null
@@ -701,7 +744,9 @@ scenario_H_hosted_conversion() {
     mid="$(dbsql "SELECT postvec.migrate('e2e_convert','body', new_model => '${BUNDLED_MODEL_NAME}', strategy => 'convert')")"
     [[ -n "${mid}" ]] && ok "migrate(strategy => 'convert') accepted (id ${mid})" \
                       || { bad "migrate() returned nothing"; return; }
-    via="$(dbsql "SELECT resolved_via->>'model' FROM postvec.migration_status(${mid})")"
+    # migration_status() returns resolved_via as text (the jsonb column
+    # cast to text); the ->> operator needs jsonb.
+    via="$(dbsql "SELECT resolved_via::jsonb->>'model' FROM postvec.migration_status(${mid})")"
     [[ "${via}" == univec-convert-* ]] \
         && ok "resolved_via names the hosted converter (${via})" \
         || bad "resolved_via is '${via}'"

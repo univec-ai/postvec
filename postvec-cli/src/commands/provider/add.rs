@@ -842,7 +842,14 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             doc.set_model_dim(&model.public_name, dim)?;
         }
     }
-    commit(&doc, &key, target.owner(), &mut journal)?;
+    // A key that changed without a usable connector beside it is a
+    // terminal partial state: nothing is reported as written or served,
+    // and no host is asked to reload what is not there.
+    if commit(&doc, &key, target.owner(), &mut journal)? == Commit::KeyOnly {
+        let result = finish(&target, plan, journal, Vec::new(), started, started_at);
+        output.show_result(&result)?;
+        return Ok(Exit::from_code(result.exit_code));
+    }
     journal.record(format!("wrote {} (0600)", file_path.display()));
     for model in &new_models {
         let shape = match &model.convert {
@@ -952,25 +959,39 @@ pub(super) struct ConvertSpec {
     pub source_dim: u32,
 }
 
+/// What the two-file commit left behind.
+#[derive(Debug, PartialEq, Eq)]
+enum Commit {
+    /// Key (if any) and connector are both in place.
+    Both,
+    /// The key changed but no usable connector was committed. Every fact
+    /// about the key — its state, residue and durability — is in the
+    /// journal's incomplete entries; the caller must not report the
+    /// connector as written nor ask a host to reload.
+    KeyOnly,
+}
+
 /// The two-file commit: the key file (bound to the state preflight
 /// approved), then the connector. The recovery matrix:
 ///
 /// - key not applied → the error, nothing to undo;
 /// - key applied but not durable, or with a displaced file left beside it
 ///   → never rolled back (a rename has happened); the connector is still
-///   written so the pair stays consistent, and the run ends incomplete
-///   naming the exact recovery path;
-/// - key applied cleanly, connector fails *before* its rename → the key is
-///   rolled back under a guard bound to the installed file's token (a
-///   changed file is retained, and said so);
+///   attempted so the pair can match; if that fails before its rename the
+///   run ends `KeyOnly` with both errors and the full key state recorded;
+/// - key applied cleanly, connector fails *before* its rename → a copied
+///   key is retained (a rerun reuses it; there is no atomic conditional
+///   unlink, and check-then-unlink is the race the guarded install
+///   removed), a rotated key is restored through the guarded exchange bound
+///   to the installed file's token; either way the run ends `KeyOnly`;
 /// - connector fails *after* its rename (directory sync) → the key stays,
-///   the run ends incomplete naming the sync.
+///   the run ends incomplete naming the sync, `Both`.
 fn commit(
     doc: &ProviderFileDoc,
     key: &KeySpec,
     owner: Option<super::FileOwner>,
     journal: &mut ApplyJournal,
-) -> Result<()> {
+) -> Result<Commit> {
     let KeySpec::Login {
         key: value,
         path,
@@ -978,10 +999,11 @@ fn commit(
     } = key
     else {
         doc.write(owner)?;
-        return Ok(());
+        return Ok(Commit::Both);
     };
-    // `Some(token)` when this run put a file there and may undo it.
-    let mut undo: Option<super::ApprovedFile> = None;
+    // `Some(token)` once this run has put a file there.
+    let mut installed: Option<super::ApprovedFile> = None;
+    let mut key_error: Option<CliError> = None;
     let (verb, prep) = match destination {
         univec::Destination::Identical(approved) => {
             if !approved.still_is(path)? {
@@ -1001,69 +1023,101 @@ fn commit(
                 _ => (super::InstallGuard::NoReplace, ("copied", "to")),
             };
             match super::install_secret_file(path, value.as_bytes(), owner, &guard) {
-                Ok(token) => undo = Some(token),
+                Ok(token) => installed = Some(token),
                 Err(super::InstallError {
                     state: super::InstallState::NotApplied { .. },
                     error,
                 }) => return Err(error),
                 Err(super::InstallError {
-                    state: super::InstallState::Applied { .. },
+                    state:
+                        super::InstallState::Applied {
+                            installed: token, ..
+                        },
                     error,
                 }) => {
-                    // The key is in place; from here the only consistent
+                    // The key is in place, imperfectly; the only consistent
                     // outcome is a connector that references it.
-                    journal.incomplete(format!(
-                        "{error}; the connector is written to match and nothing is rolled back"
-                    ));
+                    installed = Some(token);
+                    key_error = Some(error);
                 }
             }
             verb
         }
     };
-    journal.record(format!(
-        "{verb} the postvec login key {prep} {} (0600); `postvec logout` does not remove it",
-        path.display()
-    ));
+    let record_key = |journal: &mut ApplyJournal| {
+        journal.record(format!(
+            "{verb} the postvec login key {prep} {} (0600); `postvec logout` does not remove it",
+            path.display()
+        ));
+    };
     match doc.write(owner) {
-        Ok(()) => Ok(()),
-        Err(super::WriteError {
-            committed: false,
-            error,
-        }) => match undo {
-            None => Err(error),
-            Some(token) => Err(rollback_key(path, destination, &token, owner, error)),
-        },
+        Ok(()) => {
+            record_key(journal);
+            if let Some(e) = key_error {
+                journal.incomplete(format!(
+                    "{e}; the connector was written to match — confirm the key file survived \
+                     before relying on it"
+                ));
+            }
+            Ok(Commit::Both)
+        }
         Err(super::WriteError {
             committed: true,
             error,
         }) => {
+            record_key(journal);
+            if let Some(e) = key_error {
+                journal.incomplete(e.to_string());
+            }
             journal.incomplete(format!(
                 "{error}; {} was kept so the connector it references stays consistent — \
                  confirm both files survived (sync the directory, or reboot-test) before \
                  relying on them",
                 path.display()
             ));
-            Ok(())
+            Ok(Commit::Both)
+        }
+        Err(super::WriteError {
+            committed: false,
+            error,
+        }) => {
+            let Some(token) = installed else {
+                // Identical: nothing of ours changed.
+                return Err(error);
+            };
+            journal.incomplete(format!("connector not written: {error}"));
+            if let Some(e) = key_error {
+                journal.incomplete(e.to_string());
+            }
+            journal.incomplete(
+                match key_state_after_failure(&token, path, owner, destination) {
+                    Ok(state) | Err(state) => state,
+                },
+            );
+            Ok(Commit::KeyOnly)
         }
     }
 }
 
-/// Undo a key install after a connector write that never committed, bound
-/// to `installed`: a destination that is no longer that exact file is
-/// retained. The returned error states what the key file's state is —
-/// removed, restored, restored but unsynced, or retained — beside the
-/// connector error that caused the undo.
-fn rollback_key(
-    path: &std::path::Path,
-    destination: &univec::Destination,
+/// After a connector that never committed: what the key file's state is
+/// now. A copied key is retained and named (a rerun reuses it). A rotated
+/// key is restored through the guarded exchange bound to the installed
+/// file's token; a changed destination is retained and said so; a restore
+/// whose sync failed is reported as restored-but-not-durable. `Err` marks
+/// the outcomes where the previous key is NOT back in place.
+fn key_state_after_failure(
     installed: &super::ApprovedFile,
+    path: &std::path::Path,
     owner: Option<super::FileOwner>,
-    cause: CliError,
-) -> CliError {
-    let outcome = match destination {
-        univec::Destination::Identical(_) => return cause,
-        univec::Destination::Absent => super::remove_if_still(path, installed)
-            .map(|()| format!("the copied key at {} was removed again", path.display())),
+    destination: &univec::Destination,
+) -> std::result::Result<String, String> {
+    match destination {
+        univec::Destination::Identical(_) => Ok(String::new()),
+        univec::Destination::Absent => Ok(format!(
+            "the copied key at {} was KEPT (a rerun reuses it; remove it by hand if you abandon \
+             the connector)",
+            path.display()
+        )),
         univec::Destination::Rotate { old, .. } => {
             match super::install_secret_file(
                 path,
@@ -1071,10 +1125,7 @@ fn rollback_key(
                 owner,
                 &super::InstallGuard::Exact(installed.clone()),
             ) {
-                Ok(_) => Ok(format!(
-                    "the previous key was restored at {}",
-                    path.display()
-                )),
+                Ok(_) => Ok(format!("the previous key was restored at {}", path.display())),
                 Err(super::InstallError {
                     state: super::InstallState::Applied { .. },
                     error,
@@ -1082,16 +1133,12 @@ fn rollback_key(
                     "the previous key was restored at {} but: {error}",
                     path.display()
                 )),
-                Err(super::InstallError { error, .. }) => Err(error),
+                Err(super::InstallError { error, .. }) => Err(format!(
+                    "the NEW key at {} was RETAINED because it could not be safely restored: {error}",
+                    path.display()
+                )),
             }
         }
-    };
-    match outcome {
-        Ok(state) => CliError::apply(format!("{cause}; {state}")),
-        Err(r) => CliError::apply(format!(
-            "{cause}; the new key at {} was RETAINED because it could not be safely undone: {r}",
-            path.display()
-        )),
     }
 }
 
@@ -1450,12 +1497,15 @@ mod tests {
     use super::super::write_secret_file;
     use super::*;
 
-    /// The two-file commit against real failures: a connector write that
-    /// cannot even stage (read-only providers.d) rolls the key back for
-    /// every destination state; the post-rename sync failure is the
-    /// `committed: true` branch, which keeps the key and ends incomplete.
+    /// The two-file commit against real failures. A connector that cannot
+    /// even stage (read-only providers.d) is `committed: false`: a copied
+    /// key is KEPT and named, a rotated key is restored through the guarded
+    /// exchange, an identical key is untouched; every case ends `KeyOnly`
+    /// with both facts in the journal, and nothing is reported as written.
+    /// With the key itself imperfectly applied (post-rename sync failure,
+    /// injected), the key state travels into the same journal.
     #[test]
-    fn a_connector_write_that_never_committed_rolls_the_key_back() {
+    fn a_connector_that_never_committed_leaves_the_key_state_in_the_journal() {
         use std::os::unix::fs::PermissionsExt;
         if unsafe { libc::geteuid() } == 0 {
             return; // root ignores the read-only directory this relies on
@@ -1486,41 +1536,64 @@ mod tests {
             path: path.clone(),
             destination,
         };
+        let text = |journal: &ApplyJournal| journal.incomplete.join("\n");
+
+        // Absent: the copied key is kept and named; KeyOnly.
         let mut journal = ApplyJournal::default();
+        assert_eq!(
+            commit(
+                &doc,
+                &login(univec::Destination::Absent),
+                None,
+                &mut journal
+            )
+            .unwrap(),
+            Commit::KeyOnly
+        );
+        let t = text(&journal);
+        assert!(
+            t.contains("connector not written") && t.contains("cannot create"),
+            "{t}"
+        );
+        assert!(t.contains("was KEPT"), "{t}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "uv_new_key_0000000"
+        );
+        assert!(journal.applied.is_empty(), "nothing is reported as written");
 
-        // Absent: the created key is removed again.
-        let err = commit(
-            &doc,
-            &login(univec::Destination::Absent),
-            None,
-            &mut journal,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("cannot create"), "{err}");
-        assert!(!path.exists(), "the created key was rolled back");
-
-        // Rotate: the old bytes come back.
+        // Rotate: the old bytes come back through the guarded exchange.
+        std::fs::remove_file(&path).unwrap();
         write_secret_file(&path, b"uv_old_complete_key", None).unwrap();
         let approved = approved_of(b"uv_old_complete_key");
-        let err = commit(
-            &doc,
-            &login(univec::Destination::Rotate {
-                approved,
-                old: "uv_old_complete_key".into(),
-            }),
-            None,
-            &mut journal,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("cannot create"), "{err}");
+        let mut journal = ApplyJournal::default();
+        assert_eq!(
+            commit(
+                &doc,
+                &login(univec::Destination::Rotate {
+                    approved,
+                    old: "uv_old_complete_key".into(),
+                }),
+                None,
+                &mut journal,
+            )
+            .unwrap(),
+            Commit::KeyOnly
+        );
+        assert!(
+            text(&journal).contains("previous key was restored"),
+            "{}",
+            text(&journal)
+        );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "uv_old_complete_key"
         );
 
-        // Identical: untouched.
+        // Identical: untouched, and an ordinary error (nothing of ours changed).
         std::fs::write(&path, "uv_new_key_0000000").unwrap();
         let approved = approved_of(b"uv_new_key_0000000");
+        let mut journal = ApplyJournal::default();
         let err = commit(
             &doc,
             &login(univec::Destination::Identical(approved)),
@@ -1534,19 +1607,66 @@ mod tests {
             "uv_new_key_0000000"
         );
         assert!(journal.incomplete.is_empty());
+
+        // Key applied but not durable (injected), then the connector fails:
+        // both errors and the key state are in the journal.
+        std::fs::remove_file(&path).unwrap();
+        super::super::set_failpoint(Some("sync"));
+        let mut journal = ApplyJournal::default();
+        let outcome = commit(
+            &doc,
+            &login(univec::Destination::Absent),
+            None,
+            &mut journal,
+        );
+        super::super::set_failpoint(None);
+        assert_eq!(outcome.unwrap(), Commit::KeyOnly);
+        let t = text(&journal);
+        assert!(
+            t.contains("injected failure at sync")
+                && t.contains("connector not written")
+                && t.contains("was KEPT"),
+            "{t}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "uv_new_key_0000000"
+        );
+
+        // …and with a connector that does commit, the key's own error rides
+        // along as an incomplete entry while the connector is written to match.
         std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        super::super::set_failpoint(Some("sync"));
+        let mut journal = ApplyJournal::default();
+        let outcome = commit(
+            &doc,
+            &login(univec::Destination::Absent),
+            None,
+            &mut journal,
+        );
+        super::super::set_failpoint(None);
+        assert_eq!(outcome.unwrap(), Commit::Both);
+        let t = text(&journal);
+        assert!(t.contains("injected failure at sync"), "{t}");
+        assert!(doc.path.exists() && path.exists());
+        assert_eq!(
+            journal.applied.len(),
+            1,
+            "the key record, with the connector written"
+        );
     }
 
-    /// Rollback is bound to the installed file's token: a key that was
-    /// replaced or edited between install and rollback is retained (and
-    /// the error says so); the installed one is removed or restored.
+    /// The rotation restore is bound to the installed file's token: a key
+    /// that was replaced or edited between install and restore is retained,
+    /// and the message says so; the installed one is restored. A copied key
+    /// is never unlinked: it is kept and named.
     #[test]
-    fn rollback_never_touches_a_key_it_did_not_install() {
+    fn a_rotation_restore_never_touches_a_key_it_did_not_install() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let path = dir.path().join("univec.key");
-        let cause = || CliError::apply("connector write failed");
         let install = |bytes: &[u8]| {
             let _ = std::fs::remove_file(&path);
             super::super::install_secret_file(
@@ -1557,49 +1677,27 @@ mod tests {
             )
             .unwrap()
         };
-
-        // Absent: replaced → retained; same-inode edit → retained; intact → removed.
-        let token = install(b"uv_new");
-        std::fs::remove_file(&path).unwrap();
-        write_secret_file(&path, b"uv_theirs", None).unwrap();
-        let err =
-            rollback_key(&path, &univec::Destination::Absent, &token, None, cause()).to_string();
-        assert!(
-            err.contains("RETAINED") && err.contains("connector write failed"),
-            "{err}"
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"uv_theirs");
-        let token = install(b"uv_new");
-        std::fs::write(&path, b"uv_edited").unwrap();
-        let err =
-            rollback_key(&path, &univec::Destination::Absent, &token, None, cause()).to_string();
-        assert!(err.contains("RETAINED"), "{err}");
-        assert_eq!(std::fs::read(&path).unwrap(), b"uv_edited");
-        let token = install(b"uv_new");
-        let err =
-            rollback_key(&path, &univec::Destination::Absent, &token, None, cause()).to_string();
-        assert!(err.contains("removed again"), "{err}");
-        assert!(!path.exists());
-
-        // Rotate: replaced → retained; intact → the old bytes come back.
         let rotate = |token: super::super::ApprovedFile| univec::Destination::Rotate {
             approved: token,
             old: "uv_old_complete".into(),
         };
         let token = install(b"uv_new");
         std::fs::write(&path, b"uv_edited").unwrap();
-        let err = rollback_key(&path, &rotate(token.clone()), &token, None, cause()).to_string();
+        let err = key_state_after_failure(&token, &path, None, &rotate(token.clone())).unwrap_err();
         assert!(err.contains("RETAINED"), "{err}");
         assert_eq!(std::fs::read(&path).unwrap(), b"uv_edited");
         let token = install(b"uv_new");
-        let err = rollback_key(&path, &rotate(token.clone()), &token, None, cause()).to_string();
-        assert!(err.contains("previous key was restored"), "{err}");
+        let ok = key_state_after_failure(&token, &path, None, &rotate(token.clone())).unwrap();
+        assert!(ok.contains("previous key was restored"), "{ok}");
         assert_eq!(std::fs::read(&path).unwrap(), b"uv_old_complete");
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             1,
             "no residue"
         );
+        let absent =
+            key_state_after_failure(&token, &path, None, &univec::Destination::Absent).unwrap();
+        assert!(absent.contains("KEPT") && path.exists(), "{absent}");
     }
 
     #[test]

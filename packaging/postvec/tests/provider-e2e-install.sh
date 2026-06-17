@@ -12,6 +12,7 @@
 # has to reach a serving state).
 #
 # Inputs (environment): PG_MAJOR, POSTVEC_VERSION, BUNDLED_MODEL_NAME,
+# BUNDLED_MODEL_TARGET_DIM (optional; when set, the cache width must match),
 # DIST_FAMILY. Packages are at /packages.
 
 set -Eeuo pipefail
@@ -103,4 +104,28 @@ if [[ "${beat:-}" != t ]]; then
     exit 1
 fi
 
-echo "== provider-e2e install: READY (PG ${PG_MAJOR}, ${DIST_FAMILY})"
+# Heartbeat is not enough: the worker writes it before the engine has
+# finished loading MiniLM, and the first discovery refresh is delayed.
+# The image healthcheck already waits for this row; the package cell must
+# too, or the host-side mock cannot size its UniVec catalogue.
+echo "== provider-e2e install: waiting for ${BUNDLED_MODEL_NAME} in postvec.models"
+cache_dim=""
+for _ in $(seq 1 90); do
+    psql_ "-c 'SELECT postvec.refresh_models()'" >/dev/null 2>&1 || true
+    cache_dim="$(psql_ "-c \"SELECT coalesce(target_dim::text, '') FROM postvec.models WHERE name = '${BUNDLED_MODEL_NAME}'\"" 2>/dev/null || true)"
+    [[ "${cache_dim}" =~ ^[1-9][0-9]*$ ]] && break
+    sleep 2
+done
+if [[ ! "${cache_dim}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "bundled model never reached postvec.models with a usable target_dim:" >&2
+    echo "  cache: $(psql_ "-c \"SELECT coalesce(string_agg(name, ' '), '(none)') FROM postvec.models\"" 2>&1 | head -2)" >&2
+    echo "  engine log:" >&2
+    grep -iE 'postvec|engine|onnx' /tmp/pg.log | tail -15 >&2 || true
+    exit 1
+fi
+if [[ -n "${BUNDLED_MODEL_TARGET_DIM:-}" && "${cache_dim}" != "${BUNDLED_MODEL_TARGET_DIM}" ]]; then
+    echo "postvec.models.target_dim=${cache_dim} for ${BUNDLED_MODEL_NAME}, expected ${BUNDLED_MODEL_TARGET_DIM}" >&2
+    exit 1
+fi
+
+echo "== provider-e2e install: READY (PG ${PG_MAJOR}, ${DIST_FAMILY}, dim ${cache_dim})"
