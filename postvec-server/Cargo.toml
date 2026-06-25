@@ -14,7 +14,7 @@ name = "postvec-server"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-description = "Standalone inference node for postvec's remote mode: gRPC embeddings/conversions plus /config discovery, with no model hub."
+description = "Standalone inference node for postvec's remote mode: gRPC and HTTP embeddings/conversions, an OpenAI-compatible embeddings adaptor, /config discovery, and an optional dashboard."
 license = "BUSL-1.1"
 repository = "https://github.com/univec-ai/postvec"
 homepage = "https://github.com/univec-ai/postvec/tree/main/postvec-server"
@@ -75,6 +75,10 @@ axum = { version = "0.7", default-features = false, features = [
 ] }
 axum-server = { version = "0.7", default-features = false, features = [
     "tls-openssl",
+] }
+tower-http = { version = "0.5", default-features = false, features = [
+    "cors",
+    "fs",
 ] }
 
 # Cluster membership.

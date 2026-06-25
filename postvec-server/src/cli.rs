@@ -19,8 +19,10 @@ pub const DEFAULT_ADMIN_PORT: u16 = 22223;
     about = "Inference node for postvec's remote (grpc) mode",
     long_about = "\
 Serves postvec's remote mode: the inference gRPC contract (EmbedTexts, \
-ConvertEmbeddings) plus the GET /config discovery envelope, backed by ONNX \
-models already present under <root>/models.
+ConvertEmbeddings), GET /config discovery, HTTP /api/{model} (native) and \
+/api/openai/embeddings (OpenAI-compatible), backed by ONNX models already \
+present under <root>/models. An optional dashboard is served from the same \
+HTTP port when a built web-ui is found.
 
 This process has no model hub and never downloads weights. Put models on disk \
 with `postvec model pull`, a shared volume, or your own copy step.
@@ -210,6 +212,14 @@ pub struct ServeArgs {
     /// Log filter, when RUST_LOG is unset. [default: info]
     #[arg(long = "log-level", value_name = "FILTER")]
     pub log_level: Option<String>,
+
+    /// Directory of a built dashboard (must contain index.html).
+    ///
+    /// [env: POSTVEC_SERVER_WEB_UI]
+    /// [default: <root>/web-ui/dist, then next to the binary, then
+    /// /usr/share/postvec-server/web-ui]
+    #[arg(long = "web-ui", value_name = "DIR")]
+    pub web_ui: Option<PathBuf>,
 }
 
 /// Flags shared by the node-local client subcommands. They talk to

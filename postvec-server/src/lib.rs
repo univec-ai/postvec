@@ -10,7 +10,8 @@
 //!               |  postvec-server                      |
 //!               |    InferenceEngine over disk models  |
 //!               |    gossip :11111   admin :22223 (lo) |
-//!               |    no hub, no S3, no UI              |
+//!               |    HTTP /api/{model} + OpenAI adaptor|
+//!               |    optional SPA on the HTTP port     |
 //!               +--------------+-----------------------+
 //!                              | gossip, identical ports
 //!                     other postvec-server nodes
@@ -25,6 +26,7 @@
 //! node that cannot see its peers still serves every client that can see it.
 
 pub mod admin;
+pub mod api;
 pub mod cli;
 pub mod client;
 pub mod cluster;

@@ -40,9 +40,11 @@ changes is where the model runs.
   model that is not on disk is a refusal. Put models there with
   `postvec model pull`, a shared volume, or whatever copy step you already
   have.
-- **Not a public API.** No authentication, no billing, no `/v1/embed`. It is
-  dialed on a trusted private network, exactly as the extension's GUC help
-  says.
+- **Not a public API.** No authentication and no billing. HTTP
+  (`/api/{model}`, `/api/openai/embeddings`) is there so a dashboard and an
+  OpenAI-shaped client can talk to the same engine the database already
+  uses. It is still dialed on a trusted private network, exactly as the
+  extension's GUC help says.
 - **Not a control plane.** Every node is identical, binds the same ports and
   runs the same command. Gossip answers one question — who else is alive — and
   replicates nothing.
@@ -52,7 +54,7 @@ changes is where the model runs.
 | Port | Protocol | Bound to | Purpose |
 |---|---|---|---|
 | `33333` | gRPC, plaintext | `--bind` (default `0.0.0.0`) | `EmbedTexts`, `ConvertEmbeddings` |
-| `22222` | HTTPS | `--bind` | `/config`, `/health`, `/ready`, `/metrics` |
+| `22222` | HTTPS | `--bind` | `/config`, `/health`, `/ready`, `/metrics`, `/api/{model}`, `/api/openai/embeddings`, optional UI |
 | `11111` | TCP gossip | all interfaces | cluster membership |
 | `22223` | HTTP | `127.0.0.1` only | `/admin/load`, `/admin/unload` |
 
@@ -132,6 +134,25 @@ degraded, `2` unreachable.
 After `postvec model pull` and `postvec model activate`, a model is on disk but
 not resident — `/config` advertises what the node can serve *now*. Run
 `postvec-server load <model>` (or restart) to make it visible to discovery.
+
+### HTTP inference
+
+Same engine as gRPC, on the discovery port.
+
+| Route | Body | Response |
+|---|---|---|
+| `GET /api/{model}` | — | Native envelope with the model's layer overview |
+| `POST /api/{model}` | Native JSON (`texts` for embed models, `embeddings` for converters; keys follow `executor.inputs`) | `{success, data}` or `{success, error:{message}}`. HTTP stays 200 so a dashboard can treat the envelope as the contract |
+| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` (`input` as a string or array of strings; optional `encoding_format`, `dimensions`, `input_type`) | OpenAI `{object, data, model, usage}`. Errors use `{error:{message, type}}` and a real HTTP status |
+
+The OpenAI route is an adaptor: it rewrites `input` → `texts`, drops the
+`postvec/` / `univec/` prefix from `model`, and posts the result through the
+same executor path as `POST /api/{model}`. Token-ID inputs are refused.
+
+A built dashboard (see [web-ui/](web-ui/)) is served from this port when
+`index.html` is found: `--web-ui DIR`, `POSTVEC_SERVER_WEB_UI`, `web_ui` in
+the config file, `<root>/web-ui/dist`, next to the binary, or
+`/usr/share/postvec-server/web-ui`.
 
 ### Health
 

@@ -1,22 +1,30 @@
-//! Public HTTP listener: discovery, health and metrics. Nothing here mutates.
-//! Admin routes live on the loopback listener in [`crate::admin`].
+//! Public HTTP listener: discovery, health, metrics, native `/api/{model}`,
+//! the OpenAI embeddings adaptor, and the optional SPA.
+//!
+//! Admin mutation routes live on the loopback listener in [`crate::admin`].
 //!
 //! `GET /config` `data.models` is the compatibility surface: an array of
 //! `{name, status, configuration}`. Additions are safe. Renaming or nesting
 //! `models` is not. The list is what is loaded now, not what is on disk.
 
+use crate::api;
+use crate::cluster::ClusterMember;
 use crate::metrics::Snapshot;
 use crate::models;
 use crate::state::ServerState;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use engine::{InferenceEngine, ModelConfiguration};
 use serde_json::{json, Map, Value};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 
 /// How long a graceful shutdown waits for in-flight HTTP work.
 pub const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -118,11 +126,31 @@ fn server_object(state: &ServerState) -> Value {
     })
 }
 
+/// This node, as a cluster member. Used when gossip is down so the UI still
+/// has a peer to send `/api/{model}` at (this process).
+fn current_member(state: &ServerState) -> ClusterMember {
+    ClusterMember {
+        address: state.identity.api_address.clone(),
+        grpc: state.identity.grpc_address.clone(),
+        group: state.settings.group.clone(),
+        status: "Alive".to_string(),
+        frontend_address: Some(state.identity.frontend.clone()),
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        current: true,
+    }
+}
+
 async fn cluster_object(state: &ServerState) -> Value {
-    let nodes = match &state.cluster {
-        Some(cluster) => serde_json::to_value(cluster.members().await).unwrap_or(json!([])),
-        None => json!([]),
+    let mut nodes = match &state.cluster {
+        Some(cluster) => cluster.members().await,
+        None => Vec::new(),
     };
+    // A node that could not start gossip, or that has not yet seen itself in
+    // the memberlist, still serves. The dashboard queries `cluster.nodes`;
+    // an empty list would look like "no live nodes" on a working process.
+    if !nodes.iter().any(|n| n.current) {
+        nodes.insert(0, current_member(state));
+    }
     json!({
         "group": state.settings.group,
         "gossip_port": state.settings.gossip_port,
@@ -149,7 +177,7 @@ pub async fn config_envelope(state: &ServerState) -> Value {
     json!({ "success": true, "data": Value::Object(data) })
 }
 
-async fn handle_config(state: Arc<ServerState>) -> Json<Value> {
+async fn handle_config(State(state): State<Arc<ServerState>>) -> Json<Value> {
     state.metrics.config_served();
     Json(config_envelope(&state).await)
 }
@@ -157,7 +185,7 @@ async fn handle_config(state: Arc<ServerState>) -> Json<Value> {
 /// Liveness. Stays 200 through a drain: the process is alive and finishing
 /// work, and a supervisor that restarts it now would kill requests that were
 /// about to succeed.
-async fn handle_health(state: Arc<ServerState>) -> Json<Value> {
+async fn handle_health(State(state): State<Arc<ServerState>>) -> Json<Value> {
     Json(json!({
         "success": true,
         "data": {
@@ -171,7 +199,7 @@ async fn handle_health(state: Arc<ServerState>) -> Json<Value> {
 /// Readiness. 503 while draining, and 503 before any model can answer, so a
 /// compose healthcheck or load balancer waits for a node that has actually
 /// finished loading.
-async fn handle_ready(state: Arc<ServerState>) -> Response {
+async fn handle_ready(State(state): State<Arc<ServerState>>) -> Response {
     let models = state.ready_models();
     let draining = state.draining();
     let ready = !draining && !models.is_empty();
@@ -193,7 +221,7 @@ async fn handle_ready(state: Arc<ServerState>) -> Response {
     }
 }
 
-async fn handle_metrics(state: Arc<ServerState>) -> Response {
+async fn handle_metrics(State(state): State<Arc<ServerState>>) -> Response {
     let cluster_members = match &state.cluster {
         Some(cluster) => cluster.members().await.len(),
         None => 1,
@@ -222,25 +250,83 @@ async fn handle_metrics(state: Arc<ServerState>) -> Response {
         .into_response()
 }
 
-pub fn router(state: Arc<ServerState>) -> Router {
-    let metrics_enabled = state.settings.metrics;
+/// Locate a built SPA (`index.html` in a `dist` directory).
+///
+/// An explicit `--web-ui` / `web_ui` / `POSTVEC_SERVER_WEB_UI` wins and is
+/// the only candidate when set. Otherwise: `$root/web-ui/dist`, next to the
+/// binary, then `/usr/share/postvec-server/web-ui`.
+pub fn resolve_web_ui(explicit: Option<&Path>, root: &Path) -> Option<PathBuf> {
+    let has_index = |dir: &Path| dir.join("index.html").is_file();
+    if let Some(explicit) = explicit {
+        return if has_index(explicit) {
+            Some(explicit.to_path_buf())
+        } else {
+            log::warn!(
+                "web UI path {} has no index.html; the dashboard will not be served",
+                explicit.display()
+            );
+            None
+        };
+    }
+    let mut candidates = vec![root.join("web-ui").join("dist")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("web-ui").join("dist"));
+            candidates.push(dir.join("../share/postvec-server/web-ui"));
+        }
+    }
+    candidates.push(PathBuf::from("/usr/share/postvec-server/web-ui"));
+    candidates.into_iter().find(|p| has_index(p))
+}
+
+async fn no_spa() -> Json<Value> {
+    Json(json!({
+        "success": true,
+        "data": "Web front-end is not configured. Build postvec-server/web-ui and point --web-ui at dist/, or place it at <root>/web-ui/dist."
+    }))
+}
+
+/// Shared routes (discovery, health, native `/api/{model}`, OpenAI adaptor).
+/// The public listener adds CORS + the SPA fallback; the admin listener
+/// merges mutation routes on top and does not serve the dashboard.
+pub fn router(metrics_enabled: bool) -> Router<Arc<ServerState>> {
+    // Native `/api/{model}` and the OpenAI adaptor share this nest. The
+    // static `/openai/embeddings` path is two segments, so it never collides
+    // with `/{model_name}`. Body cap matches the gRPC decode ceiling.
+    let api = Router::new()
+        .route("/openai/embeddings", post(api::openai_embeddings))
+        .route("/:model_name", get(api::model_details).post(api::predict))
+        .fallback(api::api_not_found)
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
+
     let mut router = Router::new()
-        .route("/config", {
-            let state = state.clone();
-            get(move || handle_config(state.clone()))
-        })
-        .route("/health", {
-            let state = state.clone();
-            get(move || handle_health(state.clone()))
-        })
-        .route("/ready", {
-            let state = state.clone();
-            get(move || handle_ready(state.clone()))
-        });
+        .route("/config", get(handle_config))
+        .route("/health", get(handle_health))
+        .route("/ready", get(handle_ready))
+        .nest("/api", api);
     if metrics_enabled {
-        router = router.route("/metrics", get(move || handle_metrics(state.clone())));
+        router = router.route("/metrics", get(handle_metrics));
     }
     router
+}
+
+/// CORS + optional SPA. Applied only on the published listener.
+pub fn finish_public(router: Router<Arc<ServerState>>, state: Arc<ServerState>) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+    let web_ui = resolve_web_ui(state.settings.web_ui.as_deref(), &state.settings.root);
+    let router = if let Some(dir) = web_ui {
+        log::info!("serving UI from {}", dir.display());
+        let index = dir.join("index.html");
+        // `fallback` (not `not_found_service`): SPA client routes must stay
+        // HTTP 200 with index.html. `not_found_service` forces 404.
+        router.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)))
+    } else {
+        router.route("/", get(no_spa))
+    };
+    router.layer(cors).with_state(state)
 }
 
 /// A running listener, with the handle that drains it.
@@ -260,7 +346,7 @@ pub fn spawn(
         .map_err(|e| format!("local_addr: {e}"))?;
 
     let handle = axum_server::Handle::new();
-    let service = router(state.clone()).into_make_service();
+    let service = finish_public(router(state.settings.metrics), state.clone()).into_make_service();
     let tls = state.settings.tls.clone();
 
     let task = match tls {

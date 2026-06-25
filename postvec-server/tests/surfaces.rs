@@ -627,3 +627,189 @@ async fn admin_refusals_and_config_reads_are_counted() {
     let value: u64 = line.rsplit(' ').next().unwrap().parse().unwrap();
     assert!(value >= 1, "{line}");
 }
+
+// ---- HTTP inference ----------------------------------------------------
+
+fn dummy_embed_descriptor(name: &str) -> Value {
+    json!({
+        "name": name,
+        "enabled": true,
+        "backend": "generic",
+        "executor": {
+            "key": "dummy",
+            "inputs": [{"json_key": "texts"}],
+            "outputs": [{"json_key": "embeddings"}]
+        },
+        "params": {
+            "model_type": "embed",
+            "target_model": name,
+            "target_dim": 8
+        }
+    })
+}
+
+async fn start_with_dummy(name: &str) -> Node {
+    let root = tempfile::tempdir().unwrap();
+    write_descriptor(root.path(), "generic", name, dummy_embed_descriptor(name));
+    let node = start_in(root, ServeArgs::default()).await;
+    node.state
+        .engine
+        .load_model(name)
+        .await
+        .unwrap_or_else(|e| panic!("load dummy {name}: {e}"));
+    node
+}
+
+#[tokio::test]
+async fn config_always_lists_this_node_as_a_cluster_member() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node.get_json(node.public, "/config").await;
+    assert_eq!(status, 200);
+    let nodes = body["data"]["cluster"]["nodes"].as_array().expect("nodes");
+    assert!(
+        nodes.iter().any(|n| n["current"] == json!(true)),
+        "the answering node must appear in cluster.nodes so the dashboard has a query peer: {nodes:?}"
+    );
+}
+
+#[tokio::test]
+async fn native_api_unknown_model_is_an_envelope_error() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node
+        .post_json(
+            node.public,
+            "/api/no-such-model",
+            json!({"texts": ["hello"]}),
+        )
+        .await;
+    assert_eq!(status, 200, "native contract: HTTP 200, success=false");
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not loaded"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn native_api_unknown_route_is_json_404() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node.get_json(node.public, "/api/does/not/exist").await;
+    assert_eq!(status, 404);
+    assert_eq!(body["success"], json!(false));
+}
+
+#[tokio::test]
+async fn native_api_hits_a_loaded_dummy_executor() {
+    let node = start_with_dummy("echo-dummy").await;
+    let (status, body) = node
+        .post_json(node.public, "/api/echo-dummy", json!({"texts": ["hello"]}))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("dummy executor"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn openai_embeddings_rejects_token_ids_with_openai_envelope() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node
+        .post_json(
+            node.public,
+            "/api/openai/embeddings",
+            json!({"model": "echo-dummy", "input": [1, 2, 3]}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("token IDs"),
+        "{body}"
+    );
+    assert_eq!(body["error"]["type"], json!("invalid_request_error"));
+    assert!(body.get("success").is_none(), "not the native envelope");
+}
+
+#[tokio::test]
+async fn openai_embeddings_is_an_adaptor_in_front_of_the_native_path() {
+    let node = start_with_dummy("echo-dummy").await;
+    let (status, body) = node
+        .post_json(
+            node.public,
+            "/api/openai/embeddings",
+            json!({"model": "postvec/echo-dummy", "input": "hello"}),
+        )
+        .await;
+    // Dummy executor errors; the adaptor must surface that as an OpenAI
+    // error, not as `{success:false}`.
+    assert_ne!(status, 200);
+    assert_eq!(body["error"]["type"], json!("api_error"));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("dummy executor"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn openai_embeddings_unknown_model_is_not_found() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node
+        .post_json(
+            node.public,
+            "/api/openai/embeddings",
+            json!({"model": "missing", "input": ["hi"]}),
+        )
+        .await;
+    assert_eq!(status, 404);
+    assert_eq!(body["error"]["type"], json!("not_found_error"));
+}
+
+#[tokio::test]
+async fn the_public_listener_serves_a_built_spa_when_pointed_at_one() {
+    let ui = tempfile::tempdir().unwrap();
+    std::fs::write(
+        ui.path().join("index.html"),
+        "<!doctype html><title>postvec</title><div id=\"react-root\"></div>",
+    )
+    .unwrap();
+    let node = start(ServeArgs {
+        web_ui: Some(ui.path().to_path_buf()),
+        ..Default::default()
+    })
+    .await;
+    let (status, body) = node.get(node.public, "/").await;
+    assert_eq!(status, 200);
+    assert!(body.contains("react-root"), "{body}");
+    // A client-side route falls back to index.html.
+    let (status, body) = node.get(node.public, "/queries").await;
+    assert_eq!(status, 200);
+    assert!(body.contains("react-root"), "{body}");
+}
+
+#[tokio::test]
+async fn without_a_spa_the_root_path_is_a_json_stub() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node.get_json(node.public, "/").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["success"], json!(true));
+    assert!(
+        body["data"]
+            .as_str()
+            .unwrap()
+            .contains("Web front-end is not configured"),
+        "{body}"
+    );
+}

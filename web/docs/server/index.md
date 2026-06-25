@@ -28,7 +28,7 @@ joins a gossip group. Queue, scheduler and SQL stay in PostgreSQL.
 | Port | Purpose | Exposure |
 |---|---|---|
 | `33333` | gRPC inference | Plaintext, unauthenticated. Private networks only |
-| `22222` | `GET /config` discovery, `/health`, `/ready`, `/metrics` | TLS by default |
+| `22222` | `GET /config` discovery, `/health`, `/ready`, `/metrics`, `POST /api/{model}`, `POST /api/openai/embeddings`, optional dashboard | TLS by default |
 | `22223` | Admin: load, unload, reload providers | Loopback only, enforced at boot |
 | `11111` | Gossip membership | Between nodes |
 

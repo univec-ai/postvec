@@ -104,6 +104,8 @@ pub struct FileConfig {
     pub warmup: Option<bool>,
     pub metrics: Option<bool>,
     pub log_level: Option<String>,
+    /// Directory of a built dashboard (`index.html` + assets). Optional.
+    pub web_ui: Option<String>,
 }
 
 /// Strip comment keys, recursively.
@@ -181,6 +183,8 @@ pub struct Settings {
     pub warmup: bool,
     pub metrics: bool,
     pub log_level: String,
+    /// Built SPA directory. `None` means "search the default locations".
+    pub web_ui: Option<PathBuf>,
 }
 
 /// The default for `--max-inflight`: this machine's parallelism, clamped.
@@ -587,6 +591,13 @@ pub fn resolve(
         .or_else(|| file.log_level.clone())
         .unwrap_or_else(|| "info".to_string());
 
+    let web_ui = flags
+        .web_ui
+        .clone()
+        .or_else(|| env.get("POSTVEC_SERVER_WEB_UI").map(PathBuf::from))
+        .or_else(|| file.web_ui.clone().map(PathBuf::from))
+        .map(|p| against_root(&root, p));
+
     Ok(Settings {
         root,
         config_path,
@@ -609,6 +620,7 @@ pub fn resolve(
         warmup,
         metrics,
         log_level,
+        web_ui,
     })
 }
 
@@ -747,6 +759,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.http_port, 3333);
+    }
+
+    #[test]
+    fn web_ui_follows_the_precedence_and_the_root() {
+        let s = resolve_with(
+            ServeArgs {
+                web_ui: Some(PathBuf::from("web-ui/dist")),
+                ..Default::default()
+            },
+            FileConfig::default(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            s.web_ui.as_deref(),
+            Some(Path::new("/srv/root/web-ui/dist"))
+        );
+
+        let file = FileConfig {
+            web_ui: Some("/from/file".into()),
+            ..Default::default()
+        };
+        let s = resolve_with(
+            ServeArgs::default(),
+            file.clone(),
+            &[("POSTVEC_SERVER_WEB_UI", "/from/env")],
+        )
+        .unwrap();
+        assert_eq!(s.web_ui.as_deref(), Some(Path::new("/from/env")));
+        let s = resolve_with(
+            ServeArgs {
+                web_ui: Some(PathBuf::from("/from/flag")),
+                ..Default::default()
+            },
+            file,
+            &[("POSTVEC_SERVER_WEB_UI", "/from/env")],
+        )
+        .unwrap();
+        assert_eq!(s.web_ui.as_deref(), Some(Path::new("/from/flag")));
     }
 
     /// The property the whole layering exists for: an unrelated flag must not

@@ -425,7 +425,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
     // The read-only routes ride along so the node-local CLI can read
     // `/config` over plain loopback HTTP instead of negotiating TLS with a
     // self-signed certificate against the public port.
-    crate::http::router(state)
+    crate::http::router(state.settings.metrics)
         .route(
             "/admin/load",
             post(
@@ -484,6 +484,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
             }),
         )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
+        .with_state(state)
 }
 
 /// Bind and spawn the loopback admin listener.

@@ -276,3 +276,106 @@ async fn config_advertises_the_loaded_model_with_its_parameters() {
     println!("{}", serde_json::to_string_pretty(entry).unwrap());
     live.stop().await;
 }
+
+/// HTTP native + OpenAI adaptor against a real model. Same engine as the
+/// gRPC tests; a second listener on an ephemeral port.
+#[tokio::test]
+#[ignore = "needs a real model root; see the module docs"]
+async fn embeddings_come_back_over_http() {
+    use postvec_server::cli::ServeArgs;
+    use postvec_server::config::{self, FileConfig};
+    use postvec_server::metrics::Metrics;
+    use postvec_server::net;
+    use postvec_server::state::{NodeIdentity, ServerState};
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let root = root();
+    let model = model();
+    init_onnx(&root);
+
+    let engine = Arc::new(engine::InferenceEngine::new(Arc::new(
+        engine::EngineConfig {
+            root_path: root.clone(),
+            host_policy: Default::default(),
+        },
+    )));
+    engine
+        .load_model(&model)
+        .await
+        .unwrap_or_else(|e| panic!("cannot load {model:?}: {e}"));
+
+    let flags = ServeArgs {
+        insecure: true,
+        bind: Some("127.0.0.1".into()),
+        ..Default::default()
+    };
+    let settings = Arc::new(
+        config::resolve(
+            &flags,
+            &FileConfig::default(),
+            &BTreeMap::new(),
+            root.clone(),
+            None,
+        )
+        .expect("settings"),
+    );
+    let advertise = net::resolve_advertise(&settings).unwrap();
+    let identity = NodeIdentity::new(&settings, advertise);
+    let state = ServerState::new(
+        engine,
+        settings.clone(),
+        identity,
+        Arc::new(Metrics::new()),
+        None,
+        Arc::new(providers::gateway::Gateway::empty()),
+    );
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let public = postvec_server::http::spawn(state, socket).unwrap();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let base = format!("http://{}", public.bound);
+    for attempt in 0..200 {
+        if client.get(format!("{base}/health")).send().await.is_ok() {
+            break;
+        }
+        assert!(attempt < 199, "HTTP listener never came up");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let native: Value = client
+        .post(format!("{base}/api/{model}"))
+        .json(&json!({ "texts": ["quarterly revenue guidance was raised"] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(native["success"], json!(true), "{native}");
+    let embeddings = native["data"]["embeddings"]
+        .as_array()
+        .expect("native embeddings");
+    assert_eq!(embeddings.len(), 1);
+    assert!(!embeddings[0].as_array().unwrap().is_empty());
+
+    let openai: Value = client
+        .post(format!("{base}/api/openai/embeddings"))
+        .json(&json!({ "model": format!("postvec/{model}"), "input": "hello" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(openai["object"], json!("list"), "{openai}");
+    assert_eq!(openai["model"], json!(format!("postvec/{model}")));
+    assert_eq!(openai["data"][0]["object"], json!("embedding"));
+    assert!(!openai["data"][0]["embedding"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}

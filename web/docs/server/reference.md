@@ -48,6 +48,7 @@ with `//` are comments.
 | `--no-warmup` | `POSTVEC_SERVER_WARMUP=0` | `warmup` | Warmup on |
 | `--no-metrics` | `POSTVEC_SERVER_METRICS=0` | `metrics` | Metrics on |
 | `--log-level FILTER` | `RUST_LOG` | `log_level` | `info` |
+| `--web-ui DIR` | `POSTVEC_SERVER_WEB_UI` | `web_ui` | Search `<root>/web-ui/dist`, then next to the binary, then `/usr/share/postvec-server/web-ui` |
 
 `--cluster` is an accepted alias for `--peers`, and `--ssl-key` for
 `--ssl-cert-key`.
@@ -87,6 +88,9 @@ and clients actually use.
 | `GET /ready` | A model can answer **right now**. `503` before the first model loads, and for the whole drain |
 | `GET /config` | Model discovery, which is what postvec reads. Also carries `server`, `cluster` and `system` blocks |
 | `GET /metrics` | Prometheus text |
+| `GET /api/{model}` | Model layer overview, native envelope |
+| `POST /api/{model}` | Native inference. JSON body keyed like `executor.inputs` (`texts` / `embeddings`). Envelope `{success, data}` or `{success, error:{message}}`; HTTP stays 200 |
+| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` adaptor in front of the native path. `{object, data, model, usage}` on success; `{error:{message, type}}` and a real status on failure |
 
 Gate load balancers and compose healthchecks on `/ready`, and supervisors on
 `/health`. Confusing the two produces either a node that receives traffic

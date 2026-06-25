@@ -1,0 +1,331 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  outline: none;
+  padding: 0;
+}
+
+body {
+  font-family: 'Karla', 'IBM Plex Sans', Geneva, sans-serif;
+  background: #f4f1ea;
+  color: #1a2330;
+}
+
+.fullsize { width: 100%; }
+
+.m-t-20 { margin-top: 20px; }
+.m-b-20 { margin-bottom: 20px; }
+.m-t-10 { margin-top: 10px; }
+.m-b-10 { margin-bottom: 10px; }
+.p-t-20 { padding-top: 20px; }
+.p-b-20 { padding-bottom: 20px; }
+.p-l-20 { padding-left: 20px; }
+.p-r-20 { padding-right: 20px; }
+
+.pull-left { float: left !important; }
+.pull-right { float: right !important; }
+.clearfix::after {
+  content: "";
+  display: table;
+  clear: both;
+}
+
+.container {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 15px;
+}
+
+button, .btn {
+  background: white;
+  border: 1px solid #d3cdc2;
+  border-radius: 2px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  letter-spacing: 0;
+  text-shadow: none;
+  box-shadow: none;
+  margin: 0;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+button:hover, .btn:hover {
+  background: #faf8f4;
+  border-color: #228165;
+}
+
+button:disabled, .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.main-menu button { padding: 8px 8px; }
+
+input[type="text"], input[type="search"], textarea {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: #1a2330;
+  background: white;
+  border: 1px solid #d3cdc2;
+  border-radius: 2px;
+}
+
+input[type="text"]:focus, input[type="search"]:focus, textarea:focus {
+  border-color: #228165;
+  box-shadow: 0 0 0 2px rgba(34, 129, 101, 0.18);
+}
+
+.background-paper { background: #eae4d8; }
+
+.postvec-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 0 8px;
+}
+
+.postvec-title {
+  color: #1a2330;
+  margin-left: 20px;
+}
+
+.postvec-wordmark {
+  letter-spacing: 0.14em;
+}
+
+.postvec-header-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-right: 20px;
+}
+
+.postvec-live-nodes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #5a564c;
+  margin-top: 10px;
+}
+
+.postvec-no-nodes {
+  font-size: 14px;
+  color: #8a8578;
+  font-style: italic;
+  margin-top: 10px;
+}
+
+.cluster-group-badge { position: relative; }
+
+.cluster-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 2px;
+  background: #faf8f4;
+  border: 1px solid #d3cdc2;
+  font-size: 12px;
+  cursor: pointer;
+  color: #1a2330;
+  line-height: 1;
+}
+
+.cluster-group-toggle:hover {
+  background: #efe9dc;
+  border-color: #228165;
+}
+
+.cluster-group-name { font-weight: 600; }
+
+.cluster-group-count {
+  background: #228165;
+  color: white;
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 18px;
+  text-align: center;
+}
+
+.memory-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 2px;
+  background: #faf8f4;
+  border: 1px solid #d3cdc2;
+  font-size: 12px;
+  color: #5a564c;
+  line-height: 1;
+}
+
+.memory-badge-label {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #8a8578;
+}
+
+.memory-badge-bar {
+  width: 70px;
+  height: 6px;
+  border-radius: 3px;
+  background: #d3cdc2;
+  overflow: hidden;
+}
+
+.memory-badge-fill {
+  height: 100%;
+  background: #228165;
+  transition: width 0.3s ease;
+}
+
+.memory-badge-warning .memory-badge-fill { background: #c48a1a; }
+.memory-badge-critical .memory-badge-fill { background: #c44536; }
+
+.memory-badge-text {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cluster-group-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: white;
+  border: 1px solid #d3cdc2;
+  border-radius: 2px;
+  box-shadow: 0 8px 24px rgba(26, 35, 48, 0.12);
+  min-width: 200px;
+  z-index: 100;
+  padding: 4px 0;
+}
+
+.cluster-group-menu-item { padding: 6px 12px; }
+
+.cluster-group-node {
+  font-size: 12px;
+  color: #5a564c;
+  text-decoration: none;
+  display: block;
+}
+
+a.cluster-group-node:hover { color: #228165; }
+.cluster-group-node.current { color: #228165; font-weight: 600; }
+
+.tab-item {
+  border-bottom: none;
+  padding: 8px 16px;
+  cursor: pointer;
+  margin: 0;
+  font-size: 14px;
+  color: #5a564c;
+  border-top-left-radius: 2px;
+  border-top-right-radius: 2px;
+  background-color: #cfc6b4;
+}
+
+.tab-item:hover { background: #ddd4c2; color: #1a2330; }
+
+.tab-item.active {
+  color: #fff;
+  background-color: #228165;
+  position: relative;
+  top: 1px;
+  z-index: 1;
+}
+
+.postvec-query-container {
+  border: 0;
+  padding: 0;
+  position: relative;
+  top: -1px;
+}
+
+.postvec-workspace {
+  background: #eae4d8;
+}
+
+.models-list {
+  border: 1px solid #d3cdc2;
+  border-radius: 2px;
+  background: white;
+}
+
+.model-item {
+  display: flex;
+  align-items: flex-start;
+  border-bottom: 1px solid #ece6d9;
+  min-height: 72px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.model-item.selected { background-color: #1a2330; }
+.model-item.selectable { background-color: #f4efe4; }
+.model-item:hover { background: #228165; }
+.model-item.selected:hover { background-color: #145a47; }
+
+.model-item-content {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start;
+  padding: 16px 12px;
+  min-width: 0;
+}
+
+.model-item-two-row {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.model-item-row-1 { display: flex; align-items: center; }
+.model-item-row-2 { overflow: hidden; }
+.model-item-backend { float: left; }
+.model-item-last-updated { float: right; }
+
+.model-item.selected .model-item-main-name { color: #fff; }
+
+.label {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: #fff;
+  border-radius: 2px;
+  text-transform: lowercase;
+}
+
+.postvec-placeholder {
+  padding: 48px 24px;
+  text-align: left;
+  max-width: 640px;
+}
+
+.postvec-layout {
+  display: flex;
+  gap: 20px;
+}
+
+.postvec-sidebar { flex: 0 0 33%; }
+.postvec-main { flex: 1; }
+
+.postvec-page {
+  padding: 20px 0 40px;
+}
+
+@media (max-width: 768px) {
+  .container { padding: 0 10px; }
+  .postvec-layout { flex-direction: column; }
+  .postvec-sidebar { flex: 1 1 auto; }
+  .pull-left, .pull-right {
+    float: none !important;
+    text-align: left;
+  }
+}

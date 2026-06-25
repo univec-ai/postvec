@@ -1,0 +1,148 @@
+import PropTypes from 'prop-types';
+import React, { Component } from 'react';
+import { colors } from '../styles/color';
+import { transitionStyle } from '../styles/transition';
+import omit from '../util/omit';
+
+export const GRACE_TIMEOUT_INTERVAL = 150;
+
+/**
+ * Wrap an arbitrary element with a tooltip next to the element on hover.
+ */
+export const Tooltip = class Tltip extends Component {
+  static propTypes = {
+    contents: PropTypes.element.isRequired,
+    persistent: PropTypes.bool,
+    width: PropTypes.oneOfType([
+      PropTypes.number,
+      PropTypes.string,
+    ]),
+    offset: PropTypes.number,
+    top: PropTypes.bool,
+    bottom: PropTypes.bool,
+    children: PropTypes.node.isRequired,
+    style: PropTypes.object,
+  };
+
+  static defaultProps = {
+    persistent: false,
+    width: 'auto',
+    offset: 0,
+    top: true,
+    bottom: false,
+    style: {},
+  };
+
+  constructor(props) {
+    super(props);
+
+    const { persistent } = props;
+
+    this.state = {
+      displayTooltip: persistent,
+      tooltipPosition: {},
+    };
+
+    this.containerEl = null;
+    this.updateTooltipPosition = this.updateTooltipPosition.bind(this);
+  }
+
+  handleMouseOver = () => {
+    // If we mouse-over the element again before the timeout expires, simply clear the interval so
+    // that the display is maintained.
+    clearInterval(this.interval);
+
+    this.setState({ displayTooltip: true }, this.updateTooltipPosition);
+  };
+
+  handleMouseOut = () => {
+    const { persistent } = this.props;
+
+    // The logic here is to set a delay before actually changing the state of the component to
+    // no longer display the tooltip. This allows the mouse to temporarily exit the tooltip zone
+    // while still preserving display of the tooltip.
+    this.interval = setTimeout(() => this.setState({ displayTooltip: persistent }),
+      GRACE_TIMEOUT_INTERVAL);
+  };
+
+  render() {
+    const {
+      contents,
+      width,
+      offset,
+      bottom,
+      children,
+      style: overrides,
+      ...props
+    } = this.props;
+    const { displayTooltip } = this.state;
+
+    const proxyProps = omit(props, ['persistent', 'top']);
+
+    const placementProperty = bottom ? 'top' : 'bottom';
+
+    const containerStyle = {
+      display: 'inline-block',
+      position: 'relative',
+    };
+
+    const tooltipStyle = {
+      background: colors.gray80,
+      left: offset,
+      opacity: displayTooltip ? 0.95 : 0,
+      padding: '7px 15px',
+      position: 'fixed',
+      visibility: displayTooltip ? 'inherit' : 'hidden',
+      width,
+      zIndex: 9999,
+      ...transitionStyle(),
+      ...overrides,
+    };
+
+    return (
+      <div
+        style={containerStyle}
+        onMouseOver={this.handleMouseOver}
+        onMouseOut={this.handleMouseOut}
+        ref={el => this.containerEl = el}
+      >
+        {children}
+
+        <span style={{ ...tooltipStyle, ...this.state.tooltipPosition }} {...proxyProps}>
+          {contents}
+        </span>
+      </div>
+    );
+  }
+
+  updateTooltipPosition() {
+    if (this.containerEl) {
+      const rect = this.containerEl.getBoundingClientRect();
+      const { offset, bottom } = this.props;
+      
+      let tooltipPosition = {};
+      
+      if (bottom) {
+        tooltipPosition.top = rect.top - 10; // Position above the element
+      } else {
+        tooltipPosition.top = rect.bottom + 5; // Position below the element
+      }
+      
+      tooltipPosition.left = rect.left + offset;
+      
+      this.setState({ tooltipPosition });
+    }
+  }
+
+  componentDidMount() {
+    if (this.state.displayTooltip) {
+      this.updateTooltipPosition();
+    }
+  }
+
+  componentDidUpdate(prevProps, prevState) {
+    if (this.state.displayTooltip && !prevState.displayTooltip) {
+      this.updateTooltipPosition();
+    }
+  }
+}
