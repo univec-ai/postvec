@@ -133,6 +133,7 @@ export default defineConfig({
             { text: "Connect PostgreSQL", link: "/docs/server/connect" },
             { text: "Models on a node", link: "/docs/server/models" },
             { text: "Run a fleet", link: "/docs/server/fleet" },
+            { text: "HTTP API and dashboard", link: "/docs/server/http-api" },
             { text: "Node reference", link: "/docs/server/reference" },
           ],
         },

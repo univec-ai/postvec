@@ -1,166 +1,113 @@
 import React, { useState } from 'react'
-import { useStore } from '@/store'
-import { Spacing, Button, Label } from '../../shared/react-elemental'
-import CustomTabs from './CustomTabs'
-import CodeEditor from '../CodeEditor'
-import AreaModelsList from './AreaModelsList'
 import {
+  useStore,
+  requestPath,
   getCurrentModel,
-  getCurrentModelInputs,
+  getCurrentContract,
   getCurrentQueryString,
   getClusterQueryPeersActive,
   getCurrentModelQueryLoading,
   getCurrentModelQueryResponses,
+  isEmbedModel,
 } from '@/store'
+import { Spacing, Button, Text, colors } from '../../shared/react-elemental'
+import CustomTabs from './CustomTabs'
+import CodeEditor from '../CodeEditor'
+import AreaModelsList from './AreaModelsList'
 
-const SecondaryTabOption = ({ children }) => <div>{children}</div>
+const CONTRACTS = [
+  { value: 'native', label: 'Native' },
+  { value: 'openai', label: 'OpenAI' },
+]
+
+const isJson = (text) => {
+  try {
+    JSON.parse(text)
+    return true
+  } catch {
+    return false
+  }
+}
 
 const WindowQuery = () => {
-  const current_model = useStore(getCurrentModel)
-  const current_model_inputs = useStore(getCurrentModelInputs)
-  const query_loading = useStore(getCurrentModelQueryLoading)
-  const query_responses = useStore(getCurrentModelQueryResponses)
-  const current_query_string = useStore(getCurrentQueryString)
-  const cluster_query_peers_active = useStore(getClusterQueryPeersActive)
+  const model = useStore(getCurrentModel)
+  const contract = useStore(getCurrentContract)
+  const query = useStore(getCurrentQueryString)
+  const peers = useStore(getClusterQueryPeersActive)
+  const loading = useStore(getCurrentModelQueryLoading)
+  const responses = useStore(getCurrentModelQueryResponses)
   const executeQuery = useStore((state) => state.executeQuery)
   const cacheQuery = useStore((state) => state.cacheQuery)
-
+  const setContract = useStore((state) => state.setContract)
   const [tab, setTab] = useState('query')
-  const [query_json_valid, setQueryJsonValid] = useState(true)
-  const [editor_text, setEditorText] = useState('')
 
-  const onQueryChange = (text) => {
-    setEditorText(text)
-    cacheQuery(text)
-    try {
-      JSON.parse(text)
-      setQueryJsonValid(true)
-    } catch {
-      setQueryJsonValid(false)
-    }
-  }
-
-  const queryService = () => {
-    if (current_query_string && current_query_string.length > 0) {
-      executeQuery(current_model, cluster_query_peers_active, current_query_string)
-    }
-  }
-
-  const onAutocorrectClick = () => {
-    try {
-      JSON.parse(editor_text)
-    } catch {
-      let text = editor_text.replace(/(?:\\[rn])+/g, '')
-      text = text.replace(/(?:\\)+/g, '')
-      text = text.replace(/\s\s+/g, ' ')
-      const data = current_model_inputs.reduce((accumulator, input) => {
-        accumulator[input] = Object.keys(accumulator).length === 0 ? text : ''
-        return accumulator
-      }, {})
-      cacheQuery(JSON.stringify(data, null, 2))
-    }
-  }
-
-  const hasNodePeers =
-    cluster_query_peers_active instanceof Array && cluster_query_peers_active.length > 0
-  const queryButtonEnabled = query_json_valid && hasNodePeers && !query_loading
-  let submitButtonMessage = 'Query service'
-  if (!queryButtonEnabled) {
-    if (!query_json_valid) {
-      submitButtonMessage = 'JSON invalid'
-    } else if (query_loading) {
-      submitButtonMessage = 'Sending..'
-    } else if (!hasNodePeers) {
-      submitButtonMessage = 'No live nodes'
-    }
-  }
-
-  const jsonStateStr = query_json_valid ? (
-    <Label sublabel="Ok" />
-  ) : (
-    <Spacing bottom>
-      <Button text="Auto-correct json" onClick={onAutocorrectClick} />
-    </Spacing>
-  )
-
-  const actionsArea = (
-    <div>
-      <div className="pull-left">{jsonStateStr}</div>
-      <div className="pull-right">
-        <Spacing bottom>
-          <Button
-            text={submitButtonMessage}
-            disabled={!queryButtonEnabled}
-            onClick={queryService}
-          />
-        </Spacing>
+  if (!model) {
+    return (
+      <div className="postvec-placeholder">
+        <Text size="kilo" color={colors.gray40}>
+          No model is loaded on this node. Put one on disk with `postvec model pull` and load it
+          with `postvec-server load`, then refresh.
+        </Text>
       </div>
-      <div className="clearfix" />
-    </div>
-  )
-
-  let activeTab = tab
-  if (!activeTab || query_responses.length === 0) {
-    activeTab = 'query'
-  }
-  const tabs = query_responses.map((response) => {
-    const label = `${response.peer}${response.success ? ' (ok)' : ' (fail)'}`
-    return { value: response.peer, label: <SecondaryTabOption>{label}</SecondaryTabOption> }
-  })
-  tabs.unshift({ value: 'query', label: <SecondaryTabOption>Query</SecondaryTabOption> })
-
-  let currentText = '{}'
-  let activeEditor = null
-  if (tab === 'query') {
-    currentText = current_query_string
-    activeEditor = (
-      <CodeEditor
-        height={360}
-        maxHeight={360}
-        value={currentText}
-        onChange={onQueryChange}
-        language="json"
-      />
     )
-  } else {
-    const texts = query_responses
-      .filter((response) => response.peer === activeTab)
-      .map((response) => {
-        if (response.success) {
-          return JSON.stringify(response.result, null, 2)
-        }
-        return JSON.stringify(
-          {
-            success: false,
-            error: { message: response.error?.message || String(response.error) },
-          },
-          null,
-          2,
-        )
-      })
-    if (texts.length > 0) {
-      currentText = texts[0]
-    }
-    activeEditor = <CodeEditor maxHeight={Infinity} value={currentText} language="json" />
   }
+
+  const valid = isJson(query)
+  const activeTab = responses.some((r) => r.peer === tab) ? tab : 'query'
+  const tabs = [
+    { value: 'query', label: 'Query' },
+    ...responses.map((r) => ({
+      value: r.peer,
+      label: `${r.peer} (${r.ok ? 'ok' : `fail${r.status ? ` ${r.status}` : ''}`})`,
+    })),
+  ]
+  const shown = responses.find((r) => r.peer === activeTab)
+  const buttonText = loading
+    ? 'Sending..'
+    : !valid
+      ? 'JSON invalid'
+      : peers.length === 0
+        ? 'No live nodes'
+        : 'Query service'
 
   return (
     <div className="postvec-layout">
       <div className="postvec-sidebar">
-        <AreaModelsList showLivePeers={true} />
+        <AreaModelsList />
       </div>
       <div className="postvec-main">
-        <CustomTabs
-          options={tabs}
-          value={activeTab}
-          onChange={setTab}
-          tabClassName="tab-item"
-        />
-        <div className="postvec-query-container">
-          <Spacing bottom size="small">
-            {activeEditor}
-          </Spacing>
-          <div className="background-paper">{actionsArea}</div>
+        <div className="postvec-toolbar">
+          <CustomTabs options={tabs} value={activeTab} onChange={setTab} />
+          {isEmbedModel(model) && (
+            <CustomTabs
+              options={CONTRACTS}
+              value={contract}
+              onChange={(value) => setContract(model.name, value)}
+              tabClassName="contract-item"
+            />
+          )}
+        </div>
+        <div className="postvec-request-line">
+          POST {peers[0] || ''}
+          {requestPath(contract, model.name)}
+        </div>
+        <Spacing bottom size="small">
+          {activeTab === 'query' ? (
+            <CodeEditor
+              height={360}
+              value={query}
+              onChange={(text) => cacheQuery(model.name, contract, text)}
+            />
+          ) : (
+            <CodeEditor value={JSON.stringify(shown.body, null, 2)} readOnly />
+          )}
+        </Spacing>
+        <div className="postvec-actions">
+          <Button
+            text={buttonText}
+            disabled={loading || !valid || peers.length === 0}
+            onClick={() => executeQuery(model, contract, peers, query)}
+          />
         </div>
       </div>
     </div>

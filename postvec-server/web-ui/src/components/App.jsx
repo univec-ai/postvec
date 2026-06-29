@@ -10,12 +10,16 @@ import {
   sourceCodeProRegular,
 } from '../shared/react-elemental-fonts/index-esm.js'
 
-const Application = () => {
-  const appMounted = useStore((state) => state.appMounted)
+const REFRESH_MS = 30_000
+
+const App = () => {
+  const getConfiguration = useStore((state) => state.getConfiguration)
 
   useEffect(() => {
-    appMounted()
-  }, [appMounted])
+    getConfiguration()
+    const timer = setInterval(getConfiguration, REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [getConfiguration])
 
   return (
     <Elemental
@@ -23,11 +27,7 @@ const Application = () => {
         primary: { regular: karlaRegular, bold: karlaBold },
         secondary: { regular: sourceCodeProRegular, bold: sourceCodeProMedium },
       }}
-      colorOpts={{
-        primary: '#228165',
-        primaryLight: '#d4efe6',
-        primaryDark: '#145a47',
-      }}
+      colorOpts={{ primary: '#228165', primaryLight: '#d4efe6', primaryDark: '#145a47' }}
     >
       <Header />
       <PageHome />
@@ -35,4 +35,4 @@ const Application = () => {
   )
 }
 
-export default Application
+export default App

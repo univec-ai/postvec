@@ -774,7 +774,44 @@ async fn openai_embeddings_unknown_model_is_not_found() {
         )
         .await;
     assert_eq!(status, 404);
-    assert_eq!(body["error"]["type"], json!("not_found_error"));
+    assert_eq!(body["error"]["type"], json!("invalid_request_error"));
+    assert_eq!(body["error"]["code"], json!("model_not_found"));
+}
+
+#[tokio::test]
+async fn openai_embeddings_rejects_a_converter_and_bad_bodies() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node
+        .post_json(
+            node.public,
+            "/api/openai/embeddings",
+            json!({"model": "m", "input": "x", "dimensions": "64"}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["type"], json!("invalid_request_error"));
+    let (status, _) = node
+        .post_json(node.public, "/api/openai/embeddings", json!({"input": "x"}))
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn native_api_refuses_oversized_batches_before_dispatch() {
+    let node = start_with_dummy("echo-dummy").await;
+    let texts: Vec<&str> = vec!["x"; 4097];
+    let (status, body) = node
+        .post_json(node.public, "/api/echo-dummy", json!({"texts": texts}))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["success"], json!(false));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ceiling"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

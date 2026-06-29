@@ -143,11 +143,14 @@ Same engine as gRPC, on the discovery port.
 |---|---|---|
 | `GET /api/{model}` | — | Native envelope with the model's layer overview |
 | `POST /api/{model}` | Native JSON (`texts` for embed models, `embeddings` for converters; keys follow `executor.inputs`) | `{success, data}` or `{success, error:{message}}`. HTTP stays 200 so a dashboard can treat the envelope as the contract |
-| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` (`input` as a string or array of strings; optional `encoding_format`, `dimensions`, `input_type`) | OpenAI `{object, data, model, usage}`. Errors use `{error:{message, type}}` and a real HTTP status |
+| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` (`input` as a string or array of strings; optional `encoding_format`, `dimensions`, `input_type`) | OpenAI `{object, data, model, usage}`. Errors use `{error:{message, type, code, param}}` and a real HTTP status: 400 invalid request, 404 `model_not_found`, 504 deadline |
 
-The OpenAI route is an adaptor: it rewrites `input` → `texts`, drops the
-`postvec/` / `univec/` prefix from `model`, and posts the result through the
-same executor path as `POST /api/{model}`. Token-ID inputs are refused.
+The OpenAI route is an adaptor: it rewrites `input` into the model's first
+executor input (`texts`), drops a `postvec/` / `univec/` prefix from `model`,
+and runs the same executor path as `POST /api/{model}`. Token-ID inputs and
+converters are refused; provider-backed models refuse `dimensions` and
+`base64` instead of ignoring them. Any OpenAI SDK works with
+`base_url = <node>/api/openai`. Both routes cap a request at 4096 items.
 
 A built dashboard (see [web-ui/](web-ui/)) is served from this port when
 `index.html` is found: `--web-ui DIR`, `POSTVEC_SERVER_WEB_UI`, `web_ui` in

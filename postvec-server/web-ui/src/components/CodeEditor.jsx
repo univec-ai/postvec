@@ -1,61 +1,26 @@
-import React, { useRef } from 'react'
+import React from 'react'
 import CodeMirror from '@uiw/react-codemirror'
-import { javascript } from '@codemirror/lang-javascript'
 import { json } from '@codemirror/lang-json'
 import { EditorView } from '@codemirror/view'
 
-const CodeEditor = ({ height, maxHeight, value, onChange, language }) => {
-  const editorRef = useRef(null)
-  const handleChange = (newValue) => onChange && onChange(newValue)
-  const editorHeight =
-    height === 'auto'
-      ? `${maxHeight}px`
-      : typeof height === 'number'
-        ? `${height}px`
-        : height
+const mono = "'Source Code Pro', 'Menlo', 'Monaco', 'Consolas', monospace"
 
-  let langExtension
-  switch (language) {
-    case 'json':
-      langExtension = json()
-      break
-    case 'javascript':
-    default:
-      langExtension = javascript({ jsx: true })
-      break
-  }
+const theme = EditorView.theme({
+  '&': { fontFamily: mono, fontSize: '13px', backgroundColor: '#faf8f4' },
+  '.cm-content': { fontFamily: mono },
+})
 
-  const fontTheme = EditorView.theme({
-    '&': {
-      fontFamily: "'Source Code Pro', 'Menlo', 'Monaco', 'Consolas', monospace",
-      fontSize: '13px',
-      backgroundColor: '#faf8f4',
-    },
-    '.cm-content': {
-      fontFamily: "'Source Code Pro', 'Menlo', 'Monaco', 'Consolas', monospace",
-      fontSize: '13px',
-      whiteSpace: 'pre-wrap',
-      wordWrap: 'break-word',
-    },
-  })
-
-  return (
-    <CodeMirror
-      ref={editorRef}
-      value={value}
-      height={editorHeight}
-      maxHeight={`${maxHeight}px`}
-      extensions={[langExtension, fontTheme, EditorView.lineWrapping]}
-      onChange={handleChange}
-      basicSetup={{
-        lineNumbers: true,
-        foldGutter: true,
-        bracketMatching: true,
-        highlightActiveLine: true,
-        highlightSelectionMatches: true,
-      }}
-    />
-  )
-}
+// `height` fixes the box; without it the editor grows to its content.
+const CodeEditor = ({ height, value, onChange, readOnly = false }) => (
+  <CodeMirror
+    value={value}
+    height={height ? `${height}px` : undefined}
+    minHeight={height ? undefined : '120px'}
+    extensions={[json(), theme, EditorView.lineWrapping]}
+    onChange={onChange}
+    readOnly={readOnly}
+    basicSetup={{ foldGutter: true, highlightActiveLine: !readOnly }}
+  />
+)
 
 export default CodeEditor

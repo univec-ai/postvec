@@ -5,7 +5,23 @@ import createModelHubSlice from './slices/modelHubSlice'
 import createPrefsSlice from './slices/prefsSlice'
 import createNetworkingSlice from './slices/networkingSlice'
 import { createAsyncActions } from './actions/asyncActions'
-import { getCurrentModel } from './selectors/modelSelectors'
+
+// Persisted: the selection and what was typed, never responses (an
+// embedding batch would blow the localStorage quota) and never the endpoint.
+const persisted = (state) => ({
+  prefs: {
+    ...state.prefs,
+    query_peers: [],
+    query_cache: {
+      models: Object.fromEntries(
+        Object.entries(state.prefs.query_cache.models).map(([name, cache]) => [
+          name,
+          { contract: cache.contract, text: cache.text, responses: [] },
+        ]),
+      ),
+    },
+  },
+})
 
 export const useStore = create(
   devtools(
@@ -14,21 +30,19 @@ export const useStore = create(
         ...createModelHubSlice(set, get),
         ...createPrefsSlice(set, get),
         ...createNetworkingSlice(set, get),
-        getCurrentModel: () => getCurrentModel(get()),
         ...createAsyncActions(set, get),
       })),
       {
         name: 'postvec-server-storage',
-        partialize: (state) => ({
-          api_endpoint: state.api_endpoint || '',
+        version: 1,
+        migrate: () => ({}),
+        partialize: persisted,
+        merge: (saved, current) => ({
+          ...current,
           prefs: {
-            current_model_name: state.prefs?.current_model_name || '',
-            filter: state.prefs?.filter || '',
-            main_menu_tab: state.prefs?.main_menu_tab || 'queries',
-            query_cache: {
-              models: state.prefs?.query_cache?.models || {},
-              inputs: state.prefs?.query_cache?.inputs || {},
-            },
+            ...current.prefs,
+            ...saved?.prefs,
+            query_cache: { models: saved?.prefs?.query_cache?.models || {} },
           },
         }),
       },
@@ -39,3 +53,4 @@ export const useStore = create(
 
 export * from './selectors/modelSelectors'
 export * from './selectors/clusterSelectors'
+export { requestPath } from './actions/asyncActions'

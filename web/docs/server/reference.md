@@ -90,7 +90,7 @@ and clients actually use.
 | `GET /metrics` | Prometheus text |
 | `GET /api/{model}` | Model layer overview, native envelope |
 | `POST /api/{model}` | Native inference. JSON body keyed like `executor.inputs` (`texts` / `embeddings`). Envelope `{success, data}` or `{success, error:{message}}`; HTTP stays 200 |
-| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` adaptor in front of the native path. `{object, data, model, usage}` on success; `{error:{message, type}}` and a real status on failure |
+| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` adaptor in front of the native path. `{object, data, model, usage}` on success; `{error:{message, type, code}}` and a real status on failure. See [HTTP API](/docs/server/http-api) |
 
 Gate load balancers and compose healthchecks on `/ready`, and supervisors on
 `/health`. Confusing the two produces either a node that receives traffic

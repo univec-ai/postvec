@@ -4,7 +4,7 @@ import { Spacing, Tabs, Text } from '../shared/react-elemental'
 import WindowQuery from './query/WindowQuery'
 import WindowRegistries from './registries/WindowRegistries'
 
-const SecondaryTabOption = ({ children }) => (
+const TabLabel = ({ children }) => (
   <Spacing size="small" left right>
     <Spacing size="tiny" top bottom>
       <Text>{children}</Text>
@@ -12,41 +12,31 @@ const SecondaryTabOption = ({ children }) => (
   </Spacing>
 )
 
-const PageHome = () => {
-  const currentTab = useStore((state) => state.prefs.main_menu_tab)
-  const setMainMenuTab = useStore((state) => state.setMainMenuTab)
-  const validTab = currentTab === 'modelhub' ? 'queries' : currentTab
+const PAGES = { queries: WindowQuery, registries: WindowRegistries }
 
-  let pageContent = null
-  switch (validTab) {
-    case 'queries':
-      pageContent = <WindowQuery />
-      break
-    case 'registries':
-      pageContent = <WindowRegistries />
-      break
-    default:
-      break
-  }
+const PageHome = () => {
+  const tab = useStore((state) => state.prefs.main_menu_tab)
+  const setMainMenuTab = useStore((state) => state.setMainMenuTab)
+  const Page = PAGES[tab] || WindowQuery
 
   return (
     <section className="postvec-page">
       <div className="container">
-        <div className="main-menu">
-          <Spacing bottom>
-            <Tabs
-              options={[
-                { value: 'queries', label: <SecondaryTabOption>Queries</SecondaryTabOption> },
-                { value: 'registries', label: <SecondaryTabOption>Registries</SecondaryTabOption> },
-              ]}
-              value={validTab}
-              onChange={setMainMenuTab}
-              secondary
-              fit
-            />
-          </Spacing>
+        <Spacing bottom>
+          <Tabs
+            options={[
+              { value: 'queries', label: <TabLabel>Queries</TabLabel> },
+              { value: 'registries', label: <TabLabel>Registries</TabLabel> },
+            ]}
+            value={Page === WindowQuery ? 'queries' : tab}
+            onChange={setMainMenuTab}
+            secondary
+            fit
+          />
+        </Spacing>
+        <div className="postvec-workspace">
+          <Page />
         </div>
-        <div className="p-t-20 p-b-20 p-l-20 p-r-20 postvec-workspace">{pageContent}</div>
       </div>
     </section>
   )

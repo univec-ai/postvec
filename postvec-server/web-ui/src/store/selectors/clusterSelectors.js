@@ -1,47 +1,32 @@
+// Query targets. The node that served the page is addressed as this
+// origin rather than by its advertised address, so a dashboard opened via
+// localhost or a tunnel keeps working; peers use what they advertise.
 export const getClusterMembers = (state) => {
-  const cluster = state.cluster || []
-  const fromCluster = cluster
-    .map((node) => node.frontend_address || node.address)
-    .filter((address) => address && address.length > 0)
-  if (fromCluster.length > 0) {
-    return fromCluster
-  }
-  // Single-node with no gossip still has a query target: this origin.
-  return state.api_endpoint ? [state.api_endpoint] : []
+  const members = state.cluster.map((node) =>
+    node.current ? state.api_endpoint : node.frontend_address || node.address,
+  )
+  const unique = [...new Set(members.filter(Boolean))]
+  return unique.length > 0 ? unique : [state.api_endpoint]
 }
 
 export const getClusterGroups = (state) => {
-  const cluster = state.cluster || []
   const groups = {}
-  for (const node of cluster) {
+  for (const node of state.cluster) {
     const group = node.group || 'postvec'
-    if (!groups[group]) {
-      groups[group] = []
-    }
+    groups[group] ||= []
     groups[group].push({
       address: node.frontend_address || node.address,
       isCurrent: !!node.current,
     })
   }
-  for (const group of Object.keys(groups)) {
-    groups[group].sort((a, b) => a.address.localeCompare(b.address))
+  for (const group of Object.values(groups)) {
+    group.sort((a, b) => a.address.localeCompare(b.address))
   }
   return groups
 }
 
 export const getClusterQueryPeersActive = (state) => {
-  const queryPeers = state.prefs.query_peers || []
-  const clusterMembers = getClusterMembers(state)
-  const members = clusterMembers.reduce((acc, curr) => {
-    acc[curr] = true
-    return acc
-  }, {})
-  const selectedPeers = queryPeers.filter((peer) => members.hasOwnProperty(peer))
-  if (selectedPeers.length > 0) {
-    return selectedPeers
-  }
-  if (clusterMembers.length > 0) {
-    return [clusterMembers[0]]
-  }
-  return []
+  const members = getClusterMembers(state)
+  const selected = state.prefs.query_peers.filter((peer) => members.includes(peer))
+  return selected.length > 0 ? selected : members.slice(0, 1)
 }

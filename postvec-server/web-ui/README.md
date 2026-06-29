@@ -1,8 +1,9 @@
 # postvec-server web UI
 
 Dashboard for a running `postvec-server` node. Phase 1: list the models
-`GET /config` advertises and POST native JSON at `/api/{model}`. Registry
-browse is a later release.
+`GET /config` advertises and query any live node with the native
+(`/api/{model}`) or OpenAI (`/api/openai/embeddings`) contract, showing the
+route hit and the raw reply. Registry browse is a later release.
 
 The mechanics match the ninference dashboard on purpose — Zustand slices,
 the same `{success, data}` envelope, query cache per model — with a

@@ -1,111 +1,70 @@
 import axios from 'axios'
+import { modelCache } from '../slices/prefsSlice'
+
+export const requestPath = (contract, model) =>
+  contract === 'openai' ? '/api/openai/embeddings' : `/api/${encodeURIComponent(model)}`
+
+// One request to one peer; never throws. `body` is whatever the node
+// returned (native envelope or OpenAI shape), `ok` whether it succeeded.
+const post = async (peer, path, payload) => {
+  try {
+    const { status, data } = await axios.post(peer + path, payload, {
+      validateStatus: () => true,
+    })
+    const ok = status < 300 && data?.success !== false
+    return { peer, ok, status, body: data }
+  } catch (err) {
+    return { peer, ok: false, status: 0, body: { error: { message: err.message } } }
+  }
+}
 
 export const createAsyncActions = (set, get) => ({
-  appMounted: async () => {
-    set((draft) => {
-      draft.prefs.loading = true
-    })
-    try {
-      await get().getConfiguration()
-    } catch (error) {
-      console.error('Error fetching initial data:', error)
-    } finally {
-      set((draft) => {
-        draft.prefs.loading = false
-      })
-    }
-  },
+  appMounted: () => get().getConfiguration(),
 
   getConfiguration: async () => {
-    const state = get()
-    const url = state.api_endpoint + '/config'
-    const { data: response } = await axios.get(url)
-
     set((draft) => {
-      if (response && response.success === true) {
-        const hubModels = response.data?.models || []
-        const cluster = response.data?.cluster || {}
-        const clusterNodes = cluster.nodes || []
-        const currentSelectedModelName =
-          state.modelhub?.filesystem?.local?.selected_model || ''
-        draft.modelhub.prefs.active_remote_alias = 'local'
-        draft.modelhub.filesystem.local = {
-          models: hubModels,
-          loading: false,
-          selected_model: currentSelectedModelName,
-        }
-        draft.cluster = clusterNodes
-        draft.system = response.data?.system || null
-        draft.server = response.data?.server || null
-      }
+      draft.loading = true
     })
-
-    return response
+    try {
+      const { data } = await axios.get(get().api_endpoint + '/config')
+      if (!data?.success) throw new Error(data?.error?.message || 'unexpected /config reply')
+      set((draft) => {
+        draft.models = data.data.models || []
+        draft.cluster = data.data.cluster?.nodes || []
+        draft.system = data.data.system || null
+        draft.server = data.data.server || null
+        draft.error = null
+      })
+    } catch (err) {
+      set((draft) => {
+        draft.error = `Cannot reach ${get().api_endpoint}/config: ${err.message}`
+      })
+    } finally {
+      set((draft) => {
+        draft.loading = false
+      })
+    }
   },
 
-  executeQuery: async (model, peers, query) => {
-    if (!model) {
-      throw new Error('Cannot execute query - no model specified')
-    }
-    if (!peers || !Array.isArray(peers) || peers.length === 0) {
-      throw new Error('Cannot execute query - no peers specified')
-    }
-    if (!query) {
-      throw new Error('Cannot execute query - no query specified')
-    }
-
-    const modelName = model.name
-    set((draft) => {
-      const currentModelCache = draft.prefs.query_cache.models[modelName] || {}
-      currentModelCache.loading = true
-      currentModelCache.responses = []
-      currentModelCache.performed = false
-      draft.prefs.query_cache.models[modelName] = currentModelCache
-    })
-
+  executeQuery: async (model, contract, peers, text) => {
+    let payload
     try {
-      const liftFuture = async (peer, name, body) => {
-        try {
-          const url = `${peer}/api/${name}`
-          const data = JSON.parse(body)
-          const { data: response } = await axios.post(url, data)
-          if (response.success) {
-            return { peer, model: name, success: true, result: response.data }
-          }
-          const errorMessage = response?.error?.message || 'query failed'
-          return {
-            peer,
-            model: name,
-            success: false,
-            error: new Error(`Query failed (${name}) from node ${peer}: ${errorMessage}`),
-          }
-        } catch (err) {
-          return { success: false, error: err, peer, model: name }
-        }
-      }
-
-      const responses = await Promise.all(
-        peers.map((peer) => liftFuture(peer, modelName, query)),
-      )
-
-      set((draft) => {
-        const currentModelCache = draft.prefs.query_cache.models[modelName] || {}
-        currentModelCache.loading = false
-        currentModelCache.performed = true
-        currentModelCache.responses = responses
-        draft.prefs.query_cache.models[modelName] = currentModelCache
-      })
-
-      return responses
-    } catch (error) {
-      set((draft) => {
-        const currentModelCache = draft.prefs.query_cache.models[modelName] || {}
-        currentModelCache.loading = false
-        currentModelCache.performed = true
-        currentModelCache.responses = []
-        draft.prefs.query_cache.models[modelName] = currentModelCache
-      })
-      throw error
+      payload = JSON.parse(text)
+    } catch {
+      return
     }
+    const name = model.name
+    set((draft) => {
+      const cache = modelCache(draft, name)
+      cache.loading = true
+      cache.responses = []
+    })
+    const path = requestPath(contract, name)
+    const responses = await Promise.all(peers.map((peer) => post(peer, path, payload)))
+    set((draft) => {
+      const cache = modelCache(draft, name)
+      cache.loading = false
+      cache.responses = responses
+    })
   },
 })

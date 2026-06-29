@@ -378,4 +378,34 @@ async fn embeddings_come_back_over_http() {
         .as_array()
         .unwrap()
         .is_empty());
+    assert!(openai["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
+
+    // Matryoshka truncation and base64 ride through to the executor.
+    let short: Value = client
+        .post(format!("{base}/api/openai/embeddings"))
+        .json(&json!({ "model": model, "input": ["a", "b"], "dimensions": 8, "encoding_format": "base64" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(short["data"].as_array().unwrap().len(), 2, "{short}");
+    assert_eq!(short["data"][1]["index"], json!(1));
+    // 8 little-endian f32 = 32 bytes = 44 base64 characters.
+    assert_eq!(short["data"][0]["embedding"].as_str().unwrap().len(), 44);
+
+    let over = client
+        .post(format!("{base}/api/openai/embeddings"))
+        .json(&json!({ "model": model, "input": "a", "dimensions": 1_000_000 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(over.status(), 400);
+    let over: Value = over.json().await.unwrap();
+    assert_eq!(
+        over["error"]["type"],
+        json!("invalid_request_error"),
+        "{over}"
+    );
 }
