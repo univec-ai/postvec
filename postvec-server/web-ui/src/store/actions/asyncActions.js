@@ -7,14 +7,16 @@ export const requestPath = (contract, model) =>
 // One request to one peer; never throws. `body` is whatever the node
 // returned (native envelope or OpenAI shape), `ok` whether it succeeded.
 const post = async (peer, path, payload) => {
+  const started = performance.now()
+  const ms = () => Math.round(performance.now() - started)
   try {
     const { status, data } = await axios.post(peer + path, payload, {
       validateStatus: () => true,
     })
     const ok = status < 300 && data?.success !== false
-    return { peer, ok, status, body: data }
+    return { peer, ok, status, ms: ms(), body: data }
   } catch (err) {
-    return { peer, ok: false, status: 0, body: { error: { message: err.message } } }
+    return { peer, ok: false, status: 0, ms: ms(), body: { error: { message: err.message } } }
   }
 }
 

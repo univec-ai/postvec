@@ -5,9 +5,12 @@ Dashboard for a running `postvec-server` node. Phase 1: list the models
 (`/api/{model}`) or OpenAI (`/api/openai/embeddings`) contract, showing the
 route hit and the raw reply. Registry browse is a later release.
 
-The mechanics match the ninference dashboard on purpose — Zustand slices,
-the same `{success, data}` envelope, query cache per model — with a
-separate theme. postvec is its own product.
+State handling follows the ninference dashboard on purpose (Zustand slices,
+the `{success, data}` envelope, a query cache per model) so both front-ends
+feel familiar to work on. Everything visible is postvec's own: plain CSS
+with system fonts (`src/styles/app.css`), a sidebar of models and a
+request/response workbench. No component library, no bundled fonts, no
+network fetches beyond the node itself.
 
 ## Develop
 

@@ -1,19 +1,15 @@
 import React, { useEffect } from 'react'
 import { useStore } from '@/store'
-import Header from './Header'
-import PageHome from './PageHome'
-import { Elemental } from '../shared/react-elemental'
-import {
-  karlaBold,
-  karlaRegular,
-  sourceCodeProMedium,
-  sourceCodeProRegular,
-} from '../shared/react-elemental-fonts/index-esm.js'
+import Sidebar from './Sidebar'
+import Workbench from './Workbench'
+import Registries from './Registries'
 
 const REFRESH_MS = 30_000
 
 const App = () => {
   const getConfiguration = useStore((state) => state.getConfiguration)
+  const error = useStore((state) => state.error)
+  const tab = useStore((state) => state.prefs.main_menu_tab)
 
   useEffect(() => {
     getConfiguration()
@@ -22,16 +18,13 @@ const App = () => {
   }, [getConfiguration])
 
   return (
-    <Elemental
-      fontOpts={{
-        primary: { regular: karlaRegular, bold: karlaBold },
-        secondary: { regular: sourceCodeProRegular, bold: sourceCodeProMedium },
-      }}
-      colorOpts={{ primary: '#228165', primaryLight: '#d4efe6', primaryDark: '#145a47' }}
-    >
-      <Header />
-      <PageHome />
-    </Elemental>
+    <div className="shell">
+      <Sidebar />
+      <main className="main">
+        {error && <div className="banner">{error}</div>}
+        {tab === 'registries' ? <Registries /> : <Workbench />}
+      </main>
+    </div>
   )
 }
 

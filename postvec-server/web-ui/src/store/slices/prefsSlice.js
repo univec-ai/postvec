@@ -42,6 +42,13 @@ const createPrefsSlice = (set) => ({
       cache.responses = []
     }),
 
+  resetQuery: (name, contract) =>
+    set((state) => {
+      const cache = modelCache(state, name)
+      delete cache.text[contract]
+      cache.responses = []
+    }),
+
   cacheQuery: (name, contract, text) =>
     set((state) => {
       const cache = modelCache(state, name)
