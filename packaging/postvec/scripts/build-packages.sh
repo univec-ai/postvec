@@ -60,6 +60,8 @@ NOARCH_DIR_OUT="$(noarch_dist_dir "${DISTRO}")"
 # bundle is one portable FP32 graph shared by every architecture.
 ORT_PAYLOAD_ROOT="${PKG_DIR}/build/payload-${RELEASE_ARCH}"
 MODEL_PAYLOAD_ROOT="${PKG_DIR}/build/payload-common"
+# The node's dashboard: static files, built once (build-ui-bundle.sh).
+UI_PAYLOAD_ROOT="${PKG_DIR}/build/payload-ui"
 
 wanted() { [[ -z "${ONLY}" || " ${ONLY//,/ } " == *" $1 "* ]]; }
 
@@ -174,6 +176,7 @@ SERVER_UNIT_DIR=/usr/lib/systemd/system
 
 export CELL_DIR \
        ORT_PAYLOAD_DIR="${ORT_PAYLOAD_ROOT}" MODEL_PAYLOAD_DIR="${MODEL_PAYLOAD_ROOT}" \
+       UI_PAYLOAD_DIR="${UI_PAYLOAD_ROOT}" \
        PKGLIBDIR EXTENSIONDIR EXTENSION_PACKAGE DEBUG_PACKAGE DEBUG_SUFFIX PG_MAJOR \
        PKG_RELEASE PKG_ARCH NOARCH LICENSE_DST LICENSE_NAME SOURCE_DATE_ISO \
        CHANGELOG_NAME MODEL_LICENSE_SRC SERVER_UNIT_DIR \
@@ -302,6 +305,11 @@ if wanted server; then
     # one built with `--with-server`. An extension cell has no node binary and
     # is not asked for one; a shared-package cell in a release must have one.
     if [[ -f "${CELL_DIR}/server/postvec-server" ]]; then
+        # The dashboard is part of the package, not an optional extra: a
+        # node without it answers / with a stub, and nothing else would tell.
+        [[ -f "${UI_PAYLOAD_ROOT}/opt/postvec/server/ui/index.html" ]] \
+            || die "no dashboard payload at ${UI_PAYLOAD_ROOT}.
+Run: scripts/build-ui-bundle.sh"
         # The TLS listener links OpenSSL, which no bare base image carries;
         # the generator installs it first so it can name the package (see
         # elf-depends.sh --runtime-package). The pattern covers Debian 12 and

@@ -158,6 +158,10 @@ health="$(curl --silent --insecure --output /dev/null --write-out '%{http_code}'
 [[ "${health}" == 200 ]] \
     && ok "/health is 200" \
     || bad "/health is ${health}"
+index="$(curl --silent --insecure --fail "https://127.0.0.1:${port}/" 2>/dev/null || true)"
+grep -q '<div id="root">' <<<"${index}" \
+    && ok "/ serves the dashboard" \
+    || bad "/ does not serve the dashboard: ${index:0:200}"
 metrics="$(curl --silent --insecure --fail "https://127.0.0.1:${port}/metrics" 2>/dev/null || true)"
 [[ -n "${metrics}" ]] \
     && ok "/metrics serves Prometheus text" \

@@ -154,8 +154,7 @@ converters are refused; provider-backed models refuse `dimensions` and
 
 A built dashboard (see [web-ui/](web-ui/)) is served from this port when
 `index.html` is found: `--web-ui DIR`, `POSTVEC_SERVER_WEB_UI`, `web_ui` in
-the config file, `<root>/web-ui/dist`, next to the binary, or
-`/usr/share/postvec-server/web-ui`.
+the config file, else `<root>/server/ui`, where the packages install it.
 
 ### Health
 

@@ -216,8 +216,7 @@ pub struct ServeArgs {
     /// Directory of a built dashboard (must contain index.html).
     ///
     /// [env: POSTVEC_SERVER_WEB_UI]
-    /// [default: <root>/web-ui/dist, then next to the binary, then
-    /// /usr/share/postvec-server/web-ui]
+    /// [default: <root>/server/ui, where the packages install it]
     #[arg(long = "web-ui", value_name = "DIR")]
     pub web_ui: Option<PathBuf>,
 }

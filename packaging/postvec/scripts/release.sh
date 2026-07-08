@@ -65,6 +65,9 @@ step "release gate"
 
 step "engine assets (${ARCH})"
 "${PKG_DIR}/scripts/build-onnxruntime-bundle.sh" --arch "${ARCH}"
+# The node's dashboard: architecture-independent, built in the pinned node
+# container, so no toolchain on the host either.
+"${PKG_DIR}/scripts/build-ui-bundle.sh"
 # The model bundle is deliberately *not* here. It is acquired with
 # `postvec model pull`, which needs a postvec binary — and this script must not
 # require a Rust toolchain on the host. The first extension stage below builds

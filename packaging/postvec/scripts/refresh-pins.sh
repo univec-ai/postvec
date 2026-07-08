@@ -20,7 +20,7 @@ need curl python3
 
 want() { (($# == 0)) || [[ " ${TOPICS[*]} " == *" $1 "* ]]; }
 TOPICS=("$@")
-((${#TOPICS[@]})) || TOPICS=(ort model rustup protoc syft images buildx python)
+((${#TOPICS[@]})) || TOPICS=(ort model rustup protoc syft images buildx node python)
 
 if want ort; then
     echo "# ONNX Runtime ${ORT_VERSION}"
@@ -130,6 +130,15 @@ if want images; then
     printf 'BUILD_BASE_UBUNTU2204_DIGEST=%s\n' "$(resolve library/ubuntu 22.04)"
     printf 'BUILD_BASE_UBUNTU2404_DIGEST=%s\n' "$(resolve library/ubuntu 24.04)"
     printf 'BUILD_BASE_EL9_DIGEST=%s\n'        "$(resolve library/almalinux 9)"
+    echo
+fi
+
+if want node; then
+    # Same rule as BuildKit: the pinned node line, re-resolved — not the
+    # newest major.
+    echo "# node, for the postvec-server dashboard"
+    node_ref="${NODE_IMAGE%@*}"; node_repo="${node_ref%%:*}"
+    printf 'NODE_IMAGE=%s@%s\n' "${node_ref}" "$(resolve "${node_repo#docker.io/}" "${node_ref##*:}")"
     echo
 fi
 

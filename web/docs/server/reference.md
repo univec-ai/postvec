@@ -48,7 +48,7 @@ with `//` are comments.
 | `--no-warmup` | `POSTVEC_SERVER_WARMUP=0` | `warmup` | Warmup on |
 | `--no-metrics` | `POSTVEC_SERVER_METRICS=0` | `metrics` | Metrics on |
 | `--log-level FILTER` | `RUST_LOG` | `log_level` | `info` |
-| `--web-ui DIR` | `POSTVEC_SERVER_WEB_UI` | `web_ui` | Search `<root>/web-ui/dist`, then next to the binary, then `/usr/share/postvec-server/web-ui` |
+| `--web-ui DIR` | `POSTVEC_SERVER_WEB_UI` | `web_ui` | `<root>/server/ui`, where the package installs it |
 
 `--cluster` is an accepted alias for `--peers`, and `--ssl-key` for
 `--ssl-cert-key`.

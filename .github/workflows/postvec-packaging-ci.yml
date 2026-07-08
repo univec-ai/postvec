@@ -322,6 +322,10 @@ jobs:
           packaging/postvec/scripts/build-model-bundle.sh \
             --cli packaging/postvec/build/debian12-pg18-amd64/cli/postvec
 
+      - name: Dashboard, in the pinned node container
+        timeout-minutes: 15
+        run: packaging/postvec/scripts/build-ui-bundle.sh
+
       - name: Package
         timeout-minutes: 15
         run: |

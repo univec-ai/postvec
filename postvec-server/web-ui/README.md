@@ -36,13 +36,14 @@ npm ci
 npm run build
 ```
 
-`dist/` is what the node serves. Point the process at it:
+`dist/` is what the node serves. Point a checkout-built node at it:
 
 ```console
-postvec-server --web-ui ./web-ui/dist --insecure
+postvec-server --web-ui "$PWD/dist" --insecure
 ```
 
-or copy `dist/` to `$root/web-ui/dist`. Search order is `--web-ui` /
-`POSTVEC_SERVER_WEB_UI` / `web_ui` in the config file, then
-`<root>/web-ui/dist`, then next to the binary, then
-`/usr/share/postvec-server/web-ui`.
+or install it at `<root>/server/ui`, which is where the `postvec-server`
+package and image put it (`packaging/postvec/scripts/build-ui-bundle.sh`
+builds it in a pinned node container for a release). Resolution order:
+`--web-ui` / `POSTVEC_SERVER_WEB_UI` / `web_ui` in the config file, else
+`<root>/server/ui`.

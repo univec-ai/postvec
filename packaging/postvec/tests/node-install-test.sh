@@ -156,6 +156,7 @@ fi
 [[ -f /usr/lib/systemd/system/postvec-server.service ]] && ok "the unit" || bad "no unit"
 [[ -f /usr/lib/systemd/system/postvec-server.service.d/packaged.conf ]] && ok "the drop-in" || bad "no drop-in"
 [[ -f /etc/postvec-server/config.json ]] && ok "/etc/postvec-server/config.json" || bad "no config"
+[[ -f /opt/postvec/server/ui/index.html ]] && ok "the dashboard under /opt/postvec/server/ui" || bad "no dashboard"
 getent passwd postvec-server >/dev/null && ok "the postvec-server account" || bad "no account"
 [[ -f "/opt/postvec/models/onnx-runtime/${BUNDLED_MODEL_NAME}/ninference.hub.json" ]] \
     && ok "the model is at the root the drop-in names" \

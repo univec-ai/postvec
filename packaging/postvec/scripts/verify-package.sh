@@ -239,6 +239,8 @@ check_contents() {
             || problem "no packaged drop-in pointing the unit at /opt/postvec"
         grep -qE '^\.?/etc/postvec-server/config\.json$' <<<"${files}" \
             || problem "no /etc/postvec-server/config.json"
+        grep -qE '^\.?/opt/postvec/server/ui/index\.html$' <<<"${files}" \
+            || problem "no dashboard at /opt/postvec/server/ui (scripts/build-ui-bundle.sh)"
         if grep -qE '/opt/postvec/(models|libs)/' <<<"${files}"; then
             problem "the node package carries engine assets — those belong to postvec-onnxruntime and postvec-model-*"
         fi
@@ -247,7 +249,7 @@ check_contents() {
         if grep -qE 'postvec\.so$|postvec--.*\.sql$|postvec\.control$' <<<"${files}"; then
             problem "the node package carries extension files (postvec.so / SQL / control)"
         fi
-        pass "owns /usr/bin/postvec-server, its unit, the drop-in and its configuration"
+        pass "owns /usr/bin/postvec-server, its unit, the drop-in, its configuration and the dashboard"
 
         # The packaged config names the certificate pair beside itself: the
         # crate's <root>/certs default is under root-owned, read-only

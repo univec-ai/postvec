@@ -765,7 +765,7 @@ mod tests {
     fn web_ui_follows_the_precedence_and_the_root() {
         let s = resolve_with(
             ServeArgs {
-                web_ui: Some(PathBuf::from("web-ui/dist")),
+                web_ui: Some(PathBuf::from("server/ui")),
                 ..Default::default()
             },
             FileConfig::default(),
@@ -774,7 +774,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             s.web_ui.as_deref(),
-            Some(Path::new("/srv/root/web-ui/dist"))
+            Some(Path::new("/srv/root/server/ui"))
         );
 
         let file = FileConfig {

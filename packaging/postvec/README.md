@@ -37,6 +37,9 @@ packaging/postvec/scripts/release.sh
 # Or one cell at a time:
 scripts/assert-versions.sh
 scripts/build-onnxruntime-bundle.sh --arch amd64
+# The node's dashboard, built once in the pinned node container (--host uses
+# the host's npm instead) and packaged into postvec-server.
+scripts/build-ui-bundle.sh
 # `--with-server` makes this the shared-package cell: it also compiles the
 # postvec-server node (PostgreSQL-independent, like the CLI beside it).
 scripts/build-extension-stage.sh --distro debian12 --pg 18 --arch amd64 --with-server

@@ -21,7 +21,7 @@ ARG BUILD_DATE
 ARG SOURCE_DATE_EPOCH
 
 LABEL org.opencontainers.image.title="postvec-server" \
-      org.opencontainers.image.description="Standalone inference node for postvec's remote mode: gRPC embeddings and conversions plus /config discovery." \
+      org.opencontainers.image.description="Standalone inference node for postvec's remote mode: gRPC and HTTP embeddings and conversions, an OpenAI-compatible embeddings route, /config discovery and a dashboard." \
       org.opencontainers.image.version="${RELEASE_ID}" \
       org.opencontainers.image.licenses="${SERVER_LICENSE}" \
       org.opencontainers.image.source="${IMAGE_SOURCE}" \
@@ -65,6 +65,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     test -x /usr/bin/postvec; \
     test -d /opt/postvec/libs; \
     test -d /opt/postvec/models; \
+    test -f /opt/postvec/server/ui/index.html; \
     getent passwd postvec-server >/dev/null
 
 COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
@@ -89,7 +90,8 @@ RUN set -eux; \
     install -d -m 1775 -o root -g postvec-server /run/lock/postvec
 USER postvec-server
 
-# 22222 discovery (HTTPS), 33333 gRPC (plaintext), 11111 gossip. The admin port
+# 22222 discovery, HTTP inference and the dashboard (HTTPS), 33333 gRPC
+# (plaintext), 11111 gossip. The admin port
 # (22223) is deliberately NOT exposed: it is loopback-only and its routes
 # mutate the engine.
 EXPOSE 11111 22222 33333

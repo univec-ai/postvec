@@ -19,8 +19,10 @@ description: |
   Standalone inference node for postvec's remote mode.
   .
   Serves the same embedding and conversion engine postvec's embedded mode runs
-  inside PostgreSQL, as a separate process: gRPC on 33333, /config discovery on
-  22222, cluster gossip on 11111, and a loopback-only admin listener. Point a
+  inside PostgreSQL, as a separate process: gRPC on 33333, HTTP inference
+  (/api/{model}, an OpenAI-compatible /api/openai/embeddings), /config
+  discovery and a dashboard on 22222, cluster gossip on 11111, and a
+  loopback-only admin listener. Point a
   cluster at one or more nodes with `postvec setup --grpc … --http …`.
   .
   The node serves models from an engine root laid out exactly like embedded
@@ -76,6 +78,23 @@ contents:
   - dst: /var/lib/postvec-server
     type: dir
     file_info: { mode: 0755, owner: root, group: root }
+
+  # The dashboard the node serves at / on the discovery port, built once per
+  # release by scripts/build-ui-bundle.sh into <root>/server/ui — the path
+  # the binary looks at by default. Static files, root-owned and read-only
+  # like the rest of /opt/postvec; the service account only reads them.
+  - src: ${UI_PAYLOAD_DIR}/opt/postvec/server/ui
+    dst: /opt/postvec/server/ui
+    type: tree
+    file_info: { owner: root, group: root }
+  # What the bundle inlines (runtime npm dependencies, with their licence
+  # texts) and what it was built from.
+  - src: ${UI_PAYLOAD_DIR}/usr/share/doc/postvec-server/dashboard-ThirdPartyNotices.txt
+    dst: /usr/share/doc/postvec-server/dashboard-ThirdPartyNotices.txt
+    file_info: { mode: 0644, owner: root, group: root }
+  - src: ${UI_PAYLOAD_DIR}/usr/share/doc/postvec-server/dashboard-SOURCE.json
+    dst: /usr/share/doc/postvec-server/dashboard-SOURCE.json
+    file_info: { mode: 0644, owner: root, group: root }
 
   - src: ${REPO_ROOT}/postvec-server/README.md
     dst: /usr/share/doc/postvec-server/README.md

@@ -250,39 +250,30 @@ async fn handle_metrics(State(state): State<Arc<ServerState>>) -> Response {
         .into_response()
 }
 
-/// Locate a built SPA (`index.html` in a `dist` directory).
-///
-/// An explicit `--web-ui` / `web_ui` / `POSTVEC_SERVER_WEB_UI` wins and is
-/// the only candidate when set. Otherwise: `$root/web-ui/dist`, next to the
-/// binary, then `/usr/share/postvec-server/web-ui`.
+/// Where the packages install the dashboard, relative to the engine root.
+pub const WEB_UI_DIR: &str = "server/ui";
+
+/// Locate the built dashboard (a directory with `index.html`). An explicit
+/// `--web-ui` / `web_ui` / `POSTVEC_SERVER_WEB_UI` is the only candidate
+/// when set; otherwise `<root>/server/ui`, where the packages put it.
 pub fn resolve_web_ui(explicit: Option<&Path>, root: &Path) -> Option<PathBuf> {
-    let has_index = |dir: &Path| dir.join("index.html").is_file();
-    if let Some(explicit) = explicit {
-        return if has_index(explicit) {
-            Some(explicit.to_path_buf())
-        } else {
-            log::warn!(
-                "web UI path {} has no index.html; the dashboard will not be served",
-                explicit.display()
-            );
-            None
-        };
+    let dir = explicit.map(Path::to_path_buf).unwrap_or_else(|| root.join(WEB_UI_DIR));
+    if dir.join("index.html").is_file() {
+        return Some(dir);
     }
-    let mut candidates = vec![root.join("web-ui").join("dist")];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("web-ui").join("dist"));
-            candidates.push(dir.join("../share/postvec-server/web-ui"));
-        }
+    if explicit.is_some() {
+        log::warn!(
+            "web UI path {} has no index.html; the dashboard will not be served",
+            dir.display()
+        );
     }
-    candidates.push(PathBuf::from("/usr/share/postvec-server/web-ui"));
-    candidates.into_iter().find(|p| has_index(p))
+    None
 }
 
 async fn no_spa() -> Json<Value> {
     Json(json!({
         "success": true,
-        "data": "Web front-end is not configured. Build postvec-server/web-ui and point --web-ui at dist/, or place it at <root>/web-ui/dist."
+        "data": "Web front-end is not configured. Build postvec-server/web-ui and pass --web-ui <dir>, or install it at <root>/server/ui."
     }))
 }
 

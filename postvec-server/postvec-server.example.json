@@ -44,6 +44,6 @@
   "metrics": true,
   "log_level": "info",
 
-  "//web_ui": "Directory of a built dashboard (index.html). Relative paths resolve against the engine root. Omit to search <root>/web-ui/dist, then next to the binary, then /usr/share/postvec-server/web-ui.",
+  "//web_ui": "Directory of a built dashboard (index.html). Relative paths resolve against the engine root. Omit to serve <root>/server/ui, where the packages install it.",
   "web_ui": null
 }

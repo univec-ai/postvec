@@ -18,7 +18,8 @@ the [packages page](/docs/install/packages), then:
 <PgSnippet id="packages-server" />
 
 The package installs the binary, the systemd unit, a conffile at
-`/etc/postvec-server/config.json` and the `postvec-server` service account.
+`/etc/postvec-server/config.json`, the dashboard under
+`/opt/postvec/server/ui` and the `postvec-server` service account.
 It enables and starts nothing — the certificate and `systemctl` lines are
 yours. `postvec-cli` is a Recommends of the node package (for `postvec model
 pull`); it is listed explicitly because an install from local files cannot

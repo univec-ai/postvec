@@ -23,6 +23,10 @@ postvec/target
 packaging/postvec/build
 packaging/postvec/dist
 
+# The dashboard is built by scripts/build-ui-bundle.sh, not by these builders.
+postvec-server/web-ui/node_modules
+postvec-server/web-ui/dist
+
 # Local state, secrets and scratch.
 .env
 .env.*

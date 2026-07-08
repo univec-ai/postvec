@@ -27,6 +27,7 @@ trap 'rm -rf "${WORK}"' EXIT
 export CELL_DIR="${WORK}/cell" \
        ORT_PAYLOAD_DIR="${WORK}/payload" \
        MODEL_PAYLOAD_DIR="${WORK}/payload-common" \
+       UI_PAYLOAD_DIR="${WORK}/payload-ui" \
        PKGLIBDIR=/usr/lib/postgresql/18/lib \
        EXTENSIONDIR=/usr/share/postgresql/18/extension \
        EXTENSION_PACKAGE=postgresql-18-postvec \
