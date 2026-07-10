@@ -54,9 +54,9 @@ changes is where the model runs.
 | Port | Protocol | Bound to | Purpose |
 |---|---|---|---|
 | `33333` | gRPC, plaintext | `--bind` (default `0.0.0.0`) | `EmbedTexts`, `ConvertEmbeddings` |
-| `22222` | HTTPS | `--bind` | `/config`, `/health`, `/ready`, `/metrics`, `/api/{model}`, `/api/openai/embeddings`, optional UI |
+| `22222` | HTTPS | `--bind` | `/config`, `/health`, `/ready`, `/metrics`, `/api/{model}`, `/api/openai/embeddings`, `/api/registry/*`, optional UI |
 | `11111` | TCP gossip | all interfaces | cluster membership |
-| `22223` | HTTP | `127.0.0.1` only | `/admin/load`, `/admin/unload` |
+| `22223` | HTTP | `127.0.0.1` only | `/admin/load`, `/admin/unload`, registry pull/activate/deactivate |
 
 Identical on every node in a fleet — that is the point, and it is why
 `--peers` takes bare hosts.
@@ -151,6 +151,30 @@ and runs the same executor path as `POST /api/{model}`. Token-ID inputs and
 converters are refused; provider-backed models refuse `dimensions` and
 `base64` instead of ignoring them. Any OpenAI SDK works with
 `base_url = <node>/api/openai`. Both routes cap a request at 4096 items.
+
+### Model registry
+
+The node-side counterpart of `postvec model ls / ls --available / pull /
+activate / deactivate`, on the same code the CLI runs. Requests and
+replies are the admin envelope: `{success, data}`, per-model
+`{model, status, error?}` results.
+
+| Route | Listener | Does |
+|---|---|---|
+| `GET /api/registry/models` | all | Installed models: `enabled`, `loaded`, `owner`, `revision`, size |
+| `GET /api/registry/available` | all | The registry catalogue, with `installed` / `update` per entry. Anonymous, or the node's own credential (`POSTVEC_API_KEY`, the service account's `postvec login`) |
+| `POST /api/registry/pull` `{models, accept_license?}` | all (`--no-manage`: admin only) | Download, verify and install (deactivated, like the CLI); returns a `job` id |
+| `GET /api/registry/pulls` | all | Every pull started here: status, bytes, per-model results |
+| `POST /api/registry/activate` `{models}` | all (`--no-manage`: admin only) | Enable on disk (with deactivated dependencies), then load |
+| `POST /api/registry/deactivate` `{models}` | all (`--no-manage`: admin only) | Unload, then disable; refused while an enabled model depends on it |
+
+The three mutating routes are on the public port too by default, so the
+dashboard can drive them; `--no-manage` (`POSTVEC_SERVER_MANAGE=0`,
+`"manage": false`) keeps them to the loopback admin port. They are as
+unauthenticated as everything else here. Any installed model can be
+activated or deactivated, however it got there. The packaged unit hands
+`/opt/postvec/models` to the service account at start so pulls work out of
+the box; the image does the same.
 
 A built dashboard (see [web-ui/](web-ui/)) is served from this port when
 `index.html` is found: `--web-ui DIR`, `POSTVEC_SERVER_WEB_UI`, `web_ui` in

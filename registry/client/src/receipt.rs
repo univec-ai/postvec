@@ -7,10 +7,10 @@
 //! model directory, so it travels with the model when a directory is
 //! copied to an isolated host.
 
-use crate::config::owned;
-use crate::error::{CliError, Result};
-use crate::registry::archive::ExtractedFile;
-use crate::registry::index::IndexModel;
+use crate::archive::ExtractedFile;
+use crate::error::{Error as CliError, Result};
+use crate::fs as owned;
+use crate::index::IndexModel;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -129,7 +129,7 @@ impl Receipt {
         model: &IndexModel,
         source_host: Option<String>,
         files: &[ExtractedFile],
-        identity: &crate::registry::identity::Identity,
+        identity: &crate::identity::Identity,
         license_evidence: Option<&LicenseEvidence>,
     ) -> Self {
         Receipt {
@@ -157,9 +157,9 @@ impl Receipt {
             }),
             dependencies: model.dependencies.clone(),
             postvec_requires: model.postvec_requires.clone(),
-            registry_schema_version: crate::registry::index::SCHEMA_VERSION,
-            installed_at: crate::checks::timestamp_now(),
-            cli_version: crate::CLI_VERSION.to_string(),
+            registry_schema_version: crate::index::SCHEMA_VERSION,
+            installed_at: crate::receipt::timestamp_now(),
+            cli_version: crate::VERSION.to_string(),
             files: files
                 .iter()
                 .map(|f| ReceiptFile {
@@ -178,11 +178,11 @@ impl Receipt {
 
     /// The identity contract as this install recorded it. `None` when
     /// the receipt predates the identity block. The caller must then fall
-    /// back to [`crate::registry::identity::check_identity_core`] and say
+    /// back to [`crate::identity::check_identity_core`] and say
     /// what it could not verify, never assume agreement.
-    pub fn identity(&self) -> Option<crate::registry::identity::Identity> {
+    pub fn identity(&self) -> Option<crate::identity::Identity> {
         let block = self.identity.as_ref()?;
-        Some(crate::registry::identity::Identity {
+        Some(crate::identity::Identity {
             model_type: self.model_type.clone(),
             backend: self.backend.clone(),
             source_model: block.source_model.clone(),
@@ -268,9 +268,8 @@ impl Receipt {
     /// filesystem locations, so hostile or corrupted content must fail
     /// here, before any caller joins its paths.
     fn validate_shape(&self) -> std::result::Result<(), String> {
-        crate::registry::index::valid_model_name(&self.name)?;
-        crate::registry::index::valid_model_name(&self.backend)
-            .map_err(|e| format!("backend: {e}"))?;
+        crate::index::valid_model_name(&self.name)?;
+        crate::index::valid_model_name(&self.backend).map_err(|e| format!("backend: {e}"))?;
         let hex = self
             .archive_digest
             .strip_prefix("sha256:")
@@ -399,10 +398,15 @@ fn hash_file(path: &Path) -> std::result::Result<String, String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// RFC 3339, seconds, UTC — what receipts and evidence record.
+pub fn timestamp_now() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::index::{ArchiveInfo, IndexModel};
+    use crate::index::{ArchiveInfo, IndexModel};
     use std::os::unix::fs::PermissionsExt;
 
     fn model() -> IndexModel {
@@ -440,8 +444,8 @@ mod tests {
         }
     }
 
-    fn identity() -> crate::registry::identity::Identity {
-        crate::registry::identity::Identity {
+    fn identity() -> crate::identity::Identity {
+        crate::identity::Identity {
             model_type: "embed".into(),
             backend: "onnx-runtime".into(),
             source_model: None,
@@ -507,7 +511,7 @@ mod tests {
             assert!(!body.contains(absent), "{absent} must be omitted");
             value.as_object_mut().unwrap().remove(absent);
         }
-        crate::config::owned::write_atomic(
+        crate::fs::write_atomic(
             &dir.path().join(RECEIPT_FILE),
             &serde_json::to_vec(&value).unwrap(),
             0o644,
@@ -607,7 +611,7 @@ mod tests {
         let mut receipt = Receipt::new(&model(), None, &[], &identity(), None);
         receipt.schema_version = 99;
         let body = serde_json::to_vec(&receipt).unwrap();
-        crate::config::owned::write_atomic(&dir.path().join(RECEIPT_FILE), &body, 0o644).unwrap();
+        crate::fs::write_atomic(&dir.path().join(RECEIPT_FILE), &body, 0o644).unwrap();
         let err = Receipt::read(dir.path()).unwrap_err();
         assert!(err.to_string().contains("schema_version 99"), "{err}");
     }

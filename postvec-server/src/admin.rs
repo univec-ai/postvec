@@ -40,7 +40,7 @@ fn refusal(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
 }
 
 /// One per-model outcome inside a 200 envelope.
-fn model_result(model: &str, status: &str, error: Option<String>) -> Value {
+pub(crate) fn model_result(model: &str, status: &str, error: Option<String>) -> Value {
     match error {
         Some(e) => json!({ "model": model, "status": status, "error": e }),
         None => json!({ "model": model, "status": status }),
@@ -103,6 +103,17 @@ fn parse_request(
 // ---- /admin/load -------------------------------------------------------
 
 async fn admin_load(state: Arc<ServerState>, names: Vec<String>) -> (StatusCode, Json<Value>) {
+    match load_models(state, names).await {
+        Ok(results) => results_envelope(results),
+        Err(e) => refusal(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+/// Load `names`, one outcome each. Shared with the registry's activate.
+pub(crate) async fn load_models(
+    state: Arc<ServerState>,
+    names: Vec<String>,
+) -> Result<Vec<Value>, String> {
     // Detach the load. If the client disconnects, this task still holds
     // the lifecycle lock and finishes commit-or-rollback.
     let lifecycle = state.lifecycle.clone();
@@ -130,14 +141,7 @@ async fn admin_load(state: Arc<ServerState>, names: Vec<String>) -> (StatusCode,
         results
     })
     .await;
-
-    match outcome {
-        Ok(results) => results_envelope(results),
-        Err(e) => refusal(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("admin load task failed: {e}"),
-        ),
-    }
+    outcome.map_err(|e| format!("admin load task failed: {e}"))
 }
 
 async fn load_one(state: &ServerState, index: &Arc<DescriptorIndex>, name: &str) -> Value {
@@ -306,6 +310,17 @@ fn reverse_dependency_order(names: &[String], deps: &HashMap<String, Vec<String>
 }
 
 async fn admin_unload(state: Arc<ServerState>, names: Vec<String>) -> (StatusCode, Json<Value>) {
+    match unload_models(state, names).await {
+        Ok(results) => results_envelope(results),
+        Err(e) => refusal(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    }
+}
+
+/// Unload `names`, dependants first. Shared with the registry's deactivate.
+pub(crate) async fn unload_models(
+    state: Arc<ServerState>,
+    names: Vec<String>,
+) -> Result<Vec<Value>, String> {
     let lifecycle = state.lifecycle.clone();
     let root = state.settings.root.clone();
     let outcome = tokio::spawn(async move {
@@ -339,14 +354,7 @@ async fn admin_unload(state: Arc<ServerState>, names: Vec<String>) -> (StatusCod
         results
     })
     .await;
-
-    match outcome {
-        Ok(results) => results_envelope(results),
-        Err(e) => refusal(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("admin unload task failed: {e}"),
-        ),
-    }
+    outcome.map_err(|e| format!("admin unload task failed: {e}"))
 }
 
 // ---- /admin/providers/reload --------------------------------------------
@@ -425,7 +433,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
     // The read-only routes ride along so the node-local CLI can read
     // `/config` over plain loopback HTTP instead of negotiating TLS with a
     // self-signed certificate against the public port.
-    crate::http::router(state.settings.metrics)
+    crate::http::router(state.settings.metrics, true)
         .route(
             "/admin/load",
             post(

@@ -8,6 +8,7 @@ members = [
     "engine",
     "shared",
     "registry/schema",
+    "registry/client",
     "postvec-server",
     "providers",
 ]

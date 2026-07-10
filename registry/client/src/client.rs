@@ -19,8 +19,8 @@
 //!   index override, which relaxes transport so fixtures can serve from
 //!   127.0.0.1.
 
-use crate::error::{CliError, Result};
-use crate::registry::index::{self, Index, IndexModel};
+use crate::error::{Error as CliError, Result};
+use crate::index::{self, Index, IndexModel};
 use reqwest::header;
 use reqwest::StatusCode;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -112,7 +112,7 @@ impl RegistryClient {
         let client = reqwest::Client::builder()
             .connect_timeout(timeout.min(Duration::from_secs(30)))
             .redirect(redirect)
-            .user_agent(format!("postvec-cli/{}", crate::CLI_VERSION))
+            .user_agent(format!("postvec-cli/{}", crate::VERSION))
             .build()
             .map_err(|e| CliError::internal(format!("cannot build HTTP client: {e}")))?;
         Ok(Self {

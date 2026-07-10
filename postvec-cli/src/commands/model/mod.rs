@@ -27,6 +27,7 @@ use crate::registry::client::RegistryClient;
 use crate::registry::index::Index;
 use crate::registry::root::{InstalledModel, ModelRoot, Ownership};
 use crate::registry::urls;
+pub use postvec_registry::root::{disabled_closure_to_enable, enabled_dependants};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -276,7 +277,7 @@ pub async fn fetch_channel_index(
             let index = client
                 .fetch_index(&target.url, Some(&credential.key))
                 .await
-                .map_err(|e| annotate_credential_failure(e, &credential))?;
+                .map_err(|e| annotate_credential_failure(e.into(), &credential))?;
             Ok((index, Some(credential)))
         }
         None => {
@@ -408,7 +409,7 @@ pub async fn restore_and_prove(
             )
         })?;
     }
-    root.clear_swap(transaction)
+    Ok(root.clear_swap(transaction)?)
 }
 
 /// Settle an interrupted `model upgrade` transaction before this command
@@ -567,31 +568,6 @@ pub async fn require_cli_owned(
     }
 }
 
-/// Other **enabled** installed models that list `name` as a dependency.
-///
-/// A disabled dependant is not counted: it is not going to be loaded, so
-/// nothing breaks. `exempt` holds the names this same command is already
-/// acting on, so a batch does not report itself.
-pub fn enabled_dependants(
-    inventory: &[InstalledModel],
-    name: &str,
-    exempt: &[String],
-) -> Vec<String> {
-    inventory
-        .iter()
-        .filter(|other| other.dir_name != name && !exempt.contains(&other.dir_name))
-        .filter(|other| other.enabled)
-        .filter(|other| {
-            other.dependencies.iter().any(|d| d == name)
-                || other.receipt.as_ref().is_some_and(|r| {
-                    r.dependencies.iter().any(|d| d == name)
-                        || r.postvec_requires.iter().any(|d| d == name)
-                })
-        })
-        .map(|other| other.dir_name.clone())
-        .collect()
-}
-
 /// An explicit `postvec.embedded_models` list naming this model must change
 /// before the model may be taken away.
 ///
@@ -617,49 +593,6 @@ pub fn refuse_if_on_allow_list(allow_list: &[String], name: &str, verb: &str) ->
             .collect::<Vec<_>>()
             .join(",")
     )))
-}
-
-/// The deactivated models `names` needs enabled before the engine will load
-/// them, depth-first so a dependency is enabled before its dependant.
-///
-/// The engine refuses a load whose closure contains a deactivated model, and a
-/// restart would not make one resident either — so activating a converter has
-/// to bring its embed model back with it, or it would activate nothing usable.
-pub fn disabled_closure_to_enable(inventory: &[InstalledModel], names: &[String]) -> Vec<String> {
-    let by_name: std::collections::BTreeMap<&str, &InstalledModel> = inventory
-        .iter()
-        .map(|model| (model.dir_name.as_str(), model))
-        .collect();
-    let mut ordered: Vec<String> = Vec::new();
-    let mut visited: BTreeSet<String> = BTreeSet::new();
-
-    fn visit(
-        by_name: &std::collections::BTreeMap<&str, &InstalledModel>,
-        name: &str,
-        depth: usize,
-        visited: &mut BTreeSet<String>,
-        ordered: &mut Vec<String>,
-    ) {
-        // The engine bounds its own traversal at depth 32 and refuses cycles;
-        // this only has to terminate.
-        if depth > 32 || !visited.insert(name.to_string()) {
-            return;
-        }
-        let Some(model) = by_name.get(name) else {
-            return;
-        };
-        for dependency in &model.dependencies {
-            visit(by_name, dependency, depth + 1, visited, ordered);
-        }
-        if !model.enabled {
-            ordered.push(name.to_string());
-        }
-    }
-
-    for name in names {
-        visit(&by_name, name, 0, &mut visited, &mut ordered);
-    }
-    ordered
 }
 
 /// The name of the executor that lets a column on a convert-only target stay

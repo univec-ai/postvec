@@ -3064,6 +3064,7 @@ dependencies = [
  "humantime",
  "libc",
  "postvec-providers",
+ "postvec-registry",
  "registry-schema",
  "reqwest",
  "semver",
@@ -3103,6 +3104,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "postvec-registry"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "libc",
+ "registry-schema",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "walkdir",
+]
+
+[[package]]
 name = "postvec-server"
 version = "0.1.0"
 dependencies = [
@@ -3119,8 +3137,10 @@ dependencies = [
  "log",
  "memberlist",
  "postvec-providers",
+ "postvec-registry",
  "prost",
  "prost-types",
+ "registry-schema",
  "reqwest",
  "serde",
  "serde_json",

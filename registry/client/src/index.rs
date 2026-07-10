@@ -8,7 +8,7 @@
 //! the one piece that is client policy rather than schema: closure
 //! expansion for `pull`.
 
-use crate::error::{CliError, Result};
+use crate::error::{Error as CliError, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 

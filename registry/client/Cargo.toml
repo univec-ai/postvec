@@ -1,0 +1,38 @@
+# postvec-registry — the model-registry client the postvec CLI and the
+# postvec-server node share: index fetch, verified resumable download, strict
+# archive staging, install receipts, activation, and the engine-root lock.
+# PostgreSQL-free on purpose: the node links it without the CLI's driver.
+[package]
+name = "postvec-registry"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Model registry client shared by postvec's CLI and inference node"
+license = "PostgreSQL"
+publish = false
+
+[lib]
+name = "postvec_registry"
+path = "src/lib.rs"
+
+[dependencies]
+registry-schema = { path = "../schema", features = ["archive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
+libc = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+walkdir = "2"
+tokio = { version = "1", features = ["fs", "io-util", "process", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
+
+[features]
+# Test-only trust bypass: compiles in the POSTVEC_REGISTRY_*_INDEX_URL
+# overrides (and their relaxed HTTP/loopback transport) so integration
+# suites can serve loopback fixtures. Never enable this in a build that ships.
+registry-test-overrides = []

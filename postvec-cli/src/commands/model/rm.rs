@@ -247,7 +247,7 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
         match root.retire_to_trash(path) {
             Ok(grave) => retired.push((name.clone(), path.clone(), grave)),
             Err(e) => {
-                retire_failure = Some((name.clone(), e));
+                retire_failure = Some((name.clone(), e.into()));
                 break;
             }
         }

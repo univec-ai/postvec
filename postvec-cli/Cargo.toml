@@ -25,7 +25,7 @@ path = "src/main.rs"
 # ships or that runs with real credentials. Packaging uses the default
 # feature set, which does not contain it. The registry_pull tests are
 # gated on it and compile to nothing without it.
-registry-test-overrides = []
+registry-test-overrides = ["postvec-registry/registry-test-overrides"]
 
 [dependencies]
 # Every version here is already resolved in the workspace lockfile; the CLI
@@ -41,6 +41,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Shared registry index schema: one implementation for the CLI and the
 # publisher, so they cannot disagree about what a published model is.
 registry-schema = { path = "../registry/schema", features = ["archive"] }
+postvec-registry = { path = "../registry/client" }
 semver = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }

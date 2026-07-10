@@ -8,10 +8,10 @@
 //! `<root>/models/.postvec.lock`: per engine root, not per cluster,
 //! because several clusters may share one root.
 
-use crate::config::owned::{self, HostLock};
-use crate::error::{CliError, Result};
-use crate::proc::{self, Cmd};
-use crate::registry::receipt::Receipt;
+use crate::error::{Error as CliError, Result};
+use crate::fs::{self as owned, HostLock};
+use crate::receipt::Receipt;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -99,7 +99,7 @@ pub struct SwapModel {
     /// False for a fresh install (nothing preceded it) and for a replacement
     /// of a **deactivated** model: its predecessor was not resident, and the
     /// engine refuses to load a disabled descriptor — asking would fail the
-    /// very proof [`crate::commands::model::restore_and_prove`] exists to
+    /// very proof `restore_and_prove` (postvec-cli) exists to
     /// establish, turning a clean rollback into a retained transaction.
     pub reload_on_rollback: bool,
 }
@@ -298,7 +298,7 @@ pub struct InstalledModel {
     /// `params.source_model` / `params.target_model` from the descriptor —
     /// the vector spaces a converter reads from and writes into. Together with
     /// `model_type` they are what decides which columns a model can still
-    /// serve, which is how [`crate::commands::model::in_use_columns`] answers
+    /// serve, which is how `in_use_columns` (postvec-cli) answers
     /// "does anything break if this goes away".
     pub source_model: Option<String>,
     pub target_model: Option<String>,
@@ -797,8 +797,8 @@ impl ModelRoot {
         let record: SwapRecord =
             serde_json::from_str(&content).map_err(|e| malformed(e.to_string()))?;
         for model in &record.models {
-            crate::registry::index::valid_model_name(&model.name)
-                .and_then(|()| crate::registry::index::valid_model_name(&model.backend))
+            crate::index::valid_model_name(&model.name)
+                .and_then(|()| crate::index::valid_model_name(&model.backend))
                 .map_err(|e| {
                     CliError::precondition(format!("{} is malformed: {e}", path.display()))
                 })?;
@@ -1088,26 +1088,93 @@ fn fsync_tree(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Does dpkg or rpm claim this file? Best effort: absent tools or timeouts
-/// mean "no claim", which downgrades the refusal message from "package-owned"
-/// to "manual" — the refusal itself does not depend on this answer.
 async fn package_owns(path: &Path, timeout: Duration) -> bool {
     if !path.exists() {
         return false;
     }
-    for (program, args) in [("dpkg", vec!["-S"]), ("rpm", vec!["-qf"])] {
-        let mut cmd = Cmd::new(PathBuf::from(program));
-        for arg in args {
-            cmd = cmd.arg(arg);
-        }
-        cmd = cmd.arg(path.display().to_string());
-        if let Ok(output) = proc::run(&cmd, timeout).await {
-            if output.ok() {
-                return true;
-            }
+    for (program, flag) in [("dpkg", "-S"), ("rpm", "-qf")] {
+        let status = tokio::time::timeout(
+            timeout,
+            tokio::process::Command::new(program)
+                .arg(flag)
+                .arg(path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status(),
+        )
+        .await;
+        if matches!(status, Ok(Ok(s)) if s.success()) {
+            return true;
         }
     }
     false
+}
+
+/// The deactivated models `names` needs enabled before the engine will load
+/// them, depth-first so a dependency is enabled before its dependant.
+///
+/// The engine refuses a load whose closure contains a deactivated model, and a
+/// restart would not make one resident either — so activating a converter has
+/// to bring its embed model back with it, or it would activate nothing usable.
+pub fn disabled_closure_to_enable(inventory: &[InstalledModel], names: &[String]) -> Vec<String> {
+    let by_name: std::collections::BTreeMap<&str, &InstalledModel> = inventory
+        .iter()
+        .map(|model| (model.dir_name.as_str(), model))
+        .collect();
+    let mut ordered: Vec<String> = Vec::new();
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+
+    fn visit(
+        by_name: &std::collections::BTreeMap<&str, &InstalledModel>,
+        name: &str,
+        depth: usize,
+        visited: &mut BTreeSet<String>,
+        ordered: &mut Vec<String>,
+    ) {
+        // The engine bounds its own traversal at depth 32 and refuses cycles;
+        // this only has to terminate.
+        if depth > 32 || !visited.insert(name.to_string()) {
+            return;
+        }
+        let Some(model) = by_name.get(name) else {
+            return;
+        };
+        for dependency in &model.dependencies {
+            visit(by_name, dependency, depth + 1, visited, ordered);
+        }
+        if !model.enabled {
+            ordered.push(name.to_string());
+        }
+    }
+
+    for name in names {
+        visit(&by_name, name, 0, &mut visited, &mut ordered);
+    }
+    ordered
+}
+/// Other **enabled** installed models that list `name` as a dependency.
+///
+/// A disabled dependant is not counted: it is not going to be loaded, so
+/// nothing breaks. `exempt` holds the names this same command is already
+/// acting on, so a batch does not report itself.
+pub fn enabled_dependants(
+    inventory: &[InstalledModel],
+    name: &str,
+    exempt: &[String],
+) -> Vec<String> {
+    inventory
+        .iter()
+        .filter(|other| other.dir_name != name && !exempt.contains(&other.dir_name))
+        .filter(|other| other.enabled)
+        .filter(|other| {
+            other.dependencies.iter().any(|d| d == name)
+                || other.receipt.as_ref().is_some_and(|r| {
+                    r.dependencies.iter().any(|d| d == name)
+                        || r.postvec_requires.iter().any(|d| d == name)
+                })
+        })
+        .map(|other| other.dir_name.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1195,21 +1262,18 @@ mod tests {
         assert!(!staging.join("m.123.456").exists());
     }
 
-    /// A group-writable models directory is refused for mutation.
+    /// A world-writable models directory is refused for mutation.
     #[test]
     fn group_writable_models_directories_are_refused() {
         let (_guard, root) = root_with_models();
-        fs::set_permissions(root.models_dir(), fs::Permissions::from_mode(0o775)).unwrap();
+        fs::set_permissions(root.models_dir(), fs::Permissions::from_mode(0o777)).unwrap();
         let err = root.lock_exclusive().unwrap_err();
-        assert!(
-            err.to_string().contains("group- or world-writable"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("world-writable"), "{err}");
         fs::set_permissions(root.models_dir(), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(root.lock_exclusive().is_ok());
     }
 
-    /// A group-writable, non-sticky ancestor is refused. A writer there
+    /// A world-writable, non-sticky ancestor is refused. A writer there
     /// could rename-and-replace the whole managed tree.
     #[test]
     fn group_writable_ancestors_are_refused() {
@@ -1220,14 +1284,14 @@ mod tests {
         for dir in [mid.join("root/models"), mid.join("root")] {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
         }
-        fs::set_permissions(&mid, fs::Permissions::from_mode(0o775)).unwrap();
+        fs::set_permissions(&mid, fs::Permissions::from_mode(0o777)).unwrap();
 
         let root = ModelRoot::new(mid.join("root").canonicalize().unwrap());
         let err = root.lock_exclusive().unwrap_err();
         assert!(err.to_string().contains("ancestor"), "{err}");
 
         // The same chain with the ancestor tightened passes; a *sticky*
-        // group-writable ancestor (the /tmp shape) also passes.
+        // world-writable ancestor (the /tmp shape) also passes.
         fs::set_permissions(&mid, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(root.lock_exclusive().is_ok());
         fs::set_permissions(&mid, fs::Permissions::from_mode(0o1775)).unwrap();
@@ -1539,9 +1603,9 @@ mod tests {
     /// Install a CLI-owned model with a real receipt, so the flip has
     /// something to keep truthful.
     fn plant_cli_owned(root: &ModelRoot, name: &str, enabled: bool) -> PathBuf {
-        use crate::registry::archive::ExtractedFile;
-        use crate::registry::identity::Identity;
-        use crate::registry::index::{ArchiveInfo, IndexModel};
+        use crate::archive::ExtractedFile;
+        use crate::identity::Identity;
+        use crate::index::{ArchiveInfo, IndexModel};
         use sha2::{Digest, Sha256};
 
         let dir = root.models_dir().join("onnx-runtime").join(name);

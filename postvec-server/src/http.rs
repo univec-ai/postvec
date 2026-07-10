@@ -257,7 +257,9 @@ pub const WEB_UI_DIR: &str = "server/ui";
 /// `--web-ui` / `web_ui` / `POSTVEC_SERVER_WEB_UI` is the only candidate
 /// when set; otherwise `<root>/server/ui`, where the packages put it.
 pub fn resolve_web_ui(explicit: Option<&Path>, root: &Path) -> Option<PathBuf> {
-    let dir = explicit.map(Path::to_path_buf).unwrap_or_else(|| root.join(WEB_UI_DIR));
+    let dir = explicit
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(WEB_UI_DIR));
     if dir.join("index.html").is_file() {
         return Some(dir);
     }
@@ -277,14 +279,16 @@ async fn no_spa() -> Json<Value> {
     }))
 }
 
-/// Shared routes (discovery, health, native `/api/{model}`, OpenAI adaptor).
-/// The public listener adds CORS + the SPA fallback; the admin listener
-/// merges mutation routes on top and does not serve the dashboard.
-pub fn router(metrics_enabled: bool) -> Router<Arc<ServerState>> {
-    // Native `/api/{model}` and the OpenAI adaptor share this nest. The
-    // static `/openai/embeddings` path is two segments, so it never collides
-    // with `/{model_name}`. Body cap matches the gRPC decode ceiling.
-    let api = Router::new()
+/// Shared routes (discovery, health, native `/api/{model}`, OpenAI adaptor,
+/// the registry). The public listener adds CORS + the SPA fallback; the
+/// admin listener merges mutation routes on top and does not serve the
+/// dashboard. `manage` mounts the registry's mutating routes too: always on
+/// the admin listener, on the public one only by explicit choice.
+pub fn router(metrics_enabled: bool, manage: bool) -> Router<Arc<ServerState>> {
+    // Native `/api/{model}`, the OpenAI adaptor and the registry share this
+    // nest. Their static paths are two segments, so they never collide with
+    // `/{model_name}`. Body cap matches the gRPC decode ceiling.
+    let api = crate::registry::router(manage)
         .route("/openai/embeddings", post(api::openai_embeddings))
         .route("/:model_name", get(api::model_details).post(api::predict))
         .fallback(api::api_not_found)
@@ -337,7 +341,11 @@ pub fn spawn(
         .map_err(|e| format!("local_addr: {e}"))?;
 
     let handle = axum_server::Handle::new();
-    let service = finish_public(router(state.settings.metrics), state.clone()).into_make_service();
+    let service = finish_public(
+        router(state.settings.metrics, state.settings.manage),
+        state.clone(),
+    )
+    .into_make_service();
     let tls = state.settings.tls.clone();
 
     let task = match tls {
@@ -391,9 +399,10 @@ pub fn spawn(
 pub fn warn_about_exposure(bind: std::net::IpAddr, grpc_port: u16, http_port: u16) {
     if bind.is_unspecified() {
         log::warn!(
-            "gRPC ({grpc_port}) and discovery ({http_port}) are bound to every interface. \
-             Neither is authenticated. Restrict them to a private network with a firewall, a \
-             security group, or --bind <private-ip>."
+            "gRPC ({grpc_port}) and HTTP ({http_port}) are bound to every interface. \
+             Neither is authenticated, and HTTP can manage models (--no-manage to stop that). \
+             Restrict them to a private network with a firewall, a security group, or \
+             --bind <private-ip>."
         );
     }
 }

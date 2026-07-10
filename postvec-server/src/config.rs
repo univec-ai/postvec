@@ -104,6 +104,9 @@ pub struct FileConfig {
     pub warmup: Option<bool>,
     pub metrics: Option<bool>,
     pub log_level: Option<String>,
+    /// Serve the registry's pull/activate/deactivate routes on the public
+    /// port too (default), not only on the loopback admin port.
+    pub manage: Option<bool>,
     /// Directory of a built dashboard (`index.html` + assets). Optional.
     pub web_ui: Option<String>,
 }
@@ -183,6 +186,7 @@ pub struct Settings {
     pub warmup: bool,
     pub metrics: bool,
     pub log_level: String,
+    pub manage: bool,
     /// Built SPA directory. `None` means "search the default locations".
     pub web_ui: Option<PathBuf>,
 }
@@ -585,6 +589,14 @@ pub fn resolve(
             .unwrap_or(true)
     };
 
+    let manage = if flags.no_manage {
+        false
+    } else {
+        env_bool(env, "POSTVEC_SERVER_MANAGE")?
+            .or(file.manage)
+            .unwrap_or(true)
+    };
+
     let log_level = flags
         .log_level
         .clone()
@@ -620,6 +632,7 @@ pub fn resolve(
         warmup,
         metrics,
         log_level,
+        manage,
         web_ui,
     })
 }
@@ -772,10 +785,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(
-            s.web_ui.as_deref(),
-            Some(Path::new("/srv/root/server/ui"))
-        );
+        assert_eq!(s.web_ui.as_deref(), Some(Path::new("/srv/root/server/ui")));
 
         let file = FileConfig {
             web_ui: Some("/from/file".into()),

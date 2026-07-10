@@ -14,6 +14,7 @@ license covers which directory; the full texts are where the table points.
   providers/                        PostgreSQL     below
   proto/                            PostgreSQL     below
   registry/schema/                  PostgreSQL     below
+  registry/client/                  PostgreSQL     below
   docs/                             PostgreSQL     below
   postvec-server/                   BUSL-1.1       postvec-server/LICENSE
 

@@ -900,7 +900,7 @@ async fn apply(
                 for ready in &staged {
                     let _ = std::fs::remove_dir_all(&ready.path);
                 }
-                return Err(e);
+                return Err(e.into());
             }
         }
     }
@@ -942,7 +942,7 @@ async fn apply(
             Ok(message) => journal.record(message),
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&ready.path);
-                failure = Some(e);
+                failure = Some(e.into());
                 break;
             }
         }
@@ -1326,10 +1326,10 @@ async fn download_all(
                                     model.name
                                 )))
                             }
-                            Err(DownloadError::Failed(e)) => Err(e),
+                            Err(DownloadError::Failed(e)) => Err(e.into()),
                         }
                     }
-                    Err(DownloadError::Failed(e)) => Err(e),
+                    Err(DownloadError::Failed(e)) => Err(e.into()),
                 }
             }
         }))

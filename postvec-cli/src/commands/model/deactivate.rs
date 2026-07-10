@@ -251,7 +251,7 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
                     "{name} was unloaded but its descriptor still says enabled ({e}); a restart \
                      would bring it back — rerun `postvec model deactivate {name}`"
                 ));
-                journal.failed(name.clone(), &e);
+                journal.failed(name.clone(), &CliError::from(e));
             }
         }
     }

@@ -12,9 +12,8 @@
 //! auth.json`), which is why a non-root `postvec login` is deliberately
 //! invisible to a later `sudo postvec model pull`.
 
-use crate::config::owned;
-use crate::error::{CliError, Result};
-use crate::proc;
+use crate::error::{Error as CliError, Result};
+use crate::fs as owned;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -71,7 +70,7 @@ struct StoreFile {
 /// The effective user's store path. Root gets the system path so a root
 /// `login` survives for root `pull`s; everyone else gets XDG.
 pub fn store_path() -> Result<PathBuf> {
-    if proc::is_root() {
+    if crate::fs::is_root() {
         return Ok(PathBuf::from(ROOT_STORE));
     }
     let config_home = match std::env::var_os("XDG_CONFIG_HOME") {

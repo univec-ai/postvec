@@ -4,6 +4,7 @@ use crate::cluster::ClusterManager;
 use crate::config::Settings;
 use crate::metrics::Metrics;
 use crate::net::Advertise;
+use crate::registry::PullJob;
 use engine::InferenceEngine;
 use providers::gateway::Gateway;
 use std::net::IpAddr;
@@ -66,6 +67,8 @@ pub struct ServerState {
     /// admission decision rather than an observation two concurrent admin
     /// requests can both act on.
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
+    /// Registry pulls started through the API, oldest first.
+    pub pulls: std::sync::Mutex<Vec<PullJob>>,
     draining: AtomicBool,
 }
 
@@ -89,6 +92,7 @@ impl ServerState {
             startup_provider_budget,
             started_at: SystemTime::now(),
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            pulls: std::sync::Mutex::new(Vec::new()),
             draining: AtomicBool::new(false),
         })
     }

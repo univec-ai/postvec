@@ -47,6 +47,10 @@ shared = { path = "../shared" }
 # beside the engine. rustls inside the crate; it coexists with this crate's
 # OpenSSL-based TLS listener.
 postvec-providers = { path = "../providers", features = ["wire"] }
+# The model registry: index fetch, verified download, strict extraction,
+# receipts and the engine-root lock — the same code `postvec model` runs.
+postvec-registry = { path = "../registry/client" }
+registry-schema = { path = "../registry/schema" }
 
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -124,6 +128,9 @@ postvec-providers = { path = "../providers", features = ["wire", "test-util"] }
 
 [features]
 default = []
+# Test-only: compiles the registry crate's index-URL override in, so
+# tests/registry.rs can pull from a loopback fixture. Never in a shipped build.
+registry-test = ["postvec-registry/registry-test-overrides"]
 # Execution providers, forwarded to the engine. A GPU build is a second
 # artifact, never a different licence.
 ort-cuda = ["engine/ort-cuda"]

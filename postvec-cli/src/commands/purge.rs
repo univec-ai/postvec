@@ -55,10 +55,10 @@ pub fn serving_lease_path(canonical_root: &Path) -> PathBuf {
 /// `postvec-server` (new enough to take the lease) is serving this root.
 /// The root must already be canonical (`safe_root` proved it).
 pub fn acquire_serving_lease(canonical_root: &Path) -> Result<owned::HostLock> {
-    owned::HostLock::acquire_labeled(
+    Ok(owned::HostLock::acquire_labeled(
         &serving_lease_path(canonical_root),
         "this engine root (a postvec-server serving lease)",
-    )
+    )?)
 }
 
 /// Directories a purge root may never be. Anything directly under `/` is a
