@@ -221,15 +221,15 @@ pub fn validate_model_name(name: &str) -> Result<(), String> {
         return Err(format!("model name exceeds {MAX_NAME_BYTES} bytes"));
     }
     let first = name.as_bytes()[0];
-    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-        return Err(format!("model name {name:?} must start with [a-z0-9]"));
+    if !first.is_ascii_alphanumeric() {
+        return Err(format!("model name {name:?} must start with [A-Za-z0-9]"));
     }
     if !name
         .bytes()
-        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
+        .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
     {
         return Err(format!(
-            "model name {name:?} contains characters outside [a-z0-9._-]"
+            "model name {name:?} contains characters outside [A-Za-z0-9._-]"
         ));
     }
     Ok(())
@@ -549,11 +549,11 @@ mod tests {
     fn model_names_are_validated_against_traversal() {
         assert!(validate_model_name("baai-bge-m3").is_ok());
         assert!(validate_model_name("model.v1_2").is_ok());
+        assert!(validate_model_name("nvidia.NV-Embed-v2").is_ok());
         for bad in [
             "",
             "../escape",
             "/absolute",
-            "Upper",
             "-leading-dash",
             ".hidden",
             "has space",

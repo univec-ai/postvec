@@ -4,6 +4,24 @@ import { modelCache } from '../slices/prefsSlice'
 export const requestPath = (contract, model) =>
   contract === 'openai' ? '/api/openai/embeddings' : `/api/${encodeURIComponent(model)}`
 
+const failMessage = (status, data, fallback, manage) => {
+  if (manage && status === 404) {
+    return 'this node was started with --no-manage; pull, activate and deactivate are on the loopback admin port only'
+  }
+  const err = data?.error
+  if (typeof err === 'string' && err) return err
+  if (err?.message) return err.message
+  return fallback || `HTTP ${status}`
+}
+
+const envelope = async (request, { manage } = {}) => {
+  const { status, data } = await request
+  if (status >= 400 || data?.success === false) {
+    throw new Error(failMessage(status, data, 'request failed', manage))
+  }
+  return data.data
+}
+
 // One request to one peer; never throws. `body` is whatever the node
 // returned (native envelope or OpenAI shape), `ok` whether it succeeded.
 const post = async (peer, path, payload) => {
@@ -68,5 +86,138 @@ export const createAsyncActions = (set, get) => ({
       cache.loading = false
       cache.responses = responses
     })
+  },
+
+  loadRegistry: async () => {
+    const ep = get().api_endpoint
+    const opts = { validateStatus: () => true }
+    set((draft) => {
+      draft.registry.loading = true
+      draft.registry.error = null
+    })
+    try {
+      const [installed, pulls, available] = await Promise.all([
+        envelope(axios.get(ep + '/api/registry/models', opts)),
+        envelope(axios.get(ep + '/api/registry/pulls', opts)),
+        envelope(axios.get(ep + '/api/registry/available', opts)).catch((err) => ({
+          _error: err.message,
+        })),
+      ])
+      set((draft) => {
+        draft.registry.installed = installed.models || []
+        draft.registry.pulls = pulls.pulls || []
+        if (available._error) {
+          draft.registry.error = available._error
+        } else {
+          draft.registry.available = available.models || []
+          draft.registry.channel = available.channel || null
+          draft.registry.authenticated = !!available.authenticated
+          draft.registry.signed_in_as = available.signed_in_as || null
+        }
+      })
+    } catch (err) {
+      set((draft) => {
+        draft.registry.error = err.message
+      })
+    } finally {
+      set((draft) => {
+        draft.registry.loading = false
+      })
+    }
+  },
+
+  loadPulls: async () => {
+    try {
+      const data = await envelope(
+        axios.get(get().api_endpoint + '/api/registry/pulls', { validateStatus: () => true }),
+      )
+      set((draft) => {
+        draft.registry.pulls = data.pulls || []
+      })
+    } catch {
+      // A missed poll is retried; the next loadRegistry surfaces a real error.
+    }
+  },
+
+  pullModels: async (models, acceptLicense = []) => {
+    set((draft) => {
+      draft.registry.busy = { kind: 'pull', name: models[0] }
+      draft.registry.error = null
+    })
+    try {
+      await envelope(
+        axios.post(
+          get().api_endpoint + '/api/registry/pull',
+          { models, accept_license: acceptLicense },
+          { validateStatus: () => true },
+        ),
+        { manage: true },
+      )
+      await get().loadPulls()
+    } catch (err) {
+      set((draft) => {
+        draft.registry.error = err.message
+      })
+    } finally {
+      set((draft) => {
+        draft.registry.busy = null
+      })
+    }
+  },
+
+  activateModels: async (models) => {
+    set((draft) => {
+      draft.registry.busy = { kind: 'activate', name: models[0] }
+      draft.registry.error = null
+    })
+    try {
+      const data = await envelope(
+        axios.post(
+          get().api_endpoint + '/api/registry/activate',
+          { models },
+          { validateStatus: () => true },
+        ),
+        { manage: true },
+      )
+      const failed = (data.results || []).find((r) => r.status === 'error')
+      if (failed) throw new Error(`${failed.model}: ${failed.error}`)
+      await Promise.all([get().loadRegistry(), get().getConfiguration()])
+    } catch (err) {
+      set((draft) => {
+        draft.registry.error = err.message
+      })
+    } finally {
+      set((draft) => {
+        draft.registry.busy = null
+      })
+    }
+  },
+
+  deactivateModels: async (models) => {
+    set((draft) => {
+      draft.registry.busy = { kind: 'deactivate', name: models[0] }
+      draft.registry.error = null
+    })
+    try {
+      const data = await envelope(
+        axios.post(
+          get().api_endpoint + '/api/registry/deactivate',
+          { models },
+          { validateStatus: () => true },
+        ),
+        { manage: true },
+      )
+      const failed = (data.results || []).find((r) => r.status === 'error')
+      if (failed) throw new Error(`${failed.model}: ${failed.error}`)
+      await Promise.all([get().loadRegistry(), get().getConfiguration()])
+    } catch (err) {
+      set((draft) => {
+        draft.registry.error = err.message
+      })
+    } finally {
+      set((draft) => {
+        draft.registry.busy = null
+      })
+    }
   },
 })

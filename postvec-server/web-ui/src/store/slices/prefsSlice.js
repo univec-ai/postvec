@@ -16,6 +16,7 @@ const createPrefsSlice = (set) => ({
   setActiveModel: (name) =>
     set((state) => {
       state.prefs.current_model_name = name
+      state.prefs.main_menu_tab = 'queries'
     }),
 
   setMainMenuTab: (tab) =>

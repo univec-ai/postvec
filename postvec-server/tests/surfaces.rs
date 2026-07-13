@@ -837,6 +837,77 @@ async fn the_public_listener_serves_a_built_spa_when_pointed_at_one() {
 }
 
 #[tokio::test]
+async fn registry_reads_are_on_every_listener() {
+    let node = start(ServeArgs::default()).await;
+    for addr in [node.public, node.admin] {
+        let (status, body) = node.get_json(addr, "/api/registry/models").await;
+        assert_eq!(status, 200, "{addr}");
+        assert_eq!(body["success"], json!(true));
+        assert_eq!(body["data"]["models"], json!([]));
+        let (status, body) = node.get_json(addr, "/api/registry/pulls").await;
+        assert_eq!(status, 200, "{addr}");
+        assert_eq!(body["data"]["pulls"], json!([]));
+    }
+}
+
+/// `--no-manage` is the public-port split: reads stay, mutations move to
+/// loopback. Empty-body 400 on admin proves the route is still mounted.
+#[tokio::test]
+async fn no_manage_keeps_registry_mutations_off_the_public_listener() {
+    let node = start(ServeArgs {
+        no_manage: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        node.get_json(node.public, "/api/registry/models").await.0,
+        200
+    );
+    let (status, _) = node
+        .post_json(
+            node.public,
+            "/api/registry/pull",
+            json!({"models": ["anything"]}),
+        )
+        .await;
+    assert_eq!(status, 404);
+    let (status, body) = node
+        .post_json(node.admin, "/api/registry/pull", json!({"models": []}))
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(body["success"], json!(false));
+}
+
+#[tokio::test]
+async fn registry_mutations_are_on_the_public_listener_by_default() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node
+        .post_json(node.public, "/api/registry/activate", json!({"models": []}))
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["success"], json!(false));
+    // Mixed-case names are legal for already-installed copies (HF-style
+    // directory names). Path traversal is still refused; "not installed"
+    // means the charset check passed.
+    let (status, body) = node
+        .post_json(
+            node.public,
+            "/api/registry/activate",
+            json!({"models": ["nvidia.NV-Embed-v2"]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["data"]["results"][0]["status"], json!("error"));
+    assert!(
+        body["data"]["results"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("not installed"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn without_a_spa_the_root_path_is_a_json_stub() {
     let node = start(ServeArgs::default()).await;
     let (status, body) = node.get_json(node.public, "/").await;

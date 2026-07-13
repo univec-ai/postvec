@@ -108,9 +108,8 @@ const Workbench = () => {
       <div className="page">
         <h1>No model to query</h1>
         <p>
-          This node has nothing loaded. Put a model on disk with{' '}
-          <code>postvec model pull</code>, load it with <code>postvec-server load</code>, and it
-          appears here on the next refresh.
+          This node has nothing loaded. Pull a model from the Registries tab (or{' '}
+          <code>postvec model pull</code>) and activate it; it appears here on the next refresh.
         </p>
       </div>
     )

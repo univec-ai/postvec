@@ -1,9 +1,10 @@
 # postvec-server web UI
 
-Dashboard for a running `postvec-server` node. Phase 1: list the models
-`GET /config` advertises and query any live node with the native
+Dashboard for a running `postvec-server` node. It lists the models
+`GET /config` advertises and queries any live node with the native
 (`/api/{model}`) or OpenAI (`/api/openai/embeddings`) contract, showing the
-route hit and the raw reply. Registry browse is a later release.
+route hit and the raw reply. The Registries tab is `postvec model ls` /
+`ls --available` / `pull` / `activate` / `deactivate` against this node.
 
 State handling follows the ninference dashboard on purpose (Zustand slices,
 the `{success, data}` envelope, a query cache per model) so both front-ends

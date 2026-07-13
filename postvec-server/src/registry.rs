@@ -34,6 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MAX_MODELS_PER_REQUEST: usize = 32;
+const MAX_PULL_JOBS: usize = 32;
 const REGISTRY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct PullJob {
@@ -182,6 +183,8 @@ async fn available(State(state): State<Arc<ServerState>>) -> Response {
                         "target_dim": m.target_dim,
                         "download_bytes": m.archive.size,
                         "license": m.license,
+                        "license_version": m.license_version,
+                        "license_url": m.license_url,
                         "license_acceptance": m.license_acceptance(),
                         "revision": m.revision(),
                         "installed": local.is_some(),
@@ -227,6 +230,14 @@ async fn pull(State(state): State<Arc<ServerState>>, Json(request): Json<Request
     }
     let id = {
         let mut jobs = state.pulls.lock().unwrap();
+        while jobs.len() >= MAX_PULL_JOBS {
+            match jobs.iter().position(|j| j.status != "running") {
+                Some(i) => {
+                    jobs.remove(i);
+                }
+                None => break,
+            }
+        }
         let id = jobs.last().map(|j| j.id + 1).unwrap_or(1);
         jobs.push(PullJob {
             id,

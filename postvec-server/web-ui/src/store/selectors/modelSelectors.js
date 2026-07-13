@@ -36,12 +36,16 @@ export const getCurrentQueryString = (state) => {
   const cached = currentCache(state).text?.[contract]
   if (cached !== undefined) return cached
   if (contract === 'openai') {
-    return JSON.stringify({ model: model.name, input: [''] }, null, 2)
+    return JSON.stringify({ model: model.name, input: ['hello'] }, null, 2)
   }
   const inputs = getCurrentModelInputs(state)
   const keys = inputs.length > 0 ? inputs : [isEmbedModel(model) ? 'texts' : 'embeddings']
   const template = Object.fromEntries(
-    keys.map((key) => [key, key === 'texts' || key === 'embeddings' ? [] : '']),
+    keys.map((key) => {
+      if (key === 'texts') return [key, ['hello']]
+      if (key === 'embeddings') return [key, []]
+      return [key, '']
+    }),
   )
   return JSON.stringify(template, null, 2)
 }

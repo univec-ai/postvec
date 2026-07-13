@@ -250,6 +250,10 @@ async fn pull_activate_deactivate_through_the_admin_port() {
         json!("current"),
         "{available}"
     );
+    assert!(available["data"]["models"][0]
+        .get("license_version")
+        .is_some());
+    assert!(available["data"]["models"][0].get("license_url").is_some());
     let (_, body) = node
         .post(node.admin, "/api/registry/pull", json!({"models": [MODEL]}))
         .await;
