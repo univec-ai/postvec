@@ -6,7 +6,7 @@ export const requestPath = (contract, model) =>
 
 const failMessage = (status, data, fallback, manage) => {
   if (manage && status === 404) {
-    return 'this node was started with --no-manage; pull, activate and deactivate are on the loopback admin port only'
+    return 'public model management is disabled; restart with --manage or use the loopback admin port'
   }
   const err = data?.error
   if (typeof err === 'string' && err) return err
@@ -24,12 +24,13 @@ const envelope = async (request, { manage } = {}) => {
 
 // One request to one peer; never throws. `body` is whatever the node
 // returned (native envelope or OpenAI shape), `ok` whether it succeeded.
-const post = async (peer, path, payload) => {
+const post = async (peer, path, payload, timeout) => {
   const started = performance.now()
   const ms = () => Math.round(performance.now() - started)
   try {
     const { status, data } = await axios.post(peer + path, payload, {
       validateStatus: () => true,
+      timeout,
     })
     const ok = status < 300 && data?.success !== false
     return { peer, ok, status, ms: ms(), body: data }
@@ -46,7 +47,7 @@ export const createAsyncActions = (set, get) => ({
       draft.loading = true
     })
     try {
-      const { data } = await axios.get(get().api_endpoint + '/config')
+      const { data } = await axios.get(get().api_endpoint + '/config', { timeout: 15_000 })
       if (!data?.success) throw new Error(data?.error?.message || 'unexpected /config reply')
       set((draft) => {
         draft.models = data.data.models || []
@@ -80,7 +81,8 @@ export const createAsyncActions = (set, get) => ({
       cache.responses = []
     })
     const path = requestPath(contract, name)
-    const responses = await Promise.all(peers.map((peer) => post(peer, path, payload)))
+    const timeout = (get().server?.predict_timeout_ms || 30_000) + 5_000
+    const responses = await Promise.all(peers.map((peer) => post(peer, path, payload, timeout)))
     set((draft) => {
       const cache = modelCache(draft, name)
       cache.loading = false

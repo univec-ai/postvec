@@ -115,6 +115,8 @@ fn server_object(state: &ServerState) -> Value {
         "features": crate::metrics::features(),
         "uptime_seconds": state.uptime_seconds(),
         "draining": state.draining(),
+        "manage": state.settings.manage,
+        "predict_timeout_ms": state.settings.predict_timeout.as_millis() as u64,
         // The engine root, so `postvec-server status` can read the on-disk
         // inventory without being told which tree this node was started with.
         "root": state.settings.root.to_string_lossy(),
@@ -396,13 +398,18 @@ pub fn spawn(
 
 /// Warn once, loudly, when the reachable surfaces are bound to every
 /// interface. There is no authentication on either of them.
-pub fn warn_about_exposure(bind: std::net::IpAddr, grpc_port: u16, http_port: u16) {
+pub fn warn_about_exposure(bind: std::net::IpAddr, grpc_port: u16, http_port: u16, manage: bool) {
     if bind.is_unspecified() {
         log::warn!(
             "gRPC ({grpc_port}) and HTTP ({http_port}) are bound to every interface. \
-             Neither is authenticated, and HTTP can manage models (--no-manage to stop that). \
+             Neither is authenticated{}. \
              Restrict them to a private network with a firewall, a security group, or \
-             --bind <private-ip>."
+             --bind <private-ip>.",
+            if manage {
+                ", and HTTP model management is enabled"
+            } else {
+                ""
+            }
         );
     }
 }

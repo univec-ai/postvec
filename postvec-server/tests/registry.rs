@@ -105,11 +105,11 @@ struct Node {
 }
 
 impl Node {
-    async fn start(root: &Path, no_manage: bool) -> Node {
+    async fn start(root: &Path, manage: bool) -> Node {
         let flags = ServeArgs {
             insecure: true,
             bind: Some("127.0.0.1".into()),
-            no_manage,
+            manage,
             ..Default::default()
         };
         let settings = Arc::new(
@@ -199,10 +199,10 @@ async fn pull_activate_deactivate_through_the_admin_port() {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let root = root.canonicalize().unwrap();
-    let node = Node::start(&root, false).await;
+    let node = Node::start(&root, true).await;
 
-    // --no-manage keeps the public port to the reads.
-    let locked = Node::start(&root, true).await;
+    // The safe default keeps the public port to the reads.
+    let locked = Node::start(&root, false).await;
     let (status, _) = locked
         .post(
             locked.public,
@@ -213,7 +213,7 @@ async fn pull_activate_deactivate_through_the_admin_port() {
     assert_eq!(status, 404);
     drop(locked);
 
-    // By default the public port manages too: that is what the dashboard uses.
+    // --manage lets the dashboard use the public port deliberately.
     let (status, body) = node
         .post(
             node.public,
@@ -254,6 +254,7 @@ async fn pull_activate_deactivate_through_the_admin_port() {
         .get("license_version")
         .is_some());
     assert!(available["data"]["models"][0].get("license_url").is_some());
+    assert_eq!(available["data"]["models"][0]["dependencies"], json!([]));
     let (_, body) = node
         .post(node.admin, "/api/registry/pull", json!({"models": [MODEL]}))
         .await;

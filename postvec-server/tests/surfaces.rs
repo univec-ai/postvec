@@ -282,6 +282,8 @@ async fn config_is_parseable_by_postvecs_discovery_client() {
     assert_eq!(raw["data"]["server"]["name"], json!("postvec-server"));
     assert!(raw["data"]["server"]["root"].is_string());
     assert_eq!(raw["data"]["server"]["draining"], json!(false));
+    assert_eq!(raw["data"]["server"]["manage"], json!(false));
+    assert_eq!(raw["data"]["server"]["predict_timeout_ms"], json!(30_000));
     assert_eq!(raw["data"]["cluster"]["group"], json!("postvec"));
     assert_eq!(raw["data"]["cluster"]["enabled"], json!(false));
     assert!(raw["data"]["system"]["memory_total_bytes"].is_number());
@@ -850,15 +852,11 @@ async fn registry_reads_are_on_every_listener() {
     }
 }
 
-/// `--no-manage` is the public-port split: reads stay, mutations move to
-/// loopback. Empty-body 400 on admin proves the route is still mounted.
+/// Reads stay public by default, while mutations remain on loopback.
+/// Empty-body 400 on admin proves the route is still mounted.
 #[tokio::test]
-async fn no_manage_keeps_registry_mutations_off_the_public_listener() {
-    let node = start(ServeArgs {
-        no_manage: true,
-        ..Default::default()
-    })
-    .await;
+async fn registry_mutations_are_loopback_only_by_default() {
+    let node = start(ServeArgs::default()).await;
     assert_eq!(
         node.get_json(node.public, "/api/registry/models").await.0,
         200
@@ -879,8 +877,12 @@ async fn no_manage_keeps_registry_mutations_off_the_public_listener() {
 }
 
 #[tokio::test]
-async fn registry_mutations_are_on_the_public_listener_by_default() {
-    let node = start(ServeArgs::default()).await;
+async fn manage_enables_registry_mutations_on_the_public_listener() {
+    let node = start(ServeArgs {
+        manage: true,
+        ..Default::default()
+    })
+    .await;
     let (status, body) = node
         .post_json(node.public, "/api/registry/activate", json!({"models": []}))
         .await;

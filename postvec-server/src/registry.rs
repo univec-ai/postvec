@@ -4,7 +4,7 @@
 //! fetch, verified download, strict extraction, receipts, the root lock).
 //!
 //! Reads are on every listener. Mutations are on the loopback admin listener
-//! and, unless `--no-manage`, on the public one too, so the dashboard can
+//! and, with `--manage`, on the public one too, so the dashboard can
 //! drive them: nothing here authenticates, like the rest of the node.
 //!
 //! `pull` installs deactivated, like the CLI: activating is a second step,
@@ -89,6 +89,10 @@ fn bad(e: impl ToString) -> (StatusCode, String) {
 
 fn failed(e: impl ToString) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+}
+
+fn busy(e: impl ToString) -> (StatusCode, String) {
+    (StatusCode::TOO_MANY_REQUESTS, e.to_string())
 }
 
 fn validate(request: &Request) -> Result<(), (StatusCode, String)> {
@@ -178,6 +182,7 @@ async fn available(State(state): State<Arc<ServerState>>) -> Response {
                     let revision = local.map(|i| i.receipt.as_ref().map(|r| r.revision()));
                     json!({
                         "name": m.name,
+                        "dependencies": m.dependencies,
                         "access": m.access,
                         "model_type": m.model_type,
                         "target_dim": m.target_dim,
@@ -224,30 +229,44 @@ async fn pulls(State(state): State<Arc<ServerState>>) -> Response {
 
 // ---- pull ---------------------------------------------------------------
 
+fn register_pull(
+    jobs: &mut Vec<PullJob>,
+    models: Vec<String>,
+) -> Result<u64, (StatusCode, String)> {
+    while jobs.len() >= MAX_PULL_JOBS {
+        match jobs.iter().position(|job| job.status != "running") {
+            Some(i) => {
+                jobs.remove(i);
+            }
+            None => {
+                return Err(busy(format!(
+                    "{MAX_PULL_JOBS} registry pulls are already running; retry after one finishes"
+                )));
+            }
+        }
+    }
+    let id = jobs.last().map(|job| job.id + 1).unwrap_or(1);
+    jobs.push(PullJob {
+        id,
+        models,
+        status: "running",
+        progress: Arc::new(Progress::default()),
+        results: Vec::new(),
+        error: None,
+    });
+    Ok(id)
+}
+
 async fn pull(State(state): State<Arc<ServerState>>, Json(request): Json<Request>) -> Response {
     if let Err(e) = validate(&request) {
         return respond(Err(e));
     }
     let id = {
         let mut jobs = state.pulls.lock().unwrap();
-        while jobs.len() >= MAX_PULL_JOBS {
-            match jobs.iter().position(|j| j.status != "running") {
-                Some(i) => {
-                    jobs.remove(i);
-                }
-                None => break,
-            }
+        match register_pull(&mut jobs, request.models.clone()) {
+            Ok(id) => id,
+            Err(e) => return respond(Err(e)),
         }
-        let id = jobs.last().map(|j| j.id + 1).unwrap_or(1);
-        jobs.push(PullJob {
-            id,
-            models: request.models.clone(),
-            status: "running",
-            progress: Arc::new(Progress::default()),
-            results: Vec::new(),
-            error: None,
-        });
-        id
     };
     let task_state = state.clone();
     tokio::spawn(async move {
@@ -264,7 +283,7 @@ async fn pull(State(state): State<Arc<ServerState>>, Json(request): Json<Request
 }
 
 async fn run_pull(state: &Arc<ServerState>, id: u64, request: &Request) -> Result<(), String> {
-    let (index, _) = fetch_index().await?;
+    let (index, credential) = fetch_index().await?;
     let closure = index::expand_closure(&index, &request.models).map_err(|e| e.to_string())?;
     let root = root(state);
     // The root lock is what serializes this against a `postvec model pull`
@@ -273,8 +292,9 @@ async fn run_pull(state: &Arc<ServerState>, id: u64, request: &Request) -> Resul
         let root = root.clone();
         blocking(move || Ok((root.lock_exclusive()?, root.installed()?))).await?
     };
-    let client = RegistryClient::new(REGISTRY_TIMEOUT, urls::public_index_url().overridden)
-        .map_err(|e| e.to_string())?;
+    let insecure =
+        urls::public_index_url().overridden || urls::authenticated_index_url().overridden;
+    let client = RegistryClient::new(REGISTRY_TIMEOUT, insecure).map_err(|e| e.to_string())?;
     let progress = state
         .pulls
         .lock()
@@ -285,7 +305,16 @@ async fn run_pull(state: &Arc<ServerState>, id: u64, request: &Request) -> Resul
         .expect("job registered");
     for entry in closure {
         let model = entry.model;
-        let result = install_one(&root, &client, &progress, &installed, model, request).await;
+        let result = install_one(
+            &root,
+            &client,
+            &progress,
+            &installed,
+            model,
+            request,
+            credential.as_ref().map(|value| value.key.as_str()),
+        )
+        .await;
         let value = match &result {
             Ok(status) => model_result(&model.name, status, None),
             Err(e) => model_result(&model.name, "error", Some(redact(e))),
@@ -305,6 +334,7 @@ async fn install_one(
     installed: &[InstalledModel],
     model: &IndexModel,
     request: &Request,
+    bearer: Option<&str>,
 ) -> Result<&'static str, String> {
     let digest = model
         .archive
@@ -359,27 +389,52 @@ async fn install_one(
     if let Ok(meta) = tokio::fs::metadata(&part).await {
         progress.add_done(meta.len().min(model.archive.size));
     }
-    client
-        .download(model, &part, progress)
-        .await
-        .map_err(|e| match e {
-            DownloadError::AuthExpired => {
-                "the registry credential expired mid-download; retry".to_string()
+    let source_host = match client.download(model, &part, progress).await {
+        Ok(host) => host,
+        Err(DownloadError::AuthExpired) => {
+            let key = bearer.ok_or_else(|| {
+                "the registry source requires authentication; sign in and retry".to_string()
+            })?;
+            let target = urls::authenticated_index_url();
+            let fresh_index = client
+                .fetch_index(&target.url, Some(key))
+                .await
+                .map_err(|e| e.to_string())?;
+            let fresh = fresh_index.model(&model.name).ok_or_else(|| {
+                format!(
+                    "{} disappeared from the authenticated catalogue",
+                    model.name
+                )
+            })?;
+            if fresh.archive.digest != model.archive.digest {
+                return Err(format!(
+                    "{} changed revision during the download; retry the pull",
+                    model.name
+                ));
             }
-            DownloadError::Failed(e) => e.to_string(),
-        })?;
-    let source_host = model
-        .archive
-        .sources
-        .first()
-        .and_then(|u| u.split("://").nth(1))
-        .and_then(|rest| rest.split('/').next())
-        .map(str::to_string);
+            client
+                .download(fresh, &part, progress)
+                .await
+                .map_err(|e| match e {
+                    DownloadError::AuthExpired => {
+                        "authentication kept failing after a fresh registry index".to_string()
+                    }
+                    DownloadError::Failed(e) => e.to_string(),
+                })?
+        }
+        Err(DownloadError::Failed(e)) => return Err(e.to_string()),
+    };
 
     let (root, model) = (root.clone(), model.clone());
     blocking(move || {
-        let staged =
-            stage_from_archive(&root, &model, &part, source_host, evidence.as_ref(), false)?;
+        let staged = stage_from_archive(
+            &root,
+            &model,
+            &part,
+            Some(source_host),
+            evidence.as_ref(),
+            false,
+        )?;
         let installed = root.install_staged(&staged.path, &model.backend, &model.name);
         let _ = std::fs::remove_file(&part);
         installed.map(|_| "installed")
@@ -406,7 +461,11 @@ async fn activate(State(state): State<Arc<ServerState>>, Json(request): Json<Req
     respond(
         async {
             validate(&request)?;
-            let installed = installed(&state).await.map_err(failed)?;
+            let root = root(&state);
+            let (_lock, installed) =
+                blocking(move || Ok((root.lock_exclusive()?, root.installed()?)))
+                    .await
+                    .map_err(failed)?;
             let mut names = disabled_closure_to_enable(&installed, &request.models);
             for name in &request.models {
                 if !names.contains(name) {
@@ -438,7 +497,11 @@ async fn deactivate(
     respond(
         async {
             validate(&request)?;
-            let installed = installed(&state).await.map_err(failed)?;
+            let root = root(&state);
+            let (_lock, installed) =
+                blocking(move || Ok((root.lock_exclusive()?, root.installed()?)))
+                    .await
+                    .map_err(failed)?;
             let (mut results, mut to_unload) = (Vec::new(), Vec::new());
             for name in &request.models {
                 let checked = installed_model(&installed, name).and_then(|_| {
@@ -497,4 +560,25 @@ pub fn router(manage: bool) -> Router<Arc<ServerState>> {
         .route("/registry/pull", post(pull))
         .route("/registry/activate", post(activate))
         .route("/registry/deactivate", post(deactivate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pull_history_is_bounded_without_evicting_running_jobs() {
+        let mut jobs = Vec::new();
+        for i in 0..MAX_PULL_JOBS {
+            let id = register_pull(&mut jobs, vec![format!("model-{i}")]).unwrap();
+            assert_eq!(id, (i + 1) as u64);
+        }
+        let error = register_pull(&mut jobs, vec!["overflow".into()]).unwrap_err();
+        assert_eq!(error.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(jobs.len(), MAX_PULL_JOBS);
+
+        jobs[0].status = "done";
+        assert!(register_pull(&mut jobs, vec!["replacement".into()]).is_ok());
+        assert_eq!(jobs.len(), MAX_PULL_JOBS);
+    }
 }

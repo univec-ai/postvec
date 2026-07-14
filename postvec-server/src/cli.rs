@@ -213,13 +213,12 @@ pub struct ServeArgs {
     #[arg(long = "log-level", value_name = "FILTER")]
     pub log_level: Option<String>,
 
-    /// Keep the registry's pull/activate/deactivate routes off the public
-    /// HTTP port (the dashboard then cannot manage models). The loopback
-    /// admin port always has them.
+    /// Serve registry pull/activate/deactivate on the public HTTP port so the
+    /// dashboard can manage models. The loopback admin port always has them.
     ///
-    /// [env: POSTVEC_SERVER_MANAGE=0]
-    #[arg(long = "no-manage", action = ArgAction::SetTrue)]
-    pub no_manage: bool,
+    /// [env: POSTVEC_SERVER_MANAGE=1]
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub manage: bool,
 
     /// Directory of a built dashboard (must contain index.html).
     ///

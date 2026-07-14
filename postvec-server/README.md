@@ -36,10 +36,9 @@ changes is where the model runs.
 
 ## What it is not
 
-- **Not a model downloader.** There is no hub, no S3 client, no JIT fetch. A
-  model that is not on disk is a refusal. Put models there with
-  `postvec model pull`, a shared volume, or whatever copy step you already
-  have.
+- **Not a general model hub.** Registry pulls accept only the signed UniVec
+  catalogue. Models can also arrive through `postvec model pull`, a shared
+  volume, or another deployment step; inference never fetches them on demand.
 - **Not a public API.** No authentication and no billing. HTTP
   (`/api/{model}`, `/api/openai/embeddings`) is there so a dashboard and an
   OpenAI-shaped client can talk to the same engine the database already
@@ -64,8 +63,9 @@ Identical on every node in a fleet — that is the point, and it is why
 **The gRPC and discovery ports have no authentication.** postvec's gRPC client
 speaks plaintext, so adding TLS on this side alone would break every existing
 `postvec setup --grpc`. Keep both behind a firewall, a security group, or
-`--bind <private-ip>`. Only the loopback admin port can change what the engine
-has loaded.
+`--bind <private-ip>`. By default only the loopback admin port can change what
+the engine has loaded; `--manage` deliberately exposes registry mutations to
+the dashboard too.
 
 ## A fleet
 
@@ -143,7 +143,7 @@ Same engine as gRPC, on the discovery port.
 |---|---|---|
 | `GET /api/{model}` | — | Native envelope with the model's layer overview |
 | `POST /api/{model}` | Native JSON (`texts` for embed models, `embeddings` for converters; keys follow `executor.inputs`) | `{success, data}` or `{success, error:{message}}`. HTTP stays 200 so a dashboard can treat the envelope as the contract |
-| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` (`input` as a string or array of strings; optional `encoding_format`, `dimensions`, `input_type`) | OpenAI `{object, data, model, usage}`. Errors use `{error:{message, type, code, param}}` and a real HTTP status: 400 invalid request, 404 `model_not_found`, 504 deadline |
+| `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` (`input` as a string or array of strings; optional `encoding_format`, `dimensions`, `input_type`, `user`) | OpenAI `{object, data, model, usage}`. Errors use `{error:{message, type, code, param}}` and a real HTTP status: 400 invalid request, 404 `model_not_found`, 504 deadline |
 
 The OpenAI route is an adaptor: it rewrites `input` into the model's first
 executor input (`texts`), drops a `postvec/` / `univec/` prefix from `model`,
@@ -163,15 +163,16 @@ replies are the admin envelope: `{success, data}`, per-model
 |---|---|---|
 | `GET /api/registry/models` | all | Installed models: `enabled`, `loaded`, `owner`, `revision`, size |
 | `GET /api/registry/available` | all | The registry catalogue, with `installed` / `update` per entry. Anonymous, or the node's own credential (`POSTVEC_API_KEY`, the service account's `postvec login`) |
-| `POST /api/registry/pull` `{models, accept_license?}` | all (`--no-manage`: admin only) | Download, verify and install (deactivated, like the CLI); returns a `job` id |
+| `POST /api/registry/pull` `{models, accept_license?}` | admin (`--manage`: all) | Download, verify and install (deactivated, like the CLI); returns a `job` id |
 | `GET /api/registry/pulls` | all | Every pull started here: status, bytes, per-model results |
-| `POST /api/registry/activate` `{models}` | all (`--no-manage`: admin only) | Enable on disk (with deactivated dependencies), then load |
-| `POST /api/registry/deactivate` `{models}` | all (`--no-manage`: admin only) | Unload, then disable; refused while an enabled model depends on it |
+| `POST /api/registry/activate` `{models}` | admin (`--manage`: all) | Enable on disk (with deactivated dependencies), then load |
+| `POST /api/registry/deactivate` `{models}` | admin (`--manage`: all) | Unload, then disable; refused while an enabled model depends on it |
 
-The three mutating routes are on the public port too by default, so the
-dashboard can drive them; `--no-manage` (`POSTVEC_SERVER_MANAGE=0`,
-`"manage": false`) keeps them to the loopback admin port. They are as
-unauthenticated as everything else here. Any installed model can be
+The three mutating routes stay on the loopback admin port by default.
+`--manage` (`POSTVEC_SERVER_MANAGE=1`, `"manage": true`) also exposes them
+on the public port so the dashboard can drive them. They are as
+unauthenticated as everything else here, so enable that only on a trusted
+network. Any installed model can be
 activated or deactivated, however it got there. The packaged unit hands
 `/opt/postvec/models` to the service account at start so pulls work out of
 the box; the image does the same.
@@ -220,7 +221,7 @@ sudo apt install ./postvec-server_*.deb ./postvec-cli_*.deb \
   ./postvec-onnxruntime_*.deb ./postvec-model-*.deb ./postvec-extras_*.deb
 
 # The discovery listener needs a certificate pair the service account can
-# read; the packaged configuration looks here (the engine root is read-only).
+# read; the packaged configuration looks here.
 sudo install -o root -g postvec-server -m 0644 server.crt /etc/postvec-server/server.crt
 sudo install -o root -g postvec-server -m 0640 server.key /etc/postvec-server/server.key
 

@@ -14,12 +14,27 @@ const bytes = (n) => {
 const licenseToken = (model) =>
   `${model.license || ''}@${model.license_version || ''}`
 
+const licenseTerms = (model, models) => {
+  const byName = new Map(models.map((item) => [item.name, item]))
+  const seen = new Set()
+  const terms = new Map()
+  const visit = (item) => {
+    if (!item || seen.has(item.name)) return
+    seen.add(item.name)
+    for (const dependency of item.dependencies || []) visit(byName.get(dependency))
+    if (item.license_acceptance === 'notice') terms.set(licenseToken(item), item)
+  }
+  visit(model)
+  return [...terms.values()]
+}
+
 const Status = ({ value, ok }) => (
   <span className={`status ${ok ? 'ok' : 'err'}`}>{value}</span>
 )
 
 const Registries = () => {
   const registry = useStore((state) => state.registry)
+  const manage = useStore((state) => !!state.server?.manage)
   const { loadRegistry, loadPulls, pullModels, activateModels, deactivateModels } =
     useStore.getState()
   const [filter, setFilter] = useState('')
@@ -49,8 +64,9 @@ const Registries = () => {
   const busy = registry.busy
 
   const onPull = (model) => {
-    if (model.license_acceptance === 'notice') {
-      setPending(model)
+    const terms = licenseTerms(model, registry.available)
+    if (terms.length > 0) {
+      setPending({ model, terms })
       setAccepted(false)
       return
     }
@@ -59,7 +75,7 @@ const Registries = () => {
 
   const confirmPull = () => {
     if (!pending || !accepted) return
-    pullModels([pending.name], [licenseToken(pending)])
+    pullModels([pending.model.name], pending.terms.map(licenseToken))
     setPending(null)
   }
 
@@ -78,6 +94,7 @@ const Registries = () => {
             {registry.channel ? `${registry.channel} catalogue` : 'Catalogue'}
             {registry.signed_in_as ? ` · signed in as ${registry.signed_in_as}` : ' · public channel'}
             . A pull lands deactivated; activate to load it.
+            {!manage && ' Management is read-only; restart this node with --manage to enable changes.'}
           </p>
         </div>
         <div className="reg-actions">
@@ -98,20 +115,24 @@ const Registries = () => {
       {pending && (
         <div className="license">
           <div>
-            <b>{pending.name}</b> is licensed {licenseToken(pending)}. Pulling it records that
-            acknowledgement on this node.
-            {pending.license_url && (
-              <>
-                {' '}
-                <a href={pending.license_url} target="_blank" rel="noreferrer">
-                  Terms
-                </a>
-              </>
-            )}
+            <b>{pending.model.name}</b> requires acknowledgement of{' '}
+            {pending.terms.map((term, index) => (
+              <React.Fragment key={licenseToken(term)}>
+                {index > 0 && ', '}
+                {term.license_url ? (
+                  <a href={term.license_url} target="_blank" rel="noreferrer">
+                    {licenseToken(term)}
+                  </a>
+                ) : (
+                  licenseToken(term)
+                )}
+              </React.Fragment>
+            ))}
+            . Pulling records the acknowledgement on this node.
           </div>
           <label>
             <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
-            I accept {licenseToken(pending)}
+            I accept these terms
           </label>
           <div className="reg-actions">
             <button className="btn" onClick={() => setPending(null)}>
@@ -185,6 +206,7 @@ const Registries = () => {
                       {m.backend}
                       {m.revision != null && ` · rev ${m.revision}`}
                       {m.owner && ` · ${m.owner}`}
+                      {m.receipt_error && ` · receipt: ${m.receipt_error}`}
                     </div>
                   </td>
                   <td>{m.model_type || '—'}</td>
@@ -192,7 +214,7 @@ const Registries = () => {
                   <td>{bytes(m.disk_bytes)}</td>
                   <td>
                     {m.enabled ? (
-                      <Status value={m.loaded ? 'loaded' : 'enabled'} ok />
+                      <Status value={m.loaded ? 'loaded' : 'enabled, not loaded'} ok={m.loaded} />
                     ) : (
                       <span className="muted">deactivated</span>
                     )}
@@ -201,7 +223,7 @@ const Registries = () => {
                     {m.enabled ? (
                       <button
                         className="btn"
-                        disabled={!!busy}
+                        disabled={!manage || !!busy}
                         onClick={() => onDeactivate(m.name)}
                       >
                         {busy?.kind === 'deactivate' && busy.name === m.name
@@ -211,7 +233,7 @@ const Registries = () => {
                     ) : (
                       <button
                         className="btn primary"
-                        disabled={!!busy}
+                        disabled={!manage || !!busy}
                         onClick={() => activateModels([m.name])}
                       >
                         {busy?.kind === 'activate' && busy.name === m.name ? 'Activating…' : 'Activate'}
@@ -273,7 +295,11 @@ const Registries = () => {
                     </td>
                     <td className="reg-row-actions">
                       {canPull ? (
-                        <button className="btn primary" disabled={!!busy} onClick={() => onPull(m)}>
+                        <button
+                          className="btn primary"
+                          disabled={!manage || !!busy}
+                          onClick={() => onPull(m)}
+                        >
                           {pulling ? 'Pulling…' : 'Pull'}
                         </button>
                       ) : m.update === 'upgradable' ? (

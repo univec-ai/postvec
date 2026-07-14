@@ -5,6 +5,9 @@ Dashboard for a running `postvec-server` node. It lists the models
 (`/api/{model}`) or OpenAI (`/api/openai/embeddings`) contract, showing the
 route hit and the raw reply. The Registries tab is `postvec model ls` /
 `ls --available` / `pull` / `activate` / `deactivate` against this node.
+Registry reads work by default; start the public listener with `--manage` to
+enable those three mutations from the dashboard. They always remain available
+on the loopback admin listener.
 
 State handling follows the ninference dashboard on purpose (Zustand slices,
 the `{success, data}` envelope, a query cache per model) so both front-ends

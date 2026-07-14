@@ -44,8 +44,8 @@
   "metrics": true,
   "log_level": "info",
 
-  "//manage": "false keeps the registry's pull/activate/deactivate routes off the public port (the dashboard then cannot manage models). The loopback admin port always has them.",
-  "manage": true,
+  "//manage": "true exposes the registry's pull/activate/deactivate routes on the unauthenticated public port so the dashboard can manage models. The loopback admin port always has them.",
+  "manage": false,
 
   "//web_ui": "Directory of a built dashboard (index.html). Relative paths resolve against the engine root. Omit to serve <root>/server/ui, where the packages install it.",
   "web_ui": null

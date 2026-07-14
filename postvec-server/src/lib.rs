@@ -313,7 +313,12 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // option the operator gets.
     let admin_addr = SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), settings.admin_port);
     let admin_socket = reserve("--admin", admin_addr)?;
-    http::warn_about_exposure(settings.bind, settings.grpc_port, settings.http_port);
+    http::warn_about_exposure(
+        settings.bind,
+        settings.grpc_port,
+        settings.http_port,
+        settings.manage,
+    );
 
     // --- 3. ONNX Runtime -----------------------------------------------
     engine::initialize_onnx(&settings.root).map_err(|e| {

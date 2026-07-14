@@ -105,7 +105,7 @@ pub struct FileConfig {
     pub metrics: Option<bool>,
     pub log_level: Option<String>,
     /// Serve the registry's pull/activate/deactivate routes on the public
-    /// port too (default), not only on the loopback admin port.
+    /// port too, not only on the loopback admin port.
     pub manage: Option<bool>,
     /// Directory of a built dashboard (`index.html` + assets). Optional.
     pub web_ui: Option<String>,
@@ -589,12 +589,12 @@ pub fn resolve(
             .unwrap_or(true)
     };
 
-    let manage = if flags.no_manage {
-        false
+    let manage = if flags.manage {
+        true
     } else {
         env_bool(env, "POSTVEC_SERVER_MANAGE")?
             .or(file.manage)
-            .unwrap_or(true)
+            .unwrap_or(false)
     };
 
     let log_level = flags
@@ -686,6 +686,7 @@ mod tests {
         assert!(s.tls.is_some(), "TLS is on unless --insecure");
         assert!(s.warmup);
         assert!(s.metrics);
+        assert!(!s.manage, "public model mutation is opt-in");
         assert_eq!(
             s.drain_delay,
             Duration::from_millis(DEFAULT_DRAIN_DELAY_MS),

@@ -134,6 +134,7 @@ const Workbench = () => {
               <button
                 key={value}
                 className={contract === value ? 'active' : ''}
+                disabled={loading}
                 onClick={() => setContract(model.name, value)}
               >
                 {label}
@@ -149,7 +150,7 @@ const Workbench = () => {
               <b>POST</b> {peers[0]}
               {requestPath(contract, model.name)}
             </span>
-            <button className="link" onClick={() => resetQuery(model.name, contract)}>
+            <button className="link" disabled={loading} onClick={() => resetQuery(model.name, contract)}>
               Reset
             </button>
           </div>
