@@ -166,6 +166,7 @@ replies are the admin envelope: `{success, data}`, per-model
 | `POST /api/registry/pull` `{models, accept_license?}` | admin (`--manage`: all) | Download, verify and install (deactivated, like the CLI); returns a `job` id |
 | `GET /api/registry/pulls` | all | Every pull started here: status, bytes, per-model results |
 | `POST /api/registry/activate` `{models}` | admin (`--manage`: all) | Enable on disk (with deactivated dependencies), then load |
+| `POST /api/registry/remove` `{models}` | admin (`--manage`: all) | Unload, then delete the model directory; refused while an enabled model depends on it |
 | `POST /api/registry/deactivate` `{models}` | admin (`--manage`: all) | Unload, then disable; refused while an enabled model depends on it |
 
 The three mutating routes stay on the loopback admin port by default.

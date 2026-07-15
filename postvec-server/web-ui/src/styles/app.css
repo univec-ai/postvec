@@ -353,6 +353,8 @@ code { font-family: var(--mono); font-size: 12.5px; }
 
 .btn.primary:hover:not(:disabled) { background: var(--accent-text); }
 .btn:disabled { opacity: 0.5; }
+.btn.danger { color: var(--err); }
+.btn.danger:hover:not(:disabled) { background: var(--err-soft); border-color: var(--err); }
 
 .link { color: var(--text-3); font-size: 12.5px; }
 .link:hover { color: var(--accent-text); }

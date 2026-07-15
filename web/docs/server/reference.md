@@ -48,7 +48,7 @@ with `//` are comments.
 | `--no-warmup` | `POSTVEC_SERVER_WARMUP=0` | `warmup` | Warmup on |
 | `--no-metrics` | `POSTVEC_SERVER_METRICS=0` | `metrics` | Metrics on |
 | `--log-level FILTER` | `RUST_LOG` | `log_level` | `info` |
-| `--no-manage` | `POSTVEC_SERVER_MANAGE=0` | `manage: false` | Keep registry pull/activate/deactivate off the public port (admin port only); see [HTTP API](/docs/server/http-api) |
+| `--manage` | `POSTVEC_SERVER_MANAGE=1` | `manage: true` | Off. Also serve registry pull/activate/deactivate/remove on the public port, so the dashboard can manage models; see [HTTP API](/docs/server/http-api) |
 | `--web-ui DIR` | `POSTVEC_SERVER_WEB_UI` | `web_ui` | `<root>/server/ui`, where the package installs it |
 
 `--cluster` is an accepted alias for `--peers`, and `--ssl-key` for
@@ -91,7 +91,7 @@ and clients actually use.
 | `GET /metrics` | Prometheus text |
 | `GET /api/{model}` | Model layer overview, native envelope |
 | `POST /api/{model}` | Native inference. JSON body keyed like `executor.inputs` (`texts` / `embeddings`). Envelope `{success, data}` or `{success, error:{message}}`; HTTP stays 200 |
-| `GET /api/registry/{models,available,pulls}`, `POST /api/registry/{pull,activate,deactivate}` | Model management, the `postvec model` commands over HTTP. `--no-manage` keeps the `POST`s to the admin port. See [HTTP API](/docs/server/http-api) |
+| `GET /api/registry/{models,available,pulls}`, `POST /api/registry/{pull,activate,deactivate,remove}` | Model management, the `postvec model` commands over HTTP. The `POST`s are on the admin port, and on the public port with `--manage`. See [HTTP API](/docs/server/http-api) |
 | `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` adaptor in front of the native path. `{object, data, model, usage}` on success; `{error:{message, type, code}}` and a real status on failure. See [HTTP API](/docs/server/http-api) |
 
 Gate load balancers and compose healthchecks on `/ready`, and supervisors on

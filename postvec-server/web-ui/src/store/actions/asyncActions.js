@@ -141,77 +141,42 @@ export const createAsyncActions = (set, get) => ({
     }
   },
 
-  pullModels: async (models, acceptLicense = []) => {
-    set((draft) => {
-      draft.registry.busy = { kind: 'pull', name: models[0] }
-      draft.registry.error = null
-    })
+  // Installed + pulls only: what activate, deactivate and remove change.
+  // The catalogue is a network round trip and does not move.
+  loadInstalled: async () => {
     try {
-      await envelope(
-        axios.post(
-          get().api_endpoint + '/api/registry/pull',
-          { models, accept_license: acceptLicense },
-          { validateStatus: () => true },
-        ),
-        { manage: true },
+      const data = await envelope(
+        axios.get(get().api_endpoint + '/api/registry/models', { validateStatus: () => true }),
       )
-      await get().loadPulls()
+      set((draft) => {
+        draft.registry.installed = data.models || []
+      })
     } catch (err) {
       set((draft) => {
         draft.registry.error = err.message
       })
-    } finally {
-      set((draft) => {
-        draft.registry.busy = null
-      })
     }
+    await get().loadPulls()
   },
 
-  activateModels: async (models) => {
+  // One mutation: POST, fail on the first per-model error, refresh what changed.
+  manageModels: async (kind, models, extra = {}) => {
     set((draft) => {
-      draft.registry.busy = { kind: 'activate', name: models[0] }
+      draft.registry.busy = { kind, name: models[0] }
       draft.registry.error = null
     })
     try {
       const data = await envelope(
         axios.post(
-          get().api_endpoint + '/api/registry/activate',
-          { models },
+          `${get().api_endpoint}/api/registry/${kind}`,
+          { models, ...extra },
           { validateStatus: () => true },
         ),
         { manage: true },
       )
       const failed = (data.results || []).find((r) => r.status === 'error')
       if (failed) throw new Error(`${failed.model}: ${failed.error}`)
-      await Promise.all([get().loadRegistry(), get().getConfiguration()])
-    } catch (err) {
-      set((draft) => {
-        draft.registry.error = err.message
-      })
-    } finally {
-      set((draft) => {
-        draft.registry.busy = null
-      })
-    }
-  },
-
-  deactivateModels: async (models) => {
-    set((draft) => {
-      draft.registry.busy = { kind: 'deactivate', name: models[0] }
-      draft.registry.error = null
-    })
-    try {
-      const data = await envelope(
-        axios.post(
-          get().api_endpoint + '/api/registry/deactivate',
-          { models },
-          { validateStatus: () => true },
-        ),
-        { manage: true },
-      )
-      const failed = (data.results || []).find((r) => r.status === 'error')
-      if (failed) throw new Error(`${failed.model}: ${failed.error}`)
-      await Promise.all([get().loadRegistry(), get().getConfiguration()])
+      await Promise.all([get().loadInstalled(), kind !== 'pull' && get().getConfiguration()])
     } catch (err) {
       set((draft) => {
         draft.registry.error = err.message

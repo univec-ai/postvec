@@ -8,8 +8,9 @@
 //! drive them: nothing here authenticates, like the rest of the node.
 //!
 //! `pull` installs deactivated, like the CLI: activating is a second step,
-//! which also loads the model. A pull runs detached and is followed through
-//! `GET /api/registry/pulls`.
+//! which also loads the model. A pull runs detached, one at a time, and is
+//! followed through `GET /api/registry/pulls`. `remove` unloads first, then
+//! deletes the directory.
 
 use crate::admin::{load_models, model_result, unload_models};
 use crate::models::validate_model_name;
@@ -234,7 +235,10 @@ fn register_pull(
     models: Vec<String>,
 ) -> Result<u64, (StatusCode, String)> {
     while jobs.len() >= MAX_PULL_JOBS {
-        match jobs.iter().position(|job| job.status != "running") {
+        match jobs
+            .iter()
+            .position(|job| job.status != "running" && job.status != "queued")
+        {
             Some(i) => {
                 jobs.remove(i);
             }
@@ -249,7 +253,7 @@ fn register_pull(
     jobs.push(PullJob {
         id,
         models,
-        status: "running",
+        status: "queued",
         progress: Arc::new(Progress::default()),
         results: Vec::new(),
         error: None,
@@ -282,7 +286,15 @@ async fn pull(State(state): State<Arc<ServerState>>, Json(request): Json<Request
     respond(Ok(json!({ "job": id })))
 }
 
+fn set_status(state: &ServerState, id: u64, status: &'static str) {
+    if let Some(job) = state.pulls.lock().unwrap().iter_mut().find(|j| j.id == id) {
+        job.status = status;
+    }
+}
+
 async fn run_pull(state: &Arc<ServerState>, id: u64, request: &Request) -> Result<(), String> {
+    let _serial = state.pull_serial.lock().await;
+    set_status(state, id, "running");
     let (index, credential) = fetch_index().await?;
     let closure = index::expand_closure(&index, &request.models).map_err(|e| e.to_string())?;
     let root = root(state);
@@ -541,6 +553,61 @@ async fn deactivate(
     )
 }
 
+/// Unload first, then delete the directory. Refused while an enabled model
+/// depends on it; a pull of the same name afterwards is a fresh install.
+async fn remove(State(state): State<Arc<ServerState>>, Json(request): Json<Request>) -> Response {
+    respond(
+        async {
+            validate(&request)?;
+            let root = root(&state);
+            let (_lock, installed) = {
+                let root = root.clone();
+                blocking(move || Ok((root.lock_exclusive()?, root.installed()?)))
+                    .await
+                    .map_err(failed)?
+            };
+            let (mut results, mut to_remove) = (Vec::new(), Vec::new());
+            for name in &request.models {
+                let checked = installed_model(&installed, name).and_then(|_| {
+                    match enabled_dependants(&installed, name, &request.models) {
+                        d if d.is_empty() => Ok(()),
+                        d => Err(format!("still needed by enabled model(s) {}", d.join(", "))),
+                    }
+                });
+                match checked {
+                    Ok(()) => to_remove.push(name.clone()),
+                    Err(e) => results.push(model_result(name, "error", Some(e))),
+                }
+            }
+            if !to_remove.is_empty() {
+                for outcome in unload_models(state.clone(), to_remove)
+                    .await
+                    .map_err(failed)?
+                {
+                    let name = outcome["model"].as_str().unwrap_or_default().to_string();
+                    if outcome["status"] == "error" {
+                        results.push(outcome);
+                        continue;
+                    }
+                    let path = installed
+                        .iter()
+                        .find(|m| m.dir_name == name)
+                        .expect("checked above")
+                        .path
+                        .clone();
+                    let root = root.clone();
+                    results.push(match blocking(move || root.remove_installed(&path)).await {
+                        Ok(()) => model_result(&name, "removed", None),
+                        Err(e) => model_result(&name, "error", Some(e)),
+                    });
+                }
+            }
+            Ok(json!({ "results": results }))
+        }
+        .await,
+    )
+}
+
 fn set_enabled(state: &ServerState, model: &InstalledModel, enabled: bool) -> Result<(), String> {
     root(state)
         .set_enabled(model, enabled)
@@ -560,6 +627,7 @@ pub fn router(manage: bool) -> Router<Arc<ServerState>> {
         .route("/registry/pull", post(pull))
         .route("/registry/activate", post(activate))
         .route("/registry/deactivate", post(deactivate))
+        .route("/registry/remove", post(remove))
 }
 
 #[cfg(test)]
@@ -579,6 +647,7 @@ mod tests {
 
         jobs[0].status = "done";
         assert!(register_pull(&mut jobs, vec!["replacement".into()]).is_ok());
+        assert!(jobs.iter().all(|j| j.status == "queued"));
         assert_eq!(jobs.len(), MAX_PULL_JOBS);
     }
 }

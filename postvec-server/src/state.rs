@@ -67,8 +67,11 @@ pub struct ServerState {
     /// admission decision rather than an observation two concurrent admin
     /// requests can both act on.
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
-    /// Registry pulls started through the API, oldest first.
+    /// Registry pulls started through the API, oldest first. `pull_serial`
+    /// runs them one at a time: a second request queues rather than failing
+    /// on the root lock the first one holds.
     pub pulls: std::sync::Mutex<Vec<PullJob>>,
+    pub pull_serial: tokio::sync::Mutex<()>,
     draining: AtomicBool,
 }
 
@@ -93,6 +96,7 @@ impl ServerState {
             started_at: SystemTime::now(),
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             pulls: std::sync::Mutex::new(Vec::new()),
+            pull_serial: tokio::sync::Mutex::new(()),
             draining: AtomicBool::new(false),
         })
     }

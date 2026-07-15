@@ -299,6 +299,40 @@ async fn pull_activate_deactivate_through_the_admin_port() {
     let installed = node.get(node.admin, "/api/registry/models").await;
     assert_eq!(installed["data"]["models"][0]["enabled"], json!(false));
 
+    // Remove unloads (it was reactivated above) and deletes the directory;
+    // the catalogue then offers it again.
+    let (_, body) = node
+        .post(
+            node.admin,
+            "/api/registry/activate",
+            json!({"models": [MODEL]}),
+        )
+        .await;
+    assert_eq!(
+        body["data"]["results"][0]["status"],
+        json!("loaded"),
+        "{body}"
+    );
+    let (_, body) = node
+        .post(
+            node.admin,
+            "/api/registry/remove",
+            json!({"models": [MODEL]}),
+        )
+        .await;
+    assert_eq!(
+        body["data"]["results"][0]["status"],
+        json!("removed"),
+        "{body}"
+    );
+    assert!(!node.state.engine.is_model_ready(MODEL));
+    assert!(!root.join("models/generic").join(MODEL).exists());
+    let available = node.get(node.public, "/api/registry/available").await;
+    assert_eq!(
+        available["data"]["models"][0]["update"],
+        json!("not-installed")
+    );
+
     // Names the registry does not know, and bad requests, are refusals.
     let (status, body) = node
         .post(

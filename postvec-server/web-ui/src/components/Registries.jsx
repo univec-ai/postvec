@@ -35,8 +35,7 @@ const Status = ({ value, ok }) => (
 const Registries = () => {
   const registry = useStore((state) => state.registry)
   const manage = useStore((state) => !!state.server?.manage)
-  const { loadRegistry, loadPulls, pullModels, activateModels, deactivateModels } =
-    useStore.getState()
+  const { loadRegistry, loadPulls, manageModels } = useStore.getState()
   const [filter, setFilter] = useState('')
   const [pending, setPending] = useState(null)
   const [accepted, setAccepted] = useState(false)
@@ -46,7 +45,7 @@ const Registries = () => {
     loadRegistry()
   }, [loadRegistry])
 
-  const running = registry.pulls.some((job) => job.status === 'running')
+  const running = registry.pulls.some((job) => job.status === 'running' || job.status === 'queued')
   useEffect(() => {
     if (!running) {
       if (wasRunning.current) loadRegistry()
@@ -70,20 +69,17 @@ const Registries = () => {
       setAccepted(false)
       return
     }
-    pullModels([model.name])
+    manageModels('pull', [model.name])
   }
 
   const confirmPull = () => {
     if (!pending || !accepted) return
-    pullModels([pending.model.name], pending.terms.map(licenseToken))
+    manageModels('pull', [pending.model.name], { accept_license: pending.terms.map(licenseToken) })
     setPending(null)
   }
 
-  const onDeactivate = (name) => {
-    if (window.confirm(`Deactivate ${name}? It will be unloaded from this node.`)) {
-      deactivateModels([name])
-    }
-  }
+  const confirmed = (kind, name, question) => () =>
+    window.confirm(question) && manageModels(kind, [name])
 
   return (
     <div className="registry">
@@ -93,7 +89,7 @@ const Registries = () => {
           <p className="hint">
             {registry.channel ? `${registry.channel} catalogue` : 'Catalogue'}
             {registry.signed_in_as ? ` · signed in as ${registry.signed_in_as}` : ' · public channel'}
-            . A pull lands deactivated; activate to load it.
+            . A pull lands deactivated; activate to load it. Remove deletes it from disk.
             {!manage && ' Management is read-only; restart this node with --manage to enable changes.'}
           </p>
         </div>
@@ -162,14 +158,14 @@ const Registries = () => {
                     </span>
                     <Status value={job.status} ok={job.status === 'done'} />
                   </div>
-                  {job.status === 'running' && (
+                  {(job.status === 'running' || job.status === 'queued') && (
                     <div className="mem-bar">
                       <div className="mem-fill" style={{ width: `${pct}%` }} />
                     </div>
                   )}
                   <div className="hint">
                     {bytes(job.downloaded_bytes)}
-                    {total ? ` / ${bytes(total)}` : ''}
+                    {total ? ` / ${bytes(total)} · ${pct}%` : ''}
                     {job.error ? ` · ${job.error}` : ''}
                     {(job.results || [])
                       .map((r) => ` · ${r.model}: ${r.status}${r.error ? ` (${r.error})` : ''}`)
@@ -213,18 +209,31 @@ const Registries = () => {
                   <td>{m.target_dim || '—'}</td>
                   <td>{bytes(m.disk_bytes)}</td>
                   <td>
-                    {m.enabled ? (
-                      <Status value={m.loaded ? 'loaded' : 'enabled, not loaded'} ok={m.loaded} />
+                    {m.loaded ? (
+                      <Status value="loaded" ok />
                     ) : (
-                      <span className="muted">deactivated</span>
+                      <span className="muted">{m.enabled ? 'not loaded' : 'deactivated'}</span>
                     )}
                   </td>
                   <td className="reg-row-actions">
+                    {m.enabled && !m.loaded && (
+                      <button
+                        className="btn"
+                        disabled={!manage || !!busy}
+                        onClick={() => manageModels('activate', [m.name])}
+                      >
+                        {busy?.kind === 'activate' && busy.name === m.name ? 'Loading…' : 'Load'}
+                      </button>
+                    )}{' '}
                     {m.enabled ? (
                       <button
                         className="btn"
                         disabled={!manage || !!busy}
-                        onClick={() => onDeactivate(m.name)}
+                        onClick={confirmed(
+                          'deactivate',
+                          m.name,
+                          `Deactivate ${m.name}? It will be unloaded from this node.`,
+                        )}
                       >
                         {busy?.kind === 'deactivate' && busy.name === m.name
                           ? 'Deactivating…'
@@ -234,11 +243,22 @@ const Registries = () => {
                       <button
                         className="btn primary"
                         disabled={!manage || !!busy}
-                        onClick={() => activateModels([m.name])}
+                        onClick={() => manageModels('activate', [m.name])}
                       >
                         {busy?.kind === 'activate' && busy.name === m.name ? 'Activating…' : 'Activate'}
                       </button>
-                    )}
+                    )}{' '}
+                    <button
+                      className="btn danger"
+                      disabled={!manage || !!busy}
+                      onClick={confirmed(
+                        'remove',
+                        m.name,
+                        `Remove ${m.name} from this node? ${bytes(m.disk_bytes)} on disk will be deleted.`,
+                      )}
+                    >
+                      {busy?.kind === 'remove' && busy.name === m.name ? 'Removing…' : 'Remove'}
+                    </button>
                   </td>
                 </tr>
               ))}
