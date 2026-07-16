@@ -110,6 +110,10 @@ export const createAsyncActions = (set, get) => ({
         draft.registry.pulls = pulls.pulls || []
         if (available._error) {
           draft.registry.error = available._error
+          draft.registry.available = []
+          draft.registry.channel = null
+          draft.registry.authenticated = false
+          draft.registry.signed_in_as = null
         } else {
           draft.registry.available = available.models || []
           draft.registry.channel = available.channel || null
@@ -175,8 +179,11 @@ export const createAsyncActions = (set, get) => ({
         { manage: true },
       )
       const failed = (data.results || []).find((r) => r.status === 'error')
+      await Promise.all([
+        kind === 'remove' ? get().loadRegistry() : get().loadInstalled(),
+        kind !== 'pull' && get().getConfiguration(),
+      ])
       if (failed) throw new Error(`${failed.model}: ${failed.error}`)
-      await Promise.all([get().loadInstalled(), kind !== 'pull' && get().getConfiguration()])
     } catch (err) {
       set((draft) => {
         draft.registry.error = err.message

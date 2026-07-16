@@ -29,8 +29,17 @@ const licenseTerms = (model, models) => {
 }
 
 const Status = ({ value, ok }) => (
-  <span className={`status ${ok ? 'ok' : 'err'}`}>{value}</span>
+  <span className={`status${ok === undefined ? '' : ok ? ' ok' : ' err'}`}>{value}</span>
 )
+
+const matches = (model, query) =>
+  [model.name, model.summary, model.backend, model.model_type, model.license]
+    .filter(Boolean)
+    .some((value) => value.toLowerCase().includes(query))
+
+const count = (shown, all) => (shown === all ? shown : `${shown} of ${all}`)
+const filtered = (models, query) =>
+  models.filter((model) => matches(model, query)).sort((a, b) => a.name.localeCompare(b.name))
 
 const Registries = () => {
   const registry = useStore((state) => state.registry)
@@ -58,8 +67,9 @@ const Registries = () => {
   }, [running, loadPulls, loadRegistry])
 
   const q = filter.toLowerCase()
-  const installed = registry.installed.filter((m) => m.name.toLowerCase().includes(q))
-  const available = registry.available.filter((m) => m.name.toLowerCase().includes(q))
+  const installed = filtered(registry.installed, q)
+  const available = filtered(registry.available, q)
+  const activePulls = registry.pulls.filter((job) => ['queued', 'running'].includes(job.status))
   const busy = registry.busy
 
   const onPull = (model) => {
@@ -88,7 +98,7 @@ const Registries = () => {
           <h1>Model registries</h1>
           <p className="hint">
             {registry.channel ? `${registry.channel} catalogue` : 'Catalogue'}
-            {registry.signed_in_as ? ` · signed in as ${registry.signed_in_as}` : ' · public channel'}
+            {registry.signed_in_as ? ` · signed in as ${registry.signed_in_as}` : ' · anonymous'}
             . A pull lands deactivated; activate to load it. Remove deletes it from disk.
             {!manage && ' Management is read-only; restart this node with --manage to enable changes.'}
           </p>
@@ -97,6 +107,7 @@ const Registries = () => {
           <input
             type="search"
             placeholder="Filter"
+            aria-label="Filter installed models and catalogue"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
           />
@@ -156,7 +167,10 @@ const Registries = () => {
                     <span>
                       #{job.id} · {job.models.join(', ')}
                     </span>
-                    <Status value={job.status} ok={job.status === 'done'} />
+                    <Status
+                      value={job.status}
+                      ok={job.status === 'done' ? true : job.status === 'failed' ? false : undefined}
+                    />
                   </div>
                   {(job.status === 'running' || job.status === 'queued') && (
                     <div className="mem-bar">
@@ -178,9 +192,13 @@ const Registries = () => {
       )}
 
       <section className="reg-block">
-        <h2>Installed · {installed.length}</h2>
+        <h2>Installed · {count(installed.length, registry.installed.length)}</h2>
         {installed.length === 0 ? (
-          <p className="empty">Nothing on disk yet. Pull from the catalogue, or copy a model tree in.</p>
+          <p className="empty">
+            {registry.installed.length
+              ? 'No installed models match the filter.'
+              : 'Nothing on disk yet. Pull from the catalogue, or copy a model tree in.'}
+          </p>
         ) : (
           <table className="reg-table">
             <thead>
@@ -248,17 +266,19 @@ const Registries = () => {
                         {busy?.kind === 'activate' && busy.name === m.name ? 'Activating…' : 'Activate'}
                       </button>
                     )}{' '}
-                    <button
-                      className="btn danger"
-                      disabled={!manage || !!busy}
-                      onClick={confirmed(
-                        'remove',
-                        m.name,
-                        `Remove ${m.name} from this node? ${bytes(m.disk_bytes)} on disk will be deleted.`,
-                      )}
-                    >
-                      {busy?.kind === 'remove' && busy.name === m.name ? 'Removing…' : 'Remove'}
-                    </button>
+                    {m.removable ? (
+                      <button
+                        className="btn danger"
+                        disabled={!manage || !!busy}
+                        onClick={confirmed(
+                          'remove',
+                          m.name,
+                          `Remove ${m.name} from this node? ${bytes(m.disk_bytes)} on disk will be deleted.`,
+                        )}
+                      >
+                        {busy?.kind === 'remove' && busy.name === m.name ? 'Removing…' : 'Remove'}
+                      </button>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -268,7 +288,7 @@ const Registries = () => {
       </section>
 
       <section className="reg-block">
-        <h2>Catalogue · {available.length}</h2>
+        <h2>Catalogue · {count(available.length, registry.available.length)}</h2>
         {available.length === 0 ? (
           <p className="empty">
             {registry.loading
@@ -290,6 +310,7 @@ const Registries = () => {
             </thead>
             <tbody>
               {available.map((m) => {
+                const pull = activePulls.find((job) => job.models.includes(m.name))
                 const pulling = busy?.kind === 'pull' && busy.name === m.name
                 const canPull = m.update === 'not-installed' && !m.withdrawn
                 return (
@@ -317,10 +338,10 @@ const Registries = () => {
                       {canPull ? (
                         <button
                           className="btn primary"
-                          disabled={!manage || !!busy}
+                          disabled={!manage || !!busy || !!pull}
                           onClick={() => onPull(m)}
                         >
-                          {pulling ? 'Pulling…' : 'Pull'}
+                          {pulling ? 'Starting…' : pull?.status === 'queued' ? 'Queued' : pull ? 'Pulling…' : 'Pull'}
                         </button>
                       ) : m.update === 'upgradable' ? (
                         <span className="hint">upgrade via CLI</span>

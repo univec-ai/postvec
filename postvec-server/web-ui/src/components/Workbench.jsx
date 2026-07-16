@@ -66,11 +66,13 @@ const Response = ({ responses, loading }) => {
     <>
       <div className="pane-head">
         {responses.length > 1 ? (
-          <div className="resp-tabs">
+          <div className="resp-tabs" role="tablist" aria-label="Node responses">
             {responses.map((r) => (
               <button
                 key={r.peer}
                 className={`resp-tab${r === shown ? ' active' : ''}`}
+                role="tab"
+                aria-selected={r === shown}
                 onClick={() => setTab(r.peer)}
               >
                 {r.peer.replace(/^https?:\/\//, '')}
@@ -134,6 +136,8 @@ const Workbench = () => {
               <button
                 key={value}
                 className={contract === value ? 'active' : ''}
+                role="tab"
+                aria-selected={contract === value}
                 disabled={loading}
                 onClick={() => setContract(model.name, value)}
               >
@@ -169,6 +173,7 @@ const Workbench = () => {
                   <button
                     key={peer}
                     className={`target${peers.includes(peer) ? ' on' : ''}`}
+                    aria-pressed={peers.includes(peer)}
                     onClick={() => toggleQueryPeer(peer, !peers.includes(peer))}
                   >
                     {peer.replace(/^https?:\/\//, '')}

@@ -20,7 +20,11 @@ const Nodes = () => {
         const address = node.frontend_address || node.address
         return (
           <div className="node-line" key={address} title={node.group}>
-            <span className={`dot${String(node.status).toLowerCase() === 'alive' ? '' : ' off'}`} />
+            <span
+              className={`dot${String(node.status).toLowerCase() === 'alive' ? '' : ' off'}`}
+              role="img"
+              aria-label={node.status}
+            />
             {node.current ? <span>{address} · this node</span> : <a href={address}>{address}</a>}
           </div>
         )
@@ -77,7 +81,7 @@ const Sidebar = () => {
         <span className="brand-name">postvec</span>
         <span className="brand-sub">server{server?.version ? ` ${server.version}` : ''}</span>
       </div>
-      <nav className="nav">
+      <nav className="nav" aria-label="Dashboard sections">
         {[
           ['queries', 'Query'],
           ['registries', 'Registries'],
@@ -85,6 +89,7 @@ const Sidebar = () => {
           <button
             key={value}
             className={`nav-item${tab === value ? ' active' : ''}`}
+            aria-current={tab === value ? 'page' : undefined}
             onClick={() => setMainMenuTab(value)}
           >
             {label}
@@ -98,6 +103,7 @@ const Sidebar = () => {
         <input
           type="search"
           placeholder="Filter models"
+          aria-label="Filter loaded models"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />

@@ -532,4 +532,9 @@ kbd {
 @media (max-width: 760px) {
   .shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; }
+  .registry { padding-inline: 12px; }
+  .reg-head { flex-direction: column; }
+  .reg-actions { width: 100%; }
+  .reg-actions input[type="search"] { width: auto; flex: 1; }
+  .reg-table { min-width: 720px; }
 }

@@ -227,7 +227,7 @@ async fn pull_activate_deactivate_through_the_admin_port() {
     let job = loop {
         let jobs = node.get(node.admin, "/api/registry/pulls").await;
         let job = jobs["data"]["pulls"][0].clone();
-        if job["status"] != "running" {
+        if job["status"] != "running" && job["status"] != "queued" {
             break job;
         }
         assert!(Instant::now() < deadline, "pull never finished: {jobs}");
@@ -298,6 +298,7 @@ async fn pull_activate_deactivate_through_the_admin_port() {
     assert!(!node.state.engine.is_model_ready(MODEL));
     let installed = node.get(node.admin, "/api/registry/models").await;
     assert_eq!(installed["data"]["models"][0]["enabled"], json!(false));
+    assert_eq!(installed["data"]["models"][0]["removable"], json!(true));
 
     // Remove unloads (it was reactivated above) and deletes the directory;
     // the catalogue then offers it again.
@@ -332,6 +333,27 @@ async fn pull_activate_deactivate_through_the_admin_port() {
         available["data"]["models"][0]["update"],
         json!("not-installed")
     );
+
+    // A directory without a registry receipt remains operator-owned.
+    let manual = root.join("models/generic").join(MODEL);
+    std::fs::create_dir_all(&manual).unwrap();
+    std::fs::write(
+        manual.join("ninference.hub.json"),
+        descriptor(false).to_string(),
+    )
+    .unwrap();
+    std::fs::write(manual.join("weights.bin"), b"manual").unwrap();
+    let installed = node.get(node.admin, "/api/registry/models").await;
+    assert_eq!(installed["data"]["models"][0]["removable"], json!(false));
+    let (_, body) = node
+        .post(
+            node.admin,
+            "/api/registry/remove",
+            json!({"models": [MODEL]}),
+        )
+        .await;
+    assert_eq!(body["data"]["results"][0]["status"], json!("error"));
+    assert!(manual.exists());
 
     // Names the registry does not know, and bad requests, are refusals.
     let (status, body) = node

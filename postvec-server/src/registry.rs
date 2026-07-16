@@ -25,7 +25,7 @@ use postvec_registry::client::{DownloadError, Progress, RegistryClient};
 use postvec_registry::error::redact;
 use postvec_registry::receipt::{timestamp_now, LicenseEvidence};
 use postvec_registry::root::{
-    disabled_closure_to_enable, enabled_dependants, InstalledModel, ModelRoot,
+    disabled_closure_to_enable, enabled_dependants, InstalledModel, ModelRoot, Ownership,
 };
 use postvec_registry::{index, stage_from_archive, urls};
 use registry_schema::{Index, IndexModel};
@@ -37,6 +37,7 @@ use std::time::Duration;
 const MAX_MODELS_PER_REQUEST: usize = 32;
 const MAX_PULL_JOBS: usize = 32;
 const REGISTRY_TIMEOUT: Duration = Duration::from_secs(30);
+const OWNERSHIP_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct PullJob {
     pub id: u64,
@@ -151,6 +152,7 @@ async fn models(State(state): State<Arc<ServerState>>) -> Response {
         async {
             let mut rows = Vec::new();
             for m in installed(&state).await.map_err(failed)? {
+                let ownership = m.ownership(OWNERSHIP_TIMEOUT).await;
                 rows.push(json!({
                     "name": m.dir_name,
                     "backend": m.backend,
@@ -158,7 +160,8 @@ async fn models(State(state): State<Arc<ServerState>>) -> Response {
                     "target_dim": m.target_dim,
                     "disk_bytes": m.disk_bytes,
                     "enabled": m.enabled,
-                    "owner": m.ownership(Duration::from_secs(5)).await.describe(),
+                    "owner": ownership.describe(),
+                    "removable": ownership == Ownership::Cli,
                     "revision": m.receipt.as_ref().map(|r| r.revision()),
                     "loaded": state.engine.is_model_ready(&m.dir_name),
                     "receipt_error": m.receipt_error,
@@ -244,7 +247,7 @@ fn register_pull(
             }
             None => {
                 return Err(busy(format!(
-                    "{MAX_PULL_JOBS} registry pulls are already running; retry after one finishes"
+                    "{MAX_PULL_JOBS} registry pulls are active or queued; retry after one finishes"
                 )));
             }
         }
@@ -568,12 +571,26 @@ async fn remove(State(state): State<Arc<ServerState>>, Json(request): Json<Reque
             };
             let (mut results, mut to_remove) = (Vec::new(), Vec::new());
             for name in &request.models {
-                let checked = installed_model(&installed, name).and_then(|_| {
-                    match enabled_dependants(&installed, name, &request.models) {
-                        d if d.is_empty() => Ok(()),
-                        d => Err(format!("still needed by enabled model(s) {}", d.join(", "))),
-                    }
-                });
+                let checked = match installed_model(&installed, name) {
+                    Ok(model) => match model.ownership(OWNERSHIP_TIMEOUT).await {
+                        Ownership::Cli => {
+                            match enabled_dependants(&installed, name, &request.models) {
+                                d if d.is_empty() => Ok(()),
+                                d => Err(format!(
+                                    "still needed by enabled model(s) {}",
+                                    d.join(", ")
+                                )),
+                            }
+                        }
+                        Ownership::Package => Err(
+                            "owned by a package; remove the package with apt/dnf instead".into(),
+                        ),
+                        Ownership::Manual => Err(
+                            "manually managed; remove its directory manually if intended".into(),
+                        ),
+                    },
+                    Err(e) => Err(e),
+                };
                 match checked {
                     Ok(()) => to_remove.push(name.clone()),
                     Err(e) => results.push(model_result(name, "error", Some(e))),
