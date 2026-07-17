@@ -162,7 +162,7 @@ replies are the admin envelope: `{success, data}`, per-model
 | Route | Listener | Does |
 |---|---|---|
 | `GET /api/registry/models` | all | Installed models: `enabled`, `loaded`, `owner`, `revision`, size |
-| `GET /api/registry/available` | all | The registry catalogue, with `installed` / `update` per entry. Anonymous, or the node's own credential (`POSTVEC_API_KEY`, the service account's `postvec login`) |
+| `GET /api/registry/available` | all | The registry catalogue, with `installed` / `update` per entry. Anonymous, the node's own credential (`POSTVEC_API_KEY`, the service account's `postvec login`), or an `Authorization: Bearer <api key>` sent with the request (the dashboard's per-tab key) |
 | `POST /api/registry/pull` `{models, accept_license?}` | admin (`--manage`: all) | Download, verify and install (deactivated, like the CLI); returns a `job` id |
 | `GET /api/registry/pulls` | all | Every pull started here: status, bytes, per-model results |
 | `POST /api/registry/activate` `{models}` | admin (`--manage`: all) | Enable on disk (with deactivated dependencies), then load |

@@ -461,6 +461,24 @@ kbd {
   background: var(--panel);
 }
 
+.reg-key {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.reg-key b { color: var(--text); }
+.reg-key a { color: var(--accent-text); }
+.reg-key input { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; width: 260px; }
+
 .reg-block {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -496,7 +514,8 @@ kbd {
 .reg-table tr:last-child td { border-bottom: 0; }
 .reg-table tr:hover td { background: var(--panel-2); }
 .reg-table tr.dimmed td { color: var(--text-3); }
-.reg-row-actions { text-align: right; white-space: nowrap; }
+.reg-row-actions { text-align: right; }
+.reg-row-actions .btn { margin: 2px 0 2px 4px; }
 
 .license {
   background: var(--panel);

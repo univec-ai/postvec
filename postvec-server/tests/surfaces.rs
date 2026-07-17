@@ -839,6 +839,23 @@ async fn the_public_listener_serves_a_built_spa_when_pointed_at_one() {
 }
 
 #[tokio::test]
+async fn a_malformed_registry_key_is_refused_before_any_fetch() {
+    let node = start(ServeArgs::default()).await;
+    for bearer in ["Basic abc", "Bearer short", "Bearer not-a-uv-key-at-all"] {
+        let response = node
+            .client
+            .get(format!("http://{}/api/registry/available", node.public))
+            .header("authorization", bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{bearer}");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["success"], json!(false));
+    }
+}
+
+#[tokio::test]
 async fn registry_reads_are_on_every_listener() {
     let node = start(ServeArgs::default()).await;
     for addr in [node.public, node.admin] {

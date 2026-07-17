@@ -44,7 +44,8 @@ const filtered = (models, query) =>
 const Registries = () => {
   const registry = useStore((state) => state.registry)
   const manage = useStore((state) => !!state.server?.manage)
-  const { loadRegistry, loadPulls, manageModels } = useStore.getState()
+  const { loadRegistry, loadPulls, manageModels, setRegistryKey } = useStore.getState()
+  const [keyDraft, setKeyDraft] = useState('')
   const [filter, setFilter] = useState('')
   const [pending, setPending] = useState(null)
   const [accepted, setAccepted] = useState(false)
@@ -97,10 +98,8 @@ const Registries = () => {
         <div>
           <h1>Model registries</h1>
           <p className="hint">
-            {registry.channel ? `${registry.channel} catalogue` : 'Catalogue'}
-            {registry.signed_in_as ? ` · signed in as ${registry.signed_in_as}` : ' · anonymous'}
-            . A pull lands deactivated; activate to load it. Remove deletes it from disk.
-            {!manage && ' Management is read-only; restart this node with --manage to enable changes.'}
+            A pull lands deactivated; activate to load it. Remove deletes it from disk.
+            {!manage && ' Management is read-only: restart this node with --manage to enable changes.'}
           </p>
         </div>
         <div className="reg-actions">
@@ -118,6 +117,65 @@ const Registries = () => {
       </div>
 
       {registry.error && <div className="banner">{registry.error}</div>}
+
+      <div className="reg-key">
+        {registry.key ? (
+          <>
+            <span>
+              <b>{registry.authenticated ? 'Private catalogue' : 'Catalogue'}</b> · using your API
+              key {registry.signed_in_as ? `(${registry.signed_in_as}) ` : ''}for this tab only. It
+              is not stored on this node and is forgotten when the tab closes.
+            </span>
+            <button
+              className="btn"
+              onClick={() => {
+                setRegistryKey('')
+                loadRegistry()
+              }}
+            >
+              Forget key
+            </button>
+          </>
+        ) : registry.signed_in_as ? (
+          <span>
+            <b>Private catalogue</b> · this node signs in with its own credential (
+            {registry.signed_in_as}).
+          </span>
+        ) : (
+          <>
+            <span>
+              <b>Public catalogue.</b> Add your UniVec API key to browse and pull the private
+              models your account is entitled to. It is used from this tab only and never stored
+              on the node.{' '}
+              <a href="https://univec.ai/dashboard" target="_blank" rel="noreferrer">
+                Get a key
+              </a>
+            </span>
+            <form
+              className="reg-actions"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (!keyDraft.trim()) return
+                setRegistryKey(keyDraft)
+                setKeyDraft('')
+                loadRegistry()
+              }}
+            >
+              <input
+                type="password"
+                placeholder="uv_…"
+                aria-label="UniVec API key"
+                value={keyDraft}
+                onChange={(e) => setKeyDraft(e.target.value)}
+                autoComplete="off"
+              />
+              <button className="btn" type="submit" disabled={!keyDraft.trim()}>
+                Use key
+              </button>
+            </form>
+          </>
+        )}
+      </div>
 
       {pending && (
         <div className="license">

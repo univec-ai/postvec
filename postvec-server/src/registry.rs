@@ -16,11 +16,11 @@ use crate::admin::{load_models, model_result, unload_models};
 use crate::models::validate_model_name;
 use crate::state::ServerState;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use postvec_registry::auth::{self, Credential};
+use postvec_registry::auth::{self, Credential, CredentialSource};
 use postvec_registry::client::{DownloadError, Progress, RegistryClient};
 use postvec_registry::error::redact;
 use postvec_registry::receipt::{timestamp_now, LicenseEvidence};
@@ -90,7 +90,13 @@ fn bad(e: impl ToString) -> (StatusCode, String) {
 }
 
 fn failed(e: impl ToString) -> (StatusCode, String) {
-    (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    let message = e.to_string();
+    let status = if message.contains("rejected the credential") {
+        StatusCode::UNAUTHORIZED
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, message)
 }
 
 fn busy(e: impl ToString) -> (StatusCode, String) {
@@ -127,10 +133,30 @@ async fn installed(state: &ServerState) -> Result<Vec<InstalledModel>, String> {
     blocking(move || root.installed()).await
 }
 
-/// The credential is the node's own: `POSTVEC_API_KEY` or the service
-/// account's `postvec login` store. None is the public channel.
-async fn fetch_index() -> Result<(Index, Option<Credential>), String> {
-    let credential = blocking(|| auth::resolve(None)).await?;
+/// A key the caller sends for this request only (`Authorization: Bearer`,
+/// what the dashboard does); never stored. Absent means the node's own
+/// credential: `POSTVEC_API_KEY` or the service account's `postvec login`.
+fn request_key(headers: &HeaderMap) -> Result<Option<Credential>, (StatusCode, String)> {
+    let Some(raw) = headers.get(header::AUTHORIZATION) else {
+        return Ok(None);
+    };
+    let key = raw
+        .to_str()
+        .ok()
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| bad("Authorization must be `Bearer <api key>`"))?;
+    let key = auth::validate_key_shape(key).map_err(bad)?;
+    Ok(Some(Credential {
+        key,
+        source: CredentialSource::Environment,
+    }))
+}
+
+async fn fetch_index(request: Option<Credential>) -> Result<(Index, Option<Credential>), String> {
+    let credential = match request {
+        Some(c) => Some(c),
+        None => blocking(|| auth::resolve(None)).await?,
+    };
     let url = if credential.is_some() {
         urls::authenticated_index_url()
     } else {
@@ -173,10 +199,10 @@ async fn models(State(state): State<Arc<ServerState>>) -> Response {
     )
 }
 
-async fn available(State(state): State<Arc<ServerState>>) -> Response {
+async fn available(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
     respond(
         async {
-            let (index, credential) = fetch_index().await.map_err(failed)?;
+            let (index, credential) = fetch_index(request_key(&headers)?).await.map_err(failed)?;
             let installed = installed(&state).await.map_err(failed)?;
             let rows: Vec<Value> = index
                 .models
@@ -264,10 +290,15 @@ fn register_pull(
     Ok(id)
 }
 
-async fn pull(State(state): State<Arc<ServerState>>, Json(request): Json<Request>) -> Response {
-    if let Err(e) = validate(&request) {
-        return respond(Err(e));
-    }
+async fn pull(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(request): Json<Request>,
+) -> Response {
+    let key = match validate(&request).and_then(|_| request_key(&headers)) {
+        Ok(key) => key,
+        Err(e) => return respond(Err(e)),
+    };
     let id = {
         let mut jobs = state.pulls.lock().unwrap();
         match register_pull(&mut jobs, request.models.clone()) {
@@ -277,7 +308,7 @@ async fn pull(State(state): State<Arc<ServerState>>, Json(request): Json<Request
     };
     let task_state = state.clone();
     tokio::spawn(async move {
-        let outcome = run_pull(&task_state, id, &request).await;
+        let outcome = run_pull(&task_state, id, &request, key).await;
         let mut jobs = task_state.pulls.lock().unwrap();
         let job = jobs
             .iter_mut()
@@ -295,10 +326,15 @@ fn set_status(state: &ServerState, id: u64, status: &'static str) {
     }
 }
 
-async fn run_pull(state: &Arc<ServerState>, id: u64, request: &Request) -> Result<(), String> {
+async fn run_pull(
+    state: &Arc<ServerState>,
+    id: u64,
+    request: &Request,
+    key: Option<Credential>,
+) -> Result<(), String> {
     let _serial = state.pull_serial.lock().await;
     set_status(state, id, "running");
-    let (index, credential) = fetch_index().await?;
+    let (index, credential) = fetch_index(key).await?;
     let closure = index::expand_closure(&index, &request.models).map_err(|e| e.to_string())?;
     let root = root(state);
     // The root lock is what serializes this against a `postvec model pull`

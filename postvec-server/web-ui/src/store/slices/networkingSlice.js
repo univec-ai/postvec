@@ -1,11 +1,9 @@
-// Same origin as the page: the node that served it, or the Vite proxy
-// (`npm run dev` forwards /config and /api). Not persisted — the same
+// The node that served the page is the endpoint. `VITE_API_ENDPOINT` at
+// build time overrides it for `npm run dev` against a TLS node; the dev
+// server also proxies /config and /api there. Never persisted: the same
 // build may be served by another node tomorrow.
 const createNetworkingSlice = () => ({
-  api_endpoint:
-    typeof window !== 'undefined' && window.location.protocol.startsWith('http')
-      ? window.location.origin
-      : 'http://127.0.0.1:22222',
+  api_endpoint: import.meta.env.VITE_API_ENDPOINT || window.location.origin,
   cluster: [],
   system: null,
   server: null,

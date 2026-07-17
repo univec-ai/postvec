@@ -39,6 +39,11 @@ const post = async (peer, path, payload, timeout) => {
   }
 }
 
+const authHeaders = (get) => {
+  const key = get().registry.key
+  return key ? { headers: { Authorization: `Bearer ${key}` } } : {}
+}
+
 export const createAsyncActions = (set, get) => ({
   appMounted: () => get().getConfiguration(),
 
@@ -101,7 +106,9 @@ export const createAsyncActions = (set, get) => ({
       const [installed, pulls, available] = await Promise.all([
         envelope(axios.get(ep + '/api/registry/models', opts)),
         envelope(axios.get(ep + '/api/registry/pulls', opts)),
-        envelope(axios.get(ep + '/api/registry/available', opts)).catch((err) => ({
+        envelope(
+          axios.get(ep + '/api/registry/available', { ...opts, ...authHeaders(get) }),
+        ).catch((err) => ({
           _error: err.message,
         })),
       ])
@@ -174,7 +181,7 @@ export const createAsyncActions = (set, get) => ({
         axios.post(
           `${get().api_endpoint}/api/registry/${kind}`,
           { models, ...extra },
-          { validateStatus: () => true },
+          { validateStatus: () => true, ...authHeaders(get) },
         ),
         { manage: true },
       )
