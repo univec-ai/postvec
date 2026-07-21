@@ -79,7 +79,9 @@ involved, `postvec.providers_path`, holds a path.
 
 Run one or more `postvec-server` nodes and point the cluster at them with
 `postvec setup --grpc ... --http ...`. [Remote inference](/docs/server/) is
-the walkthrough, from one node to a fleet.
+the walkthrough, from one node to a fleet. The node also serves a
+[dashboard](/docs/server/dashboard) on port `22222` for querying loaded
+models and for registry operations.
 
 ## Why is the vector NULL right after INSERT?
 
@@ -112,18 +114,13 @@ vectors. `model upgrade` replaces model files.
 ## Is the extension AGPL?
 
 No. The extension, CLI and packages use the PostgreSQL License, in either
-inference mode and whatever you build with it. Terms for `postvec-server`
-will be stated before the first release.
+inference mode. `postvec-server` is source-available under the Business
+Source License 1.1; production use by an organization needs a commercial
+license.
 
 ## Which PostgreSQL versions are supported?
 
 16, 17 and 18.
-
-## How do I find a function or topic?
-
-Use search in the header. It is local to this site (no third-party
-service). Try `enable`, `migrate`, `shared_preload_libraries` or
-`ada-002`.
 
 ## Does `apt remove` drop database data?
 

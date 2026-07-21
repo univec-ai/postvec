@@ -9,15 +9,17 @@ description: Cluster configuration and diagnostics with postvec setup and doctor
 starts the worker. Run it after a package install or a source copy.
 
 The command creates missing databases, installs the extension, merges
-`shared_preload_libraries`, writes **one** owned file
-(`conf.d/99-postvec.conf`), validates it, restarts or reloads if needed,
-refreshes models and checks that the worker heartbeat **advances**.
+`shared_preload_libraries`, writes `conf.d/99-postvec.conf`, validates
+it, restarts or reloads if a setting changed, refreshes models and
+checks that the worker heartbeat **advances**.
 
+:::: info Optional
 A dry run reports the planned changes without applying them:
 
 ```bash
 sudo postvec setup --database app ... --dry-run
 ```
+::::
 
 ## Embedded
 
@@ -32,9 +34,7 @@ extension and restarts.
 <PgSnippet id="setup-embedded" />
 
 :::: tip Expected
-`model ls` shows MiniLM as loaded. `doctor` reports aligned library/SQL
-versions, an advancing heartbeat and matching on-disk / engine / SQL
-inventories.
+`model ls` shows MiniLM as loaded.
 ::::
 
 `--model NAME` (repeatable) is an embedded preload allow-list. Omit it
@@ -61,8 +61,6 @@ fails one request in three.
 sudo postvec setup --database app \
   --grpc 10.0.0.20:33333 \
   --http https://10.0.0.20:22222
-
-sudo postvec doctor --database app --deep
 ```
 
 `--allow-unreachable` is only for staging configuration before
@@ -78,8 +76,8 @@ binaries and `--config-dir` must already be included by
 <PgSnippet id="setup-embedded-cluster" />
 
 On EL9, run as the cluster owner, or set `POSTVEC_DATABASE_URL`.
-`--no-restart` writes valid state and exits **4**. PostgreSQL must then
-be restarted before running `doctor`.
+`--no-restart` writes valid state and exits **4**. Restart PostgreSQL
+before using the cluster.
 
 ## Multiple databases
 
@@ -111,34 +109,9 @@ Reconcile or move the file.
 A manually maintained `postvec.conf` should not coexist with the
 CLI-owned `99-postvec.conf`.
 
-## SQL and CLI verification
-
-:::: code-group
-
-```sql [SQL]
-SHOW postvec.mode;
-SHOW postvec.path;
-SELECT postvec.version(), postvec.build_info();
-SELECT extname, extversion FROM pg_extension
- WHERE extname IN ('vector', 'postvec');
-SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
-SELECT * FROM postvec.status();
-```
-
-```bash [CLI]
-sudo postvec doctor --database app --deep
-sudo postvec doctor --database app --deep --format json \
-  | jq '{summary, failures: [.checks[] | select(.status == "FAIL")]}'
-```
-
-::::
-
-:::: tip Expected
-`postvec.mode` is `embedded` (or `grpc` if you passed `--grpc`).
-`postvec.path` is `/opt/postvec` on a package install. Both extensions
-are present. At least one model is listed when inference is reachable.
-`worker_last_beat` is recent and advances between samples. `doctor` exit
-0 is clean.
+:::: info Optional
+[Verify artifacts](/docs/install/verify) has `doctor --deep` and the SQL
+checks (`SHOW postvec.mode`, `postvec.models`, `status()`).
 ::::
 
 ## Manual configuration
@@ -158,11 +131,5 @@ Remote deployments set `postvec.mode = 'grpc'` plus
 Create the database and `CREATE EXTENSION postvec CASCADE` **before**
 adding the name to `postvec.database`, then restart.
 
-## `doctor` summary
-
-`doctor` is read-only and runs about 40 checks, each with a
-remediation. `--deep` verifies that the heartbeat advanced and that
-CLI-installed model files match their receipts. `--strict` fails on
-warnings. `--format json` is for scripts. Exit 0 is clean.
-
-Full flag list: [CLI reference](/docs/reference/cli).
+`postvec doctor` is read-only. [Verify artifacts](/docs/install/verify)
+and the [CLI reference](/docs/reference/cli) cover flags.

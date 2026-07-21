@@ -48,18 +48,7 @@ sudo postvec setup --database app \
 `--allow-unreachable` stages the configuration before a node exists. The
 worker starts. Inference waits until a node answers.
 
-## 3. Prove the pairing
-
-```bash
-sudo postvec doctor --database app --deep
-```
-
-:::: tip Expected
-Three checks report the connection: `remote.grpc.connect`,
-`remote.http.health` and `remote.http.config`. The last one also lists the
-models the node advertises, which is what `postvec.models` will hold after the
-next refresh.
-::::
+## 3. Models
 
 ```sql
 SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
@@ -68,12 +57,19 @@ SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
 An empty result means discovery has not run yet or the node serves nothing.
 `SELECT postvec.refresh_models();` forces a refresh.
 
-If `doctor` reports the node as unreachable, check in this order: the node's
-own `/ready`, then the gRPC port through a firewall, then whether the HTTP
-endpoint in the GUC matches the scheme the node actually serves. A node
-started without `--insecure` serves `https`.
+:::: info Optional
+```bash
+sudo postvec doctor --database app --deep
+```
 
-## 4. Use it
+`remote.grpc.connect`, `remote.http.health` and `remote.http.config`
+report the pairing. If those fail: the node's `/ready`, the gRPC port
+through a firewall, then whether the HTTP endpoint matches the scheme
+the node serves (`https` unless `--insecure`).
+[Verify artifacts](/docs/install/verify).
+::::
+
+## 4. SQL
 
 SQL is unchanged:
 
@@ -116,9 +112,8 @@ embedding route. List what the cluster needs before switching:
 SELECT DISTINCT model FROM postvec.status();
 ```
 
-## Related documentation
-
-- [Run a node](/docs/server/node) - the other end of this connection
-- [Run a fleet](/docs/server/fleet) - several nodes, and the parity rule
-- [Embedded vs remote](/docs/concepts/modes) - the comparison
-- [Configure the cluster](/docs/install/setup) - `setup` in general
+- [Run a node](/docs/server/node)
+- [Dashboard](/docs/server/dashboard)
+- [Run a fleet](/docs/server/fleet)
+- [Embedded vs remote](/docs/concepts/modes)
+- [Configure the cluster](/docs/install/setup)

@@ -166,8 +166,9 @@ sudo postvec --cluster 18/main model pull baai-bge-m3 --dry-run
 ```
 
 :::: tip Expected
-The second command returns an error. In remote mode, model files belong
-on each `postvec-server` node (or on a standalone root via `--path`).
+In remote mode the cluster-targeted `pull` names the server root and
+stops. Put model files on each `postvec-server` node (CLI, [dashboard](/docs/server/dashboard),
+or `--path` on that host).
 ::::
 
 ## Credential scope

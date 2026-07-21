@@ -10,12 +10,14 @@ matches **one** release, **one** distribution, **one** architecture and
 **one** PostgreSQL major. The [release artifacts](/download) page lists
 names and publication status.
 
-Packages install files. After step 5, run
-[setup](/docs/install/setup) to configure the cluster.
+Packages install files. Then [configure the cluster](/docs/install/setup).
 
 Debian examples use the `+deb12` filename tag. Ubuntu files use
 `+ubuntu22.04` or `+ubuntu24.04` instead; the rest of the command is
 the same.
+
+Checksums, Sigstore attestations and file checks:
+[verify artifacts](/docs/install/verify).
 
 ## 1. Prerequisites (PGDG)
 
@@ -50,35 +52,16 @@ inference:
 
 The nodes install from the same release: the `postvec-server` package plus
 the runtime and model packages, on hosts that need no PostgreSQL. See
-[run a node](/docs/server/node). That package carries its own licence, stated
-on the [release page](/download#postvec-server).
+[run a node](/docs/server/node). That package is **Business Source License 1.1**
+(source-available; production use by an organization needs a commercial
+license); the
+identifier is on the [release page](/download#postvec-server).
 
 Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies
 resolve. `dpkg` / `rpm -i` skip that resolution.
 
 The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
-identifies the **target OS**. Debian 12 and Ubuntu 22.04 packages are
-not interchangeable.
-
-## 4. Verify the download
-
-<PgSnippet id="packages-verify-download" />
-
-`--ignore-missing` supports partial downloads. Omit it when you have
-the complete release.
-
-## 5. Verify installed files
-
-<PgSnippet id="packages-verify-files" />
-
-:::: tip Expected
-These checks succeed on the files alone. A complete install also has
-`libonnxruntime.so` under `/opt/postvec/libs` and a model tree under
-`/opt/postvec/models`. Worker and database configuration happens during
-[cluster configuration](/docs/install/setup).
-::::
-
-## After the packages are installed
+identifies the **target OS**. Pick the tag that matches the host.
 
 [Configure the cluster](/docs/install/setup). `apt remove` / `dnf remove`
 remove the files. User data stays in the database.

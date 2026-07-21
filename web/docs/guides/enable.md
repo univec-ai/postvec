@@ -41,26 +41,23 @@ host.
 
 ## 3. Wait for the worker
 
-:::: code-group
-
-```sql [SQL]
+```sql
 INSERT INTO docs (body) VALUES ('...');
 
 SELECT relation, model, dim, pending_jobs, dead_jobs
   FROM postvec.status();
 ```
 
-```bash [CLI]
-sudo postvec doctor --database app --deep
-```
-
+:::: info Optional
+`sudo postvec doctor --database app --deep` is the host-side check.
+[Verify artifacts](/docs/install/verify).
 ::::
 
 :::: tip Expected
 `pending_jobs` rises, then returns to 0. `docs.body_semantic` fills with
 `vector(N)` where `N` is the model's `target_dim`. With
-`index_mode => 'manual'`, `doctor` reports the missing ANN index as a
-warning.
+`index_mode => 'manual'`, `has_vector_index` stays false until
+`create_vector_index()`.
 ::::
 
 Vectors fill after the inserting transaction commits. Poll `status()` in

@@ -57,16 +57,6 @@ const installCmd = computed(() => {
   return `sudo ${tool} install \\\n  ${names}`;
 });
 
-const verifyCmd = computed(() => {
-  const first = files.value.find((n) => n.includes("postvec") && !n.includes("cli")) ?? files.value[0];
-  return [
-    "sha256sum --ignore-missing --check SHA256SUMS",
-    `gh attestation verify ./${first} \\`,
-    `  --repo ${SITE.githubRepo} \\`,
-    `  --signer-workflow ${SITE.signerWorkflow}`,
-  ].join("\n");
-});
-
 const imageTag = computed(() => {
   const suffix = variant.value === "local" ? "-local" : "-remote";
   return `${SITE.ghcr}:${SITE.release}-pg${pg.value}${suffix}`;
@@ -239,10 +229,10 @@ function assetUrl(name: string): string | null {
     <h3>Container image</h3>
     <CopyCommand :command="`docker pull ${imageTag}`" label="Pinned tag" />
     <p class="hint">
-      The moving tag is <code>{{ movingTag }}</code>. There is no
-      <code>latest</code> tag, because it would hide the PostgreSQL major.
-      Pin the versioned tag in production, preferably by digest. A preview
-      tag may not resolve until the release is published.
+      The moving tag is <code>{{ movingTag }}</code>. Pin the versioned
+      tag in production, preferably by digest. A preview tag may not
+      resolve until the release is published. Every PostgreSQL image tag
+      includes the major.
     </p>
     <p class="hint">
       PostgreSQL 18 volumes mount at <code>/var/lib/postgresql</code>. 16 and 17
@@ -270,19 +260,17 @@ function assetUrl(name: string): string | null {
       Use <code>apt</code> / <code>dnf</code>, not <code>dpkg</code> /
       <code>rpm -i</code>, so PostgreSQL, pgvector and ELF dependencies
       resolve. Packages install files only. They never restart the cluster or
-      create a database.
+      create a database. Checksums and Sigstore attestations:
+      <a href="/docs/install/verify">verify artifacts</a>.
     </p>
-
-    <h3>Verify</h3>
-    <CopyCommand :command="verifyCmd" label="Checksums + Sigstore" />
 
     <h3>Inference node (remote mode)</h3>
     <p class="hint">
       <code>postvec-server</code> is the node the remote payload dials. One
       package per distribution and architecture, no PostgreSQL major; the same
-      release, the same checksums and attestations. It is licensed under
-      <strong>{{ SITE.serverLicense }}</strong>, not the PostgreSQL License
-      that covers everything else on this page.
+      release, the same checksums and attestations. Licensed under
+      <strong>{{ SITE.serverLicense }}</strong>. The extension, CLI, runtime,
+      model packages and PostgreSQL images stay under the PostgreSQL License.
     </p>
     <ul class="files">
       <li v-for="name in serverFiles" :key="name">
@@ -307,10 +295,10 @@ function assetUrl(name: string): string | null {
     </p>
     <CopyCommand :command="`docker pull ${serverImageTag}`" label="Node image" />
     <p class="hint">
-      The same packages as an image, serving the bundled model out of the box.
-      The moving tag is <code>{{ SITE.ghcrServer }}:latest</code> — there is
-      no PostgreSQL major to hide here. gRPC (33333) and discovery (22222)
-      carry no authentication: keep them on a private network.
+      The same packages as an image, serving the bundled model. The dashboard
+      is on port 22222. The moving tag is
+      <code>{{ SITE.ghcrServer }}:latest</code>. gRPC (33333) and discovery
+      (22222) are unauthenticated: keep them on a private network.
     </p>
   </div>
 </template>

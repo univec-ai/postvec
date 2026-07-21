@@ -315,7 +315,7 @@ mistral  (mistral, key: none)
 reported as disabled. `REFUSES`: the file will not load. `ls` and
 `doctor` apply the loader's rules.
 
-## What `doctor` checks
+## `doctor` checks
 
 `postvec doctor` has a `provider.*` family, all read-only:
 
@@ -355,10 +355,8 @@ Provider outputs are not covered by the golden-vector suite. Hosted
 models are not reproducible, and pinning them would test the provider
 rather than postvec.
 
-## Related documentation
-
-- [External providers](/docs/models/providers) - the walkthrough
-- [UniVec hosted models](/docs/models/univec) - hosted embeddings and direct conversion
-- [CLI](/docs/reference/cli) - flags and exit codes
-- [GUCs](/docs/reference/gucs) - `providers_path` and the timeouts
-- [Docker](/docs/install/docker#external-providers) - mounts and permissions
+- [External providers](/docs/models/providers)
+- [UniVec hosted models](/docs/models/univec)
+- [CLI](/docs/reference/cli)
+- [GUCs](/docs/reference/gucs)
+- [Docker](/docs/install/docker#external-providers)

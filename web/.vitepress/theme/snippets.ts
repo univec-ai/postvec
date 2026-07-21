@@ -239,13 +239,30 @@ export const SNIPPETS: Record<string, SnippetDef> = {
     lang: "bash",
     render: (t) =>
       [
+        `sudo bash ./postvec-prerequisites.sh --pg ${t.pg}`,
+      ].join("\n"),
+  },
+
+  "packages-verify-prereq": {
+    lang: "bash",
+    render: () =>
+      [
         "gh --version   # 2.49 or newer",
         "",
         "gh attestation verify postvec-prerequisites.sh \\",
         `  --repo ${SITE.githubRepo} \\`,
         `  --signer-workflow ${SITE.signerWorkflow}`,
         "less postvec-prerequisites.sh",
-        `sudo bash ./postvec-prerequisites.sh --pg ${t.pg}`,
+      ].join("\n"),
+  },
+
+  "docker-verify": {
+    lang: "bash",
+    render: (t) =>
+      [
+        `gh attestation verify oci://${t.imageLocal} \\`,
+        `  --repo ${SITE.githubRepo} \\`,
+        `  --signer-workflow ${SITE.signerWorkflow}`,
       ].join("\n"),
   },
 
@@ -477,7 +494,6 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         "  --embedded",
         "",
         "postvec model ls",
-        "sudo postvec doctor --database app --deep",
       ].join("\n"),
   },
 
@@ -491,8 +507,6 @@ export const SNIPPETS: Record<string, SnippetDef> = {
           [
             `sudo postvec --cluster ${t.cluster} setup --database app \\`,
             "  --embedded",
-            "",
-            `sudo postvec --cluster ${t.cluster} doctor --database app --deep`,
           ].join("\n"),
       },
       {
@@ -508,9 +522,6 @@ export const SNIPPETS: Record<string, SnippetDef> = {
             "  --no-restart",
             "",
             `sudo systemctl restart ${t.svcel}.service`,
-            "sudo -u postgres postvec doctor \\",
-            `  --pg-config ${t.pgconfigel} \\`,
-            "  --database app --deep",
           ].join("\n"),
       },
     ],

@@ -1,6 +1,6 @@
 ---
 title: SQL functions
-description: Match enable, adopt, bridge, migrate or chunking to the table you have.
+description: enable, adopt, bridge, migrate and chunking.
 ---
 
 # SQL functions
@@ -122,12 +122,8 @@ Search still returns one row per document, plus the winning chunk. See
 refresh job; the worker splits it and fans out one embed job per chunk.
 ::::
 
-## After any of the above
-
-| Next | Where |
-|---|---|
-| Bind a column to a hosted API | [External providers](/docs/models/providers) |
-| Restrict by metadata | [Filters](/docs/guides/filters) |
-| Embed title + body together | [Templates](/docs/guides/templates) |
-| Confirm the worker | [Status](/docs/guides/status) / `postvec doctor` |
-| Re-drive failures | [`retry_dead()`](/docs/guides/retry) |
+- [External providers](/docs/models/providers)
+- [Filters](/docs/guides/filters)
+- [Templates](/docs/guides/templates)
+- [Status](/docs/guides/status) / `postvec doctor`
+- [`retry_dead()`](/docs/guides/retry)

@@ -76,7 +76,7 @@ bundled MiniLM package works without the registry. The
 | Mode | Install / activate / remove / upgrade |
 |---|---|
 | Embedded | `postvec model pull / activate / deactivate / upgrade / rm` on this host |
-| Remote | Each `postvec-server` node. Local mutation is **refused**. See [models on a node](/docs/server/models) |
+| Remote | Each `postvec-server` node, via the CLI or the [dashboard](/docs/server/dashboard). Cluster-local `model pull` is refused. See [models on a node](/docs/server/models) |
 | Either | `model ls` - local inventory, or node-advertised names in remote |
 
 `pull` installs a model **deactivated**. `model activate` / `deactivate`
@@ -101,11 +101,9 @@ four generations. To make a column uniform, re-embed or
 
 Upgrading the extension is a separate lifecycle.
 
-## Related documentation
-
 - [Pull, upgrade, remove](/docs/models/pull)
-- [Login](/docs/models/login) - private catalogue
+- [Login](/docs/models/login)
 - [Air-gapped](/docs/models/air-gapped)
-- [External providers](/docs/models/providers) - hosted embedding APIs
-- [UniVec hosted models](/docs/models/univec) - hosted embeddings and conversion
-- [Connector files](/docs/models/providers-file) - format, names, loading
+- [External providers](/docs/models/providers)
+- [UniVec hosted models](/docs/models/univec)
+- [Connector files](/docs/models/providers-file)

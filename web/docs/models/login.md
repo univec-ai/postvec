@@ -19,13 +19,12 @@ Public entries retain their public download URLs after authentication.
 The private catalogue is the same inventory a fleet of nodes can
 serve. Organisation accounts and support around that fleet are
 documented at [univec.ai](https://univec.ai). The authenticated route
-itself is **identity-only**: the account must be active and verified,
-and the key must not be expired. Balance and spending limit are not
-checked.
+is **identity-only**: the account must be active and verified, and the
+key must be unexpired.
 
-The catalogue is currently in publication preview. These commands
-document the client contract and become useful when the registry
-channels are live.
+The catalogue is currently in publication preview. The same credential
+works from the node's [dashboard](/docs/server/dashboard) (**Use key**,
+or a `postvec login` as the service account).
 
 Create a dedicated key with a **$0 spending limit**. The same `uv_` key
 would otherwise also authorize billable UniVec API calls.

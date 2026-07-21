@@ -54,7 +54,7 @@ with `//` are comments.
 `--cluster` is an accepted alias for `--peers`, and `--ssl-key` for
 `--ssl-cert-key`.
 
-### The two knobs that matter
+### `--max-inflight` and `--max-resident-models`
 
 **`--max-inflight`** bounds concurrently executing predictions. It is a CPU
 bound, because each ONNX session runs its own intra-op thread pool and N
@@ -70,11 +70,10 @@ is refused at boot, before any model loads.
 
 ### `frontend`
 
-The reachable HTTP URL of a node is not always
-`https://{advertise}:{http_port}`. NAT, a load balancer or a DNS name you
-would rather see printed all break that assumption, and `--frontend`
-overrides what `/config` and `postvec-server status` display and what peers
-learn.
+`--frontend` sets the HTTP URL printed in `/config`,
+`postvec-server status` and membership. Use it when NAT, a load balancer
+or a DNS name should appear instead of
+`https://{advertise}:{http_port}`.
 
 gRPC uses the advertised IP, membership uses the gossip socket, and
 postvec's discovery ignores `frontend`. Set `--advertise` (and
@@ -91,7 +90,7 @@ and clients actually use.
 | `GET /metrics` | Prometheus text |
 | `GET /api/{model}` | Model layer overview, native envelope |
 | `POST /api/{model}` | Native inference. JSON body keyed like `executor.inputs` (`texts` / `embeddings`). Envelope `{success, data}` or `{success, error:{message}}`; HTTP stays 200 |
-| `GET /api/registry/{models,available,pulls}`, `POST /api/registry/{pull,activate,deactivate,remove}` | Model management, the `postvec model` commands over HTTP. The `POST`s are on the admin port, and on the public port with `--manage`. See [HTTP API](/docs/server/http-api) |
+| `GET /api/registry/{models,available,pulls}`, `POST /api/registry/{pull,activate,deactivate,remove}` | Model management, the `postvec model` commands over HTTP. The `POST`s are on the admin port, and on the public port with `--manage`. See [HTTP API](/docs/server/http-api) and [dashboard](/docs/server/dashboard) |
 | `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` adaptor in front of the native path. `{object, data, model, usage}` on success; `{error:{message, type, code}}` and a real status on failure. See [HTTP API](/docs/server/http-api) |
 
 Gate load balancers and compose healthchecks on `/ready`, and supervisors on
@@ -103,7 +102,7 @@ node answers at normal latency.
 `--no-warmup` skips it, and `postvec_server_warmup_failures_total` counts what
 went wrong.
 
-## Metrics worth alerting on
+## Metrics
 
 | Series | Why |
 |---|---|
@@ -128,11 +127,14 @@ Restrict both ports to a private network with a firewall, a security group
 or `--bind <private-ip>`. The node logs a warning at boot whenever it binds
 every interface.
 
-**Only the loopback admin port can change what is loaded.** `/admin/load`,
-`/admin/unload` and `/admin/providers/reload` live on their own socket bound
-to `127.0.0.1`, never on the published one. A routable admin bind is a
-boot failure. A per-request loopback peer check sits behind that. The
-trust boundary is local OS users.
+**Load, unload and provider reload stay on the loopback admin port.**
+`/admin/load`, `/admin/unload` and `/admin/providers/reload` bind
+`127.0.0.1` only. A routable admin bind is a boot failure. A per-request
+loopback peer check sits behind that. Registry pull/activate/deactivate/remove
+use the same admin socket; `--manage` also serves those POSTs on the
+public discovery port so the [dashboard](/docs/server/dashboard) can
+drive them. The trust boundary is local OS users, plus whoever can
+reach port `22222` when `--manage` is on.
 
 No telemetry and no licence check. Models arrive on disk by whatever
 mechanism you choose. An [external provider](/docs/models/providers)
@@ -153,8 +155,7 @@ embed entry sends text.
 | Refuses to start over a configuration key | Unknown keys are fatal by design. The error names the key; prefix it with `//` if you meant a comment |
 | Requests queue and time out under load | `postvec_server_requests_in_flight` sitting at `--max-inflight` with rising `TIMEOUT`. Raise it if the box has headroom, or add nodes. Lowering `--predict-timeout-ms` makes the failures faster, not fewer |
 
-## Related documentation
-
-- [Run a node](/docs/server/node) - first start and the boot log
-- [Run a fleet](/docs/server/fleet) - parity, drift and drains
-- [Troubleshooting](/docs/troubleshooting) - the database side
+- [Run a node](/docs/server/node)
+- [Dashboard](/docs/server/dashboard)
+- [Run a fleet](/docs/server/fleet)
+- [Troubleshooting](/docs/troubleshooting)

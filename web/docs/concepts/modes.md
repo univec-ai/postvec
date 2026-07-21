@@ -70,8 +70,9 @@ stay the same.
 | Discovery | Loopback HTTP on the launcher | `GET /config` on those nodes |
 | DB-host assets | Extension, CLI, ONNX Runtime, models | Extension + CLI |
 | Raw text leaves the DB host | Stays on the host, except columns bound to an [external provider](/docs/models/providers) | Goes to the configured nodes. Provider-bound columns continue to the hosted provider |
-| Model commands | `postvec model pull / upgrade / rm / activate` | Local mutation unsupported; models are administered on each node |
-| Engine crash | Restarts the launcher | Stays outside PostgreSQL |
+| Model commands | `postvec model pull / upgrade / rm / activate` | On each node: CLI or [dashboard](/docs/server/dashboard) |
+| Engine crash | Restarts the launcher | Isolated in the node process |
+| Dashboard | | Port `22222` on the node |
 | Typical use | Single-node, private, edge, air-gapped, regulated | Crash-domain isolation, GPU, one engine shared by several databases |
 
 The same package supports both modes. `setup --embedded` (the default)
@@ -125,8 +126,9 @@ check.
 
 `postvec-server` is a CPU or GPU inference node on the deployment
 network. Every node in a fleet runs the same command and binds the same
-ports; models are files on disk that each node loads. Running one, and
-running several, is [Remote inference](/docs/server/).
+ports; models are files on disk that each node loads. The node also
+serves a [dashboard](/docs/server/dashboard) on the discovery port.
+Running one node, and running several, is [remote inference](/docs/server/).
 
 The gRPC port is plaintext and unauthenticated by design, so the nodes
 belong on a trusted private network. [External provider](/docs/models/providers)
@@ -150,11 +152,3 @@ sudo postvec setup --database app \
 ```
 
 Engine files already on the database host stay in place in remote mode.
-
-## Selection
-
-:::: warning Embedded mode shares resources with PostgreSQL
-An engine fault restarts the launcher. Remote mode keeps that fault off
-the database host. Embedded is the default (no extra process). Remote is
-the choice for crash isolation, a dedicated CPU budget or GPU inference.
-::::

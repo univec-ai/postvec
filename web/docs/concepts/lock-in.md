@@ -29,25 +29,18 @@ grows the eventual migration.
 
 That accumulated, deferred migration work is **embedding debt**.
 
-## Operations
+- [`migrate()`](/docs/guides/migrate) converts stored vectors without
+  replaying source text.
+- [Embedded mode](/docs/concepts/modes) runs local open-weight models on
+  the database host.
+- [Bridge search](/docs/guides/bridge) converts query vectors into the
+  stored space. The corpus stays.
+- [`search()`](/docs/guides/search) plus [filters](/docs/guides/filters)
+  combines lexical and semantic retrieval.
 
-| Requirement | postvec operation |
-|---|---|
-| Change the stored space without replaying source text | [`migrate()`](/docs/guides/migrate) converts the stored vectors |
-| Keep inference on the database host | [Embedded mode](/docs/concepts/modes) runs local open-weight models |
-| Query with a different model without moving the corpus | Keep the column and [bridge the query](/docs/guides/bridge) |
-| Combine lexical and semantic retrieval | [`search()`](/docs/guides/search) + [filters](/docs/guides/filters) |
-
-Bridge search and migration sit next to each other:
-
-- **Bridge search** keeps stored vectors exactly where they are and
-  converts new query vectors into that space. The stored corpus stays
-  put.
-- **In-place migration** converts the stored corpus to a new space
-  without sending source text through the old embedding provider. The
-  column's model contract changes.
-
-## Related
+Bridge search keeps stored vectors as they are and converts new query
+vectors into that space. In-place migration converts the stored corpus
+to a new space. The column's model contract changes.
 
 - [Embedded vs remote](/docs/concepts/modes)
 - [Search a retired space](/docs/guides/bridge)

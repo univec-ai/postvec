@@ -19,16 +19,18 @@ the [packages page](/docs/install/packages), then:
 
 The package installs the binary, the systemd unit, a conffile at
 `/etc/postvec-server/config.json`, the dashboard under
-`/opt/postvec/server/ui` and the `postvec-server` service account.
-It enables and starts nothing — the certificate and `systemctl` lines are
-yours. `postvec-cli` is a Recommends of the node package (for `postvec model
-pull`); it is listed explicitly because an install from local files cannot
-fetch a recommended package by itself.
+`/opt/postvec/server/ui` and the `postvec-server` service account. You
+add the certificate pair and start the unit. `postvec-cli` is a
+Recommends of the node package (for `postvec model pull`); it is listed
+explicitly because an install from local files cannot fetch a
+recommended package by itself.
 
 ::: warning Licence
-`postvec-server` is not under the PostgreSQL License that covers the rest of
-postvec. The package's copyright file, the image label and the release
-manifest state its terms; see the [release page](/download#postvec-server).
+`postvec-server` is **Business Source License 1.1** (source-available;
+production use by an organization needs a commercial license). The extension, CLI, runtime, model
+packages and PostgreSQL images stay under the PostgreSQL License. The
+package copyright file, the image label and the release manifest record
+the same identifier; see the [release page](/download#postvec-server).
 :::
 
 A checkout still builds it, and needs neither pgrx nor PostgreSQL headers:
@@ -38,7 +40,7 @@ cargo build --release -p postvec-server
 sudo install -m 0755 target/release/postvec-server /usr/local/bin/
 ```
 
-## 2. Put the files in place
+## 2. Files
 
 A node needs ONNX Runtime and at least one model under the same root. The
 packaged unit reads **`/opt/postvec`**, which is exactly where these packages
@@ -50,14 +52,15 @@ already put everything in place:
 | `postvec-onnxruntime` | `libonnxruntime.so` under `/opt/postvec/libs` |
 | `postvec-model-minilm-l6-v2` | The bundled 384-d model under `/opt/postvec/models` |
 | `postvec-extras` | Pins the two above |
-| `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands (a Recommends of the node; the daemon itself never needs it) |
+| `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands (a Recommends of the node) |
+| dashboard | `/opt/postvec/server/ui`, served on port `22222` |
 
 A node built from a checkout, or a unit without the packaged drop-in, defaults
 to `/var/lib/postvec-server` instead: point `--root` at `/opt/postvec`, or copy
 the tree there to keep the node's inventory separate from any local cluster.
 See [models on a node](/docs/server/models) for pulling more.
 
-## 3. Decide about TLS
+## 3. TLS
 
 The discovery listener requires TLS. Without `--insecure` and without a
 readable certificate pair, the node **refuses to start**.
@@ -108,9 +111,11 @@ container unless that group is gid 999. Make a mounted key readable by
 uid or gid 999, or use Compose secrets with an explicit `uid: "999"` and
 `mode: 0400`. The healthcheck is
 `/ready`, so `docker inspect` reports healthy only once a model can answer.
-The admin port is not exposed. Verify the image the way you verify a package:
+The admin port is not exposed.
 
-<PgSnippet id="docker-server-verify" />
+:::: info Optional
+Image attestations: [verify artifacts](/docs/install/verify).
+::::
 
 A checkout builds the same image from locally built packages with
 `packaging/postvec/scripts/build-server-image.sh`.
@@ -156,24 +161,30 @@ Sockets are reserved before models load, so a port conflict fails immediately.
 Between reservation and serving the ports are open but silent; a healthcheck
 sees a refused connection while the node is still starting.
 
-## 6. Confirm it serves
+## 6. Open the dashboard
 
+The package and image install the UI at `/opt/postvec/server/ui`. Browse to
+`https://<node>:22222` (or `http://` with `--insecure`). Query the bundled
+MiniLM model from the **Query** tab.
+
+Registry mutations (pull, activate, deactivate, remove) on that port need
+`--manage`. Without it the **Registries** tab is read-only; those actions
+still work on the loopback admin port. [Dashboard](/docs/server/dashboard)
+covers both tabs.
+
+:::: info Optional
 ```bash
 postvec-server status
 curl -sk https://127.0.0.1:22222/ready
 ```
 
-:::: tip Expected
-`status` prints the version, the engine root, the advertised addresses and one
-line per loaded model. `/ready` answers `200` once a model can serve a
-prediction, and `503` before that. Boot warmup runs one request per
-embedding model, so `/ready` means the node answers at normal latency.
+`status` prints version, engine root, addresses and loaded models.
+`/ready` is `200` once a model can serve, `503` before that.
 ::::
 
 Next: [connect PostgreSQL](/docs/server/connect).
 
-## Related documentation
-
-- [Models on a node](/docs/server/models) - pull, activate and load
-- [Node reference](/docs/server/reference) - every flag, and troubleshooting
-- [Packages](/docs/install/packages) - where the runtime and model come from
+- [Dashboard](/docs/server/dashboard)
+- [Models on a node](/docs/server/models)
+- [Node reference](/docs/server/reference)
+- [Packages](/docs/install/packages)

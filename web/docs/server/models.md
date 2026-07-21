@@ -39,8 +39,12 @@ A deactivated descriptor is skipped at load and at restart.
 `model activate` is the same switch on a node as on a database host.
 `load` of a deactivated model fails and names `activate`.
 
-The registry side of `pull` (the catalogue, private models, `postvec login`) is
-identical to the database-host case: [pull, activate, upgrade,
+The same pull, activate, deactivate and remove steps are available from
+the node's [dashboard](/docs/server/dashboard) (Registries tab) when the
+node runs with `--manage`. Upgrades stay on the CLI.
+
+The registry side of `pull` (the catalogue, private models, `postvec login`)
+is identical to the database-host case: [pull, activate, upgrade,
 remove](/docs/models/pull).
 
 ## Remove a model
@@ -86,7 +90,7 @@ postvec-server load baai-bge-m3
 Details and the verification contract: [air-gapped
 hosts](/docs/models/air-gapped).
 
-## What a load refuses, and why
+## Load refusals
 
 | Situation | Outcome |
 |---|---|
@@ -137,8 +141,7 @@ files](/docs/models/providers-file).
 
 UniVec conversion setup: [UniVec hosted models](/docs/models/univec).
 
-## Related documentation
-
-- [Run a fleet](/docs/server/fleet) - every node carries the same set
-- [Pull, activate, upgrade, remove](/docs/models/pull) - the CLI in general
-- [How models work](/docs/models/) - discovery, direct and bridged routes
+- [Dashboard](/docs/server/dashboard)
+- [Run a fleet](/docs/server/fleet)
+- [Pull, activate, upgrade, remove](/docs/models/pull)
+- [How models work](/docs/models/)

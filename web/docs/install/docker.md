@@ -19,21 +19,24 @@ page](/download) reports whether they are published.
   caption="A local demo can pass POSTGRES_PASSWORD=demo instead of a secret file. The example binds the port to loopback."
 />
 
+Wait until health is `healthy`:
+
 <div v-pre>
 
 ```bash
 docker inspect --format '{{.State.Health.Status}}' postvec
-docker exec postvec postvec-healthcheck
 ```
 
 </div>
 
-:::: tip Expected
-State becomes `healthy`. The extension exists in `POSTGRES_DB` **only on
-first initialization** of an empty volume.
-::::
+The extension exists in `POSTGRES_DB` **only on first initialization** of
+an empty volume. First SQL steps: [quick start](/docs/quickstart).
 
-The first SQL steps live in the [quick start](/docs/quickstart).
+:::: info Optional
+`docker exec postvec postvec-healthcheck` exits 0 when the worker and
+engine are ready. Image attestations:
+[verify artifacts](/docs/install/verify).
+::::
 
 ## Remote image
 
@@ -75,8 +78,9 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 | `POSTVEC_SHARED_PRELOAD_LIBRARIES` | unset | Existing preloads; postvec is appended |
 | `POSTVEC_CREATE_EXTENSION` | `1` | `0` skips first-run `CREATE EXTENSION` |
 
-Both images pin `POSTVEC_MODE`. The remote tag carries no engine assets, so
-the extension default (`embedded`) would fail there.
+Both images pin `POSTVEC_MODE`. The `-remote` tag pins `grpc` because that
+image has no engine assets. The `-local` tag pins `embedded` and includes
+ONNX Runtime and MiniLM.
 
 An invalid mode, an **empty** mode, an empty database list or a newline in a
 value exits **64**. Compose renders an undefined interpolation as the empty
@@ -129,8 +133,9 @@ Include `analytics` in `POSTVEC_DATABASES` and recreate the container, or
 pass `-c postvec.database=...`. Restart is required because the database
 list is POSTMASTER.
 
-## Diagnose inside the image
+## Diagnose inside the image {#diagnose}
 
+:::: info Optional
 The official PostgreSQL image has no `pg_lsclusters`, so a plain
 `postvec doctor` finds no cluster. Pass a socket URL as below.
 
@@ -147,6 +152,7 @@ docker exec -u postgres postvec \
   --database app
 ```
 
+::::
 ::::
 
 ## Persistent model storage

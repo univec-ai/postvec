@@ -38,10 +38,9 @@ ordinary tables after this command.
 ## Provider credentials
 
 When the last configured database goes away, `uninstall` names any connector
-files left in `providers.d` and leaves every one of them on disk. Package
-removal does the same. Credentials the tooling did not create are not its to
-delete, and a host nobody is watching any more is the wrong place to leave an
-API key by accident.
+files left in `providers.d` and leaves them on disk. Package removal does
+the same. Delete those files, and any key files they reference, by hand
+when no host still needs the keys.
 
 ```text
 postvec: /etc/postvec/providers.d still holds 1 provider connector file(s)

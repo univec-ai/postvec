@@ -14,25 +14,30 @@ description: Supported environments and explicit limitations.
 - `amd64` and `arm64`
 - Ordinary and partitioned tables with a primary key
 
-## Not supported
+## Environment
 
-- Hosts that cannot set `shared_preload_libraries = 'postvec'`
-- `TEMPORARY` tables (the worker cannot see them)
-- In-SQL chat / RAG completion
-- Provider API keys as GUCs
-- In-database document parsing
-- A new index access method
-- AWS session tokens, instance profiles and the credential chain for
-  [external providers](/docs/models/providers). The signer takes static
-  credentials
-- A spend or token budget. `max_concurrent` bounds calls in flight, not money
-- A private or corporate CA for provider TLS. The connectors use rustls
-  with the bundled Mozilla root set
-- Reranking providers and `Retry-After`-aware provider backoff
-- Provider-backed converters in `embed-bridge` routes. Hosted converters are
-  direct conversion routes
+postvec needs `shared_preload_libraries = 'postvec'` and a host that can
+restart PostgreSQL. Tables must be ordinary or partitioned and have a
+primary key. The worker runs in its own session, so `TEMPORARY` tables
+are invisible to it.
 
-## Deliberate product refusals
+## Out of scope
+
+- Chat / RAG completion as SQL. Generation stays in the application.
+- Provider API keys in PostgreSQL. Credentials live in the inference
+  layer; see [external providers](/docs/models/providers).
+- Document parsing (PDF, HTML, Office) inside the database.
+- A new index access method. Storage and ANN indexes are pgvector's.
+- AWS session tokens, instance profiles and the default credential
+  chain. The Bedrock signer takes static credentials.
+- A spend or token budget. `max_concurrent` bounds calls in flight.
+- A private or corporate CA for provider TLS. Connectors use rustls
+  with the bundled Mozilla root set.
+- Reranking providers and `Retry-After`-aware provider backoff.
+- Provider-backed converters in `embed-bridge` routes. Hosted converters
+  are direct `migrate()` / `convert()` routes.
+
+## SQL refusals
 
 | Situation | What happens |
 |---|---|
@@ -58,13 +63,11 @@ description: Supported environments and explicit limitations.
 
 | Layer | License |
 |---|---|
-| Extension, CLI, packages, images | **PostgreSQL License** |
+| Extension, CLI, packages, PostgreSQL images | **PostgreSQL License** |
 | Embedded inference on the database host | The same stack, running in-process |
-| `postvec-server` (remote-mode node) | To be announced |
+| `postvec-server` (remote-mode node) | **Business Source License 1.1** |
 | Converter catalogue | UniVec, under a separate license |
 | Bundled MiniLM | Upstream license, shipped in the model package |
-
-Terms for `postvec-server` will be stated before the first release.
 
 A verified UniVec account sees the private catalogue superset. The
 public channel is a subset and needs no key.

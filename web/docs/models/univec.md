@@ -21,7 +21,7 @@ Embed and converter entries are independent. They can share one
 
 The API key stays in `providers.d` on the inference host.
 
-## See what UniVec offers
+## Catalogue listing
 
 UniVec publishes its catalogue at `GET https://api.univec.ai/v1/models`, no
 key needed. `provider ls --available` lists it, with each entry's kind and
@@ -313,10 +313,8 @@ postvec-server status --fleet
 A node that lacks the converter fails requests routed to it. The fleet report
 labels provider-backed embed and convert entries.
 
-## Related documentation
-
-- [External providers](/docs/models/providers) - common setup and failure handling
-- [Connector files](/docs/models/providers-file) - schema and loading rules
-- [Migrate models](/docs/guides/migrate) - migration lifecycle
-- [Search a retired space](/docs/guides/bridge) - local bridge requirements
-- [Security](/docs/security) - text, vector and credential boundaries
+- [External providers](/docs/models/providers)
+- [Connector files](/docs/models/providers-file)
+- [Migrate models](/docs/guides/migrate)
+- [Search a retired space](/docs/guides/bridge)
+- [Security](/docs/security)

@@ -37,7 +37,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `DROP DATABASE` is blocked | Worker holds a connection. `uninstall` then `dropdb --force` |
 | `sudo model pull` is anonymous | Credentials are per user. `sudo postvec login` |
 | `model pull` says package/manual owned | Pull through the package manager or as the original owner. |
-| Remote `model pull` returns an error | Expected; models are administered on each [`postvec-server` node](/docs/server/models) |
+| Remote `model pull` returns an error | Models are administered on each [`postvec-server` node](/docs/server/models), CLI or [dashboard](/docs/server/dashboard) |
 | Remote `MODEL_NOT_LOADED`, intermittently | Fleet inventory drift. `postvec-server status --fleet` names the model and the nodes missing it |
 | `provider ls` says `NOT served` | The host has not reloaded the connector file. Rerun a `provider` command or restart. `doctor` names which |
 | `provider ls` says the host **REFUSES** a file | The file will not load however often you reload. Fix what the line names. `ls` and `doctor` apply the loader's own rules |
@@ -66,7 +66,7 @@ Replacing `postvec.so` parks the worker until
 no heartbeat. Application backends still load the new library, so keep
 application traffic paused until every database is updated.
 
-## Further diagnostics
+## JSON diagnostics
 
 `postvec doctor --format json --deep` produces a persistent diagnostic
 artifact. Each check includes an identifier, status and remediation.

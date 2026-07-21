@@ -43,7 +43,7 @@ rows written into the `postvec.models` cache. `model ls` lists inventory;
 `doctor` checks the host.
 ::::
 
-## When to use them
+## Functions
 
 | Function | Use |
 |---|---|

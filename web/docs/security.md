@@ -14,7 +14,7 @@ Embedded mode runs the engine in the PostgreSQL launcher. Text, weights
 and inference stay on the host. The engine loads packaged libraries such
 as ONNX Runtime from the install.
 
-## Credentials stay on the host
+## Registry credentials
 
 Remote inference reaches the configured `postvec-server` nodes on the
 deployment network. The registry credential used by `postvec login` and
@@ -57,6 +57,11 @@ unauthenticated. With providers configured, any local OS account that can
 reach the port, or any peer that can reach a node, can spend the provider
 budget without a SQL grant. Restrict the node's gRPC port. Use
 provider-side quotas and billing alerts as the spend control.
+
+`--manage` also serves registry pull/activate/deactivate/remove on the
+public discovery port so the [dashboard](/docs/server/dashboard) can
+drive them. Those routes are unauthenticated as well. Keep that flag
+for a private network.
 
 ## Worker visibility
 

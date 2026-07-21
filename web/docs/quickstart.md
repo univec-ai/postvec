@@ -7,8 +7,8 @@ description: Hybrid search in a postvec container. Pick PostgreSQL 16, 17 or 18.
 
 A container with PostgreSQL, postvec and the bundled MiniLM model.
 
-Steps: start the image, confirm inference, enable a column, wait for
-vectors, index, search, then remove the container.
+Start the image, enable a column, wait for vectors, index, search, then
+remove the container.
 
 :::: info Release status
 Commands use the planned `0.1.0-1` image. Publication status is listed
@@ -20,45 +20,34 @@ local image build or an existing development package.
 
 <PgSnippet id="docker-quickstart" />
 
-Wait until it is healthy:
+Wait until health is `healthy` (PostgreSQL is up and MiniLM is loaded):
 
 <div v-pre>
 
 ```bash
 docker inspect --format '{{.State.Health.Status}}' postvec
-docker exec postvec postvec-healthcheck
 ```
 
 </div>
 
-:::: tip Expected
-Health becomes `healthy` after PostgreSQL starts and the bundled MiniLM
-model loads. `postvec-healthcheck` exits 0.
-::::
-
 The image creates the extension in `POSTGRES_DB` on first initialization
 only.
 
-## 2. Verify inference
+:::: info Optional
+`postvec-healthcheck` exits 0 when the worker and engine are ready.
+`postvec.embed()` returning 384-d also proves inference:
 
 ```bash
-docker exec -i postvec psql -U app -d app <<'SQL'
-SELECT name, model_type, target_dim
-  FROM postvec.models
- ORDER BY name;
-
-SELECT vector_dims(postvec.embed(
-  'the isolated image performs inference',
-  'sentence-transformers-all-minilm-l6-v2'
-)::vector);
-SQL
+docker exec postvec postvec-healthcheck
+docker exec -i postvec psql -U app -d app -c \
+  "SELECT vector_dims(postvec.embed(
+     'the isolated image performs inference',
+     'sentence-transformers-all-minilm-l6-v2'
+   )::vector);"
 ```
-
-:::: tip Expected
-The bundled model is listed. `vector_dims` returns **384**.
 ::::
 
-## 3. Enable a column and insert
+## 2. Enable a column and insert
 
 ```bash
 docker exec -i postvec psql -U app -d app <<'SQL'
@@ -101,7 +90,7 @@ SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
 that is usually a second or two.
 ::::
 
-## 4. Index and search
+## 3. Index and search
 
 ```sql
 SELECT postvec.create_vector_index('public.docs', 'body');
@@ -122,14 +111,12 @@ The engineering row ranks highly despite almost no keyword overlap.
 `status().has_vector_index` is true.
 ::::
 
-## 5. Remove the container
+## 4. Remove the container
 
 ```bash
 docker rm -f postvec
 ```
 
-## Next
-
-- [Install on a cluster](/docs/install/)
-- [SQL functions](/docs/guides/starting) - enable, adopt, bridge or migrate
-- [How the worker fills vectors](/docs/concepts/consistency)
+- [Install](/docs/install/)
+- [SQL functions](/docs/guides/starting)
+- [Eventual consistency](/docs/concepts/consistency)

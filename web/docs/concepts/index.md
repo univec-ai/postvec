@@ -169,8 +169,6 @@ and `doctor`. [Backup](/docs/guides/backup) has the checklist.
 5. **`adopt()`'s `model` is an assertion.** The wrong name makes
    `search()` embed into an incompatible space.
 
-## Related
-
 - [Eventual consistency](/docs/concepts/consistency)
 - [Embedded vs remote](/docs/concepts/modes)
 - [Vector lock-in](/docs/concepts/lock-in)

@@ -1,9 +1,9 @@
 ---
-title: Choose an installation method
+title: Installation
 description: Docker, package and source installation for PostgreSQL 16, 17 and 18.
 ---
 
-# Choose an installation method
+# Installation
 
 Installation stages:
 
@@ -22,13 +22,10 @@ and images have been published. Until they are, use locally built
 artifacts.
 ::::
 
-## Select a method
-
-| Use case | Method |
-|---|---|
-| Container | [Docker](/docs/install/docker) |
-| Debian / Ubuntu / EL9 | [Packages](/docs/install/packages) |
-| Manual | [Source](/docs/install/source) |
+- [Docker](/docs/install/docker)
+- [Packages](/docs/install/packages) (Debian, Ubuntu, EL9)
+- [Build from source](/docs/install/source)
+- [Verify artifacts](/docs/install/verify) (checksums, attestations, `doctor`)
 
 ## Requirements
 
@@ -40,21 +37,14 @@ artifacts.
   database.
 - A host that can set `shared_preload_libraries = 'postvec'`.
 
-## Confirm the files, then configure
+## After install
 
-```bash
-postvec --version
-```
+[Configure the cluster](/docs/install/setup). `setup` already checks that
+the worker heartbeat advances.
 
-Expected: the installed CLI version, for example `postvec 0.1.0`.
+:::: info Optional
+[Verify artifacts](/docs/install/verify) has checksums, Sigstore
+attestations, file checks and `postvec doctor --deep`.
+::::
 
-Then [configure the cluster](/docs/install/setup). After setup:
-
-```bash
-sudo postvec doctor --database app --deep
-```
-
-Exit 0 means library and SQL versions match, the heartbeat advances and
-the on-disk, engine and SQL inventories agree.
-
-Later: [Upgrade](/docs/install/upgrade) / [Uninstall](/docs/install/uninstall).
+[Upgrade](/docs/install/upgrade). [Uninstall](/docs/install/uninstall).

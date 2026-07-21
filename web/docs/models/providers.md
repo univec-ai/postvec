@@ -44,7 +44,7 @@ A bound column sends its source text to the provider on every insert and
 update, and `search()` sends the query text. A migration through a hosted
 UniVec converter sends the stored vectors instead.
 
-## See what a provider offers
+## Catalogue listing
 
 `postvec provider ls --available [PROVIDER]` asks the provider's own model
 list instead of reading `providers.d`. UniVec publishes kinds and dimensions,
@@ -281,8 +281,6 @@ Provider calls ignore `postvec.embedded_max_inflight`. A slow hosted
 call runs beside local ONNX. Raising `max_concurrent` after
 start needs a restart for the full budget. The models serve either way.
 The CLI says so.
-
-## See also
 
 - [Connector files](/docs/models/providers-file)
 - [UniVec hosted models](/docs/models/univec)

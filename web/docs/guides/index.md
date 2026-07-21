@@ -13,18 +13,14 @@ the cluster and, in embedded mode, the model inventory. Configure a
 Existing tables: [SQL functions](/docs/guides/starting). New table: the
 sequence below.
 
-SQL functions:
+- `enable()` - adds a shadow vector column and starts syncing
+- `adopt()` - registers an existing vector column; stored bytes stay
+- `search()` - hybrid full-text + vector ranking, one query
+- `create_vector_index()` - builds the ANN index `search()` uses
+- `set_format()` - changes the embedding template and refreshes every row
+- `migrate()` - converts stored vectors to another model, then waits for finalize
 
-| Call | Does |
-|---|---|
-| `enable()` | Adds a shadow vector column and starts syncing |
-| `adopt()` | Takes over an existing vector column; stored bytes stay |
-| `search()` | Hybrid full-text + vector ranking, one query |
-| `create_vector_index()` | Builds the ANN index `search()` wants |
-| `set_format()` | Changes the embedding template and refreshes every row |
-| `migrate()` | Converts stored vectors to another model, then waits for you to finalize |
-
-## First pass
+## Example
 
 ```sql
 CREATE TABLE docs (
@@ -66,25 +62,14 @@ Vectors fill **after** the inserting transaction commits. Poll
 `status()` in a later transaction. See
 [eventual consistency](/docs/concepts/consistency).
 
-## Guides in this section
-
-1. [Enable](/docs/guides/enable) a new column, or [adopt](/docs/guides/adopt)
-   an existing vector column.
-   Hosted API: [provider add](/docs/models/providers), then the same
-   `enable()`.
-2. [Search](/docs/guides/search), [filters](/docs/guides/filters),
-   [index](/docs/guides/indexes).
-3. [Templates](/docs/guides/templates) for row context on short text.
-   [Chunking](/docs/guides/chunking) for long source documents.
-4. [Bridge](/docs/guides/bridge) an existing space, or
-   [migrate](/docs/guides/migrate) it.
-
-Operation:
-
-- [Status](/docs/guides/status) and `postvec doctor`
-- [`retry_dead()`](/docs/guides/retry)
-- [Backup](/docs/guides/backup)
-- [One-shot helpers](/docs/guides/helpers) (`embed` / `convert`)
+- [Enable](/docs/guides/enable) / [adopt](/docs/guides/adopt)
+- [External providers](/docs/models/providers), then the same `enable()`
+- [Search](/docs/guides/search), [filters](/docs/guides/filters),
+  [indexes](/docs/guides/indexes)
+- [Templates](/docs/guides/templates), [chunking](/docs/guides/chunking)
+- [Bridge](/docs/guides/bridge) / [migrate](/docs/guides/migrate)
+- [Status](/docs/guides/status), [`retry_dead()`](/docs/guides/retry),
+  [backup](/docs/guides/backup), [helpers](/docs/guides/helpers)
 
 ## Roles
 

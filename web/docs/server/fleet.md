@@ -42,7 +42,7 @@ sudo postvec setup --database app \
 - **Discovery.** postvec never joins gossip and never reads membership.
   The endpoint lists are the routing table.
 
-## The parity rule
+## Inventory parity
 
 **Every node carries the same enabled set**, or the HTTP endpoint list is
 restricted to the nodes that do.
@@ -116,8 +116,7 @@ address: check the boot log for the autodetection warning and pin
 port is open between them. It is a separate port from gRPC and discovery, and
 firewalls forget it.
 
-## Related documentation
-
-- [Connect PostgreSQL](/docs/server/connect) - the endpoint lists
-- [Models on a node](/docs/server/models) - what parity is about
-- [Node reference](/docs/server/reference) - flags, metrics and troubleshooting
+- [Connect PostgreSQL](/docs/server/connect)
+- [Dashboard](/docs/server/dashboard)
+- [Models on a node](/docs/server/models)
+- [Node reference](/docs/server/reference)

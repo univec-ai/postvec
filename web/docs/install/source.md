@@ -83,7 +83,8 @@ sudo install -m 0755 target/release/postvec-server /usr/local/bin/
 
 It still needs ONNX Runtime and at least one model under its `--root`, which
 is the same engine root described above. [Run a node](/docs/server/node)
-covers TLS, the first start and what the boot log means.
+covers TLS, the first start and the boot log. The [dashboard](/docs/server/dashboard)
+needs a built `postvec-server/web-ui` and `--web-ui`.
 
 ## Development rebuild sequence
 
