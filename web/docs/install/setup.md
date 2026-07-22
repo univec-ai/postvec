@@ -6,7 +6,8 @@ description: Cluster configuration and diagnostics with postvec setup and doctor
 # Configure the cluster
 
 `postvec setup` writes cluster configuration, creates the extension and
-starts the worker. Run it after a package install or a source copy.
+starts the worker. Run it after [packages](/docs/install/packages),
+[Docker](/docs/install/docker) or a [source](/docs/install/source) copy.
 
 The command creates missing databases, installs the extension, merges
 `shared_preload_libraries`, writes `conf.d/99-postvec.conf`, validates

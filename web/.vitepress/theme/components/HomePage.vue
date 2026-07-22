@@ -604,7 +604,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="dir__card">
             <h3>Day to day</h3>
-            <a :href="withBase('/docs/guides/starting')">
+            <a :href="withBase('/docs/guides/')">
               Which SQL call
               <small>enable, adopt, bridge or migrate</small>
             </a>

@@ -26,10 +26,10 @@ PostgreSQL 16, 17 or 18 on a host that can set
 cluster.
 
 - [Quick start](/docs/quickstart) in a container
-- [Install](/docs/install/) on an existing PostgreSQL, then [configure](/docs/install/setup)
-- [SQL functions](/docs/guides/starting) for enable, adopt, bridge, migrate or chunking
+- [Packages](/docs/install/packages) on an existing PostgreSQL, then [configure](/docs/install/setup)
+- [SQL functions](/docs/guides/) for enable, adopt, bridge, migrate or chunking
 
-1. [Install](/docs/install/) - Docker, packages or a source build.
+1. [Packages](/docs/install/packages) or [Docker](/docs/install/docker).
 2. [Configure the cluster](/docs/install/setup) with `postvec setup`.
    Expected: `postvec.models` lists MiniLM (or whatever the node
    advertises in remote mode).

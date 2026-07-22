@@ -7,7 +7,8 @@ description: Package installation for Debian, Ubuntu and EL9, with copy-paste sn
 
 Use packages when the host will keep postvec installed. Each install
 matches **one** release, **one** distribution, **one** architecture and
-**one** PostgreSQL major. The [release artifacts](/download) page lists
+**one** PostgreSQL major. Needs PostgreSQL 16, 17 or 18, pgvector >= 0.8,
+superuser and a restart. The [release artifacts](/download) page lists
 names and publication status.
 
 Packages install files. Then [configure the cluster](/docs/install/setup).

@@ -6,7 +6,7 @@ outline: deep
 
 # SQL reference
 
-Signatures and grants. Walkthroughs live under [Usage](/docs/guides/).
+Signatures and grants. Walkthroughs start at [SQL functions](/docs/guides/).
 
 `relation` and `fts_config` are `text`. The extension resolves them with
 `to_regclass` / `::regconfig`, so `'schema.table'` works. `retry_dead()`

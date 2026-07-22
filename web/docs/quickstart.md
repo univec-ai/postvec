@@ -117,6 +117,6 @@ The engineering row ranks highly despite almost no keyword overlap.
 docker rm -f postvec
 ```
 
-- [Install](/docs/install/)
-- [SQL functions](/docs/guides/starting)
+- [Packages](/docs/install/packages)
+- [SQL functions](/docs/guides/)
 - [Eventual consistency](/docs/concepts/consistency)
