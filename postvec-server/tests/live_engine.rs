@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Golden path against a real model root. Ignored by default; needs ONNX
 //! and a model.
 //!

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! HTTP surfaces over real sockets, not handler-level calls.
 //! Protects which routes exist on which listener and the discovery envelope.
 //! No ONNX: admission and rendering only.

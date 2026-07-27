@@ -59,7 +59,7 @@ done
 # postvec-server is the exception, and asserting it is the point: it is a
 # separate program under a separate grant, sitting in a tree where every
 # neighbour is PostgreSQL-licensed. A copy-paste from one of them would
-# relicense it silently, and the root LICENSE index would then be wrong about
+# relicense it silently, and the LICENSING.md index would then be wrong about
 # a file nobody re-read. All four statements of the fact have to agree: the
 # reviewed pin (SERVER_LICENSE, which is what the postvec-server *package*
 # declares), the crate manifest, the licence text, and the root index.
@@ -67,10 +67,10 @@ done
     || { echo "  FAIL  postvec-server/LICENSE is missing"; fail=1; }
 check "postvec-server license" "${SERVER_LICENSE}" \
     "$(grep -E '^license = ' "${REPO_ROOT}/postvec-server/Cargo.toml" | head -1 | cut -d'"' -f2)"
-# The index line is `  postvec-server/   <id>   postvec-server/LICENSE`; the id
-# is compared literally, dots and all.
-index_licence="$(sed -nE 's|^ +postvec-server/ +([^ ]+) .*$|\1|p' "${REPO_ROOT}/LICENSE" | head -1)"
-check "LICENSE index (postvec-server)" "${SERVER_LICENSE}" "${index_licence:-<not listed in the root LICENSE>}"
+# The index row in LICENSING.md is `| `postvec-server/` | <name> | ... |`; the
+# name is mapped to its SPDX id and compared literally, dots and all.
+index_licence="$(sed -nE 's#^\| `postvec-server/` \| ([^|]+) \|.*$#\1#p' "${REPO_ROOT}/LICENSING.md" | head -1 | sed -e 's/ *$//' -e 's/^Business Source License 1\.1$/BUSL-1.1/' -e 's/^Elastic License 2\.0$/Elastic-2.0/' -e 's/^Apache License 2\.0$/Apache-2.0/')"
+check "LICENSING.md index (postvec-server)" "${SERVER_LICENSE}" "${index_licence:-<not listed in LICENSING.md>}"
 # And the version: the node speaks exactly the wire contract this commit's
 # extension was compiled against, and its package carries POSTVEC_VERSION.
 check "postvec-server/Cargo.toml" "${POSTVEC_VERSION}" \

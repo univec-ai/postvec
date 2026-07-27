@@ -115,8 +115,9 @@ vectors. `model upgrade` replaces model files.
 
 No. The extension, CLI and packages use the PostgreSQL License, in either
 inference mode. `postvec-server` is source-available under the Business
-Source License 1.1; production use by an organization needs a commercial
-license.
+Source License 1.1: development, testing, personal production use and one
+30-day production evaluation per organization are free; production use by an
+organization needs a commercial license.
 
 ## Which PostgreSQL versions are supported?
 

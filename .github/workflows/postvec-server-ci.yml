@@ -131,7 +131,8 @@ jobs:
           test -n "${licence}"
           test -f postvec-server/LICENSE
           grep -q "^license = \"${licence}\"$" postvec-server/Cargo.toml
-          grep -qE "^ +postvec-server/ +${licence} " LICENSE
+          case "${licence}" in BUSL-1.1) name="Business Source License 1.1" ;; Elastic-2.0) name="Elastic License 2.0" ;; Apache-2.0) name="Apache License 2.0" ;; *) name="${licence}" ;; esac
+          grep -qF "| \`postvec-server/\` | ${name} |" LICENSING.md
 
       # The whole point of the two-listener design is that the socket
       # published to the network carries no route that can mutate the engine.

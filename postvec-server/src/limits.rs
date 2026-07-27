@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Response-envelope budgets, matching the embedded loopback server.
 //! postvec's own client never comes close; these guard foreign or buggy callers.
 

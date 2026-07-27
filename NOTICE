@@ -1,14 +1,14 @@
 postvec — https://github.com/univec-ai/postvec
 
-Copyright (c) UniVec.
+Copyright (c) 2026 Univec Ltd, Dublin, Ireland.
 
 This repository holds two products under two licenses. The postvec extension,
 its CLI, their packaging, and the crates they link (`engine`, `shared`,
 `proto`, `registry/schema`) are under the PostgreSQL License.
 `postvec-server/` — the standalone inference node for remote mode — is under
 the Business Source License 1.1 (source-available; production use by
-organizations needs a commercial license). See LICENSE for the per-directory
-index and postvec-server/LICENSE for its text.
+organizations needs a commercial license). See LICENSING.md for the
+per-directory index; the texts are LICENSE and postvec-server/LICENSE.
 
 The published packages and container images embed or depend on third-party
 work under its own terms:

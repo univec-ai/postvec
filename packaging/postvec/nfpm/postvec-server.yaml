@@ -2,7 +2,7 @@
 # built once per (distribution, architecture) into the common root.
 #
 # Not PostgreSQL-licensed. Identifier is SERVER_LICENSE in versions.env;
-# assert-versions.sh refuses a mismatch with the crate and the LICENSE index.
+# assert-versions.sh refuses a mismatch with the crate and the LICENSING.md index.
 
 name: postvec-server
 arch: ${PKG_ARCH}

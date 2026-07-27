@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Registry routes end to end: pull from a loopback registry fixture, then
 //! activate (which loads) and deactivate (which unloads).
 //!

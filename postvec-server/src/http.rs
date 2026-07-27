@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Public HTTP listener: discovery, health, metrics, native `/api/{model}`,
 //! the OpenAI embeddings adaptor, and the optional SPA.
 //!

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Shared process state for the HTTP, gRPC and admin listeners.
 
 use crate::cluster::ClusterManager;

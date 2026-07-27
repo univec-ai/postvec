@@ -1,73 +1,19 @@
-postvec — license index
-=======================
-
-This repository holds two products with different terms. This file says which
-license covers which directory; the full texts are where the table points.
-
-  Path                              License        Text
-  --------------------------------  -------------  --------------------------
-  postvec/                          PostgreSQL     below, and postvec/LICENSE
-  postvec-cli/                      PostgreSQL     below
-  packaging/postvec/                PostgreSQL     below
-  engine/                           PostgreSQL     below
-  shared/                           PostgreSQL     below
-  providers/                        PostgreSQL     below
-  proto/                            PostgreSQL     below
-  registry/schema/                  PostgreSQL     below
-  registry/client/                  PostgreSQL     below
-  docs/                             PostgreSQL     below
-  postvec-server/                   BUSL-1.1       postvec-server/LICENSE
-
-The PostgreSQL License below therefore covers everything published as a
-postvec release artifact — the extension, the `postvec` command, their
-packaging, and the inference engine embedded mode links into the database
-process. That grant is unconditional: it does not depend on which mode you run
-postvec in, on how much traffic you serve, or on whether you charge for what
-you build with it.
-
-`postvec-server/` is a separate program — a standalone inference node for
-postvec's remote mode — under the Business Source License 1.1
-(source-available; production use by an organization needs a commercial
-license; see postvec-server/LICENSE). It links the PostgreSQL-licensed crates
-above and does not change their terms.
-
-Third-party components redistributed alongside postvec keep their own
-licenses; see NOTICE.
-
-
 PostgreSQL License
-==================
 
-Copyright (c) 2026, the UniVec authors
+Copyright (c) 2026, Univec Ltd
 
 Permission to use, copy, modify, and distribute this software and its
 documentation for any purpose, without fee, and without a written agreement is
 hereby granted, provided that the above copyright notice and this paragraph and
 the following two paragraphs appear in all copies.
 
-IN NO EVENT SHALL THE UNIVEC AUTHORS BE LIABLE TO ANY PARTY FOR DIRECT,
-INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS,
-ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF THE
-UNIVEC AUTHORS HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+IN NO EVENT SHALL UNIVEC LTD BE LIABLE TO ANY PARTY FOR DIRECT, INDIRECT,
+SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING LOST PROFITS, ARISING
+OUT OF THE USE OF THIS SOFTWARE AND ITS DOCUMENTATION, EVEN IF UNIVEC LTD HAS
+BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-THE UNIVEC AUTHORS SPECIFICALLY DISCLAIM ANY WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
-PARTICULAR PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS, AND
-THE UNIVEC AUTHORS HAVE NO OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES,
-ENHANCEMENTS, OR MODIFICATIONS.
-
-
-Third-party components in the release artifacts
-===============================================
-
-These ship inside the packages and images that carry them, under their own
-terms:
-
-  * pgvector                — PostgreSQL License (a package dependency, never
-                              vendored)
-  * ONNX Runtime            — MIT (postvec-onnxruntime package / local image;
-                              its license text ships with the bundle)
-  * bundled embedding model — see the model package's own LICENSE, NOTICE and
-                              SOURCE.json under
-                              /usr/share/doc/postvec-model-*/ and
-                              /opt/postvec/models/
+UNIVEC LTD SPECIFICALLY DISCLAIMS ANY WARRANTIES, INCLUDING, BUT NOT LIMITED
+TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+PURPOSE. THE SOFTWARE PROVIDED HEREUNDER IS ON AN "AS IS" BASIS, AND UNIVEC LTD
+HAS NO OBLIGATIONS TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
+MODIFICATIONS.

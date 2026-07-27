@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Loopback admin listener: `POST /admin/load`, `POST /admin/unload` and
 //! `POST /admin/providers/reload`.
 //!

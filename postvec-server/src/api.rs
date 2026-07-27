@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Native HTTP inference (`/api/{model}`) and the OpenAI embeddings adaptor.
 //!
 //! The native contract is the JSON the engine executors already speak: a

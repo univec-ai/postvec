@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Settings resolution: `defaults < file < environment < flags`.
 //!
 //! An absent flag does not clear a file value. An unknown file key is

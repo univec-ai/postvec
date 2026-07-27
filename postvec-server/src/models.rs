@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! On-disk model store: `<root>/models/<backend>/<name>/ninference.hub.json`.
 //! Nothing here fetches. A model that is not on disk is a refusal.
 //!

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Addressing: what this node advertises, and how peer strings become sockets.
 //!
 //! On a multi-homed host, autodetection can pick a NIC peers cannot reach.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Engine bring-up: which models to load, how hard to fail, and warmup.
 //!
 //! An explicit `--models` list: any failure is fatal.

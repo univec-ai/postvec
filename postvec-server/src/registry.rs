@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! The model registry over HTTP: what `postvec model ls`, `ls --available`,
 //! `pull`, `activate` and `deactivate` do, on the node, built on the
 //! primitives postvec-cli's `registry` module already provides (index

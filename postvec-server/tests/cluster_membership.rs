@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Two real gossip nodes on one machine, identical ports.
 //! Distinct loopback addresses (`127.0.0.2`, `127.0.0.3`, ...) give two
 //! nodes the same port on one host. All of `127.0.0.0/8` is local on Linux.

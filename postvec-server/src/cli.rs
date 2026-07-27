@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Command-line surface.
 //!
 //! Value-carrying flags are `Option` so [`crate::config`] can tell unset

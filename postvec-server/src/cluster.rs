@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Cluster membership over memberlist gossip (memberlist 0.8, TCP only).
 //!
 //! Default group is `postvec`. Peers are resolved in [`crate::net`] before

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! gRPC inference: `EmbedTexts` and `ConvertEmbeddings` on the canonical proto.
 //!
 //! Requests never load models; an unready name is `MODEL_NOT_LOADED`.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! gRPC wire contract over a real client and socket.
 //! Status codes and `x-ravenna-error-code` drive postvec's retry policy.
 //! An unrecognised code becomes Transient and retries forever.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Prometheus text-format metrics from plain atomics.
 //!
 //! Error labels are a closed set: the `shared::ErrorCode` strings that also

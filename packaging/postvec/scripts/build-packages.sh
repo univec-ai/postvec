@@ -230,11 +230,10 @@ render_server_copyright() {
             echo "Source: ${SOURCE_REPOSITORY}"
             echo "Comment: postvec-server is the one component of postvec that is not under"
             echo " the PostgreSQL License. The extension, the postvec command, the engine"
-            echo " assets and their packaging are; see the root LICENSE index of the source"
-            echo " repository."
+            echo " assets and their packaging are; see LICENSING.md in the source repository."
             echo
             echo "Files: *"
-            echo "Copyright: 2026 the UniVec authors"
+            echo "Copyright: 2026 Univec Ltd"
             echo "License: ${SERVER_LICENSE}"
             if [[ "${SERVER_LICENSE}" == Apache-2.0 ]]; then
                 echo " On Debian systems, the complete text of the Apache License, Version 2.0"

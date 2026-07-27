@@ -42,9 +42,12 @@ licenses.
   numbers-changing risk — run
   `packaging/postvec/tests/model-golden-test.sh` before trusting it.
 - **Licensing.** The tree is PostgreSQL-licensed except `postvec-server/`,
-  which is under the Business Source License 1.1 — keep new files' headers and `Cargo.toml` `license`
-  fields consistent with their crate, and never copy code across that
-  boundary without carrying its license.
+  which is under the Business Source License 1.1 (see [LICENSING.md](LICENSING.md)).
+  Keep new files' SPDX headers and `Cargo.toml` `license` fields consistent
+  with their crate, and never copy code across that boundary in either
+  direction without carrying its license. External pull requests to
+  `postvec-server/` are not accepted until a contributor license agreement
+  is published; open an issue instead. The DCO below covers everything else.
 - **The vendored proto** (`postvec/proto/ninference.proto`) must stay
   byte-identical to `proto/ninference.proto`; it is a live wire contract
   with services outside this repository. A `#[pg_test]` pins it.

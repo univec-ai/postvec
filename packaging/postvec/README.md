@@ -12,7 +12,7 @@ Two licences travel in one release. Everything is under the PostgreSQL
 License except `postvec-server`, whose identifier is the reviewed
 `SERVER_LICENSE` pin in `versions.env`: the package declares it, the image
 labels it, the manifest records it under `licenses`, and `assert-versions.sh`
-refuses a release where the crate, the licence text, the root `LICENSE` index
+refuses a release where the crate, the licence text, the `LICENSING.md` index
 and the pin disagree.
 
 This directory is deliberately separate from UniVec's internal application

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
+
 //! Node-local subcommands: `status`, `load`, `unload`.
 //!
 //! All three talk to `127.0.0.1` on the admin port. Nothing here mutates a
