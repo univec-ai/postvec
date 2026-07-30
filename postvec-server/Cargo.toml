@@ -6,7 +6,7 @@
 # configuration file required.
 #
 # LICENCE: this crate is **not** PostgreSQL-licensed like the rest of the
-# repository. See ./LICENSE and the root LICENSE index. Everything it links —
+# repository. See ./LICENSE (Business Source License 1.1) and LICENSING.md. Everything it links —
 # `engine`, `shared`, the proto — stays PostgreSQL-licensed and is usable
 # without reference to this crate's terms.
 [package]

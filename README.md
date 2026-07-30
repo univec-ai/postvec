@@ -83,9 +83,12 @@ Same SQL, same queue, same wire contract in both modes.
   phones nothing home: no telemetry, no licence check, and no provider API key
   in the database — external embedding providers are opt-in per column, and
   their credentials live only in the inference layer, in `0600` files.
-  `postvec-server` is under the Business Source License 1.1 (source-available;
-  production use by an organization needs a commercial license). It phones
-  nothing home either.
+  `postvec-server` is under the Business Source License 1.1: free for
+  development, testing and personal use, and for a 30-day production
+  evaluation; production use by an organization needs a
+  [postvec Pro](https://univec.ai) subscription. Each version becomes
+  PostgreSQL-licensed four years after release. It phones nothing home
+  either.
 - `postvec model pull` fetches models from UniVec's model registry: an
   anonymous public channel for open models, and an authenticated channel
   (an account at https://univec.ai) for the commercial conversion models that

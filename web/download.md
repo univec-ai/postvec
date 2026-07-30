@@ -51,7 +51,7 @@ this exact node image, and the clean-host install test starts the packaged
 node against the packaged model on every distribution.
 
 **Licence.** `postvec-server` is **Business Source License 1.1** (`BUSL-1.1`,
-source-available; production use by an organization needs a commercial license). That identifier is in
+source-available; production use by organizations needs a subscription). That identifier is in
 the release manifest's `licenses` block, the package copyright file and
 the image's `org.opencontainers.image.licenses` label. The extension,
 the CLI, the runtime and model packages and the PostgreSQL images stay

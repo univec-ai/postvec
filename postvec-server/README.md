@@ -32,8 +32,10 @@ changes is where the model runs.
 > **License.** This directory is under the Business Source License 1.1
 > (source-available), not the PostgreSQL License the rest of the repository
 > uses. Development, testing, personal use and a 30-day production evaluation
-> are free. Production use by an organization needs a commercial license. See [LICENSE](LICENSE) and
-> the [LICENSING.md](../LICENSING.md) index.
+> are free; production use by an organization needs a
+> [postvec Pro](https://univec.ai) subscription or an enterprise agreement.
+> Each version converts to the PostgreSQL License four years after release.
+> See [LICENSE](LICENSE) and the [LICENSING.md](../LICENSING.md) index.
 
 ## What it is not
 

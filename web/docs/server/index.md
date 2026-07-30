@@ -52,8 +52,12 @@ The model layout is the same one embedded mode uses. A tree that
 ## License
 
 The extension, CLI and their packages are under the PostgreSQL License.
-`postvec-server` is **Business Source License 1.1** (source-available;
-production use by an organization needs a commercial license from Univec).
+`postvec-server` is **Business Source License 1.1**: source-available.
+Development, testing, personal use and a 30-day production evaluation are
+free. Production use by an organization needs a
+[postvec Pro](https://univec.ai) subscription; hosting it for third parties
+needs an enterprise agreement. Each version converts to the PostgreSQL
+License four years after release.
 
 - [Embedded vs remote](/docs/concepts/modes)
 - [External providers](/docs/models/providers)
