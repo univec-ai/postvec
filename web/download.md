@@ -50,6 +50,9 @@ tested against it: the release's remote-mode images are smoke-tested through
 this exact node image, and the clean-host install test starts the packaged
 node against the packaged model on every distribution.
 
+The same binary includes the [managed PostgreSQL schema installer](/docs/server/managed).
+The managed sync worker and proxy are planned separately.
+
 **Licence.** `postvec-server` is **Business Source License 1.1** (`BUSL-1.1`,
 source-available; production use by organizations needs a subscription). That identifier is in
 the release manifest's `licenses` block, the package copyright file and

@@ -47,6 +47,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Install or inspect the managed PostgreSQL schema (no sync worker yet).
+    #[command(subcommand)]
+    Managed(crate::managed::Command),
     /// Start the node (the default when no command is given).
     Serve(Box<ServeArgs>),
 
@@ -336,6 +339,21 @@ mod tests {
 
     /// Absent flags must stay absent, so the merge in `config` can tell
     /// "unset" from "set to the default".
+    #[test]
+    fn managed_commands_require_a_dsn() {
+        for action in ["install", "status", "uninstall"] {
+            assert!(Cli::try_parse_from(["postvec-server", "managed", action]).is_err());
+            assert!(Cli::try_parse_from([
+                "postvec-server",
+                "managed",
+                action,
+                "--dsn",
+                "postgresql://localhost/app"
+            ])
+            .is_ok());
+        }
+    }
+
     #[test]
     fn absent_flags_are_none() {
         let cli = Cli::try_parse_from(["postvec-server"]).unwrap();

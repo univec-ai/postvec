@@ -9,6 +9,7 @@
 //! transaction, so any `error!` rolls the whole operation back.
 
 use crate::api::embed::embed_texts;
+use crate::registry::RegistryEntryDb as _;
 use crate::registry::{quote_ident, quote_literal, RegistryEntry};
 use pgrx::prelude::*;
 
@@ -3779,6 +3780,7 @@ fn retry_dead(
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
+    use crate::registry::RegistryEntryDb as _;
     use pgrx::prelude::*;
 
     /// Seed a fake embed model so enable() resolves a dimension without network.

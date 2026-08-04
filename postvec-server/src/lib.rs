@@ -38,6 +38,7 @@ pub mod engine_host;
 pub mod grpc;
 pub mod http;
 pub mod limits;
+pub mod managed;
 pub mod metrics;
 pub mod models;
 pub mod net;
@@ -73,6 +74,7 @@ const MAX_BLOCKING_THREADS: usize = 64;
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::Managed(args)) => run_client(|| managed::run(args)),
         None => run_serve(cli.serve),
         Some(Command::Serve(args)) => run_serve(*args),
         Some(Command::Status(args)) => run_client(|| async move { client::status(&args).await }),

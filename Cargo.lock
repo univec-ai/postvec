@@ -3080,6 +3080,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "postvec-core"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "once_cell",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "postvec-providers"
 version = "0.1.0"
 dependencies = [
@@ -3136,6 +3149,7 @@ dependencies = [
  "local-ip-address",
  "log",
  "memberlist",
+ "postvec-core",
  "postvec-providers",
  "postvec-registry",
  "prost",
@@ -3146,6 +3160,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shared",
+ "sqlx",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",

@@ -8,6 +8,7 @@
 //! these directly inside the `#[pg_test]` transaction with a mock client.
 
 use crate::client::{EmbedRoute, ErrorClass, InferenceClient, PvError};
+use crate::registry::RegistryEntryDb as _;
 use crate::registry::{quote_ident, serialize_vector, RegistryEntry};
 use crate::runtime;
 use pgrx::prelude::*;
@@ -1635,7 +1636,7 @@ pub mod mock {
 #[pgrx::pg_schema]
 mod tests {
     use super::*;
-    use crate::registry::RegistryEntry;
+    use crate::registry::{RegistryEntry, RegistryEntryDb};
 
     /// Seed the cache with embed model 'm' at the given dimension.
     fn seed_model(dim: i32) {

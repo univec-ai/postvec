@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+use anyhow::{ensure, Context, Result};
+use postvec_server::managed::{self, Command, ConnectionArgs};
+use sqlx::{Connection, Executor, PgConnection};
+
+fn command(dsn: &str, action: &str) -> Command {
+    let args = ConnectionArgs {
+        dsn: dsn.into(),
+        password_file: None,
+        timeout: 10,
+    };
+    match action {
+        "install" => Command::Install(args),
+        "status" => Command::Status(args),
+        "uninstall" => Command::Uninstall(args),
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test]
+#[ignore = "POSTVEC_MANAGED_TEST_DSN must name a disposable PostgreSQL 18 admin database with pgvector installed on disk"]
+async fn managed_lifecycle() -> Result<()> {
+    let dsn = std::env::var("POSTVEC_MANAGED_TEST_DSN").context("set POSTVEC_MANAGED_TEST_DSN")?;
+    let mut admin = PgConnection::connect(&dsn).await?;
+    let name = format!("managed_{}", uuid::Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE ROLE {name} LOGIN PASSWORD '{name}'").as_str())
+        .await?;
+    admin
+        .execute(format!("CREATE DATABASE {name} OWNER {name}").as_str())
+        .await?;
+    let mut url = reqwest::Url::parse(&dsn)?;
+    url.set_path(&format!("/{name}"));
+    let mut setup = PgConnection::connect(url.as_str()).await?;
+    setup.execute("CREATE SCHEMA vectors; CREATE EXTENSION vector SCHEMA vectors; GRANT USAGE ON SCHEMA vectors TO PUBLIC").await?;
+    setup.close().await?;
+    url.set_username(&name).unwrap();
+    url.set_password(Some(&name)).unwrap();
+    let result = async {
+        exercise(url.as_str()).await?;
+        if std::env::var_os("POSTVEC_MANAGED_TEST_EXTENSION").is_some() {
+            managed::run(command(url.as_str(), "install")).await?;
+            let mut managed_db = PgConnection::connect(url.as_str()).await?;
+            let contract = table_contract(&mut managed_db).await?;
+            managed::run(command(url.as_str(), "uninstall")).await?;
+            managed_db.close().await?;
+            let mut extension_url = reqwest::Url::parse(&dsn)?;
+            extension_url.set_path(&format!("/{name}"));
+            let mut extension_db = PgConnection::connect(extension_url.as_str()).await?;
+            extension_db.execute("CREATE EXTENSION postvec").await?;
+            ensure!(
+                table_contract(&mut extension_db).await? == contract,
+                "durable schema drift"
+            );
+            for action in ["install", "status", "uninstall"] {
+                ensure!(
+                    managed::run(command(url.as_str(), action)).await.is_err(),
+                    "extension accepted"
+                );
+            }
+            extension_db.close().await?;
+        }
+        Ok(())
+    }
+    .await;
+    admin
+        .execute(format!("DROP DATABASE {name} WITH (FORCE)").as_str())
+        .await?;
+    admin.execute(format!("DROP ROLE {name}").as_str()).await?;
+    result
+}
+
+async fn exercise(dsn: &str) -> Result<()> {
+    let mut db = PgConnection::connect(dsn).await?;
+    db.execute("CREATE SCHEMA postvec").await?;
+    ensure!(
+        managed::run(command(dsn, "install")).await.is_err(),
+        "foreign schema accepted"
+    );
+    db.execute("DROP SCHEMA postvec").await?;
+    managed::run(command(dsn, "install")).await?;
+    managed::run(command(dsn, "install")).await?;
+    managed::run(command(dsn, "status")).await?;
+    db.execute("UPDATE postvec.schema_version SET version = 2")
+        .await?;
+    for action in ["install", "status", "uninstall"] {
+        ensure!(
+            managed::run(command(dsn, action)).await.is_err(),
+            "newer version accepted"
+        );
+    }
+    db.execute("UPDATE postvec.schema_version SET version = 1")
+        .await?;
+    db.execute(r#"
+        CREATE TABLE docs (id bigint PRIMARY KEY, body text, category varchar(10), v vectors.vector(3));
+        INSERT INTO docs VALUES (1,'reset password','account','[1,0,0]'), (2,'billing invoice','billing','[0,1,0]');
+        INSERT INTO postvec.registry (table_schema,table_name,source_column,vector_column,pk_columns,pk_types,model,dim)
+        VALUES ('public','docs','body','v',ARRAY['id'],ARRAY['bigint'],'fixture',3);
+        CREATE TRIGGER postvec_trunc_1 AFTER TRUNCATE ON docs FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_truncate('1');
+        INSERT INTO postvec.jobs_dead (job_id,registry_id,pk_value,last_error) VALUES (1,1,'1','bad'),(2,1,'1','bad');
+        DO $$ BEGIN
+            IF (SELECT worker_alive FROM postvec.status()) THEN RAISE EXCEPTION 'false liveness'; END IF;
+            IF (SELECT queue_dead FROM postvec.stats()) <> 2 THEN RAISE EXCEPTION 'dead count'; END IF;
+            IF (SELECT count(*) FROM postvec.migration_status()) <> 0 THEN RAISE EXCEPTION 'migrations'; END IF;
+            IF postvec.retry_dead('docs','body',ARRAY[1,1,2]) <> 2 THEN RAISE EXCEPTION 'retry count'; END IF;
+            IF (SELECT count(*) FROM postvec.jobs) <> 1 THEN RAISE EXCEPTION 'dedup'; END IF;
+        END $$;
+    "#).await?;
+    for filter in [
+        r#"{"category":"account"}"#,
+        r#"{"category":{"neq":"billing"}}"#,
+        r#"{"category":["account"]}"#,
+        r#"{"category":{"ilike":"Acc%"}}"#,
+        r#"{"id":{"gte":1,"lt":2}}"#,
+    ] {
+        let keys: Vec<String> = sqlx::query_scalar("SELECT pk_value FROM postvec.search_with_vector('docs','body',ARRAY[1,0,0]::real[], 'password', filter => $1::jsonb)")
+            .bind(filter).fetch_all(&mut db).await?;
+        ensure!(keys == ["1"], "filter mismatch: {filter}");
+    }
+    for query in [
+        "SELECT * FROM postvec.search_with_vector('docs','body',ARRAY[1,0]::real[])",
+        "SELECT * FROM postvec.search_with_vector('docs','body',ARRAY[1,NULL,0]::real[])",
+        "SELECT * FROM postvec.search_with_vector('docs','body',ARRAY[1,'NaN',0]::real[])",
+        "SELECT * FROM postvec.search_with_vector('docs','body',ARRAY[1,0,0]::real[],filter => '{\"category\":{\"sql\":\"true\"}}')",
+        "SELECT * FROM postvec.search_with_vector('docs','body',ARRAY[1,0,0]::real[],filter => '{\"category\":\"more than ten chars\"}')",
+        "SELECT postvec.retry_dead('docs','body',ARRAY[999])",
+    ] { ensure!(db.execute(query).await.is_err(), "invalid input accepted: {query}"); }
+    db.execute(r#"
+        ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE docs FORCE ROW LEVEL SECURITY;
+        CREATE POLICY visible ON docs USING (id = 1);
+        DO $$ BEGIN
+            IF (SELECT count(*) FROM postvec.search_with_vector('docs','body',ARRAY[1,0,0]::real[], 'billing')) <> 1
+            THEN RAISE EXCEPTION 'search bypassed RLS'; END IF;
+        END $$;
+        ALTER TABLE docs DISABLE ROW LEVEL SECURITY;
+        CREATE TABLE chunk_docs (id bigint PRIMARY KEY, body text);
+        CREATE TABLE chunks (postvec_chunk_id bigint PRIMARY KEY, postvec_source_pk bigint,
+            postvec_chunk_seq integer, postvec_char_start bigint, postvec_char_end bigint,
+            chunk_text text, v vectors.vector(3));
+        INSERT INTO chunk_docs VALUES (1,'password reset'),(2,'billing');
+        INSERT INTO chunks VALUES (1,1,0,0,8,'password','[1,0,0]'),(2,1,1,8,14,'reset','[1,0.1,0]'),
+                                  (3,2,0,0,7,'billing','[0,1,0]');
+        INSERT INTO postvec.registry (table_schema,table_name,source_column,vector_column,pk_columns,pk_types,model,dim,
+            chunking,chunk_size,chunk_overlap,destination_schema,destination_table,destination_view,destination_token)
+        VALUES ('public','chunk_docs','body','v',ARRAY['id'],ARRAY['bigint'],'fixture',3,
+            'recursive',64,0,'public','chunks','chunk_view','test');
+        CREATE TRIGGER postvec_trunc_2 AFTER TRUNCATE ON chunk_docs FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_truncate('2');
+        INSERT INTO postvec.jobs_dead (job_id,registry_id,pk_value,op,chunk_id)
+        VALUES (3,2,'1','embed',1),(4,2,'1','embed',999),(5,2,'1','refresh',NULL);
+        DO $$ BEGIN
+            IF (SELECT count(*) FROM postvec.search_with_vector('chunk_docs','body',ARRAY[1,0,0]::real[], 'password')) <> 2
+            THEN RAISE EXCEPTION 'chunk collapse'; END IF;
+            IF (SELECT chunk_text FROM postvec.search_with_vector('chunk_docs','body',ARRAY[1,0,0]::real[], 'password') LIMIT 1) <> 'password'
+            THEN RAISE EXCEPTION 'winning chunk text'; END IF;
+            IF postvec.retry_dead('chunk_docs','body') <> 3 THEN RAISE EXCEPTION 'chunk retry count'; END IF;
+            IF (SELECT count(*) FROM postvec.jobs WHERE registry_id=2) <> 2 THEN RAISE EXCEPTION 'obsolete chunk retry'; END IF;
+        END $$;
+        TRUNCATE chunk_docs;
+        DO $$ BEGIN
+            IF EXISTS (SELECT FROM chunks) OR EXISTS (SELECT FROM postvec.jobs WHERE registry_id=2)
+            THEN RAISE EXCEPTION 'truncate cleanup'; END IF;
+        END $$;
+    "#).await?;
+    db.execute("CREATE VIEW user_dependency AS SELECT * FROM postvec.registry")
+        .await?;
+    ensure!(
+        managed::run(command(dsn, "uninstall")).await.is_err(),
+        "external view cascaded"
+    );
+    let triggers: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_trigger WHERE tgrelid='docs'::regclass AND NOT tgisinternal",
+    )
+    .fetch_one(&mut db)
+    .await?;
+    ensure!(triggers == 1, "failed uninstall did not roll back");
+    db.execute("DROP VIEW user_dependency").await?;
+    managed::run(command(dsn, "uninstall")).await?;
+    let vectors: i64 = sqlx::query_scalar("SELECT count(*) FROM docs WHERE v IS NOT NULL")
+        .fetch_one(&mut db)
+        .await?;
+    ensure!(vectors == 2, "uninstall removed vectors");
+    ensure!(managed::run(command(dsn, "status")).await.is_err());
+    db.close().await?;
+    Ok(())
+}
+
+async fn table_contract(db: &mut PgConnection) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(r#"
+        SELECT jsonb_build_array(c.relname,a.attname,a.attnum,format_type(a.atttypid,a.atttypmod),
+            a.attnotnull,a.attidentity,pg_get_expr(d.adbin,d.adrelid))::text AS contract
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
+        LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
+        WHERE n.nspname='postvec' AND c.relkind='r'
+        UNION ALL
+        SELECT jsonb_build_array(c.relname,con.conname,pg_get_constraintdef(con.oid))::text
+        FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
+        JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='postvec'
+        UNION ALL
+        SELECT jsonb_build_array(tablename,indexname,indexdef)::text FROM pg_indexes WHERE schemaname='postvec'
+        ORDER BY 1
+    "#).fetch_all(db).await?)
+}

@@ -166,6 +166,7 @@ export default defineConfig({
               ],
             },
             { text: "Fleet", link: "/docs/server/fleet" },
+            { text: "Managed schema", link: "/docs/server/managed" },
             { text: "HTTP API", link: "/docs/server/http-api" },
             { text: "Node reference", link: "/docs/server/reference" },
           ],

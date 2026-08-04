@@ -20,7 +20,7 @@
 //! entry is never retried automatically; the operator's repair path is
 //! `create_vector_index()`, whose readiness-first wrapper clears the error.
 
-use crate::registry::RegistryEntry;
+use crate::registry::{RegistryEntry, RegistryEntryDb};
 use crate::worker::{try_transaction, Counters};
 use pgrx::prelude::*;
 

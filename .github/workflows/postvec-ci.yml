@@ -18,6 +18,9 @@ on:
     branches: [main]
     paths:
       - "postvec/**"
+      - "core/**"
+      - "postvec-server/src/managed/**"
+      - "postvec-server/tests/managed.rs"
       - "proto/**"
       # embedded mode compiles these workspace crates into postvec.so
       - "engine/**"
@@ -28,6 +31,9 @@ on:
   pull_request:
     paths:
       - "postvec/**"
+      - "core/**"
+      - "postvec-server/src/managed/**"
+      - "postvec-server/tests/managed.rs"
       - "proto/**"
       - "engine/**"
       - "shared/**"
@@ -134,7 +140,7 @@ jobs:
       - name: dump/restore smoke (P5)
         if: matrix.pgver == 18
         working-directory: postvec
-        run: ./dump_restore_smoke.sh
+        run: POSTVEC_TEST_MANAGED=1 ./dump_restore_smoke.sh
 
       # Smoke-test the packaging path (control-file @CARGO_VERSION@
       # substitution, install-SQL generation, staging-tree layout) so it isn't

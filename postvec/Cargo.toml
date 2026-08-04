@@ -44,6 +44,7 @@ pg_test_concurrency = ["pg_test", "dep:postgres"]
 embedded = ["dep:engine", "dep:shared", "dep:log", "dep:axum", "dep:tower", "dep:http-body", "dep:postvec-providers", "tokio/rt-multi-thread"]
 
 [dependencies]
+postvec-core = { path = "../core" }
 pgrx = "=0.18.1"
 tonic = "0.13"
 tower = { version = "0.5", features = ["limit"], optional = true }

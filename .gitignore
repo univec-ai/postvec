@@ -4,4 +4,4 @@ postvec/target/
 .env
 .env.*
 *.log
-docs
+/docs/

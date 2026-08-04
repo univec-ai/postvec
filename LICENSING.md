@@ -8,7 +8,7 @@ per-directory index; the license texts are where the table points.
 | `postvec/` | PostgreSQL License | [LICENSE](LICENSE), [postvec/LICENSE](postvec/LICENSE) |
 | `postvec-cli/` | PostgreSQL License | [LICENSE](LICENSE) |
 | `packaging/postvec/` | PostgreSQL License | [LICENSE](LICENSE) |
-| `engine/`, `shared/` | PostgreSQL License | [LICENSE](LICENSE) |
+| `core/`, `engine/`, `shared/` | PostgreSQL License | [LICENSE](LICENSE) |
 | `providers/` | PostgreSQL License | [LICENSE](LICENSE) |
 | `proto/` | PostgreSQL License | [LICENSE](LICENSE) |
 | `registry/schema/`, `registry/client/` | PostgreSQL License | [LICENSE](LICENSE) |

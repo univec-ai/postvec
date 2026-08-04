@@ -41,7 +41,10 @@ RUN_ID="postvec-server-test-$$"
 passed=0; failed=0
 ok()   { printf '  \033[32mok\033[0m    %s\n' "$*"; passed=$((passed + 1)); }
 bad()  { printf '  \033[1;31mFAIL\033[0m  %s\n' "$*" >&2; failed=$((failed + 1)); }
-cleanup() { docker rm --force "${RUN_ID}" >/dev/null 2>&1 || true; }
+cleanup() {
+    docker rm --force "${RUN_ID}" "${RUN_ID}-db" >/dev/null 2>&1 || true
+    docker network rm "${RUN_ID}-net" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
 log "testing ${IMAGE}"
@@ -104,6 +107,40 @@ version="$(docker run --rm "${IMAGE}" postvec --version 2>&1 || true)"
     || bad "postvec --version said: ${version}"
 
 echo
+echo "managed schema"
+docker network create "${RUN_ID}-net" >/dev/null
+database_image="${POSTVEC_MANAGED_POSTGRES_IMAGE:-${IMAGE_REPOSITORY}:${RELEASE_ID}-pg18-remote}"
+docker run --detach --name "${RUN_ID}-db" --network "${RUN_ID}-net" \
+    --env POSTGRES_HOST_AUTH_METHOD=trust --env POSTVEC_CREATE_EXTENSION=0 \
+    --entrypoint docker-entrypoint.sh "${database_image}" \
+    postgres -c shared_preload_libraries= >/dev/null
+for attempt in {1..60}; do
+    docker exec "${RUN_ID}-db" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
+    sleep 1
+done
+docker exec -i "${RUN_ID}-db" psql -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+CREATE ROLE managed LOGIN;
+CREATE DATABASE managed OWNER managed;
+\connect managed
+CREATE EXTENSION vector;
+SET ROLE managed;
+CREATE TABLE keep_vectors (id integer PRIMARY KEY, embedding vector(3));
+INSERT INTO keep_vectors VALUES (1,'[1,0,0]');
+SQL
+for action in install install status uninstall; do
+    docker run --rm --network "${RUN_ID}-net" "${IMAGE}" \
+        postvec-server managed "${action}" --dsn "postgresql://managed@${RUN_ID}-db/managed"
+done
+remaining="$(docker exec "${RUN_ID}-db" psql -U managed -d managed -Atc \
+    "SELECT (SELECT count(*) FROM keep_vectors WHERE embedding IS NOT NULL),
+            (SELECT count(*) FROM pg_extension WHERE extname='postvec'),
+            (SELECT count(*) FROM pg_namespace WHERE nspname='postvec')")"
+[[ "${remaining}" == '1|0|0' ]] \
+    && ok "managed install/status/uninstall without postvec.so preserves vectors" \
+    || bad "managed lifecycle result: ${remaining}"
+docker rm --force "${RUN_ID}-db" >/dev/null
+docker network rm "${RUN_ID}-net" >/dev/null
+
 echo "serving"
 
 docker run --detach --name "${RUN_ID}" --publish 127.0.0.1::22222 "${IMAGE}" >/dev/null

@@ -12,6 +12,7 @@
 //! rows past the watermark that lose their vector later are the triggers'
 //! (not the backfiller's) responsibility, exactly like queue-mode backfill.
 
+use crate::registry::RegistryEntryDb as _;
 use crate::registry::{quote_ident, RegistryEntry};
 use pgrx::prelude::*;
 

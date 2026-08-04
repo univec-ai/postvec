@@ -31,6 +31,8 @@ name = "postvec-server"
 path = "src/main.rs"
 
 [dependencies]
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
+postvec-core = { path = "../core" }
 # The engine-root serving lease (flock): held shared for the serving
 # lifetime so a postvec-cli purge cannot sweep the root from under a
 # running or starting server.

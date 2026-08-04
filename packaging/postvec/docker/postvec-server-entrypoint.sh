@@ -10,6 +10,11 @@
 # (/etc/postvec-server/server.{crt,key}). The crate default is <root>/certs.
 set -Eeuo pipefail
 
+case "${1:-}:${2:-}" in
+    postvec-server:managed|postvec-server:status|postvec-server:load|postvec-server:unload|postvec-server:--help|postvec-server:--version)
+        exec "$@" ;;
+esac
+
 ROOT="${POSTVEC_SERVER_ROOT:-/opt/postvec}"
 CERTS="${POSTVEC_SERVER_CERTS_DIR:-${ROOT}/certs}"
 

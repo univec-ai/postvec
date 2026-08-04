@@ -937,7 +937,10 @@ mod tests {
         )
         .expect("fixture parses");
         upsert_models(&models).expect("upsert works");
-        assert_eq!(resolve_convert("model-p", "model-q").unwrap(), "z-local-convert");
+        assert_eq!(
+            resolve_convert("model-p", "model-q").unwrap(),
+            "z-local-convert"
+        );
         // Positive control: with only hosted routes, lexical order applies.
         assert_eq!(
             resolve_convert("snowflake-arctic-embed-l-v2.0", "ext2-model").unwrap(),

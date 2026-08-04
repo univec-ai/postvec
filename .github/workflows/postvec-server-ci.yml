@@ -15,6 +15,8 @@ on:
     branches: [main]
     paths:
       - "postvec-server/**"
+      - "core/**"
+      - "postvec/sql/managed/**"
       # The engine it links and the wire contract it serves.
       - "engine/**"
       - "shared/**"
@@ -27,6 +29,8 @@ on:
   pull_request:
     paths:
       - "postvec-server/**"
+      - "core/**"
+      - "postvec/sql/managed/**"
       - "engine/**"
       - "shared/**"
       # The provider gateway it mounts.
@@ -78,13 +82,13 @@ jobs:
             protobuf-compiler libprotobuf-dev libssl-dev
 
       - name: rustfmt
-        run: cargo fmt -p postvec-server -- --check
+        run: cargo fmt -p postvec-server -p postvec-core -- --check
 
       - name: clippy
-        run: cargo clippy -p postvec-server --all-targets -- -D warnings
+        run: cargo clippy -p postvec-server -p postvec-core --all-targets -- -D warnings
 
       - name: test
-        run: cargo test -p postvec-server --all-targets
+        run: cargo test -p postvec-server -p postvec-core --all-targets
 
       # The provider gateway both inference hosts mount. Before this job, a
       # providers-only change triggered no CI at all, and its own suite ran

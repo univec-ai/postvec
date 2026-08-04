@@ -27,6 +27,7 @@
 #[cfg(feature = "pg_test_concurrency")]
 #[pgrx::pg_schema]
 mod tests {
+    use crate::registry::RegistryEntryDb as _;
     use pgrx::prelude::*;
     use std::time::Duration;
 

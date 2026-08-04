@@ -4,6 +4,7 @@ resolver = "2"
 # builds standalone, exactly as it did in the monorepo.
 exclude = ["postvec"]
 members = [
+    "core",
     "postvec-cli",
     "engine",
     "shared",

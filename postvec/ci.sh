@@ -52,6 +52,6 @@ fi
 
 echo "== dump/restore smoke (P5) =="
 # Relies on the extension the test steps above installed into the pgrx dir.
-./dump_restore_smoke.sh
+POSTVEC_TEST_MANAGED=1 ./dump_restore_smoke.sh
 
 echo "== postvec CI gate passed =="

@@ -18,6 +18,7 @@
 //! bound in one step; that is intended. The bound gates starting an
 //! expansion.
 
+use crate::registry::RegistryEntryDb as _;
 use crate::registry::{quote_ident, RegistryEntry};
 use crate::worker::{try_transaction, Counters};
 use pgrx::prelude::*;

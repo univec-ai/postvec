@@ -24,6 +24,7 @@ use crate::api::embed::resolve_convert;
 use crate::api::registry::{
     assert_owner, build_vector_index, resolve_dim, resolve_relation, validate_choice,
 };
+use crate::registry::RegistryEntryDb as _;
 use crate::registry::{
     distance_opclass, halfvec_opclass, quote_ident, quote_literal,
     vector_index_exists as registry_vector_index_exists, RegistryEntry,

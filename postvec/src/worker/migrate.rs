@@ -26,6 +26,7 @@
 use crate::api::migrate::Migration;
 use crate::client::grpc::GrpcClient;
 use crate::client::{EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode};
+use crate::registry::RegistryEntryDb as _;
 use crate::registry::{parse_vector, quote_ident, RegistryEntry};
 use crate::runtime;
 use crate::worker::{try_transaction, Counters};

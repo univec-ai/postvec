@@ -1,0 +1,277 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+use super::{Command, ConnectionArgs};
+use anyhow::{bail, Context, Result};
+use postvec_core::registry::quote_ident;
+use sqlx::{postgres::PgConnectOptions, Connection, Executor, PgConnection, Row};
+use std::{io::Read, str::FromStr, time::Duration};
+
+const VERSION: i32 = 1;
+const MARKER: &str = "postvec managed schema";
+const MODELS: &str = include_str!("../../../postvec/sql/managed/models.sql");
+const CONTROL: &str = include_str!("../../../postvec/sql/managed/control.sql");
+const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql");
+const FUNCTIONS: &str = include_str!("../../../postvec/sql/managed/functions.sql");
+
+async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
+    let mut options = PgConnectOptions::from_str(&args.dsn)
+        .map_err(|_| anyhow::anyhow!("invalid PostgreSQL DSN"))?;
+    if args.dsn.contains("password=")
+        || reqwest::Url::parse(&args.dsn)
+            .ok()
+            .is_some_and(|u| u.password().is_some())
+    {
+        eprintln!(
+            "Database password in DSN; prefer --password-file to keep it out of process arguments."
+        );
+    }
+    if let Some(path) = &args.password_file {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .context("cannot open password file")?;
+        let meta = file.metadata()?;
+        if !meta.is_file() || meta.mode() & 0o777 != 0o600 || meta.len() > 65536 {
+            bail!("password file must be a regular file with mode 0600, at most 65536 bytes");
+        }
+        let mut password = String::new();
+        (&mut file).take(65537).read_to_string(&mut password)?;
+        if password.len() > 65536 {
+            bail!("password file exceeds 65536 bytes");
+        }
+        let password = password.trim_end_matches(['\r', '\n']);
+        if password.is_empty() || password.contains(['\r', '\n', '\0']) {
+            bail!("password file must contain one nonempty password");
+        }
+        options = options.password(password);
+    }
+    let mut connection = tokio::time::timeout(
+        Duration::from_secs(args.timeout.into()),
+        PgConnection::connect_with(&options),
+    )
+    .await
+    .context("database connection timed out")?
+    .map_err(|_| {
+        anyhow::anyhow!("database connection failed; check address, credentials and TLS settings")
+    })?;
+    sqlx::query(
+        "SELECT set_config('statement_timeout', $1, false), set_config('lock_timeout', $1, false)",
+    )
+    .bind(format!("{}s", args.timeout))
+    .execute(&mut connection)
+    .await?;
+    Ok(connection)
+}
+
+async fn check(connection: &mut PgConnection) -> Result<bool> {
+    let extension: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT FROM pg_catalog.pg_extension WHERE extname = 'postvec')",
+    )
+    .fetch_one(&mut *connection)
+    .await?;
+    if extension {
+        bail!(
+            "postvec extension is installed; managed commands cannot modify an extension database"
+        );
+    }
+    let schema = sqlx::query(
+        "SELECT obj_description(oid, 'pg_namespace') AS marker,
+        pg_has_role(current_user, nspowner, 'USAGE') AS owned
+        FROM pg_catalog.pg_namespace WHERE nspname = 'postvec'",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some(schema) = schema else {
+        return Ok(false);
+    };
+    if schema.get::<Option<String>, _>("marker").as_deref() != Some(MARKER)
+        || !schema.get::<bool, _>("owned")
+    {
+        bail!("postvec schema is not a managed installation owned by this role");
+    }
+    let version: (i32, String) =
+        sqlx::query_as("SELECT version, mode FROM postvec.schema_version WHERE id")
+            .fetch_one(connection)
+            .await
+            .context("invalid managed schema version table")?;
+    if version != (VERSION, "managed".into()) {
+        bail!("unsupported managed schema version {}; this server supports {VERSION}; no changes made", version.0);
+    }
+    Ok(true)
+}
+
+pub async fn run(command: Command) -> Result<()> {
+    let args = match &command {
+        Command::Install(a) | Command::Status(a) | Command::Uninstall(a) => a,
+    };
+    let mut connection = connect(args).await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(1886615158, 1)")
+        .execute(&mut *tx)
+        .await?;
+    let installed = check(&mut tx).await?;
+    match command {
+        Command::Install(_) => {
+            let vector_schema: Option<String> = sqlx::query_scalar(
+                "SELECT n.nspname::text FROM pg_catalog.pg_extension e
+                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'",
+            ).fetch_optional(&mut *tx).await?;
+            let vector_schema = vector_schema.context("pgvector is required; have the database administrator run CREATE EXTENSION vector first")?;
+            tx.execute(
+                format!(
+                    "SELECT {schema}.vector_dims('[0]'::{schema}.vector)",
+                    schema = quote_ident(&vector_schema)
+                )
+                .as_str(),
+            )
+            .await?;
+            let platform = super::platform::detect(&mut tx).await?;
+            if !installed {
+                tx.execute(
+                    "CREATE SCHEMA postvec; REVOKE CREATE ON SCHEMA postvec FROM PUBLIC;
+                    COMMENT ON SCHEMA postvec IS 'postvec managed schema'",
+                )
+                .await?;
+                for sql in [MODELS, CONTROL, TRIGGERS] {
+                    tx.execute(sql).await?;
+                }
+                tx.execute(FUNCTIONS).await?;
+                tx.execute("UPDATE postvec.schema_version SET mode = 'managed'")
+                    .await?;
+            }
+            sqlx::query(
+                "INSERT INTO postvec.settings (key, value) VALUES ('platform', to_jsonb($1::text))
+                ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(&platform)
+            .execute(&mut *tx)
+            .await?;
+            let role: String = sqlx::query_scalar("SELECT current_user::text")
+                .fetch_one(&mut *tx)
+                .await?;
+            let owners: Vec<String> = sqlx::query_scalar("SELECT DISTINCT r.rolname::text
+                FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
+                WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('postvec','information_schema')
+                  AND n.nspname NOT LIKE 'pg_%' AND NOT pg_has_role(current_user,c.relowner,'USAGE')
+                  AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d WHERE d.classid='pg_class'::regclass
+                    AND d.objid=c.oid AND d.deptype='e') ORDER BY r.rolname::text")
+                .fetch_all(&mut *tx).await?;
+            tx.commit().await?;
+            println!("Managed schema v{VERSION} ready ({platform}). Sync worker and proxy are not included in this phase.");
+            if owners.is_empty() {
+                println!("The worker role already owns, or inherits ownership of, the existing source tables.");
+            } else {
+                println!("Source owners can run the relevant grant below for tables this worker will manage:");
+                for owner in owners {
+                    println!("GRANT {} TO {};", quote_ident(&owner), quote_ident(&role));
+                }
+            }
+            println!("Organization production use requires postvec Pro; personal noncommercial use, non-production use and one 30-day production evaluation per organization are free. https://github.com/univec-ai/postvec/blob/main/LICENSING.md");
+        }
+        Command::Status(_) => {
+            if !installed {
+                bail!("managed schema is not installed");
+            }
+            let status: String = sqlx::query_scalar("SELECT jsonb_build_object(
+                'schema_version', (SELECT version FROM postvec.schema_version),
+                'platform', (SELECT value FROM postvec.settings WHERE key = 'platform'),
+                'worker_alive', COALESCE((SELECT last_beat > now() - interval '30 seconds' FROM postvec.worker_heartbeat), false),
+                'heartbeat', (SELECT to_jsonb(h) FROM postvec.worker_heartbeat h),
+                'leader', NULL,
+                'queue_depth', (SELECT count(*) FROM postvec.jobs),
+                'dead_letters', (SELECT count(*) FROM postvec.jobs_dead))::text")
+                .fetch_one(&mut *tx).await?;
+            tx.commit().await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(&status)?)?
+            );
+        }
+        Command::Uninstall(_) => {
+            if !installed {
+                bail!("managed schema is not installed");
+            }
+            let triggers: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT n.nspname::text, c.relname::text, t.tgname::text
+                   FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+                   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                   JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
+                   JOIN pg_catalog.pg_namespace pn ON pn.oid = p.pronamespace
+                  WHERE pn.nspname = 'postvec' AND NOT t.tgisinternal ORDER BY c.oid, t.oid",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
+            for (schema, table, trigger) in triggers {
+                tx.execute(
+                    format!(
+                        "DROP TRIGGER {} ON {}.{}",
+                        quote_ident(&trigger),
+                        quote_ident(&schema),
+                        quote_ident(&table)
+                    )
+                    .as_str(),
+                )
+                .await?;
+            }
+            let functions: Vec<String> = sqlx::query_scalar(
+                "SELECT p.oid::regprocedure::text FROM pg_catalog.pg_proc p
+                 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'postvec'"
+            ).fetch_all(&mut *tx).await?;
+            for function in functions {
+                tx.execute(format!("DROP FUNCTION {function} RESTRICT").as_str())
+                    .await?;
+            }
+            tx.execute(
+                "DROP TABLE postvec.migrations, postvec.jobs_dead, postvec.jobs,
+                postvec.registry, postvec.worker_heartbeat, postvec.models, postvec.settings,
+                postvec.schema_version RESTRICT; DROP SCHEMA postvec RESTRICT",
+            )
+            .await?;
+            tx.commit().await?;
+            println!("Managed schema removed. User tables and vector columns retained.");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn password_files_fail_closed_before_connecting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("password");
+        std::fs::write(&path, "private").unwrap();
+        let mut args = ConnectionArgs {
+            dsn: "postgresql://localhost/test".into(),
+            password_file: Some(path.clone()),
+            timeout: 1,
+        };
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(connect(&args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("0600"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&path, "first\nsecond").unwrap();
+        assert!(connect(&args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("one nonempty password"));
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(path, &link).unwrap();
+        args.password_file = Some(link);
+        assert!(connect(&args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cannot open password file"));
+    }
+}

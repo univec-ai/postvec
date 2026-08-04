@@ -51,7 +51,7 @@ check "postvec.control default_version" "default_version = '@CARGO_VERSION@'" \
 # embedded mode), providers (the gateway, linked into postvec.so and
 # postvec-server), and registry-schema (linked into the CLI).
 [[ -f "${REPO_ROOT}/postvec/LICENSE" ]] || { echo "  FAIL  postvec/LICENSE is missing"; fail=1; }
-for manifest in postvec postvec-cli engine shared providers registry/schema; do
+for manifest in core postvec postvec-cli engine shared providers registry/schema; do
     licence="$(grep -E '^license = ' "${REPO_ROOT}/${manifest}/Cargo.toml" | head -1 | cut -d'"' -f2)"
     check "${manifest} license" "PostgreSQL" "${licence}"
 done
@@ -67,6 +67,13 @@ done
     || { echo "  FAIL  postvec-server/LICENSE is missing"; fail=1; }
 check "postvec-server license" "${SERVER_LICENSE}" \
     "$(grep -E '^license = ' "${REPO_ROOT}/postvec-server/Cargo.toml" | head -1 | cut -d'"' -f2)"
+while IFS= read -r -d '' source; do
+    if ! grep -q '^// SPDX-License-Identifier: BUSL-1.1$' "${source}"; then
+        printf '  FAIL  missing BUSL-1.1 header: %s\n' "${source}"
+        fail=1
+    fi
+done < <(find "${REPO_ROOT}/postvec-server/src" -type f -name '*.rs' -print0)
+
 # The index row in LICENSING.md is `| `postvec-server/` | <name> | ... |`; the
 # name is mapped to its SPDX id and compared literally, dots and all.
 index_licence="$(sed -nE 's#^\| `postvec-server/` \| ([^|]+) \|.*$#\1#p' "${REPO_ROOT}/LICENSING.md" | head -1 | sed -e 's/ *$//' -e 's/^Business Source License 1\.1$/BUSL-1.1/' -e 's/^Elastic License 2\.0$/Elastic-2.0/' -e 's/^Apache License 2\.0$/Apache-2.0/')"

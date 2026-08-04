@@ -10,7 +10,8 @@
 use crate::api::embed::embed_texts;
 use crate::api::registry::{resolve_relation, RelInfo};
 use crate::gucs;
-use crate::registry::{quote_ident, quote_literal, serialize_vector, RegistryEntry};
+use crate::registry::RegistryEntryDb as _;
+use crate::registry::{quote_ident, serialize_vector, RegistryEntry};
 use pgrx::prelude::*;
 use pgrx::JsonB;
 
@@ -441,27 +442,9 @@ pub(crate) fn render_filter(
 /// is rendered in exactly that form. An alias prefix on the column side does
 /// not disturb expression-index matching (the parser resolves the alias back
 /// to the column).
-pub(crate) fn semantic_match_exprs(entry: &RegistryEntry, alias: &str) -> (String, String) {
-    let prefix = if alias.is_empty() {
-        String::new()
-    } else {
-        format!("{alias}.")
-    };
-    let vec = format!("{prefix}{}", quote_ident(&entry.vector_column));
-    if entry.dim > 2000 {
-        let dim = entry.dim;
-        (
-            format!("({vec}::halfvec({dim}))"),
-            format!("$1::halfvec({dim})"),
-        )
-    } else {
-        (vec, "$1::vector".to_string())
-    }
-}
-
-/// The fixed internal alias the searched table carries in both candidate
-/// CTEs — also the alias [`render_filter`] renders its predicate against.
-pub(crate) const SEARCH_ALIAS: &str = "d";
+#[cfg(any(test, feature = "pg_test"))]
+pub(crate) use postvec_core::search::semantic_match_exprs;
+use postvec_core::search::SEARCH_ALIAS;
 
 /// Build and run the hybrid (or, when `qvec` is `None`, FTS-only) query.
 /// The same filter predicate sits inside both candidate CTEs, before their
@@ -484,73 +467,15 @@ pub(crate) fn hybrid_rows(
             entry, qvec, query, limit_n, weight, rrf_k, candidates, filter,
         );
     }
-    let tbl = entry.qualified_table();
-    let d = SEARCH_ALIAS;
-    let pk = entry.pk_text_expr(d);
-    let col = format!("{d}.{}", quote_ident(&entry.source_column));
-    let vec = format!("{d}.{}", quote_ident(&entry.vector_column));
-    let (sem, qparam) = semantic_match_exprs(entry, d);
-    let op = crate::registry::distance_op(&entry.distance);
-    let cfg = quote_literal(&entry.fts_config);
-    let w = f64::from(weight);
-    let k = rrf_k.max(1);
-    let fpred = filter
-        .predicate
-        .as_deref()
-        .map(|p| format!("\n                AND ({p})"))
-        .unwrap_or_default();
-
-    let fts_cte = format!(
-        "fts AS (
-             SELECT {pk} AS pk,
-                    row_number() OVER (
-                        ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, {col}::text),
-                                            websearch_to_tsquery({cfg}::regconfig, $2)) DESC
-                    ) AS rank_fts
-               FROM {tbl} {d}
-              WHERE to_tsvector({cfg}::regconfig, {col}::text)
-                    @@ websearch_to_tsquery({cfg}::regconfig, $2){fpred}
-              ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, {col}::text),
-                                  websearch_to_tsquery({cfg}::regconfig, $2)) DESC
-              LIMIT {candidates}
-         )"
+    let sql = postvec_core::search::hybrid_rows_sql(
+        entry,
+        qvec.is_some(),
+        limit_n,
+        weight,
+        rrf_k,
+        candidates,
+        filter.predicate.as_deref(),
     );
-
-    let sql = if qvec.is_some() {
-        format!(
-            "WITH semantic AS (
-                 SELECT {pk} AS pk,
-                        row_number() OVER (ORDER BY {sem} {op} {qparam}) AS rank_sem
-                   FROM {tbl} {d}
-                  WHERE {vec} IS NOT NULL{fpred}
-                  ORDER BY {sem} {op} {qparam}
-                  LIMIT {candidates}
-             ),
-             {fts_cte},
-             fused AS (
-                 SELECT COALESCE(s.pk, f.pk) AS pk,
-                        COALESCE({w}::float8 / ({k} + s.rank_sem), 0)
-                      + COALESCE((1 - {w}::float8) / ({k} + f.rank_fts), 0) AS rrf_score,
-                        s.rank_sem, f.rank_fts
-                   FROM semantic s FULL OUTER JOIN fts f USING (pk)
-             )
-             SELECT pk, rrf_score, rank_sem, rank_fts
-               FROM fused ORDER BY rrf_score DESC NULLS LAST LIMIT {limit_n}"
-        )
-    } else {
-        // Degraded: FTS only. rrf_score is 1/(k+rank_fts); rank_sem NULL.
-        format!(
-            "WITH {fts_cte},
-             fused AS (
-                 SELECT pk, (1.0 / ({k} + rank_fts))::float8 AS rrf_score,
-                        NULL::bigint AS rank_sem, rank_fts
-                   FROM fts
-             )
-             SELECT pk, rrf_score, rank_sem, rank_fts
-               FROM fused ORDER BY rrf_score DESC LIMIT {limit_n}"
-        )
-    };
-
     let qvec_text = qvec.map(serialize_vector).unwrap_or_default();
     Spi::connect(|c| {
         let mut args: Vec<pgrx::datum::DatumWithOid> =
@@ -600,102 +525,16 @@ fn chunk_hybrid_rows(
     candidates: i32,
     filter: &RenderedFilter,
 ) -> Vec<Row> {
-    let qdest = entry.qualified_vector_table();
-    let qsrc = entry.qualified_table();
-    let d = SEARCH_ALIAS;
-    let src_join = entry.source_pk_join(d, "c");
-    let vec = format!("c.{}", quote_ident(&entry.vector_column));
-    let (sem, qparam) = semantic_match_exprs(entry, "c");
-    let op = crate::registry::distance_op(&entry.distance);
-    let cfg = quote_literal(&entry.fts_config);
-    let w = f64::from(weight);
-    let k = rrf_k.max(1);
-    let fpred = filter
-        .predicate
-        .as_deref()
-        .map(|p| format!("\n                AND ({p})"))
-        .unwrap_or_default();
-
-    // Deliberately NO chunk_text here: projecting it through the candidate
-    // and fusion CTEs would materialize candidate-pool × chunk-size bytes in
-    // the SPI result before any Rust-side ceiling could run. The winners'
-    // text is fetched in a second, byte-budgeted phase below.
-    let chunk_fields = "c.postvec_chunk_id AS cid, c.postvec_source_pk::text AS pk,
-                    c.postvec_chunk_seq AS seq, c.postvec_char_start AS cs,
-                    c.postvec_char_end AS ce";
-    let fts_cte = format!(
-        "fts_chunks AS (
-             SELECT {chunk_fields},
-                    row_number() OVER (
-                        ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, c.chunk_text),
-                                            websearch_to_tsquery({cfg}::regconfig, $2)) DESC
-                    ) AS rank_fts
-               FROM {qdest} c JOIN {qsrc} {d} ON {src_join}
-              WHERE to_tsvector({cfg}::regconfig, c.chunk_text)
-                    @@ websearch_to_tsquery({cfg}::regconfig, $2){fpred}
-              ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, c.chunk_text),
-                                  websearch_to_tsquery({cfg}::regconfig, $2)) DESC
-              LIMIT {candidates}
-         )"
+    let sql = postvec_core::search::chunk_hybrid_rows_sql(
+        entry,
+        qvec.is_some(),
+        limit_n,
+        weight,
+        rrf_k,
+        candidates,
+        filter.predicate.as_deref(),
     );
-    // The deterministic winning-chunk order inside each document.
-    let doc_window = "row_number() OVER (
-                        PARTITION BY pk
-                        ORDER BY rrf_score DESC,
-                                 COALESCE(rank_sem, 9223372036854775807),
-                                 COALESCE(rank_fts, 9223372036854775807),
-                                 seq, cid) AS doc_row";
-
-    let sql = if qvec.is_some() {
-        format!(
-            "WITH semantic_chunks AS (
-                 SELECT {chunk_fields},
-                        row_number() OVER (ORDER BY {sem} {op} {qparam}) AS rank_sem
-                   FROM {qdest} c JOIN {qsrc} {d} ON {src_join}
-                  WHERE {vec} IS NOT NULL{fpred}
-                  ORDER BY {sem} {op} {qparam}
-                  LIMIT {candidates}
-             ),
-             {fts_cte},
-             fused_chunks AS (
-                 SELECT COALESCE(s.cid, f.cid) AS cid,
-                        COALESCE(s.pk, f.pk) AS pk,
-                        COALESCE(s.seq, f.seq) AS seq,
-                        COALESCE(s.cs, f.cs) AS cs,
-                        COALESCE(s.ce, f.ce) AS ce,
-                        COALESCE({w}::float8 / ({k} + s.rank_sem), 0)
-                      + COALESCE((1 - {w}::float8) / ({k} + f.rank_fts), 0) AS rrf_score,
-                        s.rank_sem, f.rank_fts
-                   FROM semantic_chunks s FULL OUTER JOIN fts_chunks f USING (cid)
-             ),
-             best_per_document AS (
-                 SELECT *, {doc_window} FROM fused_chunks
-             )
-             SELECT cid, pk, rrf_score, rank_sem, rank_fts, seq, cs, ce
-               FROM best_per_document
-              WHERE doc_row = 1
-              ORDER BY rrf_score DESC NULLS LAST LIMIT {limit_n}"
-        )
-    } else {
-        // Degraded: lexical chunks only, same document collapse.
-        format!(
-            "WITH {fts_cte},
-             fused_chunks AS (
-                 SELECT cid, pk, seq, cs, ce,
-                        (1.0 / ({k} + rank_fts))::float8 AS rrf_score,
-                        NULL::bigint AS rank_sem, rank_fts
-                   FROM fts_chunks
-             ),
-             best_per_document AS (
-                 SELECT *, {doc_window} FROM fused_chunks
-             )
-             SELECT cid, pk, rrf_score, rank_sem, rank_fts, seq, cs, ce
-               FROM best_per_document
-              WHERE doc_row = 1
-              ORDER BY rrf_score DESC LIMIT {limit_n}"
-        )
-    };
-
+    let qdest = entry.qualified_vector_table();
     let qvec_text = qvec.map(serialize_vector).unwrap_or_default();
     Spi::connect(|c| {
         let mut args: Vec<pgrx::datum::DatumWithOid> =
@@ -1058,6 +897,7 @@ fn degrade_or_error(reason: &str) -> Option<Vec<f32>> {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
+    use crate::registry::RegistryEntryDb as _;
     use crate::registry::{serialize_vector, RegistryEntry};
     use pgrx::prelude::*;
 
@@ -1096,6 +936,55 @@ mod tests {
             .unwrap();
         }
         RegistryEntry::load_active("public", "docs", "body").unwrap()
+    }
+
+    #[pg_test]
+    fn core_search_sql_matches_pre_extraction_query() {
+        let entry = setup();
+        let sql = postvec_core::search::hybrid_rows_sql(
+            &entry,
+            true,
+            10,
+            0.5,
+            60,
+            50,
+            Some("d.\"id\" > $3::bigint"),
+        );
+        assert_eq!(
+            sql,
+            r#"WITH semantic AS (
+                 SELECT d."id"::text AS pk,
+                        row_number() OVER (ORDER BY d."body_semantic" <=> $1::vector) AS rank_sem
+                   FROM "public"."docs" d
+                  WHERE d."body_semantic" IS NOT NULL
+                AND (d."id" > $3::bigint)
+                  ORDER BY d."body_semantic" <=> $1::vector
+                  LIMIT 50
+             ),
+             fts AS (
+             SELECT d."id"::text AS pk,
+                    row_number() OVER (
+                        ORDER BY ts_rank_cd(to_tsvector('english'::regconfig, d."body"::text),
+                                            websearch_to_tsquery('english'::regconfig, $2)) DESC
+                    ) AS rank_fts
+               FROM "public"."docs" d
+              WHERE to_tsvector('english'::regconfig, d."body"::text)
+                    @@ websearch_to_tsquery('english'::regconfig, $2)
+                AND (d."id" > $3::bigint)
+              ORDER BY ts_rank_cd(to_tsvector('english'::regconfig, d."body"::text),
+                                  websearch_to_tsquery('english'::regconfig, $2)) DESC
+              LIMIT 50
+         ),
+             fused AS (
+                 SELECT COALESCE(s.pk, f.pk) AS pk,
+                        COALESCE(0.5::float8 / (60 + s.rank_sem), 0)
+                      + COALESCE((1 - 0.5::float8) / (60 + f.rank_fts), 0) AS rrf_score,
+                        s.rank_sem, f.rank_fts
+                   FROM semantic s FULL OUTER JOIN fts f USING (pk)
+             )
+             SELECT pk, rrf_score, rank_sem, rank_fts
+               FROM fused ORDER BY rrf_score DESC NULLS LAST LIMIT 10"#
+        );
     }
 
     #[pg_test]
