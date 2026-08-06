@@ -51,6 +51,7 @@ impl NodeIdentity {
 }
 
 pub struct ServerState {
+    pub managed: crate::managed::ManagedRuntime,
     pub engine: Arc<InferenceEngine>,
     pub settings: Arc<Settings>,
     pub identity: NodeIdentity,
@@ -88,7 +89,9 @@ impl ServerState {
         gateway: Arc<Gateway>,
     ) -> Arc<Self> {
         let startup_provider_budget = gateway.inflight_budget();
+        let managed = crate::managed::ManagedRuntime::new(&settings.managed);
         Arc::new(Self {
+            managed,
             engine,
             settings,
             identity,

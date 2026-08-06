@@ -407,6 +407,8 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         gateway.clone(),
     );
 
+    let managed_tasks = managed::start(&state);
+
     // --- 6. Serve ---------------------------------------------------------
     let public = http::spawn(state.clone(), http_socket)?;
     let admin = admin::spawn(state.clone(), admin_socket)?;
@@ -462,6 +464,10 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // drain-delay so the 503 is observable, then stop. A second signal
     // skips the wait.
     state.begin_drain();
+    for task in managed_tasks {
+        task.abort();
+        let _ = task.await;
+    }
     if let Some(maintenance) = maintenance {
         maintenance.abort();
     }

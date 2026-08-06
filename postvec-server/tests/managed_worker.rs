@@ -1,0 +1,305 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+use anyhow::{ensure, Context, Result};
+use axum::{http::StatusCode, routing::post, Json, Router};
+use postvec_server::{
+    cli::ServeArgs,
+    config,
+    managed::{self, Command, ConnectionArgs, ManagedDb},
+    metrics::Metrics,
+    state::{NodeIdentity, ServerState},
+};
+use serde_json::{json, Value};
+use sqlx::{Connection, Executor, PgConnection};
+use std::{
+    os::unix::fs::PermissionsExt,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+
+struct Tasks(Vec<tokio::task::JoinHandle<()>>);
+impl Drop for Tasks {
+    fn drop(&mut self) {
+        for t in &self.0 {
+            t.abort();
+        }
+    }
+}
+async fn wait(db: &mut PgConnection, sql: &str) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            if sqlx::query_scalar::<_, bool>(&format!("SELECT coalesce(({sql}),false)"))
+                .fetch_one(&mut *db)
+                .await?
+            {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .with_context(|| format!("timed out: {sql}"))??;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "POSTVEC_MANAGED_TEST_DSN must name a disposable PostgreSQL 18 admin database"]
+async fn worker_fleet_lifecycle() -> Result<()> {
+    let dsn = std::env::var("POSTVEC_MANAGED_TEST_DSN")?;
+    let name = format!("worker_{}", uuid::Uuid::new_v4().simple());
+    let mut admin = PgConnection::connect(&dsn).await?;
+    admin
+        .execute(format!("CREATE DATABASE {name}").as_str())
+        .await?;
+    let mut url = reqwest::Url::parse(&dsn)?;
+    url.set_path(&format!("/{name}"));
+    let result = exercise(url.as_str()).await;
+    admin
+        .execute(format!("DROP DATABASE {name} WITH(FORCE)").as_str())
+        .await?;
+    result
+}
+async fn exercise(dsn: &str) -> Result<()> {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let mut db = PgConnection::connect(dsn).await?;
+    db.execute("CREATE SCHEMA vectors;CREATE EXTENSION vector SCHEMA vectors;GRANT USAGE ON SCHEMA vectors TO PUBLIC").await?;
+    managed::run(Command::Install(ConnectionArgs {
+        dsn: dsn.into(),
+        password_file: None,
+        timeout: 10,
+    }))
+    .await?;
+    let paused = Arc::new(AtomicBool::new(false));
+    let entered = Arc::new(AtomicBool::new(false));
+    let p = paused.clone();
+    let e = entered.clone();
+    let mock=Router::new().route("/v1/embeddings",post(move|Json(v):Json<Value>|{
+        let paused=p.clone();let entered=e.clone();async move {
+            entered.store(true,Ordering::SeqCst);
+            while paused.load(Ordering::SeqCst){tokio::time::sleep(Duration::from_millis(20)).await;}
+            let texts=v["input"].as_array().cloned().unwrap_or_default();
+            if texts.iter().any(|v|v.as_str()==Some("poison")){return (StatusCode::BAD_REQUEST,Json(json!({"error":{"message":"maximum context length exceeded: too many tokens"}})));}
+            (StatusCode::OK,Json(json!({"data":texts.iter().enumerate().map(|(i,t)|json!({"index":i,"embedding":[t.as_str().unwrap().len() as f32,1.0,2.0]})).collect::<Vec<_>>()})))
+        }
+    }));
+    let mock = mock.route("/v1/convert",post(|Json(v):Json<Value>|async move {
+        Json(json!({"success":true,"data":{"embeddings":v["embeddings"].as_array().unwrap().iter().map(|r|r.as_array().unwrap().iter().map(|n|n.as_f64().unwrap()+10.0).collect::<Vec<_>>()).collect::<Vec<_>>()}}))
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let mock_task = tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755))?;
+    let providers = root.path().join("providers.d");
+    std::fs::create_dir(&providers)?;
+    std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700))?;
+    let file = providers.join("mock.toml");
+    std::fs::write(&file,format!("provider=\"openai\"\napi_key=\"fixture\"\nbase_url=\"http://{addr}\"\n[[models]]\nname=\"fixture\"\nprovider_model_id=\"fixture\"\ndim=3\n[[models]]\nname=\"next\"\nprovider_model_id=\"next\"\ndim=3\n"))?;
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
+    let file = providers.join("univec.toml");
+    std::fs::write(&file,format!("provider=\"univec\"\napi_key=\"uv-test\"\nbase_url=\"http://{addr}\"\n[[models]]\nname=\"converter\"\nkind=\"convert\"\nprovider_model_id=\"next\"\nprovider_source_id=\"origin\"\nsource_model=\"origin\"\ntarget_model=\"next\"\nsource_dim=3\ndim=3\n"))?;
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600))?;
+    let gateway = Arc::new(providers::gateway::Gateway::load(
+        &providers,
+        &Default::default(),
+    ));
+    ensure!(!gateway.is_empty(), "mock provider did not load");
+    let make = |port, dsn: String, poll_only| {
+        let settings = Arc::new(
+            config::resolve(
+                &ServeArgs {
+                    insecure: true,
+                    ..Default::default()
+                },
+                &config::FileConfig {
+                    managed: Some(vec![ManagedDb {
+                        name: "test".into(),
+                        dsn,
+                        poll_interval_ms: 100,
+                        batch_size: 8,
+                        poll_only,
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                &std::collections::BTreeMap::<String, String>::new(),
+                root.path().into(),
+                None,
+            )
+            .unwrap(),
+        );
+        ServerState::new(
+            Arc::new(engine::InferenceEngine::new(Arc::new(
+                engine::EngineConfig {
+                    root_path: root.path().into(),
+                    host_policy: Default::default(),
+                },
+            ))),
+            settings,
+            NodeIdentity {
+                advertise: "127.0.0.1".parse().unwrap(),
+                api_address: format!("http://127.0.0.1:{port}"),
+                grpc_address: format!("127.0.0.1:{port}"),
+                frontend: String::new(),
+            },
+            Arc::new(Metrics::new()),
+            None,
+            gateway.clone(),
+        )
+    };
+    let first = make(31101, dsn.into(), false);
+    let second = make(31102, format!("{dsn}?application_name=standby"), true);
+    let mut tasks = Tasks(vec![mock_task]);
+    tasks.0.extend(managed::start(&first));
+    tasks.0.extend(managed::start(&second));
+    wait(&mut db, "SELECT count(*)=3 FROM postvec.models").await?;
+    db.execute("CREATE TABLE docs(id int PRIMARY KEY,body text,title text);INSERT INTO docs VALUES(1,'hello','one'),(2,NULL,'two');SELECT postvec.enable('docs','body','fixture',backfill_mode=>'cursor');").await?;
+    wait(
+        &mut db,
+        "SELECT body_semantic IS NOT NULL FROM docs WHERE id=1",
+    )
+    .await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT body_semantic::text FROM docs WHERE id=1")
+            .fetch_one(&mut db)
+            .await?
+            == "[5,1,2]"
+    );
+    paused.store(true, Ordering::SeqCst);
+    entered.store(false, Ordering::SeqCst);
+    db.execute("UPDATE docs SET body='old' WHERE id=1").await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !entered.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
+    db.execute("UPDATE docs SET body='new value' WHERE id=1")
+        .await?;
+    paused.store(false, Ordering::SeqCst);
+    wait(
+        &mut db,
+        "SELECT body_semantic::text='[9,1,2]' FROM docs WHERE id=1",
+    )
+    .await?;
+    db.execute("INSERT INTO docs VALUES(3,'poison','bad'),(4,'good','ok')")
+        .await?;
+    wait(&mut db,"SELECT EXISTS(SELECT FROM postvec.jobs_dead) AND (SELECT body_semantic IS NOT NULL FROM docs WHERE id=4)").await?;
+    db.execute("UPDATE docs SET body='fixed' WHERE id=3;UPDATE docs SET body=NULL WHERE id=1")
+        .await?;
+    wait(&mut db,"SELECT (SELECT body_semantic IS NULL FROM docs WHERE id=1) AND NOT EXISTS(SELECT FROM postvec.jobs_dead) AND NOT EXISTS(SELECT FROM postvec.jobs)").await?;
+    db.execute("SELECT postvec.set_format('docs','body','$title: $body')")
+        .await?;
+    wait(
+        &mut db,
+        "SELECT body_semantic::text='[10,1,2]' FROM docs WHERE id=3",
+    )
+    .await?;
+    db.execute("CREATE TABLE chunks(id int PRIMARY KEY,body text);INSERT INTO chunks VALUES(1,repeat('chunk text ',30));SELECT postvec.enable('chunks','body','fixture',chunking=>'recursive',chunk_size=>64,chunk_overlap=>8)").await?;
+    wait(
+        &mut db,
+        "SELECT count(*)>1 AND bool_and(body_semantic IS NOT NULL) FROM chunks_body_chunks",
+    )
+    .await?;
+    db.execute("UPDATE chunks SET body='replacement' WHERE id=1")
+        .await?;
+    wait(&mut db,"SELECT count(*)=1 AND bool_and(chunk_text='replacement') AND bool_and(body_semantic IS NOT NULL) FROM chunks_body_chunks").await?;
+    db.execute("SELECT postvec.migrate('docs','body','next',strategy=>'reembed')")
+        .await?;
+    wait(
+        &mut db,
+        "SELECT state='awaiting_finalize' FROM postvec.migrations WHERE registry_id=1",
+    )
+    .await?;
+    db.execute("SELECT postvec.migration_finalize(1)").await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT model FROM postvec.registry WHERE id=1")
+            .fetch_one(&mut db)
+            .await?
+            == "next"
+    );
+    db.execute("UPDATE postvec.registry SET index_mode='auto' WHERE id=1")
+        .await?;
+    wait(&mut db,"SELECT EXISTS(SELECT FROM pg_index WHERE indrelid='docs'::regclass AND indexrelid<>'docs_pkey'::regclass AND indisvalid)").await?;
+    db.execute("CREATE TABLE converted(id uuid PRIMARY KEY,body text,v vectors.vector(3));INSERT INTO converted VALUES('00000000-0000-0000-0000-000000000001','no embedding required','[1,2,3]');SELECT postvec.adopt('converted','body','v','origin',sync=>false,backfill=>'none');SELECT postvec.migrate('converted','body','next',observed_writes_quiesced=>true)").await?;
+    wait(
+        &mut db,
+        "SELECT state='awaiting_finalize' FROM postvec.migrations WHERE id=2",
+    )
+    .await?;
+    db.execute("SELECT postvec.migration_finalize(2)").await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT v::text FROM converted")
+            .fetch_one(&mut db)
+            .await?
+            == "[11,12,13]",
+        "conversion output"
+    );
+    db.execute("CREATE TABLE composite(a text,b int,body text,PRIMARY KEY(a,b));INSERT INTO composite VALUES(E'back\\\\slash''quote',1,'composite');SELECT postvec.enable('composite','body','fixture',backfill_mode=>'cursor')").await?;
+    wait(
+        &mut db,
+        "SELECT body_semantic::text='[9,1,2]' FROM composite",
+    )
+    .await?;
+    paused.store(true, Ordering::SeqCst);
+    entered.store(false, Ordering::SeqCst);
+    db.execute("UPDATE docs SET body='in flight at failover' WHERE id=4")
+        .await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !entered.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pid FROM postvec.worker_heartbeat")
+        .fetch_one(&mut db)
+        .await?;
+    sqlx::query("SELECT pg_terminate_backend($1)")
+        .bind(pid)
+        .execute(&mut db)
+        .await?;
+    wait(&mut db,&format!("SELECT pid<>{pid} AND last_beat>now()-interval '10 seconds' FROM postvec.worker_heartbeat")).await?;
+    let leaders:i64=sqlx::query_scalar("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())").fetch_one(&mut db).await?;
+    ensure!(leaders == 1, "multiple leaders");
+    db.execute("INSERT INTO docs VALUES(5,'after failover','node')")
+        .await?;
+    wait(
+        &mut db,
+        "SELECT body_semantic IS NOT NULL FROM docs WHERE id=5",
+    )
+    .await?;
+    db.execute(
+        "UPDATE postvec.schema_version SET version=2;INSERT INTO docs VALUES(6,'parked','version')",
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT body_semantic IS NULL FROM docs WHERE id=6")
+            .fetch_one(&mut db)
+            .await?,
+        "newer schema drained"
+    );
+    db.execute("UPDATE postvec.schema_version SET version=1")
+        .await?;
+    wait(
+        &mut db,
+        "SELECT body_semantic IS NOT NULL FROM docs WHERE id=6",
+    )
+    .await?;
+    db.execute("INSERT INTO postvec.jobs(registry_id,pk_value) SELECT id,'(gone,1)' FROM postvec.registry WHERE table_name='composite';ALTER TABLE composite DROP COLUMN body").await?;
+    wait(
+        &mut db,
+        "SELECT state='disabled' FROM postvec.registry WHERE table_name='composite'",
+    )
+    .await?;
+    first.begin_drain();
+    second.begin_drain();
+    drop(tasks);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    Ok(())
+}

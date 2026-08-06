@@ -3,6 +3,7 @@ import { useStore } from '@/store'
 import Sidebar from './Sidebar'
 import Workbench from './Workbench'
 import Registries from './Registries'
+import Databases from './Databases'
 
 const REFRESH_MS = 30_000
 
@@ -22,7 +23,7 @@ const App = () => {
       <Sidebar />
       <main className="main">
         {error && <div className="banner">{error}</div>}
-        {tab === 'registries' ? <Registries /> : <Workbench />}
+        {tab === 'databases' ? <Databases /> : tab === 'registries' ? <Registries /> : <Workbench />}
       </main>
     </div>
   )

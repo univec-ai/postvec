@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PostgreSQL
 /// One enabled (table, column) as stored in `postvec.registry`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct RegistryEntry {
     pub id: i64,
     pub table_schema: String,

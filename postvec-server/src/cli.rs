@@ -47,7 +47,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Install or inspect the managed PostgreSQL schema (no sync worker yet).
+    /// Install or inspect the managed PostgreSQL schema.
     #[command(subcommand)]
     Managed(crate::managed::Command),
     /// Start the node (the default when no command is given).
@@ -65,6 +65,13 @@ pub enum Command {
 
 #[derive(Debug, Args, Default)]
 pub struct ServeArgs {
+    /// Attach a managed database sync worker.
+    #[arg(long, value_name = "DSN")]
+    pub sync: Option<String>,
+    /// Poll without a LISTEN connection.
+    #[arg(long, requires = "sync")]
+    pub poll_only: bool,
+
     /// Engine root holding libs/ and models/.
     ///
     /// [env: POSTVEC_SERVER_ROOT] [default: current directory]

@@ -8,6 +8,10 @@
   "admin_port": 22223,
 
   "//peers": "Bare hosts (names or IPs). Every node uses the same gossip port, so no ports here; host:port is an escape hatch for one colliding entry. Including this node is fine — the self-join is skipped.",
+  "//managed": "Optional database workers. See /docs/server/managed. Password files must be owned/readable by postvec-server, mode 0600. Use direct PostgreSQL endpoints, not transaction poolers.",
+  "managed": [],
+  "//managed-example": {"name":"prod","dsn":"postgresql://postvec_worker@db.example/app?sslmode=verify-full","password_file":"/etc/postvec-server/prod.pw","sync":true,"poll_interval_ms":2000,"poll_only":false,"batch_size":64,"index_concurrently":true},
+
   "peers": ["10.0.0.10", "10.0.0.11", "10.0.0.12"],
   "group": "postvec",
 

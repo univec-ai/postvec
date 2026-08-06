@@ -1,0 +1,252 @@
+-- SPDX-License-Identifier: PostgreSQL
+CREATE OR REPLACE FUNCTION postvec._owner(relation regclass) RETURNS void LANGUAGE plpgsql
+SET search_path=pg_catalog AS $$
+BEGIN
+    IF NOT EXISTS(SELECT FROM pg_class WHERE oid=relation AND relkind IN ('r','p') AND pg_has_role(current_user,relowner,'USAGE')) THEN
+        RAISE EXCEPTION 'table ownership is required';
+    END IF;
+    PERFORM pg_advisory_xact_lock(1886615158,3);
+    EXECUTE format('LOCK TABLE %s IN SHARE ROW EXCLUSIVE MODE',relation);
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec._format(relation regclass, template text, source_column text, chunked boolean)
+RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE i integer:=1; c text; name text; closed boolean; referenced boolean:=false;
+BEGIN
+    IF template IS NULL THEN RETURN; END IF;
+    IF octet_length(template) NOT BETWEEN 1 AND 16384 THEN RAISE EXCEPTION 'invalid format length'; END IF;
+    WHILE i<=length(template) LOOP
+        c:=substr(template,i,1); i:=i+1;
+        IF c<>'$' THEN CONTINUE; END IF;
+        c:=substr(template,i,1); name:='';
+        IF c='$' THEN i:=i+1; CONTINUE;
+        ELSIF c='{' THEN
+            i:=i+1; closed:=false;
+            WHILE i<=length(template) LOOP
+                c:=substr(template,i,1); i:=i+1;
+                IF c='}' THEN
+                    IF substr(template,i,1)='}' THEN i:=i+1;
+                    ELSE closed:=true; EXIT; END IF;
+                END IF;
+                name:=name||c;
+            END LOOP;
+            IF NOT closed THEN RAISE EXCEPTION 'unclosed format reference'; END IF;
+        ELSE
+            IF c!~'^[A-Za-z_]$' THEN RAISE EXCEPTION 'invalid format reference'; END IF;
+            WHILE substr(template,i,1)~'^[A-Za-z0-9_]$' LOOP
+                name:=name||substr(template,i,1); i:=i+1;
+            END LOOP;
+        END IF;
+        IF name='' THEN RAISE EXCEPTION 'empty format reference'; END IF;
+        IF chunked AND name='chunk' THEN referenced:=true; CONTINUE; END IF;
+        IF NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=name AND attnum>0 AND NOT attisdropped AND atttypid IN ('text'::regtype,'varchar'::regtype,'bpchar'::regtype,'int2'::regtype,'int4'::regtype,'int8'::regtype,'float4'::regtype,'float8'::regtype,'numeric'::regtype,'bool'::regtype,'uuid'::regtype,'date'::regtype,'timestamp'::regtype,'timestamptz'::regtype)) THEN RAISE EXCEPTION 'unsupported format column %',name; END IF;
+        referenced:=referenced OR (NOT chunked AND name=source_column);
+    END LOOP;
+    IF NOT referenced THEN RAISE EXCEPTION 'format must reference %',CASE WHEN chunked THEN '$chunk' ELSE source_column END; END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec._enqueue() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE r postvec.registry; pk text; oldpk text; expr text; ignored text[]; item record;
+BEGIN
+    SELECT * INTO r FROM postvec.registry WHERE id=TG_ARGV[0]::bigint AND state<>'disabled'
+      AND (to_regclass(format('%I.%I',table_schema,table_name))=TG_RELID OR TG_RELID IN (SELECT relid FROM pg_partition_tree(to_regclass(format('%I.%I',table_schema,table_name)))));
+    IF NOT FOUND THEN RETURN NULL; END IF;
+    SELECT array_agg(v) INTO ignored FROM (SELECT r.vector_column AS v UNION ALL SELECT new_column FROM postvec.migrations WHERE registry_id=r.id AND state IN ('running','awaiting_finalize','awaiting_index')) q;
+    IF TG_OP='UPDATE' AND (to_jsonb(NEW)-ignored) IS NOT DISTINCT FROM (to_jsonb(OLD)-ignored) THEN RETURN NULL; END IF;
+    SELECT string_agg(format('($1).%I',c),',') INTO expr FROM unnest(r.pk_columns) c;
+    IF cardinality(r.pk_columns)>1 THEN expr:='ROW('||expr||')'; END IF;
+    IF TG_OP<>'INSERT' THEN EXECUTE 'SELECT ('||expr||')::text' INTO oldpk USING OLD; END IF;
+    IF TG_OP<>'DELETE' THEN EXECUTE 'SELECT ('||expr||')::text' INTO pk USING NEW; END IF;
+    FOR item IN SELECT DISTINCT x FROM unnest(ARRAY[oldpk,pk]) x WHERE x IS NOT NULL LOOP
+        IF r.chunking='recursive' THEN
+            EXECUTE format('DELETE FROM %I.%I WHERE postvec_source_pk::text=$1',r.destination_schema,r.destination_table) USING item.x;
+            DELETE FROM postvec.jobs WHERE registry_id=r.id AND pk_value=item.x AND op='embed';
+        END IF;
+        DELETE FROM postvec.jobs_dead WHERE registry_id=r.id AND pk_value=item.x;
+    END LOOP;
+    IF oldpk IS NOT NULL AND oldpk IS DISTINCT FROM pk THEN
+        DELETE FROM postvec.jobs WHERE registry_id=r.id AND pk_value=oldpk AND claimed_at IS NULL;
+    END IF;
+    IF pk IS NOT NULL THEN
+        INSERT INTO postvec.jobs(registry_id,pk_value,op) VALUES(r.id,pk,CASE WHEN r.chunking='recursive' THEN 'refresh' ELSE 'embed' END)
+        ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING;
+    END IF;
+    PERFORM postvec.worker_kick(); RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec._register(relation regclass, col text, model_name text, vec text, adopted boolean, sync boolean, backfill text, distance text, fts text, fts_index boolean, template text, index_mode text, chunking text, chunk_size integer, chunk_overlap integer, destination text)
+RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE r postvec.registry; ns text; tbl text; vt text; dimension integer; keys text[]; types text[]; expr text; owner_oid oid; pkdef text; dest text[];
+BEGIN
+    PERFORM postvec._owner(relation);
+    IF distance NOT IN ('cosine','l2','ip') OR index_mode NOT IN ('manual','auto','immediate') OR backfill NOT IN ('none','queue','cursor') OR chunking NOT IN ('none','recursive') THEN RAISE EXCEPTION 'invalid registry option'; END IF;
+    IF NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=col AND attnum>0 AND NOT attisdropped AND atttypid IN ('text'::regtype,'varchar'::regtype,'bpchar'::regtype)) THEN RAISE EXCEPTION 'source must be a text column'; END IF;
+    SELECT n.nspname,c.relname,c.relowner INTO ns,tbl,owner_oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=relation;
+    IF ns='postvec' OR ns LIKE 'pg_%' THEN RAISE EXCEPTION 'source must be a user table'; END IF;
+    SELECT array_agg(a.attname::text ORDER BY k.ord),array_agg(format_type(a.atttypid,a.atttypmod) ORDER BY k.ord)
+      INTO keys,types FROM pg_index i CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ord)
+      JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE i.indrelid=relation AND i.indisprimary AND k.ord<=i.indnkeyatts;
+    IF keys IS NULL THEN RAISE EXCEPTION 'primary key required'; END IF;
+    SELECT format('%I.vector',n.nspname) INTO vt FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector';
+    SELECT target_dim INTO dimension FROM postvec.models WHERE (target_model=model_name OR name=model_name) AND target_dim>0 ORDER BY (model_type='embed') DESC,name LIMIT 1;
+    IF adopted THEN
+        SELECT atttypmod INTO STRICT dimension FROM pg_attribute WHERE attrelid=relation AND attname=vec AND atttypid=vt::regtype AND NOT attisdropped AND attnum>0;
+        IF EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=vec AND (attgenerated<>'' OR attidentity<>'' OR atthasdef OR (attnotnull AND (sync OR backfill<>'none')))) THEN RAISE EXCEPTION 'vector column has incompatible generation, default or NOT NULL'; END IF;
+        IF EXISTS(SELECT FROM postvec.models WHERE (target_model=model_name OR name=model_name) AND target_dim IS NOT NULL AND target_dim<>dimension) THEN RAISE EXCEPTION 'model dimension contradicts vector column'; END IF;
+    END IF;
+    IF dimension IS NULL OR dimension NOT BETWEEN 1 AND 16000 THEN RAISE EXCEPTION 'model dimension unavailable; wait for model refresh'; END IF;
+    IF octet_length(vec)>63 OR vec=col OR vec=ANY(keys) THEN RAISE EXCEPTION 'invalid vector column'; END IF;
+    PERFORM postvec._format(relation,template,col,chunking='recursive');
+    IF chunking='recursive' AND (adopted OR cardinality(keys)<>1 OR col='chunk' OR chunk_size NOT BETWEEN 64 AND 100000 OR chunk_overlap<0 OR chunk_overlap>=chunk_size) THEN RAISE EXCEPTION 'invalid recursive configuration'; END IF;
+    INSERT INTO postvec.registry(table_schema,table_name,source_column,vector_column,pk_columns,pk_types,model,dim,fts_config,distance,trigger_mode,backfill_mode,owns_vector_column,format,index_mode,chunking,chunk_size,chunk_overlap,destination_schema,destination_table,destination_view,destination_token)
+    VALUES(ns,tbl,col,vec,keys,types,model_name,dimension,fts::regconfig,distance,CASE WHEN sync THEN 'row' ELSE 'none' END,backfill,NOT adopted,template,index_mode,chunking,CASE WHEN chunking='recursive' THEN chunk_size END,CASE WHEN chunking='recursive' THEN chunk_overlap END,CASE WHEN chunking='recursive' THEN ns END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN gen_random_uuid()::text END) RETURNING * INTO r;
+    IF chunking='recursive' THEN
+        dest:=parse_ident(coalesce(destination,tbl||'_'||col||'_chunks'));
+        IF cardinality(dest) NOT IN (1,2) THEN RAISE EXCEPTION 'invalid destination'; END IF;
+        r.destination_schema:=CASE WHEN cardinality(dest)=2 THEN dest[1] ELSE ns END;
+        r.destination_table:=dest[cardinality(dest)]; r.destination_view:=r.destination_table||'_view';
+        IF octet_length(r.destination_view)>63 THEN RAISE EXCEPTION 'destination name too long'; END IF;
+        UPDATE postvec.registry SET destination_schema=r.destination_schema,destination_table=r.destination_table,destination_view=r.destination_view WHERE id=r.id;
+        SELECT format_type(atttypid,atttypmod)||CASE WHEN attcollation<>0 THEN ' COLLATE '||attcollation::regcollation::text ELSE '' END INTO pkdef FROM pg_attribute WHERE attrelid=relation AND attname=keys[1];
+        EXECUTE format('CREATE TABLE %I.%I(postvec_chunk_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,postvec_source_pk %s NOT NULL,postvec_chunk_seq integer NOT NULL,postvec_char_start bigint NOT NULL,postvec_char_end bigint NOT NULL,chunk_text text NOT NULL,%I %s(%s),UNIQUE(postvec_source_pk,postvec_chunk_seq))',r.destination_schema,r.destination_table,pkdef,vec,vt,dimension);
+        EXECUTE format('COMMENT ON TABLE %I.%I IS %L',r.destination_schema,r.destination_table,format('postvec: managed chunk destination for %s.%s.%s (registry entry %s); ownership token %s. Automatic teardown requires this exact comment.',ns,tbl,col,r.id,r.destination_token));
+        EXECUTE format('CREATE VIEW %I.%I WITH(security_invoker=true,security_barrier=true) AS SELECT c.postvec_source_pk AS pk_value,c.postvec_chunk_seq AS chunk_seq,c.postvec_char_start AS chunk_start,c.postvec_char_end AS chunk_end,c.chunk_text FROM %I.%I c JOIN %s s ON s.%I=c.postvec_source_pk',r.destination_schema,r.destination_view,r.destination_schema,r.destination_table,relation,keys[1]);
+        EXECUTE format('COMMENT ON VIEW %I.%I IS %L',r.destination_schema,r.destination_view,format('postvec: managed chunk join view for %s.%s.%s (registry entry %s); ownership token %s. Automatic teardown requires this exact comment.',ns,tbl,col,r.id,r.destination_token));
+        EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY; CREATE POLICY postvec_source_visible ON %I.%I FOR SELECT USING(EXISTS(SELECT FROM %s s WHERE s.%I=postvec_source_pk))',r.destination_schema,r.destination_table,r.destination_schema,r.destination_table,relation,keys[1]);
+    ELSIF NOT adopted THEN EXECUTE format('ALTER TABLE %s ADD COLUMN %I %s(%s)',relation,vec,vt,dimension);
+    END IF;
+    IF sync THEN EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION postvec._enqueue(%L)','postvec_sync_'||r.id,relation,r.id); END IF;
+    EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_truncate(%L)','postvec_trunc_'||r.id,relation,r.id);
+    IF backfill='queue' THEN
+        SELECT string_agg(format('%I',c),',') INTO expr FROM unnest(keys) c;
+        IF cardinality(keys)>1 THEN expr:='ROW('||expr||')'; END IF;
+        EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,(%s)::text,$2 FROM %s WHERE %I IS NOT NULL',expr,relation,col) USING r.id,CASE WHEN chunking='recursive' THEN 'refresh' ELSE 'embed' END;
+    END IF;
+    IF fts_index THEN EXECUTE format('CREATE INDEX %I ON %s USING gin(to_tsvector(%L::regconfig,coalesce(%I::text,'''')))','postvec_fts_'||r.id,CASE WHEN chunking='recursive' THEN format('%I.%I',r.destination_schema,r.destination_table) ELSE relation::text END,fts,CASE WHEN chunking='recursive' THEN 'chunk_text' ELSE col END); END IF;
+    IF index_mode='immediate' THEN PERFORM postvec.create_vector_index(relation,col); END IF;
+    RAISE NOTICE 'Source text is sent to the configured postvec-server inference fleet';
+    PERFORM postvec.worker_kick();RETURN r.id;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec.enable(relation regclass,column_name text,model text,vector_column text DEFAULT NULL,fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,backfill boolean DEFAULT true,distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',index_mode text DEFAULT 'manual',backfill_mode text DEFAULT 'queue',format text DEFAULT NULL,chunking text DEFAULT 'none',chunk_size integer DEFAULT NULL,chunk_overlap integer DEFAULT NULL,destination text DEFAULT NULL)
+RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+    IF trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid trigger mode'; END IF;
+    RETURN postvec._register(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'),false,true,CASE WHEN backfill THEN backfill_mode ELSE 'none' END,distance,fts_config,create_fts_index,format,index_mode,chunking,coalesce(chunk_size,1000),coalesce(chunk_overlap,200),destination);
+END $$;
+CREATE OR REPLACE FUNCTION postvec.adopt(relation regclass,column_name text,vector_column text,model text,sync boolean DEFAULT true,backfill text DEFAULT 'missing',backfill_mode text DEFAULT 'queue',distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,format text DEFAULT NULL,index_mode text DEFAULT 'manual')
+RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE rid bigint;
+BEGIN
+    IF backfill NOT IN ('missing','all','none') OR trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid adoption option'; END IF;
+    rid:=postvec._register(relation::regclass,column_name,model,vector_column,true,sync,CASE WHEN backfill='none' THEN 'none' ELSE backfill_mode END,distance,fts_config,create_fts_index,format,index_mode,'none',NULL,NULL,NULL);
+    IF backfill='missing' AND backfill_mode='queue' THEN
+        EXECUTE format('DELETE FROM postvec.jobs j WHERE registry_id=$1 AND EXISTS(SELECT FROM %s s WHERE %I IS NOT NULL AND %s=j.pk_value)',relation::regclass,vector_column,(SELECT CASE WHEN cardinality(pk_columns)>1 THEN 'ROW('||string_agg(quote_ident(c),',')||')' ELSE string_agg(quote_ident(c),',') END||'::text' FROM postvec.registry CROSS JOIN LATERAL unnest(pk_columns) c WHERE id=rid GROUP BY pk_columns)) USING rid;
+    END IF;
+    RETURN rid;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec.set_format(relation regclass,column_name text,format text) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE r postvec.registry;
+BEGIN
+    PERFORM postvec._owner(relation::regclass);
+    SELECT * INTO STRICT r FROM postvec.registry WHERE to_regclass(pg_catalog.format('%I.%I',table_schema,table_name))=relation::regclass AND source_column=column_name FOR UPDATE;
+    IF r.state<>'active' THEN RAISE EXCEPTION 'entry must be active'; END IF;
+    PERFORM postvec._format(relation::regclass,format,column_name,r.chunking='recursive');
+    IF r.format IS NOT DISTINCT FROM format THEN RETURN; END IF;
+    UPDATE postvec.registry SET format=set_format.format,backfill_mode='cursor',backfill_watermark=NULL WHERE id=r.id;
+    IF r.chunking='none' THEN EXECUTE pg_catalog.format('UPDATE %s SET %I=NULL',relation::regclass,r.vector_column);
+    ELSE EXECUTE pg_catalog.format('DELETE FROM %I.%I',r.destination_schema,r.destination_table); END IF;
+    DELETE FROM postvec.jobs WHERE registry_id=r.id;DELETE FROM postvec.jobs_dead WHERE registry_id=r.id;
+    PERFORM postvec.worker_kick();
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec.create_vector_index(relation regclass,column_name text) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE r postvec.registry; ns text; expr text; op text;
+BEGIN
+    PERFORM postvec._owner(relation::regclass);
+    SELECT * INTO STRICT r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation::regclass AND source_column=column_name FOR UPDATE;
+    IF r.state<>'active' THEN RAISE EXCEPTION 'entry must be active'; END IF;
+    SELECT quote_ident(n.nspname) INTO ns FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector';
+    op:=CASE r.distance WHEN 'l2' THEN 'l2' WHEN 'ip' THEN 'ip' ELSE 'cosine' END;
+    expr:=CASE WHEN r.dim>2000 THEN format('(%I::%s.halfvec(%s)) %s.halfvec_%s_ops',r.vector_column,ns,r.dim,ns,op) ELSE format('%I %s.vector_%s_ops',r.vector_column,ns,op) END;
+    EXECUTE format('CREATE INDEX %I ON %I.%I USING hnsw(%s)','postvec_vec_'||r.id,coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name),expr);
+    UPDATE postvec.registry SET index_error=NULL WHERE id=r.id;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec.migrate(relation regclass,column_name text,new_model text,strategy text DEFAULT 'convert',reindex text DEFAULT 'manual',observed_writes_quiesced boolean DEFAULT false)
+RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE r postvec.registry; converter text; dimension integer; vt text; rid bigint; total bigint; newcol text; via jsonb;
+BEGIN
+    PERFORM postvec._owner(relation::regclass);
+    SELECT * INTO STRICT r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation::regclass AND source_column=column_name FOR UPDATE;
+    IF r.state<>'active' OR r.model=new_model OR strategy NOT IN ('convert','reembed','auto') OR reindex NOT IN ('manual','blocking') THEN RAISE EXCEPTION 'invalid migration state or options'; END IF;
+    IF r.trigger_mode='none' AND NOT observed_writes_quiesced THEN RAISE EXCEPTION 'observed writes must be quiesced'; END IF;
+    SELECT name INTO converter FROM postvec.models WHERE model_type='convert' AND source_model=r.model AND target_model=new_model ORDER BY (raw->'extra'->>'provider') IS NOT NULL,name LIMIT 1;
+    IF strategy='convert' AND converter IS NULL THEN RAISE EXCEPTION 'no direct converter'; END IF;
+    via:=CASE WHEN strategy='reembed' OR converter IS NULL THEN jsonb_build_object('kind','reembed') ELSE jsonb_build_object('kind','convert','model',converter) END;
+    SELECT target_dim INTO dimension FROM postvec.models WHERE (target_model=new_model OR name=new_model) AND target_dim>0 ORDER BY (model_type='embed') DESC,name LIMIT 1;
+    IF dimension IS NULL THEN RAISE EXCEPTION 'target dimension unavailable'; END IF;
+    newcol:='postvec_new_'||r.id;
+    SELECT format('%I.vector',n.nspname) INTO vt FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector';
+    EXECUTE format('ALTER TABLE %I.%I ADD COLUMN %I %s(%s)',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name),newcol,vt,dimension);
+    EXECUTE format('SELECT count(*) FROM %I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name)) INTO total;
+    INSERT INTO postvec.migrations(registry_id,old_model,new_model,old_dim,new_dim,strategy,resolved_via,new_column,reindex,rows_total) VALUES(r.id,r.model,new_model,r.dim,dimension,strategy,via,newcol,reindex,total) RETURNING id INTO rid;
+    UPDATE postvec.registry SET state='migrating' WHERE id=r.id;
+    RAISE NOTICE 'Migration inputs are sent to the configured postvec-server inference fleet';
+    PERFORM postvec.worker_kick();RETURN rid;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec.migration_abort(migration_id bigint) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE m postvec.migrations; r postvec.registry;
+BEGIN
+    SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id;
+    SELECT * INTO STRICT r FROM postvec.registry WHERE id=m.registry_id;
+    PERFORM postvec._owner(to_regclass(format('%I.%I',r.table_schema,r.table_name)));
+    SELECT * INTO STRICT r FROM postvec.registry WHERE id=r.id FOR UPDATE;
+    SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
+    IF m.state IN ('done','aborted') THEN RETURN; END IF;
+    EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I RESTRICT',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name),m.new_column);
+    UPDATE postvec.migrations SET state='aborted',finished_at=now() WHERE id=m.id;
+    UPDATE postvec.registry SET state='active',backfill_mode='cursor',backfill_watermark=NULL WHERE id=r.id;
+    IF r.chunking='none' THEN EXECUTE format('UPDATE %I.%I SET %I=NULL',r.table_schema,r.table_name,r.vector_column); END IF;
+    PERFORM postvec.worker_kick();
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec.migration_finalize(migration_id bigint) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE m postvec.migrations; r postvec.registry; target regclass; a record;
+BEGIN
+    SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id;
+    SELECT * INTO STRICT r FROM postvec.registry WHERE id=m.registry_id;
+    PERFORM postvec._owner(to_regclass(format('%I.%I',r.table_schema,r.table_name)));
+    target:=to_regclass(format('%I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name)));
+    EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE',target);
+    SELECT * INTO STRICT r FROM postvec.registry WHERE id=r.id FOR UPDATE;
+    SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
+    IF m.state NOT IN ('awaiting_finalize','awaiting_index') OR EXISTS(SELECT FROM postvec.jobs WHERE registry_id=r.id) THEN RAISE EXCEPTION 'migration has not drained'; END IF;
+    SELECT * INTO STRICT a FROM pg_attribute WHERE attrelid=target AND attname=r.vector_column AND NOT attisdropped;
+    IF a.attnotnull OR a.atthasdef OR a.attgenerated<>'' OR a.attidentity<>'' OR a.attacl IS NOT NULL OR col_description(target,a.attnum) IS NOT NULL OR EXISTS(SELECT FROM pg_constraint WHERE conrelid=target AND a.attnum=ANY(conkey)) THEN RAISE EXCEPTION 'old vector column has metadata or constraints; resolve before cutover'; END IF;
+    EXECUTE format('ALTER TABLE %s DROP COLUMN %I RESTRICT',target,r.vector_column);
+    EXECUTE format('ALTER TABLE %s RENAME COLUMN %I TO %I',target,m.new_column,r.vector_column);
+    UPDATE postvec.registry SET state='active',model=m.new_model,dim=m.new_dim,owns_vector_column=true WHERE id=r.id;
+    UPDATE postvec.migrations SET state='done',finished_at=now() WHERE id=m.id;
+    IF m.reindex='blocking' THEN PERFORM postvec.create_vector_index(format('%I.%I',r.table_schema,r.table_name)::regclass,r.source_column); END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec.disable(relation regclass,column_name text,drop_column boolean DEFAULT false,drop_destination boolean DEFAULT false) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE r postvec.registry; t record;
+BEGIN
+    PERFORM postvec._owner(relation::regclass);
+    SELECT * INTO STRICT r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation::regclass AND source_column=column_name FOR UPDATE;
+    IF r.state='migrating' THEN RAISE EXCEPTION 'abort or finalize migration first'; END IF;
+    IF drop_destination THEN RAISE EXCEPTION 'retain destination and drop it explicitly after reviewing dependencies'; END IF;
+    FOR t IN SELECT tgname FROM pg_trigger WHERE tgrelid=relation::regclass AND tgname IN ('postvec_sync_'||r.id,'postvec_trunc_'||r.id) LOOP EXECUTE format('DROP TRIGGER %I ON %s',t.tgname,relation::regclass); END LOOP;
+    IF drop_column AND r.owns_vector_column AND r.chunking='none' THEN EXECUTE format('ALTER TABLE %s DROP COLUMN %I RESTRICT',relation::regclass,r.vector_column); END IF;
+    DELETE FROM postvec.registry WHERE id=r.id; DELETE FROM postvec.jobs_dead WHERE registry_id=r.id;
+END $$;
+
+DO $$ DECLARE f record; BEGIN
+    FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_format','_register','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f.signature);
+    END LOOP;
+END $$;

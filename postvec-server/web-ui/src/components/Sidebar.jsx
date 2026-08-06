@@ -85,6 +85,7 @@ const Sidebar = () => {
         {[
           ['queries', 'Query'],
           ['registries', 'Registries'],
+          ['databases', 'Databases'],
         ].map(([value, label]) => (
           <button
             key={value}

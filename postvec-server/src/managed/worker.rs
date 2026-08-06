@@ -1,0 +1,518 @@
+// SPDX-License-Identifier: BUSL-1.1
+
+use super::{inference::Client, ManagedDb};
+use anyhow::{ensure, Context, Result};
+use postvec_core::{
+    client::{EmbedRoute, ErrorClass},
+    registry::{
+        chunk_format_expr, chunk_format_len_expr, format_expr, format_len_expr, quote_ident,
+        serialize_vector, RegistryEntry,
+    },
+};
+use sqlx::{Connection, Executor, PgConnection, Row};
+
+pub(super) const ITEM_CAP: i64 = 1024 * 1024;
+const BATCH_CAP: usize = 8 * 1024 * 1024;
+
+pub(super) async fn guard(conn: &mut PgConnection) -> Result<()> {
+    conn.execute("SELECT pg_advisory_xact_lock_shared(1886615158,1); SET LOCAL search_path=pg_catalog; SET LOCAL row_security=off; SET LOCAL standard_conforming_strings=on").await?;
+    ensure!(
+        super::install::check(conn).await?,
+        "managed schema is not installed"
+    );
+    Ok(())
+}
+
+pub(super) async fn entry(
+    conn: &mut PgConnection,
+    id: i64,
+    lock: bool,
+) -> Result<Option<RegistryEntry>> {
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT to_jsonb(r)::text FROM postvec.registry r WHERE id=$1 AND state<>'disabled'",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let e: RegistryEntry = serde_json::from_str(&raw)?;
+    ensure!(
+        !e.pk_columns.is_empty() && e.pk_columns.len() == e.pk_types.len(),
+        "invalid primary key metadata"
+    );
+    if let Some(template) = &e.format {
+        postvec_core::registry::parse_format(template).map_err(anyhow::Error::msg)?;
+    }
+    if lock {
+        conn.execute(format!("LOCK TABLE {} IN ROW SHARE MODE", e.qualified_table()).as_str())
+            .await?;
+        let sentinel: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_trigger WHERE tgrelid=to_regclass($1) AND tgname=$2 AND tgfoid='postvec.trg_truncate()'::regprocedure)")
+            .bind(e.qualified_table()).bind(format!("postvec_trunc_{}",e.id)).fetch_one(&mut *conn).await?;
+        ensure!(sentinel, "source relation identity changed");
+        if e.is_recursive() {
+            conn.execute(
+                format!(
+                    "LOCK TABLE {} IN ROW EXCLUSIVE MODE",
+                    e.qualified_vector_table()
+                )
+                .as_str(),
+            )
+            .await?;
+            let marker: Option<String> =
+                sqlx::query_scalar("SELECT obj_description(to_regclass($1),'pg_class')")
+                    .bind(e.qualified_vector_table())
+                    .fetch_one(&mut *conn)
+                    .await?;
+            ensure!(
+                marker == e.destination_comments().map(|c| c.0),
+                "chunk destination ownership changed"
+            );
+        }
+        let mut columns=e.referenced_columns().map_err(anyhow::Error::msg)?;
+        columns.extend(e.pk_columns.iter().cloned()); columns.push(e.source_column.clone());
+        conn.execute(format!("SELECT {} FROM {} LIMIT 0",columns.iter().map(|c|quote_ident(c)).collect::<Vec<_>>().join(","),e.qualified_table()).as_str()).await?;
+        let shape: bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid JOIN pg_extension x ON x.extnamespace=t.typnamespace AND x.extname='vector' WHERE a.attrelid=to_regclass($1) AND a.attname=$2 AND a.atttypmod=$3 AND t.typname='vector' AND NOT a.attisdropped)").bind(e.qualified_vector_table()).bind(&e.vector_column).bind(e.dim).fetch_one(&mut *conn).await?;
+        ensure!(shape,"vector column identity changed");
+        let current: Option<String> = sqlx::query_scalar("SELECT to_jsonb(r)::text FROM postvec.registry r WHERE id=$1 AND state<>'disabled' FOR UPDATE") .bind(id).fetch_optional(&mut *conn).await?;
+        ensure!(
+            current.as_deref().is_none_or(|s| s == raw),
+            "registry changed while locking"
+        );
+        if current.is_none() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(e))
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Routing {
+    pub model: String,
+    pub column: String,
+    pub dim: i32,
+    pub migration: Option<i64>,
+}
+pub(super) async fn routing(conn: &mut PgConnection, e: &RegistryEntry) -> Result<Routing> {
+    let m: Option<(i64,String,String,i32)> = sqlx::query_as("SELECT id,new_model,new_column,new_dim FROM postvec.migrations WHERE registry_id=$1 AND state IN ('running','awaiting_finalize','awaiting_index') ORDER BY id DESC LIMIT 1") .bind(e.id).fetch_optional(conn).await?;
+    Ok(match m {
+        Some((id, model, column, dim)) => Routing {
+            model,
+            column,
+            dim,
+            migration: Some(id),
+        },
+        None => Routing {
+            model: e.model.clone(),
+            column: e.vector_column.clone(),
+            dim: e.dim,
+            migration: None,
+        },
+    })
+}
+
+pub(super) fn source(e: &RegistryEntry) -> (String, String, String, String) {
+    if e.is_recursive() {
+        (
+            format!(
+                "{} c JOIN {} s ON {}",
+                e.qualified_vector_table(),
+                e.qualified_table(),
+                e.source_pk_join("s", "c")
+            ),
+            "c.postvec_chunk_id::text".into(),
+            chunk_format_expr(e, "s", "c"),
+            chunk_format_len_expr(e, "s", "c"),
+        )
+    } else {
+        (
+            format!("{} s", e.qualified_table()),
+            e.pk_text_expr("s"),
+            format_expr(e, "s"),
+            format_len_expr(e, "s"),
+        )
+    }
+}
+
+struct Job {
+    id: i64,
+    pk: String,
+    chunk: Option<i64>,
+    text: Option<String>,
+    version: Option<String>,
+    oversized: bool,
+}
+
+pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedDb) -> Result<bool> {
+    let mut tx = conn.begin().await?;
+    guard(&mut tx).await?;
+    tx.execute("WITH d AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-interval '5 minutes' AND attempts>=5 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,'worker repeatedly lost during inference',created_at FROM d").await?;
+    tx.execute("WITH old AS (DELETE FROM postvec.jobs WHERE claimed_at < now()-interval '5 minutes' RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,last_error) SELECT registry_id,pk_value,op,chunk_id,attempts,'reclaimed after worker loss' FROM old ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING").await?;
+    let id: Option<i64> = sqlx::query_scalar("SELECT j.registry_id FROM postvec.jobs j JOIN postvec.registry r ON r.id=j.registry_id WHERE j.op='embed' AND j.claimed_at IS NULL AND j.not_before<=now() AND r.state<>'disabled' ORDER BY j.not_before,j.id LIMIT 1") .fetch_optional(&mut *tx).await?;
+    let Some(id) = id else {
+        tx.commit().await?;
+        return Ok(false);
+    };
+    let e = match entry(&mut tx, id, true).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            return quarantine_or_error(conn, id, error).await;
+        }
+    };
+    let expected = routing(&mut tx, &e).await?;
+    let rows = sqlx::query("UPDATE postvec.jobs SET claimed_at=clock_timestamp(),attempts=attempts+1 WHERE id IN (SELECT id FROM postvec.jobs WHERE registry_id=$1 AND op='embed' AND claimed_at IS NULL AND not_before<=now() ORDER BY not_before,id LIMIT $2 FOR UPDATE SKIP LOCKED) RETURNING id,pk_value,chunk_id") .bind(id).bind(db.batch_size).fetch_all(&mut *tx).await?;
+    let (from, key, expr, len) = source(&e);
+    let version = if e.is_recursive() {
+        "c.xmin::text || ':' || s.xmin::text"
+    } else {
+        "s.xmin::text"
+    };
+    let mut jobs = Vec::new();
+    let mut bytes = 0;
+    for row in rows {
+        let jid: i64 = row.get("id");
+        let pk: String = row.get("pk_value");
+        let chunk: Option<i64> = row.get("chunk_id");
+        if e.is_recursive() != chunk.is_some() {
+            finish(&mut tx, jid, Some("malformed embed job"), true).await?;
+            continue;
+        }
+        let k = chunk.map(|n| n.to_string()).unwrap_or_else(|| pk.clone());
+        let q = format!("SELECT CASE WHEN {len}<=$2 THEN {expr} END AS text,({len})::bigint AS len,{version} AS version FROM {from} WHERE {key}=$1");
+        let read = sqlx::query(&q)
+            .bind(&k)
+            .bind(ITEM_CAP)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let (text, version, oversized) = match read {
+            Some(r) => (
+                r.get::<Option<String>, _>("text"),
+                Some(r.get::<String, _>("version")),
+                r.get::<Option<i64>, _>("len").is_some_and(|n| n > ITEM_CAP),
+            ),
+            None => (None, None, false),
+        };
+        bytes += text.as_ref().map_or(0, String::len);
+        if bytes > BATCH_CAP {
+            release(&mut tx, jid, "batch byte budget", false).await?;
+            continue;
+        }
+        jobs.push(Job {
+            id: jid,
+            pk,
+            chunk,
+            text,
+            version,
+            oversized,
+        });
+    }
+    tx.commit().await?;
+    let texts: Vec<_> = jobs.iter().filter_map(|j| j.text.clone()).collect();
+    let outcomes = infer_live(conn, client, &texts, None, &expected.model, expected.dim).await?;
+    let mut tx = conn.begin().await?;
+    guard(&mut tx).await?;
+    let fresh = match entry(&mut tx, id, true).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            tx.commit().await?;
+            return Ok(true);
+        }
+        Err(error) => {
+            tx.rollback().await?;
+            return quarantine_or_error(conn, id, error).await;
+        }
+    };
+    let route = routing(&mut tx, &fresh).await?;
+    let changed = route != expected
+        || fresh.format != e.format
+        || fresh.qualified_vector_table() != e.qualified_vector_table();
+    let vector_type: String = sqlx::query_scalar("SELECT quote_ident(n.nspname)||'.vector' FROM pg_extension x JOIN pg_namespace n ON n.oid=x.extnamespace WHERE x.extname='vector'").fetch_one(&mut *tx).await?;
+    let mut outcomes = outcomes.into_iter();
+    for job in jobs {
+        let result = if job.text.is_some() {
+            Some(outcomes.next().context("missing inference outcome")?)
+        } else {
+            None
+        };
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT FROM postvec.jobs WHERE id=$1 AND claimed_at IS NOT NULL)",
+        )
+        .bind(job.id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            continue;
+        }
+        if changed {
+            release(&mut tx, job.id, "routing changed", false).await?;
+            continue;
+        }
+        if job.oversized {
+            finish(
+                &mut tx,
+                job.id,
+                Some("source exceeds 1 MiB embedding limit"),
+                true,
+            )
+            .await?;
+            continue;
+        }
+        let output = match result {
+            Some(Outcome::Vector(v)) => Some(serialize_vector(&v)),
+            Some(Outcome::Dead(error) | Outcome::Failed(error)) => {
+                finish(&mut tx, job.id, Some(&error), true).await?;
+                continue;
+            }
+            Some(Outcome::Retry(error)) => {
+                release(&mut tx, job.id, &error, true).await?;
+                continue;
+            }
+            None => None,
+        };
+        if let Some(version) = job.version {
+            let (table, key, version_pred) = if e.is_recursive() {
+                (
+                    e.qualified_vector_table(),
+                    "postvec_chunk_id::text".into(),
+                    format!(
+                        "xmin::text || ':' || (SELECT s.xmin::text FROM {} s WHERE {}=$3)",
+                        e.qualified_table(),
+                        e.pk_text_expr("s")
+                    ),
+                )
+            } else {
+                (e.qualified_table(), e.pk_text_expr(""), "xmin::text".into())
+            };
+            let k = job
+                .chunk
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| job.pk.clone());
+            let old_null = if output.is_none() && route.column != e.vector_column {
+                format!(",{}=NULL", quote_ident(&e.vector_column))
+            } else {
+                String::new()
+            };
+            let q = format!("UPDATE {table} SET {}=$1::{vector_type}{old_null} WHERE {key}=$2 AND {version_pred}=$4 AND $3::text IS NOT NULL",quote_ident(&route.column));
+            let changed = sqlx::query(&q)
+                .bind(&output)
+                .bind(k)
+                .bind(&job.pk)
+                .bind(version)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+            if changed == 0 {
+                release(&mut tx, job.id, "source changed", false).await?;
+                continue;
+            }
+        }
+        finish(&mut tx, job.id, None, false).await?;
+        let counter = if output.is_some() {
+            "jobs_embedded"
+        } else {
+            "jobs_nulled"
+        };
+        tx.execute(format!("UPDATE postvec.worker_heartbeat SET {counter}={counter}+1,jobs_done=COALESCE(jobs_done,0)+1 WHERE id=1").as_str()).await?;
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+
+pub(super) enum Outcome {
+    Vector(Vec<f32>),
+    Retry(String),
+    Dead(String),
+    Failed(String),
+}
+pub(super) async fn infer_live(
+    conn: &mut PgConnection,
+    client: &Client,
+    texts: &[String],
+    vectors: Option<&[Vec<f32>]>,
+    model: &str,
+    dim: i32,
+) -> Result<Vec<Outcome>> {
+    let future = infer(client, texts, vectors, model, dim);
+    tokio::pin!(future);
+    let mut beat = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            result = &mut future => return Ok(result),
+            _ = beat.tick() => {
+                let mut tx = conn.begin().await?; guard(&mut tx).await?;
+                tx.execute("UPDATE postvec.worker_heartbeat SET last_beat=now() WHERE id=1").await?;
+                tx.commit().await?;
+            }
+        }
+    }
+}
+
+pub(super) async fn infer(
+    client: &Client,
+    texts: &[String],
+    vectors: Option<&[Vec<f32>]>,
+    model: &str,
+    dim: i32,
+) -> Vec<Outcome> {
+    let n = vectors.map_or(texts.len(), |v| v.len());
+    let route = if vectors.is_some() {
+        Ok((model.into(), EmbedRoute::default()))
+    } else {
+        client.route(model)
+    };
+    let (model, route) = match route {
+        Ok(r) => r,
+        Err(e) => return (0..n).map(|_| Outcome::Retry(e.to_string())).collect(),
+    };
+    let mut out: Vec<_> = (0..n)
+        .map(|_| Outcome::Retry("inference incomplete".into()))
+        .collect();
+    let width = (96 * 1024 * 1024usize / (dim.max(1) as usize * 96 + 256)).clamp(1, 512);
+    let mut pending: Vec<_> = (0..n)
+        .step_by(width)
+        .map(|lo| (lo, (lo + width).min(n)))
+        .rev()
+        .collect();
+    while let Some((lo, hi)) = pending.pop() {
+        if hi == lo {
+            continue;
+        }
+        let text = if vectors.is_some() {
+            &[][..]
+        } else {
+            &texts[lo..hi]
+        };
+        match client
+            .predict(text, vectors.map(|v| &v[lo..hi]), &model, &route)
+            .await
+        {
+            Ok(rows) if rows.len() == hi - lo => {
+                for (index, row) in (lo..hi).zip(rows) {
+                    out[index] = if row.len() != dim as usize {
+                        Outcome::Retry("inference dimension mismatch".into())
+                    } else if row.iter().any(|v| !v.is_finite()) {
+                        Outcome::Dead("non-finite inference output".into())
+                    } else {
+                        Outcome::Vector(row)
+                    };
+                }
+            }
+            Ok(_) => {
+                for item in &mut out[lo..hi] {
+                    *item = Outcome::Retry("inference row count mismatch".into());
+                }
+            }
+            Err(e) => {
+                if (e.class() == ErrorClass::PoisonRow
+                    || (vectors.is_some()
+                        && matches!(
+                            &e,
+                            postvec_core::client::PvError::Deadline { .. }
+                                | postvec_core::client::PvError::Remote {
+                                    code: postvec_core::client::RavennaCode::Timeout,
+                                    ..
+                                }
+                        )))
+                    && hi - lo > 1
+                {
+                    let mid = (lo + hi) / 2;
+                    pending.push((mid, hi));
+                    pending.push((lo, mid));
+                } else {
+                    for item in &mut out[lo..hi] {
+                        *item = if e.class() == ErrorClass::Permanent {
+                            Outcome::Failed(e.to_string())
+                        } else if e.class() == ErrorClass::PoisonRow {
+                            Outcome::Dead(e.to_string())
+                        } else {
+                            Outcome::Retry(e.to_string())
+                        };
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+pub(super) async fn finish(
+    conn: &mut PgConnection,
+    id: i64,
+    error: Option<&str>,
+    dead: bool,
+) -> Result<()> {
+    if dead {
+        sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE id=$1 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,not_before,claimed_at,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,not_before,claimed_at,$2,created_at FROM d") .bind(id).bind(error).execute(&mut *conn).await?;
+        sqlx::query(
+            "UPDATE postvec.worker_heartbeat SET jobs_dead=jobs_dead+1,last_error=$1 WHERE id=1",
+        )
+        .bind(error)
+        .execute(conn)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM postvec.jobs WHERE id=$1")
+            .bind(id)
+            .execute(conn)
+            .await?;
+    }
+    Ok(())
+}
+pub(super) async fn release(
+    conn: &mut PgConnection,
+    id: i64,
+    error: &str,
+    backoff: bool,
+) -> Result<()> {
+    let attempts: Option<i32> = sqlx::query_scalar("SELECT attempts FROM postvec.jobs WHERE id=$1")
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    if backoff && attempts.is_some_and(|n| n >= 5) {
+        return finish(conn, id, Some(error), true).await;
+    }
+    sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE id=$1 RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,not_before,last_error,created_at) SELECT registry_id,pk_value,op,chunk_id,CASE WHEN $3 THEN attempts ELSE greatest(attempts-1,0) END,now()+make_interval(secs=>CASE WHEN $3 THEN least(60,power(2,least(attempts,6))) ELSE 0 END),$2,created_at FROM d ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING") .bind(id).bind(error).bind(backoff).execute(&mut *conn).await?;
+    sqlx::query(
+        "UPDATE postvec.worker_heartbeat SET jobs_retried=jobs_retried+1,last_error=$1 WHERE id=1",
+    )
+    .bind(error)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+pub(super) async fn quarantine_or_error(
+    conn: &mut PgConnection,
+    id: i64,
+    error: anyhow::Error,
+) -> Result<bool> {
+    let missing = error
+        .downcast_ref::<sqlx::Error>()
+        .and_then(|e| e.as_database_error())
+        .and_then(|e| e.code())
+        .is_some_and(|code| matches!(code.as_ref(), "42P01" | "42703"));
+    if !missing
+        && !error.to_string().contains("ownership changed")
+        && !error.to_string().contains("identity changed")
+    {
+        return Err(error);
+    }
+    let mut tx = conn.begin().await?;
+    guard(&mut tx).await?;
+    sqlx::query("UPDATE postvec.registry SET state='disabled',index_error=$2 WHERE id=$1")
+        .bind(id)
+        .bind(error.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE postvec.migrations SET state='failed',error=$2 WHERE registry_id=$1 AND state IN ('running','awaiting_finalize','awaiting_index')").bind(id).bind(error.to_string()).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM postvec.jobs WHERE registry_id=$1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
+}

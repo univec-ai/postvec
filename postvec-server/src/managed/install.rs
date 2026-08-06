@@ -6,14 +6,14 @@ use postvec_core::registry::quote_ident;
 use sqlx::{postgres::PgConnectOptions, Connection, Executor, PgConnection, Row};
 use std::{io::Read, str::FromStr, time::Duration};
 
-const VERSION: i32 = 1;
+pub(super) const VERSION: i32 = 1;
 const MARKER: &str = "postvec managed schema";
 const MODELS: &str = include_str!("../../../postvec/sql/managed/models.sql");
 const CONTROL: &str = include_str!("../../../postvec/sql/managed/control.sql");
 const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql");
 const FUNCTIONS: &str = include_str!("../../../postvec/sql/managed/functions.sql");
 
-async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
+pub(super) fn options(args: &ConnectionArgs) -> Result<PgConnectOptions> {
     let mut options = PgConnectOptions::from_str(&args.dsn)
         .map_err(|_| anyhow::anyhow!("invalid PostgreSQL DSN"))?;
     if args.dsn.contains("password=")
@@ -47,6 +47,11 @@ async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
         }
         options = options.password(password);
     }
+    Ok(options)
+}
+
+pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
+    let options = options(args)?;
     let mut connection = tokio::time::timeout(
         Duration::from_secs(args.timeout.into()),
         PgConnection::connect_with(&options),
@@ -65,7 +70,7 @@ async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     Ok(connection)
 }
 
-async fn check(connection: &mut PgConnection) -> Result<bool> {
+pub(super) async fn check(connection: &mut PgConnection) -> Result<bool> {
     let extension: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT FROM pg_catalog.pg_extension WHERE extname = 'postvec')",
     )
@@ -141,6 +146,8 @@ pub async fn run(command: Command) -> Result<()> {
                 tx.execute("UPDATE postvec.schema_version SET mode = 'managed'")
                     .await?;
             }
+            tx.execute(include_str!("../../../postvec/sql/managed/lifecycle.sql"))
+                .await?;
             sqlx::query(
                 "INSERT INTO postvec.settings (key, value) VALUES ('platform', to_jsonb($1::text))
                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -160,7 +167,7 @@ pub async fn run(command: Command) -> Result<()> {
                     AND d.objid=c.oid AND d.deptype='e') ORDER BY r.rolname::text")
                 .fetch_all(&mut *tx).await?;
             tx.commit().await?;
-            println!("Managed schema v{VERSION} ready ({platform}). Sync worker and proxy are not included in this phase.");
+            println!("Managed schema v{VERSION} ready ({platform}). Configure managed[] or serve --sync to start the worker.");
             if owners.is_empty() {
                 println!("The worker role already owns, or inherits ownership of, the existing source tables.");
             } else {
@@ -180,7 +187,7 @@ pub async fn run(command: Command) -> Result<()> {
                 'platform', (SELECT value FROM postvec.settings WHERE key = 'platform'),
                 'worker_alive', COALESCE((SELECT last_beat > now() - interval '30 seconds' FROM postvec.worker_heartbeat), false),
                 'heartbeat', (SELECT to_jsonb(h) FROM postvec.worker_heartbeat h),
-                'leader', NULL,
+                'leader', (SELECT value FROM postvec.settings WHERE key='leader'),
                 'queue_depth', (SELECT count(*) FROM postvec.jobs),
                 'dead_letters', (SELECT count(*) FROM postvec.jobs_dead))::text")
                 .fetch_one(&mut *tx).await?;

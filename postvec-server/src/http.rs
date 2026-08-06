@@ -128,6 +128,7 @@ fn server_object(state: &ServerState) -> Value {
         // client comparing disk against loaded reports every deliberately
         // excluded model as a missing one.
         "models_allowed": state.settings.models,
+        "managed": state.managed.snapshot(),
     })
 }
 
@@ -250,7 +251,11 @@ async fn handle_metrics(State(state): State<Arc<ServerState>>) -> Response {
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        state.metrics.render(&snapshot),
+        format!(
+            "{}{}",
+            state.metrics.render(&snapshot),
+            state.managed.metrics()
+        ),
     )
         .into_response()
 }
@@ -286,8 +291,8 @@ async fn no_spa() -> Json<Value> {
 
 /// Shared routes (discovery, health, native `/api/{model}`, OpenAI adaptor,
 /// the registry). The public listener adds CORS + the SPA fallback; the
-/// admin listener merges mutation routes on top and does not serve the
-/// dashboard. `manage` mounts the registry's mutating routes too: always on
+/// admin listener merges mutation routes and serves the dashboard without
+/// cross-origin access. `manage` mounts the registry's mutating routes too: always on
 /// the admin listener, on the public one only by explicit choice.
 pub fn router(metrics_enabled: bool, manage: bool) -> Router<Arc<ServerState>> {
     // Native `/api/{model}`, the OpenAI adaptor and the registry share this
@@ -316,6 +321,10 @@ pub fn finish_public(router: Router<Arc<ServerState>>, state: Arc<ServerState>) 
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
+    finish_ui(router.layer(cors), state)
+}
+
+pub(crate) fn finish_ui(router: Router<Arc<ServerState>>, state: Arc<ServerState>) -> Router {
     let web_ui = resolve_web_ui(state.settings.web_ui.as_deref(), &state.settings.root);
     let router = if let Some(dir) = web_ui {
         log::info!("serving UI from {}", dir.display());
@@ -326,7 +335,7 @@ pub fn finish_public(router: Router<Arc<ServerState>>, state: Arc<ServerState>) 
     } else {
         router.route("/", get(no_spa))
     };
-    router.layer(cors).with_state(state)
+    router.with_state(state)
 }
 
 /// A running listener, with the handle that drains it.

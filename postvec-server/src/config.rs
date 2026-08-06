@@ -83,6 +83,7 @@ pub struct SslFile {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
+    pub managed: Option<Vec<crate::managed::ManagedDb>>,
     pub bind_address: Option<String>,
     pub http_port: Option<u16>,
     pub grpc_port: Option<u16>,
@@ -161,6 +162,7 @@ pub struct TlsPaths {
 
 #[derive(Debug, Clone)]
 pub struct Settings {
+    pub managed: Vec<crate::managed::ManagedDb>,
     pub root: PathBuf,
     /// The file that was actually read, for the boot log. `None` = none found.
     pub config_path: Option<PathBuf>,
@@ -613,7 +615,25 @@ pub fn resolve(
         .or_else(|| file.web_ui.clone().map(PathBuf::from))
         .map(|p| against_root(&root, p));
 
+    let mut managed = file.managed.clone().unwrap_or_default();
+    if let Some(dsn) = &flags.sync {
+        managed = vec![crate::managed::ManagedDb {
+            name: "default".into(),
+            dsn: dsn.clone(),
+            poll_only: flags.poll_only,
+            ..Default::default()
+        }];
+    }
+    let mut names = std::collections::HashSet::new();
+    for db in &mut managed {
+        db.validate()?;
+        if !names.insert(db.name.clone()) {
+            return Err("managed database names must be unique".into());
+        }
+        db.password_file = db.password_file.as_ref().map(|p| against_root(&root, p));
+    }
     Ok(Settings {
+        managed,
         root,
         config_path,
         bind,

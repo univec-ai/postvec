@@ -171,7 +171,7 @@ fn resolved_response_dim(
     Ok(Some(dim as i32))
 }
 
-struct InferenceService {
+pub(crate) struct InferenceService {
     engine: Arc<InferenceEngine>,
     metrics: Arc<Metrics>,
     predict_timeout: Duration,
@@ -190,6 +190,21 @@ struct InferenceService {
     /// External-provider gateway. Empty in the zero-config case; `owns()`
     /// decides routing after the engine readiness check.
     gateway: Arc<Gateway>,
+}
+
+impl InferenceService {
+    pub(crate) fn local(state: &crate::state::ServerState) -> Self {
+        Self {
+            engine: state.engine.clone(),
+            metrics: state.metrics.clone(),
+            predict_timeout: state.settings.predict_timeout,
+            response_slots: Arc::new(Semaphore::new(state.settings.max_inflight.max(1))),
+            provider_response_bytes: Arc::new(Semaphore::new(
+                PROVIDER_RESPONSE_BUDGET_MIB as usize,
+            )),
+            gateway: state.gateway.clone(),
+        }
+    }
 }
 
 /// The metric label for a refusal: its wire error code when it carries one,

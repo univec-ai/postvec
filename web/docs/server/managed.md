@@ -1,104 +1,154 @@
 ---
-title: Managed PostgreSQL schema
-description: Install the postvec SQL schema on PostgreSQL without the native extension.
+title: Managed PostgreSQL
+description: Run automatic embeddings and model migrations on PostgreSQL without a native extension.
 ---
 
-# Managed PostgreSQL schema
+# Managed PostgreSQL
 
-`postvec-server managed` installs the plain SQL foundation on PostgreSQL 16–18
-with pgvector. It needs no postvec library, preload setting, or database restart.
-The SQL is embedded in the existing server binary and ships in its packages
-and image.
+postvec-server runs the sync worker outside PostgreSQL, using a plain SQL schema
+and pgvector on PostgreSQL 16–18. It supports backfill, automatic updates,
+recursive chunking, migration by conversion or re-embedding, and fleet failover.
+No postvec library, preload setting or database restart is required.
 
-**This release implements the schema and installer only.** It does not start a
-sync worker or proxy, populate the model catalogue, or provide managed
-`enable()`, `adopt()`, or migration lifecycle commands. Ordinary extension
-installations retain their complete feature set. Automatic embeddings on
-managed databases arrive with the worker phase.
+## Install and run
 
-## Install
-
-Have the database administrator enable pgvector and create a dedicated login
-role with `CREATE` on the application database. Install as that role; it owns
-the managed schema and its functions. Source-table ownership or membership in
-the owning role will be needed when the worker is added.
+Have the database administrator enable pgvector and create a login role with
+`CREATE` on the application database. Install as that role; it owns the managed
+schema. The worker needs ownership of source tables, or membership in their
+owning roles. The installer prints the applicable role grants for review.
 
 ```sh
 chmod 600 /etc/postvec-server/database.pw
 postvec-server managed install \
   --dsn 'postgresql://postvec_worker@db.example/app?sslmode=verify-full' \
   --password-file /etc/postvec-server/database.pw
-postvec-server managed status \
-  --dsn 'postgresql://postvec_worker@db.example/app?sslmode=verify-full' \
-  --password-file /etc/postvec-server/database.pw
 ```
 
-Use your provider's CA configuration for TLS verification. The server host
-needs a route to PostgreSQL; installation opens no inbound listener. Passwords
-stay outside the schema. Password files must be regular files with mode `0600`;
-symlinks are refused. A DSN password is accepted with a warning.
+Add this to `/etc/postvec-server/config.json`:
 
-Installation is transactional and serialized. Repeating it preserves data.
-The installer refuses an existing postvec extension, an unrelated schema, or
-an unsupported schema version. Version 1 is the first managed schema; no older
-managed upgrade is needed yet. Future versions must supply explicit migrations.
+```json
+{
+  "managed": [{
+    "name": "prod",
+    "dsn": "postgresql://postvec_worker@db.example/app?sslmode=verify-full",
+    "password_file": "/etc/postvec-server/database.pw",
+    "sync": true,
+    "poll_interval_ms": 2000,
+    "poll_only": false,
+    "batch_size": 64,
+    "index_concurrently": true
+  }]
+}
+```
 
-The installer prints grants for existing source-table owner roles the worker
-does not inherit. Apply only the grants relevant to the tables you intend to
-manage: role membership grants the privileges of that role. It never applies
-those grants itself or creates a database role.
+Restart postvec-server. Its existing models, provider credentials and gossip
+fleet serve the worker. For one database, `postvec-server serve --sync <DSN>`
+is a shortcut; `--poll-only` disables LISTEN. Multiple databases use the file.
+Passwords never enter the schema or dashboard. Password files must be regular
+files, mode `0600`, readable by the service account; symlinks are refused.
+Relative password paths resolve against the engine root.
 
-## SQL available in this phase
+Use a direct database endpoint, not a transaction-pooling endpoint: election
+requires a session advisory lock. All nodes configured for a database share
+one leader, even when their DSNs use different credentials or host aliases.
+Standbys take over after the leader's database session closes. PostgreSQL's
+TCP keepalive settings determine detection time for a severed network.
 
-The durable registry, queue, dead-letter, migration, model, and heartbeat
-tables share their definitions with the extension. `schema_version` records
-the schema contract and installation mode. `settings` holds non-secret
-`key text PRIMARY KEY, value jsonb NOT NULL` rows; currently `platform` is
-populated by best-effort detection. An unrecognised platform is `postgresql`.
+`poll_only` removes the LISTEN connection, but election and heartbeat still
+keep database sessions open. It does **not** guarantee Neon or Aurora scale to
+zero. Stop the managed workers when scale-to-zero is required.
 
-Available helpers are `search_with_vector()`, `status()`, `stats()`,
-`retry_dead()`, `migration_status()`, and `refresh_models()`. Search uses the
-caller's table privileges and row security. `status()` adds `worker_alive`
-before the extension's usual columns; it is false without a heartbeat newer
-than 30 seconds. CLI status also reports an empty leader field until the
-worker and fleet phases are implemented.
+## Use
 
-`retry_dead()` and `refresh_models()` are restricted to the installing role
-by default. Retry additionally requires ownership of the source table and
-preserves queue deduplication. `refresh_models()` sends a notification;
-there is no listener until the worker phase.
+Once the worker has populated `postvec.models`:
 
-For a provisioned registry entry and existing vectors, the two-call search
-path is the server's [HTTP embeddings endpoint](/docs/server/http-api), then
-`postvec.search_with_vector(relation, column, query_vector::real[], query_text)`.
-The installer does not provision those entries. Single-call `search(text)`
-through a proxy is a later phase, and no proxy port is opened here.
+```sql
+SELECT postvec.enable('public.docs', 'body', 'your-model',
+                      backfill_mode => 'cursor', index_mode => 'auto');
+SELECT * FROM postvec.status();
+SELECT postvec.migrate('public.docs', 'body', 'new-model', strategy => 'convert');
+SELECT * FROM postvec.migration_status();
+SELECT postvec.migration_finalize(1);
+```
 
-## Remove
+`adopt()` registers an existing vector column. `enable()` creates one, or a
+chunk destination with `chunking => 'recursive'`. `set_format()` refreshes the
+entry using a document template. Managed installations currently use row
+triggers for updates, including when `trigger_mode => 'statement'` is requested.
+Use `backfill_mode => 'cursor'` to bound the initial queue on large tables.
+
+Claims and source reads commit before inference. Write-back checks the source
+row version and migration target again. Transient/configuration failures retry
+with exponential backoff; queue jobs dead-letter after five attempts. Oversized
+embedding inputs (1 MiB per item, 8 MiB per batch) dead-letter without loading
+the full value into the worker. Recursive splitting accepts documents up to
+32 MiB. Input-length failures split batches to isolate the offending row.
+
+Source-table RLS must not restrict the worker: it uses `row_security=off` to
+fail rather than silently skip rows. Ordinary table owners bypass non-forced
+RLS; a forced-RLS source needs an appropriately privileged worker role.
+Chunk destinations are private until the owner grants access; their SELECT
+policy checks source visibility for non-owner readers.
+
+`index_mode => 'auto'` waits for backfill and jobs to drain and builds an HNSW
+index concurrently by default. A saved build intent supports invalid-index
+recovery. Other index errors appear in `index_error`; resolve the cause and
+clear that field to retry. `create_vector_index()` explicitly builds a blocking
+index. PostgreSQL does not support concurrent index creation on partitioned
+parents; use a blocking build or manage partition indexes explicitly.
+
+Migration cutover is explicit and refuses old-column constraints or metadata
+that dropping the column would discard. Dependent views block cutover. Aborting
+rebuilds the old model's vectors so writes received during migration converge.
+`disable()` retains user vectors and chunk data by default; managed destinations
+are dropped explicitly after reviewing their dependencies.
+
+The proxy is a later phase. For search, call the server's
+[HTTP embeddings endpoint](/docs/server/http-api), then
+`postvec.search_with_vector('public.docs','body',query_vector::real[],query_text)`.
+No SQL `search(text)`, `embed()` or proxy port is provided in this release.
+
+## Observe and operate
+
+The dashboard's **Databases** page shows platform, schema version, leader,
+heartbeat age, queues, migrations and source-owner grants. Database credentials
+and source text are omitted. Job inspection, retry and model refresh use the
+loopback admin listener. Open the dashboard through an SSH tunnel to that port:
 
 ```sh
-postvec-server managed uninstall \
-  --dsn 'postgresql://postvec_worker@db.example/app?sslmode=verify-full' \
-  --password-file /etc/postvec-server/database.pw
+ssh -L 22223:127.0.0.1:22223 server-host
+# Open http://127.0.0.1:22223
 ```
 
-This removes managed triggers, functions, and the schema in one transaction.
-User tables, vector columns, and chunk data remain. External dependencies,
-such as a user view of a registry table, cause a rollback instead of a cascading
-removal. Remove those dependencies explicitly before retrying. The `postvec`
-schema is reserved for managed objects.
+Admin routes are `GET /admin/managed`, `GET /admin/managed/{name}/jobs`,
+`POST /admin/managed/{name}/refresh-models`, and
+`POST /admin/managed/{name}/retry-dead` with
+`{"registry_id":1,"dead_ids":[123]}`. Omitting `dead_ids` retries the entry's
+eligible dead letters. Database actions remain off the public listener.
 
-## Provider notes
+Metrics include `postvec_managed_queue_depth{db}`,
+`postvec_managed_jobs_total{db,outcome}`, `postvec_managed_leader{db}`, and
+`postvec_managed_heartbeat_age_seconds{db}`. The job counters are database-wide
+and survive leadership changes; avoid summing copies scraped from multiple nodes.
 
-Use the direct database endpoint for installation. RDS/Aurora, Cloud SQL, and
-Azure may require an administrator to enable pgvector or grant database
-`CREATE`. Supabase's direct endpoint avoids pooler restrictions. Neon and
-Aurora Serverless may wake for installation and status checks; no persistent
-LISTEN connection is opened in this phase. Test with your provider's actual
-role and TLS settings before production; the automated suite uses local PostgreSQL.
+```sh
+postvec-server managed status --dsn <DSN> --password-file <PATH>
+postvec-server managed uninstall --dsn <DSN> --password-file <PATH>
+```
 
-Organization production use of postvec-server requires postvec Pro. Personal
-noncommercial use, non-production environments, and one 30-day production
-evaluation per organization are free. See the
-[license terms](https://github.com/univec-ai/postvec/blob/main/LICENSING.md).
-No license key or telemetry is added.
+Installation is transactional and repeatable. Rerun `managed install` to add the
+lifecycle functions to an earlier version-1 managed installation. The installer
+refuses an extension database, unrelated schema or unsupported schema version.
+Workers park on schema-version mismatch. Uninstall removes managed triggers and
+schema objects, retains user vectors/chunks, and refuses external dependencies.
+Stop configured workers before uninstalling.
+
+Use your provider's CA configuration for verified TLS. RDS/Aurora, Cloud SQL,
+Azure, Supabase and Neon also require a network route and suitable database-role
+permissions. Tests exercise local PostgreSQL; verify your provider's actual
+role, TLS and network configuration before deployment.
+
+Organization production use requires postvec Pro. Personal noncommercial use,
+non-production environments and one 30-day production evaluation per organization
+are free. See the [license terms](https://github.com/univec-ai/postvec/blob/main/LICENSING.md).
+There is no runtime license check or telemetry.

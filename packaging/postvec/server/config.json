@@ -2,6 +2,9 @@
   "//": "postvec-server configuration, read by the packaged unit (--config /etc/postvec-server/config.json). Every key is optional and has a default; unknown keys are a hard error. Keys beginning with // are comments. Precedence: defaults < this file < environment < flags. Every key, explained: /usr/share/doc/postvec-server/postvec-server.example.json",
 
   "//peers": "Bare hosts of the other nodes in this fleet, e.g. [\"10.0.0.11\", \"10.0.0.12\"]. Leave empty for a single node.",
+  "//managed": "Optional database workers. See /docs/server/managed. Password files must be owned/readable by postvec-server, mode 0600. Use direct PostgreSQL endpoints, not transaction poolers.",
+  "managed": [],
+
   "peers": [],
 
   "//ssl": "Certificate pair for the discovery listener. The unit runs as postvec-server with /opt/postvec root-owned and read-only, so the pair lives here: install the key as root:postvec-server mode 0640. Without a readable pair the node refuses to start. Set \"insecure\": true only for local development.",
