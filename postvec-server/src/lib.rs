@@ -464,10 +464,6 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // drain-delay so the 503 is observable, then stop. A second signal
     // skips the wait.
     state.begin_drain();
-    for task in managed_tasks {
-        task.abort();
-        let _ = task.await;
-    }
     if let Some(maintenance) = maintenance {
         maintenance.abort();
     }
@@ -485,6 +481,12 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         }
     }
 
+    // The managed sessions leave on their own once they see the drain; a
+    // session still inside a long statement is cut here.
+    for task in managed_tasks {
+        task.abort();
+        let _ = task.await;
+    }
     if let Some(cluster) = &cluster {
         cluster.shutdown().await;
     }

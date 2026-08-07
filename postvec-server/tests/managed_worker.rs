@@ -152,8 +152,12 @@ async fn exercise(dsn: &str) -> Result<()> {
             gateway.clone(),
         )
     };
+    let mut standby = reqwest::Url::parse(dsn)?;
+    standby
+        .query_pairs_mut()
+        .append_pair("application_name", "standby");
     let first = make(31101, dsn.into(), false);
-    let second = make(31102, format!("{dsn}?application_name=standby"), true);
+    let second = make(31102, standby.into(), true);
     let mut tasks = Tasks(vec![mock_task]);
     tasks.0.extend(managed::start(&first));
     tasks.0.extend(managed::start(&second));
@@ -264,6 +268,12 @@ async fn exercise(dsn: &str) -> Result<()> {
         .execute(&mut db)
         .await?;
     wait(&mut db,&format!("SELECT pid<>{pid} AND last_beat>now()-interval '10 seconds' FROM postvec.worker_heartbeat")).await?;
+    paused.store(false, Ordering::SeqCst);
+    wait(
+        &mut db,
+        "SELECT body_semantic::text='[25,1,2]' FROM docs WHERE id=4",
+    )
+    .await?;
     let leaders:i64=sqlx::query_scalar("SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())").fetch_one(&mut db).await?;
     ensure!(leaders == 1, "multiple leaders");
     db.execute("INSERT INTO docs VALUES(5,'after failover','node')")

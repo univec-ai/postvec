@@ -42,11 +42,14 @@ pub(crate) use admin::routes;
 use crate::state::ServerState;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Connection, Executor};
+use sqlx::{postgres::PgListener, Connection, Executor};
 use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
+use tokio::time::Instant;
+
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -121,7 +124,7 @@ pub struct DatabaseStatus {
     pub database: Value,
 }
 pub struct ManagedRuntime {
-    pub(super) status: RwLock<Vec<DatabaseStatus>>,
+    status: RwLock<Vec<DatabaseStatus>>,
 }
 impl ManagedRuntime {
     pub fn new(dbs: &[ManagedDb]) -> Self {
@@ -210,13 +213,13 @@ pub fn start(state: &Arc<ServerState>) -> Vec<tokio::task::JoinHandle<()>> {
         .iter()
         .filter(|d| d.sync)
         .map(|db| {
+            if install::dsn_has_password(&db.dsn) {
+                log::warn!("managed {}: password in DSN; prefer password_file", db.name);
+            }
             let db = db.clone();
             let state = state.clone();
             tokio::spawn(async move {
-                loop {
-                    if state.draining() {
-                        break;
-                    }
+                while !state.draining() {
                     if let Err(e) = session(&state, &db).await {
                         log::warn!("managed {}: {e}", db.name);
                         state.managed.update(
@@ -233,110 +236,117 @@ pub fn start(state: &Arc<ServerState>) -> Vec<tokio::task::JoinHandle<()>> {
         .collect()
 }
 
+/// One database session: stand by until the leader lock is free, then drain
+/// until the connection or the schema is lost. The lock is session-scoped, so
+/// losing the connection is losing leadership.
 async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()> {
     let mut conn = install::connect(&db.args()).await?;
-    let mut listener = if db.poll_only {
-        None
-    } else {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(Duration::from_secs(10))
-            .connect_lazy_with(install::options(&db.args())?);
-        let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
-        listener.listen("postvec_kick").await?;
-        Some(listener)
-    };
-    let mut leader = false;
-    let mut monitor = None;
+    let mut listener: Option<PgListener> = None;
+    let mut monitor: Option<AbortOnDrop> = None;
     let mut client = inference::Client::new(state);
-    let mut refresh = tokio::time::Instant::now();
-    let mut heartbeat = tokio::time::Instant::now();
+    let mut refresh = Instant::now();
+    let mut sampled = Instant::now();
     loop {
         if state.draining() {
-            drop(monitor);
             return Ok(());
         }
-        if !leader {
-            leader = sqlx::query_scalar("SELECT pg_try_advisory_lock(1886615158, 2)")
+        if monitor.is_none()
+            && sqlx::query_scalar("SELECT pg_try_advisory_lock(1886615158, 2)")
                 .fetch_one(&mut conn)
+                .await?
+        {
+            let mut tx = conn.begin().await?;
+            worker::guard(&mut tx).await?;
+            sqlx::query("INSERT INTO postvec.settings(key,value) VALUES ('leader',to_jsonb($1::text)) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+                .bind(&state.identity.grpc_address).execute(&mut *tx).await?;
+            tx.execute("INSERT INTO postvec.worker_heartbeat(id,pid,started_at,last_beat,jobs_done,errors) VALUES (1,pg_backend_pid(),now(),now(),0,0) ON CONFLICT(id) DO UPDATE SET pid=pg_backend_pid(),started_at=now(),last_beat=now()").await?;
+            tx.execute("UPDATE postvec.jobs SET claimed_at=now()-interval '6 minutes' WHERE claimed_at IS NOT NULL").await?;
+            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *tx)
                 .await?;
-            if leader {
-                let mut tx = conn.begin().await?;
-                worker::guard(&mut tx).await?;
-                sqlx::query("INSERT INTO postvec.settings(key,value) VALUES ('leader',to_jsonb($1::text)) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-                    .bind(&state.identity.grpc_address).execute(&mut *tx).await?;
-                tx.execute("INSERT INTO postvec.worker_heartbeat(id,pid,started_at,last_beat,jobs_done,errors) VALUES (1,pg_backend_pid(),now(),now(),0,0) ON CONFLICT(id) DO UPDATE SET pid=pg_backend_pid(),started_at=now(),last_beat=now()") .await?;
-                tx.execute("UPDATE postvec.jobs SET claimed_at=now()-interval '6 minutes' WHERE claimed_at IS NOT NULL").await?;
-                let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-                    .fetch_one(&mut *tx)
-                    .await?;
-                tx.commit().await?;
-                let args = db.args();
-                let state = state.clone();
-                let name = db.name.clone();
-                monitor = Some(AbortOnDrop(tokio::spawn(async move {
-                    loop {
-                        let result=async {
-                            let mut conn=install::connect(&args).await?;
-                            loop {
-                                let n=sqlx::query("UPDATE postvec.worker_heartbeat SET last_beat=now() WHERE id=1 AND pid=$1 AND EXISTS(SELECT FROM postvec.schema_version WHERE version=1 AND mode='managed') AND EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND pid=$1 AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted)").bind(pid).execute(&mut conn).await?.rows_affected();
-                                if n==0 { anyhow::bail!("leader session lost"); }
-                                let data=admin::status(&mut conn).await?;
-                                state.managed.update(&name,true,None,Some(data));
-                                tokio::time::sleep(Duration::from_secs(5)).await;
-                            }
-                            #[allow(unreachable_code)] Ok::<(),anyhow::Error>(())
-                        }.await;
-                        if result.is_err() {
-                            state.managed.update(
-                                &name,
-                                false,
-                                Some("Heartbeat unavailable".into()),
-                                None,
-                            );
-                        }
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                })));
+            tx.commit().await?;
+            monitor = Some(AbortOnDrop(tokio::spawn(heartbeat(
+                state.clone(),
+                db.clone(),
+                pid,
+            ))));
+            if !db.poll_only {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .acquire_timeout(Duration::from_secs(10))
+                    .connect_lazy_with(install::options(&db.args())?);
+                let mut l = PgListener::connect_with(&pool).await?;
+                l.listen("postvec_kick").await?;
+                listener = Some(l);
             }
         }
         let mut progress = false;
-        if leader {
-            if refresh <= tokio::time::Instant::now() {
+        if monitor.is_some() {
+            if refresh <= Instant::now() {
                 client.refresh(state).await?;
                 let mut tx = conn.begin().await?;
                 worker::guard(&mut tx).await?;
                 client.cache(&mut tx).await?;
                 tx.commit().await?;
-                refresh = tokio::time::Instant::now() + Duration::from_secs(30);
+                refresh = Instant::now() + Duration::from_secs(30);
             }
             progress = worker::step(&mut conn, &client, db).await?;
             progress |= maintenance::step(&mut conn, &client, db).await?;
-        }
-        if heartbeat <= tokio::time::Instant::now() {
-            let mut tx = conn.begin().await?;
-            worker::guard(&mut tx).await?;
-            if leader {
-                tx.execute("UPDATE postvec.worker_heartbeat SET last_beat=now() WHERE id=1")
-                    .await?;
-            }
-            let status = admin::status(&mut tx).await?;
-            tx.commit().await?;
-            state.managed.update(&db.name, leader, None, Some(status));
-            heartbeat = tokio::time::Instant::now() + Duration::from_secs(5);
+        } else if sampled <= Instant::now() {
+            let status = admin::status(&mut conn).await?;
+            state.managed.update(&db.name, false, None, Some(status));
+            sampled = Instant::now() + SAMPLE_INTERVAL;
         }
         if progress {
             tokio::task::yield_now().await;
             continue;
         }
-        if let Some(listener) = &mut listener {
-            tokio::select! {
-                result = listener.recv() => { if result?.payload()=="refresh_models" { refresh = tokio::time::Instant::now(); } }
-                _ = tokio::time::sleep(Duration::from_millis(db.poll_interval_ms)) => {}
-            }
-        } else {
+        let Some(l) = &mut listener else {
             tokio::time::sleep(Duration::from_millis(db.poll_interval_ms)).await;
+            continue;
+        };
+        tokio::select! {
+            first = l.recv() => {
+                let mut kicks = vec![first?];
+                kicks.extend(std::iter::from_fn(|| l.next_buffered()));
+                if kicks.iter().any(|k| k.payload() == "refresh_models") {
+                    refresh = Instant::now();
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(db.poll_interval_ms)) => {}
         }
+    }
+}
+
+/// The leader's heartbeat and status sampler, on its own connection so a
+/// long index build or inference call never lets the beat go stale. The beat
+/// is conditional on the leader session still holding its lock.
+async fn heartbeat(state: Arc<ServerState>, db: ManagedDb, pid: i32) {
+    loop {
+        let result = async {
+            let mut conn = install::connect(&db.args()).await?;
+            loop {
+                let beats = sqlx::query("UPDATE postvec.worker_heartbeat SET last_beat=now() WHERE id=1 AND pid=$1 AND EXISTS(SELECT FROM postvec.schema_version WHERE version=$2 AND mode='managed') AND EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND pid=$1 AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted)")
+                    .bind(pid).bind(install::VERSION).execute(&mut conn).await?.rows_affected();
+                anyhow::ensure!(beats == 1, "leader session lost");
+                let status = admin::status(&mut conn).await?;
+                state.managed.update(&db.name, true, None, Some(status));
+                tokio::time::sleep(SAMPLE_INTERVAL).await;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(e) = result {
+            log::warn!("managed {} heartbeat: {e}", db.name);
+        }
+        state.managed.update(
+            &db.name,
+            false,
+            Some("Heartbeat unavailable; see server log".into()),
+            None,
+        );
+        tokio::time::sleep(SAMPLE_INTERVAL).await;
     }
 }
 

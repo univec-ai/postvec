@@ -20,7 +20,7 @@ on:
       - "postvec/**"
       - "core/**"
       - "postvec-server/src/managed/**"
-      - "postvec-server/tests/managed.rs"
+      - "postvec-server/tests/managed*.rs"
       - "proto/**"
       # embedded mode compiles these workspace crates into postvec.so
       - "engine/**"
@@ -33,7 +33,7 @@ on:
       - "postvec/**"
       - "core/**"
       - "postvec-server/src/managed/**"
-      - "postvec-server/tests/managed.rs"
+      - "postvec-server/tests/managed*.rs"
       - "proto/**"
       - "engine/**"
       - "shared/**"

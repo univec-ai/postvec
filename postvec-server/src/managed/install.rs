@@ -13,18 +13,16 @@ const CONTROL: &str = include_str!("../../../postvec/sql/managed/control.sql");
 const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql");
 const FUNCTIONS: &str = include_str!("../../../postvec/sql/managed/functions.sql");
 
+pub(super) fn dsn_has_password(dsn: &str) -> bool {
+    dsn.contains("password=")
+        || reqwest::Url::parse(dsn)
+            .ok()
+            .is_some_and(|u| u.password().is_some())
+}
+
 pub(super) fn options(args: &ConnectionArgs) -> Result<PgConnectOptions> {
     let mut options = PgConnectOptions::from_str(&args.dsn)
         .map_err(|_| anyhow::anyhow!("invalid PostgreSQL DSN"))?;
-    if args.dsn.contains("password=")
-        || reqwest::Url::parse(&args.dsn)
-            .ok()
-            .is_some_and(|u| u.password().is_some())
-    {
-        eprintln!(
-            "Database password in DSN; prefer --password-file to keep it out of process arguments."
-        );
-    }
     if let Some(path) = &args.password_file {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let mut file = std::fs::OpenOptions::new()
@@ -58,9 +56,7 @@ pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     )
     .await
     .context("database connection timed out")?
-    .map_err(|_| {
-        anyhow::anyhow!("database connection failed; check address, credentials and TLS settings")
-    })?;
+    .context("database connection failed")?;
     sqlx::query(
         "SELECT set_config('statement_timeout', $1, false), set_config('lock_timeout', $1, false)",
     )
@@ -111,6 +107,11 @@ pub async fn run(command: Command) -> Result<()> {
     let args = match &command {
         Command::Install(a) | Command::Status(a) | Command::Uninstall(a) => a,
     };
+    if dsn_has_password(&args.dsn) {
+        eprintln!(
+            "Database password in DSN; prefer --password-file to keep it out of process arguments."
+        );
+    }
     let mut connection = connect(args).await?;
     let mut tx = connection.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(1886615158, 1)")

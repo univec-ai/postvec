@@ -10,27 +10,51 @@ use postvec_core::{
     chunking,
     registry::{
         distance_opclass, parse_vector, quote_ident as qi, quote_literal_estring as ql,
-        serialize_vector,
+        serialize_vector, vector_index_probe_sql,
     },
 };
 use sqlx::{Connection, Executor, PgConnection, Row};
 
+/// Backfill cursors, chunk refreshes, migrations and index builds, for the
+/// entries that currently have such work. Each entry's failure is isolated.
 pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedDb) -> Result<bool> {
-    let ids: Vec<i64> =
-        sqlx::query_scalar("SELECT id FROM postvec.registry WHERE state<>'disabled' ORDER BY id")
-            .fetch_all(&mut *conn)
-            .await?;
+    let plan: Vec<(i64, bool, bool, bool)> = sqlx::query_as(&format!(
+        "SELECT r.id,
+            (r.backfill_mode='cursor' AND r.state='active' AND NOT EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id))
+            OR EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id AND j.op='refresh' AND j.claimed_at IS NULL AND j.not_before<=now()),
+            EXISTS(SELECT FROM postvec.migrations m WHERE m.registry_id=r.id AND m.state='running' AND m.not_before<=now()),
+            r.index_mode='auto' AND r.state='active' AND r.index_error IS NULL AND r.backfill_mode<>'cursor'
+            AND NOT EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id)
+            AND NOT EXISTS(SELECT FROM postvec.jobs_dead d WHERE d.registry_id=r.id)
+            AND NOT {}
+         FROM postvec.registry r WHERE r.state<>'disabled' ORDER BY r.id",
+        vector_index_probe_sql(
+            "to_regclass(format('%I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name)))",
+            "r.vector_column"
+        )
+    ))
+    .fetch_all(&mut *conn)
+    .await?;
     let mut progress = false;
-    for id in ids {
-        match local(conn, id, db).await {
-            Ok(work) => progress |= work,
-            Err(error) => {
-                progress |= worker::quarantine_or_error(conn, id, error).await?;
-                continue;
+    for (id, local_work, migrating, build) in plan {
+        let result = async {
+            let mut work = false;
+            if local_work {
+                work |= local(conn, id, db).await?;
             }
+            if migrating {
+                work |= migrate(conn, client, id, db).await?;
+            }
+            if build {
+                index(conn, id, db).await?;
+            }
+            Ok::<_, anyhow::Error>(work)
         }
-        progress |= migrate(conn, client, id, db).await?;
-        index(conn, id, db).await?;
+        .await;
+        progress |= match result {
+            Ok(work) => work,
+            Err(error) => worker::quarantine_or_error(conn, id, error).await?,
+        };
     }
     Ok(progress)
 }
@@ -82,9 +106,7 @@ async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool>
                 worker::finish(&mut tx, jid, Some("refresh on non-chunked entry"), true).await?;
             } else {
                 let src = qi(&e.source_column);
-                let table = e.qualified_table();
-                let key = e.pk_text_expr("");
-                let row:Option<(Option<String>,Option<i64>)>=sqlx::query_as(&format!("SELECT CASE WHEN octet_length({src}::text)<=$2 THEN {src}::text END,octet_length({src}::text)::bigint FROM {table} WHERE {key}=$1 FOR SHARE")) .bind(&pk).bind(chunking::MAX_DOCUMENT_BYTES as i64).fetch_optional(&mut *tx).await?;
+                let row:Option<(Option<String>,Option<i64>)>=sqlx::query_as(&format!("SELECT CASE WHEN octet_length({src}::text)<=$2 THEN {src}::text END,octet_length({src}::text)::bigint FROM {} WHERE {} FOR SHARE",e.qualified_table(),worker::pk_pred(&e,"","$1"))) .bind(&pk).bind(chunking::MAX_DOCUMENT_BYTES as i64).fetch_optional(&mut *tx).await?;
                 let text = row.as_ref().and_then(|r| r.0.as_deref()).unwrap_or("");
                 let chunks = if row
                     .as_ref()
@@ -104,8 +126,9 @@ async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool>
                     Err(error) => worker::finish(&mut tx, jid, Some(&error), true).await?,
                     Ok(chunks) => {
                         sqlx::query(&format!(
-                            "DELETE FROM {} WHERE postvec_source_pk::text=$1",
-                            e.qualified_vector_table()
+                            "DELETE FROM {} WHERE postvec_source_pk=$1::{}",
+                            e.qualified_vector_table(),
+                            e.pk_types[0]
                         ))
                         .bind(&pk)
                         .execute(&mut *tx)
@@ -159,33 +182,30 @@ async fn migrate(
     let via: serde_json::Value = serde_json::from_str(&m.get::<String, _>("resolved_via"))?;
     let reembed = via["kind"] == "reembed";
     let last: Option<String> = m.get("last_pk");
-    let (from, key, text, len) = worker::source(&e);
+    let (from, key, text, len, _) = worker::source(&e);
+    let alias = if e.is_recursive() { "c" } else { "s" };
     let (expr, len) = if reembed {
         (text, len)
     } else {
-        let expr = format!(
-            "{}.{}::text",
-            if e.is_recursive() { "c" } else { "s" },
-            qi(&e.vector_column)
-        );
+        let expr = format!("{alias}.{}::text", qi(&e.vector_column));
         (expr.clone(), format!("octet_length({expr})"))
     };
-    let wm = if e.is_recursive() {
-        last.as_ref()
-            .map(|w| format!(" AND c.postvec_chunk_id>{}::bigint", ql(w)))
-            .unwrap_or_default()
+    let (wm, order) = if e.is_recursive() {
+        (
+            last.as_ref()
+                .map(|w| format!(" AND c.postvec_chunk_id>{}::bigint", ql(w)))
+                .unwrap_or_default(),
+            "c.postvec_chunk_id".to_string(),
+        )
     } else {
-        last.as_ref()
-            .map(|w| e.pk_watermark_clause("s", w))
-            .unwrap_or_default()
+        (
+            last.as_ref()
+                .map(|w| e.pk_watermark_clause("s", w))
+                .unwrap_or_default(),
+            e.pk_order_expr("s"),
+        )
     };
-    let order = if e.is_recursive() {
-        "c.postvec_chunk_id".into()
-    } else {
-        e.pk_order_expr("s")
-    };
-    let alias = if e.is_recursive() { "c" } else { "s" };
-    let rows=sqlx::query(&format!("SELECT {key} AS pk,CASE WHEN {len}<=$2 THEN {expr} END AS payload,{alias}.xmin::text AS version FROM {from} WHERE {alias}.{} IS NULL{wm} ORDER BY {order} LIMIT $1",qi(&column))) .bind(db.batch_size.min(8)).bind(worker::ITEM_CAP).fetch_all(&mut *tx).await?;
+    let rows=sqlx::query(&format!("SELECT {key} AS pk,CASE WHEN {len}<=$2 THEN {expr} END AS payload,{alias}.xmin::text AS version FROM {from} WHERE {alias}.{} IS NULL{wm} ORDER BY {order} LIMIT $1",qi(&column))) .bind(db.batch_size).bind(worker::ITEM_CAP).fetch_all(&mut *tx).await?;
     if rows.is_empty() {
         let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.jobs WHERE registry_id=$1) OR EXISTS(SELECT FROM postvec.registry WHERE id=$1 AND backfill_mode='cursor')").bind(id).fetch_one(&mut *tx).await?;
         if !busy {
@@ -215,15 +235,14 @@ async fn migrate(
     } else {
         via["model"].as_str().context("missing converter model")?
     };
-    let results = worker::infer_live(
-        conn,
+    let results = worker::infer(
         client,
         &payloads,
         if reembed { None } else { Some(&parsed) },
         target,
         dim,
     )
-    .await?;
+    .await;
     let mut tx = conn.begin().await?;
     worker::guard(&mut tx).await?;
     let Some(fresh) = worker::entry(&mut tx, id, true).await? else {
@@ -235,9 +254,20 @@ async fn migrate(
         tx.commit().await?;
         return Ok(false);
     }
+    let key = if e.is_recursive() {
+        "postvec_chunk_id=$2::bigint".to_string()
+    } else {
+        worker::pk_pred(&e, "", "$2")
+    };
+    let write = format!(
+        "UPDATE {} SET {}=$1::{} WHERE {key} AND xmin::text=$3 AND {} IS NULL",
+        e.qualified_vector_table(),
+        qi(&column),
+        worker::vector_type(&mut tx).await?,
+        qi(&column)
+    );
     let mut outcomes = results.into_iter();
-    let mut done = 0i64;
-    let mut skipped = 0i64;
+    let (mut done, mut skipped) = (0i64, 0i64);
     let mut watermark = last.clone();
     for row in rows {
         let pk: String = row.get("pk");
@@ -247,8 +277,20 @@ async fn migrate(
         } else {
             None
         };
-        let vector = match result {
-            Some(Outcome::Vector(v)) => Some(serialize_vector(&v)),
+        match result {
+            Some(Outcome::Vector(v)) => {
+                let affected = sqlx::query(&write)
+                    .bind(serialize_vector(&v))
+                    .bind(&pk)
+                    .bind(version)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+                if affected == 0 {
+                    break;
+                }
+                done += 1;
+            }
             Some(Outcome::Retry(error)) => {
                 sqlx::query("UPDATE postvec.migrations SET retry_failures=retry_failures+1,not_before=now()+make_interval(secs=>least(60,power(2,least(retry_failures+1,6)))),error=$2 WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
                 break;
@@ -257,23 +299,7 @@ async fn migrate(
                 sqlx::query("UPDATE postvec.migrations SET state='failed',error=$2,finished_at=now() WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
                 break;
             }
-            Some(Outcome::Dead(_)) | None => None,
-        };
-        let table = e.qualified_vector_table();
-        let key = if e.is_recursive() {
-            "postvec_chunk_id::text".into()
-        } else {
-            e.pk_text_expr("")
-        };
-        if let Some(vector) = vector {
-            let vector_type:String=sqlx::query_scalar("SELECT quote_ident(n.nspname)||'.vector' FROM pg_extension x JOIN pg_namespace n ON n.oid=x.extnamespace WHERE x.extname='vector'").fetch_one(&mut *tx).await?;
-            let affected=sqlx::query(&format!("UPDATE {table} SET {}=$1::{vector_type} WHERE {key}=$2 AND xmin::text=$3 AND {} IS NULL",qi(&column),qi(&column))).bind(vector).bind(&pk).bind(version).execute(&mut *tx).await?.rows_affected();
-            if affected == 0 {
-                break;
-            }
-            done += 1;
-        } else {
-            skipped += 1;
+            Some(Outcome::Dead(_)) | None => skipped += 1,
         }
         watermark = Some(pk);
     }
@@ -287,16 +313,8 @@ async fn migrate(
 }
 
 async fn index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<()> {
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(1886615158,3)")
-        .fetch_one(&mut *conn)
-        .await?;
-    if !locked {
-        return Ok(());
-    }
-    conn.execute("SELECT pg_advisory_lock_shared(1886615158,1)")
-        .await?;
     let result = build_index(conn, id, db).await;
-    conn.execute("SET statement_timeout='30s'; SELECT pg_advisory_unlock_shared(1886615158,1); SELECT pg_advisory_unlock(1886615158,3)").await?;
+    conn.execute("SET statement_timeout='30s'").await?;
     if let Err(error) = result {
         let mut tx = conn.begin().await?;
         worker::guard(&mut tx).await?;
@@ -317,29 +335,22 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
         tx.commit().await?;
         return Ok(());
     };
+    let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.jobs WHERE registry_id=$1) OR EXISTS(SELECT FROM postvec.jobs_dead WHERE registry_id=$1)").bind(id).fetch_one(&mut *tx).await?;
     if e.index_mode != "auto"
         || e.state != "active"
         || e.index_error.is_some()
         || e.backfill_mode == "cursor"
+        || busy
     {
-        tx.commit().await?;
-        return Ok(());
-    }
-    let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.jobs WHERE registry_id=$1) OR EXISTS(SELECT FROM postvec.jobs_dead WHERE registry_id=$1)").bind(id).fetch_one(&mut *tx).await?;
-    if busy {
         tx.commit().await?;
         return Ok(());
     }
     let table = e.qualified_vector_table();
     let probe = format!(
         "SELECT {}",
-        postvec_core::registry::vector_index_probe_sql(
-            &format!("{}::regclass", ql(&table)),
-            &ql(&e.vector_column)
-        )
+        vector_index_probe_sql(&format!("{}::regclass", ql(&table)), &ql(&e.vector_column))
     );
-    let indexed: bool = sqlx::query_scalar(&probe).fetch_one(&mut *tx).await?;
-    if indexed {
+    if sqlx::query_scalar(&probe).fetch_one(&mut *tx).await? {
         tx.commit().await?;
         return Ok(());
     }
@@ -382,30 +393,20 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
         }
     }
     tx.commit().await?;
+    let concurrently = if db.index_concurrently {
+        "CONCURRENTLY "
+    } else {
+        ""
+    };
     conn.execute("SET statement_timeout='1h'").await?;
     if existing.is_some() {
-        conn.execute(
-            format!(
-                "DROP INDEX {}{qualified}",
-                if db.index_concurrently {
-                    "CONCURRENTLY "
-                } else {
-                    ""
-                }
-            )
-            .as_str(),
-        )
-        .await?;
+        conn.execute(format!("DROP INDEX {concurrently}{qualified}").as_str())
+            .await?;
     }
     let result = conn
         .execute(
             format!(
-                "CREATE INDEX {}{} ON {table} USING hnsw ({expr} {vector_schema}.{op})",
-                if db.index_concurrently {
-                    "CONCURRENTLY "
-                } else {
-                    ""
-                },
+                "CREATE INDEX {concurrently}{} ON {table} USING hnsw ({expr} {vector_schema}.{op})",
                 qi(&name)
             )
             .as_str(),
@@ -416,10 +417,7 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
             .as_database_error()
             .and_then(|e| e.code())
             .is_some_and(|c| matches!(c.as_ref(), "57014" | "40P01" | "55P03"));
-        if retry {
-            return Ok(());
-        }
-        return Err(error.into());
+        return if retry { Ok(()) } else { Err(error.into()) };
     }
     conn.execute(
         format!(

@@ -220,5 +220,5 @@ echo "== postvec dump/restore smoke passed =="
 if [[ "${POSTVEC_TEST_MANAGED:-0}" == 1 ]]; then
     POSTVEC_MANAGED_TEST_DSN="postgresql://$(id -un)@localhost/postgres?host=${WORK}&port=${PORT}" \
     POSTVEC_MANAGED_TEST_EXTENSION=1 \
-        cargo test --manifest-path ../Cargo.toml -p postvec-server --test managed -- --ignored
+        cargo test --manifest-path ../Cargo.toml -p postvec-server --test managed --test managed_worker -- --ignored
 fi

@@ -59,7 +59,7 @@ BEGIN
     IF TG_OP<>'DELETE' THEN EXECUTE 'SELECT ('||expr||')::text' INTO pk USING NEW; END IF;
     FOR item IN SELECT DISTINCT x FROM unnest(ARRAY[oldpk,pk]) x WHERE x IS NOT NULL LOOP
         IF r.chunking='recursive' THEN
-            EXECUTE format('DELETE FROM %I.%I WHERE postvec_source_pk::text=$1',r.destination_schema,r.destination_table) USING item.x;
+            EXECUTE format('DELETE FROM %I.%I WHERE postvec_source_pk=$1::%s',r.destination_schema,r.destination_table,r.pk_types[1]) USING item.x;
             DELETE FROM postvec.jobs WHERE registry_id=r.id AND pk_value=item.x AND op='embed';
         END IF;
         DELETE FROM postvec.jobs_dead WHERE registry_id=r.id AND pk_value=item.x;

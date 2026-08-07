@@ -39,6 +39,7 @@ impl Client {
         self.nodes = vec![(None, parse_config(&envelope.to_string())?)];
         self.complete = true;
         let http = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(5))
             .build()?;
         if let Some(cluster) = &state.cluster {
