@@ -318,6 +318,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // option the operator gets.
     let admin_addr = SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), settings.admin_port);
     let admin_socket = reserve("--admin", admin_addr)?;
+    let proxy_sockets = managed::reserve(&settings)?;
     http::warn_about_exposure(
         settings.bind,
         settings.grpc_port,
@@ -407,7 +408,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         gateway.clone(),
     );
 
-    let managed_tasks = managed::start(&state);
+    let managed_tasks = managed::start(&state, proxy_sockets);
 
     // --- 6. Serve ---------------------------------------------------------
     let public = http::spawn(state.clone(), http_socket)?;

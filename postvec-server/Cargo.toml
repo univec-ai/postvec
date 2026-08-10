@@ -32,6 +32,10 @@ path = "src/main.rs"
 
 [dependencies]
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres"] }
+# The pgwire proxy terminates and originates TLS with the same OpenSSL the
+# discovery listener already links.
+openssl = "0.10"
+tokio-openssl = "0.6"
 postvec-core = { path = "../core" }
 # The engine-root serving lease (flock): held shared for the serving
 # lifetime so a postvec-cli purge cannot sweep the root from under a
@@ -58,6 +62,7 @@ tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
     "signal",
+    "process",
     "net",
     "sync",
     "time",

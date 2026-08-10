@@ -100,7 +100,11 @@ impl Client {
         }
         Ok(())
     }
-    pub fn route(&self, name: &str) -> Result<(String, EmbedRoute), PvError> {
+    pub fn route(
+        &self,
+        name: &str,
+        purpose: EmbedPurpose,
+    ) -> Result<(String, EmbedRoute), PvError> {
         let mut direct: Vec<_> = self
             .models
             .iter()
@@ -111,10 +115,7 @@ impl Client {
             .collect();
         direct.sort_by_key(|m| (m.target_model.as_deref() != Some(name), &m.name));
         if let Some(m) = direct.first() {
-            return Ok((
-                m.name.clone(),
-                EmbedRoute::default().with_purpose(EmbedPurpose::Document),
-            ));
+            return Ok((m.name.clone(), EmbedRoute::default().with_purpose(purpose)));
         }
         for (_, models) in &self.nodes {
             for c in models.iter().filter(|m| {
@@ -135,7 +136,7 @@ impl Client {
                                 EmbedRoute {
                                     bridge_model: Some(source.clone()),
                                     target_model: Some(name.into()),
-                                    purpose: EmbedPurpose::Document,
+                                    purpose,
                                 },
                             ));
                         }

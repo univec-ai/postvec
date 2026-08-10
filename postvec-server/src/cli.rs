@@ -71,6 +71,17 @@ pub struct ServeArgs {
     /// Poll without a LISTEN connection.
     #[arg(long, requires = "sync")]
     pub poll_only: bool,
+    /// Open the pgwire proxy on this port for the --sync or --proxy-upstream database.
+    #[arg(long, value_name = "PORT")]
+    pub proxy: Option<u16>,
+    /// Proxy for a database that another node syncs.
+    #[arg(
+        long = "proxy-upstream",
+        value_name = "DSN",
+        conflicts_with = "sync",
+        requires = "proxy"
+    )]
+    pub proxy_upstream: Option<String>,
 
     /// Engine root holding libs/ and models/.
     ///

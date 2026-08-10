@@ -10,9 +10,10 @@ use postvec_server::{
     state::{NodeIdentity, ServerState},
 };
 use serde_json::{json, Value};
-use sqlx::{Connection, Executor, PgConnection};
+use sqlx::{Connection, Executor, PgConnection, Row};
 use std::{
     os::unix::fs::PermissionsExt,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -109,11 +110,13 @@ async fn exercise(dsn: &str) -> Result<()> {
         &Default::default(),
     ));
     ensure!(!gateway.is_empty(), "mock provider did not load");
-    let make = |port, dsn: String, poll_only| {
+    let make = |port, dsn: String, poll_only, proxy_port, tls: Option<(PathBuf, PathBuf)>| {
         let settings = Arc::new(
             config::resolve(
                 &ServeArgs {
-                    insecure: true,
+                    insecure: tls.is_none(),
+                    ssl_cert: tls.as_ref().map(|t| t.0.clone()),
+                    ssl_cert_key: tls.as_ref().map(|t| t.1.clone()),
                     ..Default::default()
                 },
                 &config::FileConfig {
@@ -123,6 +126,8 @@ async fn exercise(dsn: &str) -> Result<()> {
                         poll_interval_ms: 100,
                         batch_size: 8,
                         poll_only,
+                        proxy_port,
+                        sync: proxy_port.is_none(),
                         ..Default::default()
                     }]),
                     ..Default::default()
@@ -156,11 +161,11 @@ async fn exercise(dsn: &str) -> Result<()> {
     standby
         .query_pairs_mut()
         .append_pair("application_name", "standby");
-    let first = make(31101, dsn.into(), false);
-    let second = make(31102, standby.into(), true);
+    let first = make(31101, dsn.into(), false, None, None);
+    let second = make(31102, standby.into(), true, None, None);
     let mut tasks = Tasks(vec![mock_task]);
-    tasks.0.extend(managed::start(&first));
-    tasks.0.extend(managed::start(&second));
+    tasks.0.extend(managed::start(&first, Vec::new()));
+    tasks.0.extend(managed::start(&second, Vec::new()));
     wait(&mut db, "SELECT count(*)=3 FROM postvec.models").await?;
     db.execute("CREATE TABLE docs(id int PRIMARY KEY,body text,title text);INSERT INTO docs VALUES(1,'hello','one'),(2,NULL,'two');SELECT postvec.enable('docs','body','fixture',backfill_mode=>'cursor');").await?;
     wait(
@@ -307,8 +312,179 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT state='disabled' FROM postvec.registry WHERE table_name='composite'",
     )
     .await?;
+    let proxy_port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let third = make(31103, dsn.into(), true, Some(proxy_port), None);
+    tasks.0.extend(managed::start(
+        &third,
+        managed::reserve(&third.settings).map_err(anyhow::Error::msg)?,
+    ));
+    let mut proxied = reqwest::Url::parse(dsn)?;
+    proxied.set_host(Some("127.0.0.1"))?;
+    proxied.set_port(Some(proxy_port)).unwrap();
+    proxied.set_query(None);
+    let via = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(c) = PgConnection::connect(proxied.as_str()).await {
+                return c;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    let mut via = via.context("proxy did not accept connections")?;
+    wait(&mut via, "SELECT count(*)=3 FROM postvec.models").await?;
+    let simple: Vec<String> =
+        sqlx::raw_sql("SELECT pk_value FROM postvec.search('docs', 'body', 'hello', limit_n => 1)")
+            .fetch_all(&mut via)
+            .await?
+            .iter()
+            .map(|r| r.get::<String, _>("pk_value"))
+            .collect();
+    ensure!(simple == ["3"], "simple-query search: {simple:?}");
+    for _ in 0..2 {
+        let extended: String = sqlx::query_scalar(
+            "SELECT pk_value FROM postvec.search('public.docs', 'body', $1, limit_n => 1)",
+        )
+        .bind("hello")
+        .fetch_one(&mut via)
+        .await?;
+        ensure!(extended == "3", "extended-query search: {extended}");
+    }
+    let embedded: String = sqlx::query_scalar("SELECT postvec.embed('hello', 'fixture')::text")
+        .fetch_one(&mut via)
+        .await?;
+    ensure!(embedded == "{5,1,2}", "embed: {embedded}");
+    let rows = sqlx::raw_sql(
+        "BEGIN; SELECT count(*) AS n FROM postvec.search('docs', 'body', 'x'); ROLLBACK;",
+    )
+    .fetch_all(&mut via)
+    .await?;
+    ensure!(
+        rows.len() == 1 && rows[0].get::<i64, _>("n") > 0,
+        "search inside a transaction"
+    );
+    for bad in [
+        "SELECT postvec.search(t.body, 'body', 'x') FROM docs t",
+        "SELECT postvec.search('missing', 'body', 'x')",
+        "SELECT postvec.embed('x', 'no-such-model')",
+    ] {
+        ensure!(via.execute(bad).await.is_err(), "accepted: {bad}");
+        ensure!(
+            sqlx::query_scalar::<_, i32>(bad)
+                .fetch_one(&mut via)
+                .await
+                .is_err(),
+            "accepted: {bad}"
+        );
+    }
+    let still: i32 = sqlx::query_scalar("SELECT $1::int")
+        .bind(7)
+        .fetch_one(&mut via)
+        .await?;
+    ensure!(still == 7, "connection unusable after proxy errors");
+    ensure!(
+        db.execute("SELECT postvec.search('docs', 'body', 'x')")
+            .await
+            .is_err(),
+        "direct search() did not fail"
+    );
+    if let Ok(out) = tokio::process::Command::new("psql")
+        .arg(proxied.as_str())
+        .args([
+            "-Atc",
+            "SELECT pk_value FROM postvec.search('docs','body','hello',limit_n=>1)",
+        ])
+        .output()
+        .await
+    {
+        ensure!(
+            String::from_utf8_lossy(&out.stdout).trim() == "3",
+            "psql via proxy: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let proxy = third
+        .managed
+        .snapshot()
+        .into_iter()
+        .find(|s| s.name == "test")
+        .unwrap()
+        .proxy;
+    ensure!(
+        proxy["rewrites"]["search"].as_u64() >= Some(4) && proxy["connections"].as_i64() >= Some(1),
+        "proxy stats: {proxy}"
+    );
+    via.close().await?;
+    let (crt, key) = (
+        root.path().join("server.crt"),
+        root.path().join("server.key"),
+    );
+    let certificate = tokio::process::Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+        ])
+        .args([
+            "-addext",
+            "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            "-keyout",
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&crt)
+        .output()
+        .await;
+    if certificate.is_ok_and(|o| o.status.success()) {
+        let tls_port = std::net::TcpListener::bind("127.0.0.1:0")?
+            .local_addr()?
+            .port();
+        let fourth = make(31104, dsn.into(), true, Some(tls_port), Some((crt, key)));
+        tasks.0.extend(managed::start(
+            &fourth,
+            managed::reserve(&fourth.settings).map_err(anyhow::Error::msg)?,
+        ));
+        proxied.set_port(Some(tls_port)).unwrap();
+        proxied.set_query(Some("sslmode=require&channel_binding=disable"));
+        let mut secure = PgConnection::connect(proxied.as_str())
+            .await
+            .context("TLS proxy")?;
+        let hit: String = sqlx::query_scalar(
+            "SELECT pk_value FROM postvec.search('docs', 'body', $1, limit_n => 1)",
+        )
+        .bind("hello")
+        .fetch_one(&mut secure)
+        .await?;
+        ensure!(hit == "3", "search through the TLS proxy: {hit}");
+        secure.close().await?;
+        if let Ok(out) = tokio::process::Command::new("psql")
+            .arg(proxied.as_str())
+            .args([
+                "-Atc",
+                "SELECT pk_value FROM postvec.search('docs','body','hello',limit_n=>1)",
+            ])
+            .output()
+            .await
+        {
+            ensure!(
+                String::from_utf8_lossy(&out.stdout).trim() == "3",
+                "psql via TLS proxy: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        fourth.begin_drain();
+    }
     first.begin_drain();
     second.begin_drain();
+    third.begin_drain();
     drop(tasks);
     tokio::time::sleep(Duration::from_millis(100)).await;
     Ok(())

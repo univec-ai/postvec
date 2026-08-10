@@ -7,7 +7,8 @@ description: Run automatic embeddings and model migrations on PostgreSQL without
 
 postvec-server runs the sync worker outside PostgreSQL, using a plain SQL schema
 and pgvector on PostgreSQL 16–18. It supports backfill, automatic updates,
-recursive chunking, migration by conversion or re-embedding, and fleet failover.
+recursive chunking, migration by conversion or re-embedding, fleet failover and
+a pgwire proxy for single-call `search(text)`.
 No postvec library, preload setting or database restart is required.
 
 ## Install and run
@@ -33,6 +34,7 @@ Add this to `/etc/postvec-server/config.json`:
     "dsn": "postgresql://postvec_worker@db.example/app?sslmode=verify-full",
     "password_file": "/etc/postvec-server/database.pw",
     "sync": true,
+    "proxy_port": 5433,
     "poll_interval_ms": 2000,
     "poll_only": false,
     "batch_size": 64,
@@ -103,10 +105,38 @@ rebuilds the old model's vectors so writes received during migration converge.
 `disable()` retains user vectors and chunk data by default; managed destinations
 are dropped explicitly after reviewing their dependencies.
 
-The proxy is a later phase. For search, call the server's
-[HTTP embeddings endpoint](/docs/server/http-api), then
-`postvec.search_with_vector('public.docs','body',query_vector::real[],query_text)`.
-No SQL `search(text)`, `embed()` or proxy port is provided in this release.
+## Search through the proxy
+
+`postvec.search(relation, column, text)` and `postvec.embed(text, model)` need
+an embedding the database cannot compute. Set `proxy_port` on a managed entry
+(or pass `--proxy <PORT>` with `--sync`, or `--proxy-upstream <DSN>` on a node
+that only proxies) and point the connections that call them at that port. The
+proxy rewrites each call into `search_with_vector()` or a vector literal,
+embedding the text with this node's models or the fleet, and forwards every
+other byte unchanged: authentication, transactions, prepared statements,
+`COPY` and cancellation all pass through. Clients authenticate against the
+database with their own credentials; the proxy has none of them.
+
+```sql
+SELECT * FROM postvec.search('public.docs', 'body', 'reset password', limit_n => 5);
+SELECT * FROM postvec.search('public.docs', 'body', $1, filter => '{"tenant": 7}');
+SELECT postvec.embed('reset password', 'your-model');
+```
+
+The relation, column and model must be literals; the text may be a literal or
+a bind parameter. Calls in any other form, and calls made without the proxy,
+raise an error naming the proxy. Unqualified relation names must be unique
+across schemas. Every execution embeds the text again, so prepared statements
+cost one embedding per execution.
+
+The proxy uses the node's TLS certificate, or plain TCP with `--insecure`, and
+connects to the database with the entry's `sslmode`. SCRAM channel binding
+cannot pass through a proxy: libpq clients (psql, psycopg, JDBC) connecting to
+the proxy over TLS against a TLS-only database must add
+`channel_binding=disable`; plain-TCP clients and drivers without channel
+binding are unaffected.
+Metrics: `postvec_proxy_connections{db}` and
+`postvec_proxy_rewrites_total{db,kind}`.
 
 ## Observe and operate
 

@@ -37,7 +37,7 @@ export default function Databases() {
         {db.error && <p role="alert">{db.error}</p>}
         <p>{d.platform || 'Connecting'} · schema {d.schema_version ?? '—'} · leader {d.leader || '—'}</p>
         <p>Heartbeat: {age == null ? 'unknown' : `${Math.round(age)}s ago`} · queued: {d.queue_depth ?? '—'} · dead letters: {d.dead_letters ?? '—'}</p>
-        <p>Proxy: {d.proxy_state || 'not configured'}</p>
+        <p>Proxy: {db.proxy ? `port ${db.proxy.port} · ${db.proxy.connections} connections · ${db.proxy.rewrites.search} searches, ${db.proxy.rewrites.embed} embeds` : 'not configured'}</p>
         {(d.migrations || []).map((m) => <p key={m.id}>Migration {m.id}: {m.old_model} → {m.new_model} · {m.state} · {m.rows_done} done, {m.rows_skipped} skipped {m.error && `· ${m.error}`}</p>)}
         {d.grant_script && <details><summary>Source-owner grant script</summary><pre>{d.grant_script}</pre></details>}
         <button className="btn" disabled={busy} onClick={() => request(db.name, 'jobs')}>Inspect jobs</button>{' '}

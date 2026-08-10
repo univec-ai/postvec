@@ -616,13 +616,17 @@ pub fn resolve(
         .map(|p| against_root(&root, p));
 
     let mut managed = file.managed.clone().unwrap_or_default();
-    if let Some(dsn) = &flags.sync {
+    if let Some(dsn) = flags.sync.as_ref().or(flags.proxy_upstream.as_ref()) {
         managed = vec![crate::managed::ManagedDb {
             name: "default".into(),
             dsn: dsn.clone(),
+            sync: flags.sync.is_some(),
+            proxy_port: flags.proxy,
             poll_only: flags.poll_only,
             ..Default::default()
         }];
+    } else if flags.proxy.is_some() {
+        return Err("--proxy needs --sync or --proxy-upstream to name the database".into());
     }
     let mut names = std::collections::HashSet::new();
     for db in &mut managed {
@@ -631,6 +635,15 @@ pub fn resolve(
             return Err("managed database names must be unique".into());
         }
         db.password_file = db.password_file.as_ref().map(|p| against_root(&root, p));
+        if let Some(port) = db.proxy_port {
+            if let Some((other, _)) = seen.iter().find(|(_, p)| *p == port) {
+                return Err(format!(
+                    "{other} and the proxy for managed database {} are both {port}; every listener needs its own port",
+                    db.name
+                ));
+            }
+            seen.push(("proxy_port", port));
+        }
     }
     Ok(Settings {
         managed,
@@ -1144,6 +1157,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("resident ceiling"), "{err}");
+    }
+
+    #[test]
+    fn proxy_flags_build_a_managed_entry() {
+        let s = resolve_with(
+            ServeArgs {
+                proxy_upstream: Some("postgresql://u@db/app".into()),
+                proxy: Some(5433),
+                ..Default::default()
+            },
+            FileConfig::default(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(s.managed.len(), 1);
+        assert!(!s.managed[0].sync);
+        assert_eq!(s.managed[0].proxy_port, Some(5433));
+        for flags in [
+            ServeArgs {
+                proxy: Some(5433),
+                ..Default::default()
+            },
+            ServeArgs {
+                sync: Some("postgresql://u@db/app".into()),
+                proxy: Some(DEFAULT_HTTP_PORT),
+                ..Default::default()
+            },
+        ] {
+            assert!(resolve_with(flags, FileConfig::default(), &[]).is_err());
+        }
     }
 
     #[test]

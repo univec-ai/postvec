@@ -36,6 +36,8 @@ pub async fn run(command: Command) -> anyhow::Result<i32> {
 mod admin;
 mod inference;
 mod maintenance;
+mod proxy;
+mod rewrite;
 mod worker;
 pub(crate) use admin::routes;
 
@@ -58,6 +60,7 @@ pub struct ManagedDb {
     pub dsn: String,
     pub password_file: Option<PathBuf>,
     pub sync: bool,
+    pub proxy_port: Option<u16>,
     pub poll_interval_ms: u64,
     pub poll_only: bool,
     pub batch_size: i32,
@@ -77,6 +80,7 @@ impl Default for ManagedDb {
             dsn: String::new(),
             password_file: None,
             sync: true,
+            proxy_port: None,
             poll_interval_ms: 2000,
             poll_only: false,
             batch_size: 64,
@@ -100,6 +104,9 @@ impl ManagedDb {
         {
             return Err("managed poll_interval_ms must be 100–3600000 and batch_size 1–512".into());
         }
+        if self.proxy_port == Some(0) || (!self.sync && self.proxy_port.is_none()) {
+            return Err("managed entry needs sync or a nonzero proxy_port".into());
+        }
         self.dsn
             .parse::<sqlx::postgres::PgConnectOptions>()
             .map_err(|_| "invalid managed PostgreSQL DSN")?;
@@ -122,6 +129,9 @@ pub struct DatabaseStatus {
     pub leader: bool,
     pub error: Option<String>,
     pub database: Value,
+    #[serde(skip)]
+    stats: Option<Arc<proxy::Stats>>,
+    pub proxy: Value,
 }
 pub struct ManagedRuntime {
     status: RwLock<Vec<DatabaseStatus>>,
@@ -137,6 +147,13 @@ impl ManagedRuntime {
                         leader: false,
                         error: None,
                         database: json!({}),
+                        stats: d.proxy_port.map(|port| {
+                            Arc::new(proxy::Stats {
+                                port,
+                                ..Default::default()
+                            })
+                        }),
+                        proxy: Value::Null,
                     })
                     .collect(),
             ),
@@ -152,6 +169,9 @@ impl ManagedRuntime {
                 if let Some(age) = s.database["heartbeat_age_seconds"].as_f64() {
                     s.database["heartbeat_age_seconds"] =
                         json!(age + s.sampled_at.elapsed().unwrap_or_default().as_secs_f64());
+                }
+                if let Some(stats) = &s.stats {
+                    s.proxy = stats.json();
                 }
                 s
             })
@@ -185,8 +205,26 @@ impl ManagedRuntime {
                     );
                 }
             }
+            if let Some(n) = s.proxy["connections"].as_i64() {
+                let _ = writeln!(out, "postvec_proxy_connections{{db=\"{}\"}} {n}", s.name);
+                for kind in ["search", "embed"] {
+                    let _ = writeln!(
+                        out,
+                        "postvec_proxy_rewrites_total{{db=\"{}\",kind=\"{kind}\"}} {}",
+                        s.name, s.proxy["rewrites"][kind]
+                    );
+                }
+            }
         }
         out
+    }
+    fn stats(&self, name: &str) -> Option<Arc<proxy::Stats>> {
+        self.status
+            .read()
+            .unwrap()
+            .iter()
+            .find(|s| s.name == name)
+            .and_then(|s| s.stats.clone())
     }
     fn update(&self, name: &str, leader: bool, error: Option<String>, database: Option<Value>) {
         if let Some(s) = self
@@ -206,34 +244,72 @@ impl ManagedRuntime {
     }
 }
 
-pub fn start(state: &Arc<ServerState>) -> Vec<tokio::task::JoinHandle<()>> {
-    state
-        .settings
+/// Bind every proxy port before anything slow happens, like the other listeners.
+pub fn reserve(
+    settings: &crate::config::Settings,
+) -> Result<Vec<(String, std::net::TcpListener)>, String> {
+    settings
         .managed
         .iter()
-        .filter(|d| d.sync)
-        .map(|db| {
-            if install::dsn_has_password(&db.dsn) {
-                log::warn!("managed {}: password in DSN; prefer password_file", db.name);
-            }
-            let db = db.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                while !state.draining() {
-                    if let Err(e) = session(&state, &db).await {
-                        log::warn!("managed {}: {e}", db.name);
-                        state.managed.update(
-                            &db.name,
-                            false,
-                            Some("Worker unavailable; see server log".into()),
-                            None,
-                        );
-                    }
-                    tokio::time::sleep(Duration::from_millis(db.poll_interval_ms.max(1000))).await;
-                }
-            })
+        .filter_map(|db| db.proxy_port.map(|port| (db, port)))
+        .map(|(db, port)| {
+            let addr = std::net::SocketAddr::new(settings.bind, port);
+            std::net::TcpListener::bind(addr)
+                .map(|l| (db.name.clone(), l))
+                .map_err(|e| {
+                    format!(
+                        "cannot bind the proxy for managed database {} to {addr}: {e}",
+                        db.name
+                    )
+                })
         })
         .collect()
+}
+
+pub fn start(
+    state: &Arc<ServerState>,
+    proxies: Vec<(String, std::net::TcpListener)>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut tasks: Vec<_> = proxies
+        .into_iter()
+        .filter_map(|(name, listener)| {
+            let db = state
+                .settings
+                .managed
+                .iter()
+                .find(|d| d.name == name)?
+                .clone();
+            let stats = state.managed.stats(&name)?;
+            let state = state.clone();
+            Some(tokio::spawn(async move {
+                if let Err(e) = proxy::serve(state, db, listener, stats).await {
+                    log::error!("proxy {name}: {e:#}");
+                }
+            }))
+        })
+        .collect();
+    tasks.extend(state.settings.managed.iter().filter(|d| d.sync).map(|db| {
+        if install::dsn_has_password(&db.dsn) {
+            log::warn!("managed {}: password in DSN; prefer password_file", db.name);
+        }
+        let db = db.clone();
+        let state = state.clone();
+        tokio::spawn(async move {
+            while !state.draining() {
+                if let Err(e) = session(&state, &db).await {
+                    log::warn!("managed {}: {e}", db.name);
+                    state.managed.update(
+                        &db.name,
+                        false,
+                        Some("Worker unavailable; see server log".into()),
+                        None,
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(db.poll_interval_ms.max(1000))).await;
+            }
+        })
+    }));
+    tasks
 }
 
 /// One database session: stand by until the leader lock is free, then drain

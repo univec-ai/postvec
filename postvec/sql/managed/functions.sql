@@ -5,6 +5,30 @@ CREATE FUNCTION postvec.refresh_models() RETURNS void LANGUAGE sql
 SET search_path = pg_catalog, pg_temp AS $$ SELECT pg_catalog.pg_notify('postvec_kick', 'refresh_models') $$;
 REVOKE ALL ON FUNCTION postvec.refresh_models() FROM PUBLIC;
 
+-- Served by the postvec-server proxy, which rewrites these calls before the
+-- database sees them; reaching the function means the call did not go
+-- through it.
+CREATE FUNCTION postvec.search(relation text, column_name text, query text, limit_n integer DEFAULT 10,
+    semantic_weight real DEFAULT 0.5, rrf_k integer DEFAULT 60, candidates integer DEFAULT NULL, filter jsonb DEFAULT NULL)
+RETURNS TABLE(pk_value text, rrf_score double precision, semantic_rank bigint, fts_rank bigint,
+              chunk_seq integer, chunk_start bigint, chunk_end bigint, chunk_text text)
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    RAISE EXCEPTION 'postvec: search(text) is available through the postvec-server proxy port'
+        USING ERRCODE = 'feature_not_supported',
+              HINT = 'Connect through the proxy with a literal or parameter query text, or embed the query with the server API and call postvec.search_with_vector().';
+END $$;
+CREATE FUNCTION postvec._proxy_error(message text) RETURNS void
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+BEGIN RAISE EXCEPTION '%', message USING ERRCODE = 'feature_not_supported'; END $$;
+CREATE FUNCTION postvec.embed(input text, model text) RETURNS real[]
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    RAISE EXCEPTION 'postvec: embed() is available through the postvec-server proxy port'
+        USING ERRCODE = 'feature_not_supported',
+              HINT = 'Connect through the proxy with a literal or parameter text, or use the server''s /api/openai/embeddings endpoint.';
+END $$;
+
 CREATE FUNCTION postvec.retry_dead(relation regclass, column_name text, dead_ids bigint[] DEFAULT NULL)
 RETURNS bigint LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 DECLARE r postvec.registry; picked bigint[]; consumed bigint; q text;

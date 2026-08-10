@@ -2,7 +2,7 @@
   "//": "postvec-server configuration, read by the packaged unit (--config /etc/postvec-server/config.json). Every key is optional and has a default; unknown keys are a hard error. Keys beginning with // are comments. Precedence: defaults < this file < environment < flags. Every key, explained: /usr/share/doc/postvec-server/postvec-server.example.json",
 
   "//peers": "Bare hosts of the other nodes in this fleet, e.g. [\"10.0.0.11\", \"10.0.0.12\"]. Leave empty for a single node.",
-  "//managed": "Optional database workers. See /docs/server/managed. Password files must be owned/readable by postvec-server, mode 0600. Use direct PostgreSQL endpoints, not transaction poolers.",
+  "//managed": "Optional database workers and pgwire proxies. See /docs/server/managed. Password files must be owned/readable by postvec-server, mode 0600. Use direct PostgreSQL endpoints, not transaction poolers. proxy_port opens a pgwire port that rewrites postvec.search(text) and postvec.embed(); omit it for a sync-only node.",
   "managed": [],
 
   "peers": [],

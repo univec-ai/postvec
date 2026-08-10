@@ -397,7 +397,7 @@ pub(super) async fn infer(
     let route = if vectors.is_some() {
         Ok((model.into(), EmbedRoute::default()))
     } else {
-        client.route(model)
+        client.route(model, postvec_core::client::EmbedPurpose::Document)
     };
     let (model, route) = match route {
         Ok(r) => r,
