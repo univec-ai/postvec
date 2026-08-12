@@ -69,6 +69,73 @@ mod tests {
             .unwrap_or_else(|| e.to_string())
     }
 
+    /// `start_worker()` runs a worker with no launcher and no preload: the
+    /// heartbeat appears, a second call is a no-op, and a terminated worker
+    /// exits cleanly instead of being respawned.
+    #[pg_test]
+    fn start_worker_runs_without_preload() {
+        let db = Spi::get_one::<String>("SELECT current_database()::text")
+            .unwrap()
+            .unwrap();
+        let mut c = session(&conn_config(&db));
+        let workers = |c: &mut postgres::Client| -> i64 {
+            c.query_one(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                 AND backend_type LIKE 'postvec worker%'",
+                &[],
+            )
+            .unwrap()
+            .get(0)
+        };
+        let wait =
+            |c: &mut postgres::Client, what: &str, ok: &dyn Fn(&mut postgres::Client) -> bool| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                while !ok(c) {
+                    assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            };
+        assert!(c
+            .query_one("SELECT postvec.start_worker()", &[])
+            .unwrap()
+            .get::<_, bool>(0));
+        wait(&mut c, "heartbeat", &|c| {
+            c.query_one(
+                "SELECT EXISTS (SELECT FROM postvec.worker_heartbeat \
+                 WHERE last_beat > now() - interval '1 minute')",
+                &[],
+            )
+            .unwrap()
+            .get(0)
+        });
+        assert!(!c
+            .query_one("SELECT postvec.start_worker()", &[])
+            .unwrap()
+            .get::<_, bool>(0));
+        assert_eq!(workers(&mut c), 1);
+        c.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname = current_database() AND backend_type LIKE 'postvec worker%'",
+            &[],
+        )
+        .unwrap();
+        wait(&mut c, "worker exit", &|c| workers(c) == 0);
+        std::thread::sleep(Duration::from_secs(7));
+        assert_eq!(workers(&mut c), 0, "a clean exit must not be respawned");
+        assert!(c
+            .query_one("SELECT postvec.start_worker()", &[])
+            .unwrap()
+            .get::<_, bool>(0));
+        wait(&mut c, "second start", &|c| workers(c) == 1);
+        c.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname = current_database() AND backend_type LIKE 'postvec worker%'",
+            &[],
+        )
+        .unwrap();
+        wait(&mut c, "cleanup", &|c| workers(c) == 0);
+    }
+
     /// Committed fixtures live in the suite database (this module owns the
     /// invocation, so nothing else observes them). Each test uses its own
     /// table name and drops everything it created at the end.

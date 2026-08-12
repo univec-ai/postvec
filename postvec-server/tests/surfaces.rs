@@ -707,6 +707,24 @@ async fn native_api_unknown_route_is_json_404() {
 }
 
 #[tokio::test]
+async fn convert_by_pair_reports_a_missing_converter() {
+    let node = start(ServeArgs::default()).await;
+    let (status, body) = node
+        .post_json(
+            node.public,
+            "/api/convert",
+            json!({"source_model": "a", "target_model": "b", "embeddings": [[1.0, 2.0]]}),
+        )
+        .await;
+    assert_eq!(status, 404);
+    assert_eq!(body["success"], json!(false));
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no converter"));
+}
+
+#[tokio::test]
 async fn native_api_hits_a_loaded_dummy_executor() {
     let node = start_with_dummy("echo-dummy").await;
     let (status, body) = node

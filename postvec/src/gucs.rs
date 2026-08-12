@@ -25,11 +25,9 @@ pub static MAX_BATCH_TOTAL_BYTES: GucSetting<i32> = GucSetting::<i32>::new(16_77
 pub static DDL_LOCK_TIMEOUT_MS: GucSetting<i32> = GucSetting::<i32>::new(60_000);
 pub static HEARTBEAT_INTERVAL_MS: GucSetting<i32> = GucSetting::<i32>::new(30_000);
 
-// Embedded-mode settings. All POSTMASTER: the engine, its model pools and
-// its loopback listeners are built once at worker start and cannot be
-// swapped in later. Like postvec.database they are only defined under
-// shared_preload_libraries (a POSTMASTER GUC cannot be created from a
-// plain backend load). Backends of a preloaded cluster inherit the values.
+// Embedded-mode settings. The engine, its model pools and its loopback
+// listeners are built once at worker start, so a changed value applies to
+// the next worker start.
 /// `embedded` by default: an install that carries the engine and a model
 /// should serve `search()` after `CREATE EXTENSION` and a restart, with
 /// nothing else configured. Remote deployments say `postvec.mode = 'grpc'`
@@ -157,96 +155,92 @@ pub fn register() {
         GucContext::Sighup,
         GucFlags::default(),
     );
-    // PGC_POSTMASTER variables can only be created while
-    // shared_preload_libraries is being processed; when the library is merely
-    // loaded by CREATE EXTENSION in a backend, skip it — without preload there
-    // is no background worker to consume it.
-    if unsafe { pgrx::pg_sys::process_shared_preload_libraries_in_progress } {
-        GucRegistry::define_string_guc(
-            c"postvec.database",
-            c"Comma-separated database(s) served by the postvec background workers",
-            c"The launcher spawns (and respawns) one dynamic worker per listed database. \
-              Unset: the launcher idles and logs a hint.",
-            &DATABASE,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-        GucRegistry::define_string_guc(
-            c"postvec.mode",
-            c"Inference deployment mode: 'embedded' (default, in-process) or 'grpc' (remote)",
-            c"'embedded' hosts the UniVec engine in-process (build with --features embedded): \
-              the launcher hosts one shared engine and serves the per-database workers and \
-              connection backends over loopback listeners; \
-              postvec.grpc_endpoints and postvec.http_endpoints are then ignored. \
-              'grpc' makes this a thin client to postvec-server nodes named by \
-              postvec.grpc_endpoints and postvec.http_endpoints.",
-            &MODE,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-        GucRegistry::define_string_guc(
-            c"postvec.path",
-            c"Engine root path for embedded mode (libs/, models/)",
-            c"Defaults to /opt/postvec, where the postvec-onnxruntime and \
-              postvec-model-* packages install their payloads.",
-            &ENGINE_PATH,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-        GucRegistry::define_string_guc(
-            c"postvec.embedded_models",
-            c"Comma-separated model names to preload at worker start (embedded mode)",
-            c"Unset: every enabled model found under <root>/models is loaded.",
-            &EMBEDDED_MODELS,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-        GucRegistry::define_string_guc(
-            c"postvec.embedded_listen",
-            c"host:port the in-worker gRPC server binds in embedded mode",
-            c"Default 127.0.0.1:33433. Backends' search()/embed() (and, in launcher mode, \
-              the per-database workers) dial this address; keep it on loopback — anything \
-              that can reach it can drive inference.",
-            &EMBEDDED_LISTEN,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-        GucRegistry::define_int_guc(
-            c"postvec.embedded_max_inflight",
-            c"Engine-wide cap on concurrently executing embedded predictions",
-            c"Across all models and routes; the permit is held until the native computation \
-              returns, so a timed-out caller cannot oversubscribe the database host. The \
-              hard ceiling is deliberately small — embedded inference shares every core \
-              with PostgreSQL.",
-            &EMBEDDED_MAX_INFLIGHT,
-            1,
-            16,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-        GucRegistry::define_string_guc(
-            c"postvec.providers_path",
-            c"Directory of external-provider connector files (providers.d) for the embedded host",
-            c"Default /etc/postvec/providers.d. Holds one TOML file per provider (0600, cluster \
-              owner), administered with `postvec provider add|ls|rm|test`. A path, never a \
-              credential: no provider API key is ever stored in a GUC, catalog table or SQL \
-              argument. An empty or missing directory means no provider-backed models — the \
-              zero-config behavior is unchanged.",
-            &PROVIDERS_PATH,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-        GucRegistry::define_string_guc(
-            c"postvec.embedded_http_listen",
-            c"host:port the engine host serves GET /config on in embedded mode",
-            c"Default 127.0.0.1:33434. Model discovery for per-database workers and \
-              refresh_models(); same envelope shape as the inference host's /config. Keep it on \
-              loopback.",
-            &EMBEDDED_HTTP_LISTEN,
-            GucContext::Postmaster,
-            GucFlags::default(),
-        );
-    }
+    // Read once, when a worker starts: SIGHUP context so they can be set with
+    // ALTER SYSTEM and take effect for the next worker without a restart.
+    GucRegistry::define_string_guc(
+        c"postvec.database",
+        c"Comma-separated database(s) served by the postvec background workers",
+        c"The launcher spawns (and respawns) one dynamic worker per listed database. \
+          Unset: the launcher idles and logs a hint.",
+        &DATABASE,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"postvec.mode",
+        c"Inference deployment mode: 'embedded' (default, in-process) or 'grpc' (remote)",
+        c"'embedded' hosts the UniVec engine in-process (build with --features embedded): \
+          the launcher hosts one shared engine and serves the per-database workers and \
+          connection backends over loopback listeners; \
+          postvec.grpc_endpoints and postvec.http_endpoints are then ignored. \
+          'grpc' makes this a thin client to postvec-server nodes named by \
+          postvec.grpc_endpoints and postvec.http_endpoints.",
+        &MODE,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"postvec.path",
+        c"Engine root path for embedded mode (libs/, models/)",
+        c"Defaults to /opt/postvec, where the postvec-onnxruntime and \
+          postvec-model-* packages install their payloads.",
+        &ENGINE_PATH,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"postvec.embedded_models",
+        c"Comma-separated model names to preload at worker start (embedded mode)",
+        c"Unset: every enabled model found under <root>/models is loaded.",
+        &EMBEDDED_MODELS,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"postvec.embedded_listen",
+        c"host:port the in-worker gRPC server binds in embedded mode",
+        c"Default 127.0.0.1:33433. Backends' search()/embed() (and, in launcher mode, \
+          the per-database workers) dial this address; keep it on loopback — anything \
+          that can reach it can drive inference.",
+        &EMBEDDED_LISTEN,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"postvec.embedded_max_inflight",
+        c"Engine-wide cap on concurrently executing embedded predictions",
+        c"Across all models and routes; the permit is held until the native computation \
+          returns, so a timed-out caller cannot oversubscribe the database host. The \
+          hard ceiling is deliberately small — embedded inference shares every core \
+          with PostgreSQL.",
+        &EMBEDDED_MAX_INFLIGHT,
+        1,
+        16,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"postvec.providers_path",
+        c"Directory of external-provider connector files (providers.d) for the embedded host",
+        c"Default /etc/postvec/providers.d. Holds one TOML file per provider (0600, cluster \
+          owner), administered with `postvec provider add|ls|rm|test`. A path, never a \
+          credential: no provider API key is ever stored in a GUC, catalog table or SQL \
+          argument. An empty or missing directory means no provider-backed models — the \
+          zero-config behavior is unchanged.",
+        &PROVIDERS_PATH,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_string_guc(
+        c"postvec.embedded_http_listen",
+        c"host:port the engine host serves GET /config on in embedded mode",
+        c"Default 127.0.0.1:33434. Model discovery for per-database workers and \
+          refresh_models(); same envelope shape as the inference host's /config. Keep it on \
+          loopback.",
+        &EMBEDDED_HTTP_LISTEN,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
     GucRegistry::define_bool_guc(
         c"postvec.notify_on_write",
         c"NOTIFY 'postvec' with the registry id after each write-back batch",

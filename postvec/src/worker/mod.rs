@@ -416,10 +416,11 @@ fn park_idle() {
 }
 
 /// Entry point for per-database dynamic workers; the database name arrives in
-/// `bgw_extra` (set by the launcher).
+/// `bgw_extra`. The launcher passes no argument; `start_worker()` passes 1,
+/// meaning there is no launcher and this worker hosts the engine itself.
 #[pg_guard]
 #[no_mangle]
-pub extern "C-unwind" fn postvec_worker_db_main(_arg: pg_sys::Datum) {
+pub extern "C-unwind" fn postvec_worker_db_main(arg: pg_sys::Datum) {
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM);
     let db = BackgroundWorker::get_extra().to_string();
     if db.is_empty() {
@@ -429,7 +430,55 @@ pub extern "C-unwind" fn postvec_worker_db_main(_arg: pg_sys::Datum) {
     let Some(mode) = mode_or_park(&format!("worker for db={db}")) else {
         return;
     };
-    run_worker(&db, mode);
+    run_worker(&db, mode, arg.value() == 1);
+}
+
+/// Start this database's worker now, without `shared_preload_libraries`.
+/// Returns false when one is already running. The postmaster restarts it
+/// after a crash; only the preload path re-creates it after a server restart.
+#[pg_extern]
+fn start_worker() -> bool {
+    if !unsafe { pg_sys::superuser() } {
+        error!("postvec: start_worker() requires a superuser");
+    }
+    let db = Spi::get_one::<String>("SELECT current_database()::text")
+        .unwrap()
+        .unwrap();
+    let running = Spi::get_one::<bool>(
+        "SELECT EXISTS (SELECT FROM pg_stat_activity WHERE datname = current_database() \
+         AND backend_type LIKE 'postvec worker%')",
+    )
+    .unwrap()
+    .unwrap_or(false);
+    if running {
+        return false;
+    }
+    let handle = BackgroundWorkerBuilder::new(&format!("postvec worker [{db}]"))
+        .set_function("postvec_worker_db_main")
+        .set_library("postvec")
+        .set_extra(&db)
+        .set_argument(Some(pg_sys::Datum::from(1usize)))
+        .enable_spi_access()
+        .set_restart_time(Some(Duration::from_secs(5)))
+        .set_notify_pid(unsafe { pg_sys::MyProcPid })
+        .load_dynamic()
+        .unwrap_or_else(|_| {
+            error!(
+                "postvec: could not register a background worker (max_worker_processes exhausted?)"
+            )
+        });
+    match handle.wait_for_startup() {
+        Ok(pid) => {
+            notice!(
+                "postvec: worker started for {db:?} (pid {pid}); to keep it across server \
+                 restarts add postvec to shared_preload_libraries and {db:?} to postvec.database"
+            );
+            true
+        }
+        Err(status) => {
+            error!("postvec: worker for {db:?} did not start ({status:?}); see the server log")
+        }
+    }
 }
 
 /// The launcher: spawn one dynamic worker per database and respawn any that
@@ -659,6 +708,9 @@ fn worker_wake(state: &mut WorkerState<'_>) -> WakeOutcome {
         if shutdown_requested() {
             return WakeOutcome::Shutdown;
         }
+        if state.host_engine {
+            launcher_engine_tick();
+        }
         // Version gate: never touch postvec tables whose shape may belong to
         // another release (see `CatalogVersion`).
         match catalog_version() {
@@ -845,6 +897,9 @@ struct WorkerState<'a> {
     /// per-wake cost under sustained load). The price is an auto build
     /// starting up to one interval after its entry drains.
     next_auto_index_scan: Instant,
+    /// A `start_worker()` worker in embedded mode: no launcher, so the
+    /// engine lives here.
+    host_engine: bool,
 }
 
 enum WakeOutcome {
@@ -867,7 +922,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 /// the engine — in embedded mode they are thin clients of the
 /// launcher-hosted loopback listeners, exactly like connection backends.
 /// The caller has already validated the mode via [`mode_or_park`].
-fn run_worker(db: &str, mode: gucs::Mode) {
+fn run_worker(db: &str, mode: gucs::Mode, standalone: bool) {
     let embedded = mode == gucs::Mode::Embedded;
 
     BackgroundWorker::connect_worker_to_spi(Some(db), None);
@@ -924,6 +979,7 @@ fn run_worker(db: &str, mode: gucs::Mode) {
         gate,
         http_gate: GateCache::default(),
         next_auto_index_scan: Instant::now(),
+        host_engine: standalone && embedded,
     };
     let mut panic_gate = Recurring::default();
     while BackgroundWorker::wait_latch(Some(poll_interval())) {
@@ -955,6 +1011,10 @@ fn run_worker(db: &str, mode: gucs::Mode) {
                 }
             }
         }
+    }
+    #[cfg(feature = "embedded")]
+    if state.host_engine {
+        crate::client::embedded::shutdown();
     }
     let counters = state.counters;
 

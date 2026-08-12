@@ -108,6 +108,7 @@ pub const DROP_EXTENSION: &str = "DROP EXTENSION postvec";
 pub const RELOAD_CONF: &str = "SELECT pg_reload_conf() AS reloaded";
 
 pub const REFRESH_MODELS: &str = "SELECT postvec.refresh_models() AS models";
+pub const START_WORKER: &str = "SELECT postvec.start_worker() AS started";
 
 pub const HEARTBEAT: &str = "\
 SELECT pid,
@@ -289,6 +290,7 @@ mod tests {
             ("DROP_EXTENSION", DROP_EXTENSION),
             ("RELOAD_CONF", RELOAD_CONF),
             ("REFRESH_MODELS", REFRESH_MODELS),
+            ("START_WORKER", START_WORKER),
             ("HEARTBEAT", HEARTBEAT),
             ("HEARTBEAT_SAMPLE", HEARTBEAT_SAMPLE),
             ("PID_IS_LIVE", PID_IS_LIVE),

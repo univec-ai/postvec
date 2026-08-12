@@ -144,6 +144,9 @@ pub enum DbRequest {
     ListDatabases,
     /// `postvec.refresh_models()`. Mutating: `setup` smoke checks only.
     RefreshModels { database: String },
+    /// `postvec.start_worker()`: a worker for the database without a
+    /// preloaded launcher. Mutating: `setup` only.
+    StartWorker { database: String },
     /// A single heartbeat reading, for advancement sampling.
     HeartbeatSample { database: String },
     /// `SELECT pg_reload_conf()`. Applies SIGHUP-context settings without an
@@ -165,6 +168,7 @@ impl DbRequest {
                 | DbRequest::InstallExtension { .. }
                 | DbRequest::UninstallExtension { .. }
                 | DbRequest::RefreshModels { .. }
+                | DbRequest::StartWorker { .. }
                 | DbRequest::ReloadConfig { .. }
         )
     }
@@ -275,6 +279,13 @@ impl Db {
 
     pub async fn refresh_models(&mut self, database: &str) -> Result<i64> {
         self.request(DbRequest::RefreshModels {
+            database: database.to_string(),
+        })
+        .await
+    }
+
+    pub async fn start_worker(&mut self, database: &str) -> Result<bool> {
+        self.request(DbRequest::StartWorker {
             database: database.to_string(),
         })
         .await

@@ -14,6 +14,13 @@ The command creates missing databases, installs the extension, merges
 it, restarts or reloads if a setting changed, refreshes models and
 checks that the worker heartbeat **advances**.
 
+Where postvec is not preloaded yet, `setup` also starts the worker in each
+database immediately with `postvec.start_worker()`, so the database is served
+before the restart. With `--no-restart` the worker runs now and the restart,
+which makes it survive server restarts, can happen later. The same function
+works by hand after a plain `CREATE EXTENSION postvec`: run
+`SELECT postvec.start_worker()` as a superuser.
+
 :::: info Optional
 A dry run reports the planned changes without applying them:
 

@@ -8,7 +8,9 @@ description: Docker, packages or source, then postvec setup.
 Files first, then [configure the cluster](/docs/install/setup).
 
 PostgreSQL 16, 17 or 18, pgvector >= 0.8, superuser, and a host that can
-set `shared_preload_libraries = 'postvec'` and restart.
+set `shared_preload_libraries = 'postvec'` and restart. Without a
+restart, `SELECT postvec.start_worker()` runs the worker until the next server
+restart.
 
 - [Docker](/docs/install/docker)
 - [Packages](/docs/install/packages)

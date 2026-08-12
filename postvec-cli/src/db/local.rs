@@ -161,6 +161,7 @@ impl Direct {
             DbRequest::RefreshModels { database } => {
                 Ok(json!(self.refresh_models(&database).await?))
             }
+            DbRequest::StartWorker { database } => Ok(json!(self.start_worker(&database).await?)),
             DbRequest::HeartbeatSample { database } => {
                 Ok(json!(self.heartbeat_sample(&database).await?))
             }
@@ -707,6 +708,21 @@ impl Direct {
                 .with_fix("reloading the configuration requires a superuser")
             })?;
         Ok(())
+    }
+
+    async fn start_worker(&mut self, database: &str) -> Result<bool> {
+        let conn = self.conn(database).await?;
+        let row = sqlx::query(sql::START_WORKER)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|e| {
+                CliError::apply(format!(
+                    "postvec.start_worker() in {database:?} failed: {}",
+                    redact(&e.to_string())
+                ))
+                .with_fix("read the PostgreSQL log; max_worker_processes may be exhausted")
+            })?;
+        Ok(row.try_get("started")?)
     }
 
     async fn refresh_models(&mut self, database: &str) -> Result<i64> {

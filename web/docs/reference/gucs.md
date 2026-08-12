@@ -9,14 +9,17 @@ description: postvec.* settings, defaults and which ones need a restart.
 reading what a setting does and whether a restart is required.
 
 Each GUC is read at use time, so a `SIGHUP` takes effect without a worker
-restart. POSTMASTER settings exist only when `shared_preload_libraries`
-includes `postvec`.
+restart. The settings a worker reads at start (`database`, `mode`, `path`,
+`embedded_*`, `providers_path`) are SIGHUP: set them with `ALTER SYSTEM` and
+`pg_reload_conf()`, and they apply to the next worker start. With
+`shared_preload_libraries`, that means the next server restart; a worker
+started with `start_worker()` picks them up when it is started.
 
 | GUC (`postvec.*`) | Default | Context |
 |---|---:|---|
 | `grpc_endpoints` | - | SIGHUP |
 | `http_endpoints` | - | SIGHUP |
-| `database` | - | **POSTMASTER** (comma-separated) |
+| `database` | - | SIGHUP (comma-separated) |
 | `worker_enabled` | on | SIGHUP |
 | `poll_interval_ms` | 5000 | SIGHUP - idle poll; writers wake the worker at commit |
 | `batch_size` | 64 | SIGHUP (×4 = cursor chunk) |
@@ -35,21 +38,22 @@ includes `postvec`.
 | `max_batch_total_bytes` | 16 MiB | SIGHUP - remaining rows stay pending |
 | `ddl_lock_timeout_ms` | 60000 | USERSET - applied `SET LOCAL` in lifecycle verbs |
 | `heartbeat_interval_ms` | 30000 | SIGHUP - idle workers write no WAL between beats |
-| `mode` | `embedded` | **POSTMASTER** |
-| `path` | `/opt/postvec` | **POSTMASTER** |
-| `embedded_models` | - | **POSTMASTER** (empty = load every enabled model) |
-| `embedded_listen` | `127.0.0.1:33433` | **POSTMASTER** |
-| `embedded_http_listen` | `127.0.0.1:33434` | **POSTMASTER** |
-| `embedded_max_inflight` | 1 | **POSTMASTER** |
-| `providers_path` | `/etc/postvec/providers.d` | **POSTMASTER** - a path, never a credential |
+| `mode` | `embedded` | SIGHUP |
+| `path` | `/opt/postvec` | SIGHUP |
+| `embedded_models` | - | SIGHUP (empty = load every enabled model) |
+| `embedded_listen` | `127.0.0.1:33433` | SIGHUP |
+| `embedded_http_listen` | `127.0.0.1:33434` | SIGHUP |
+| `embedded_max_inflight` | 1 | SIGHUP |
+| `providers_path` | `/etc/postvec/providers.d` | SIGHUP - a path, never a credential |
 
 `path` is the engine root (`libs/`, `models/`). Package payloads install
 there. CLI `--path` and `POSTVEC_PATH` name the same directory. The CLI
 merges `shared_preload_libraries` and owns `99-postvec.conf`.
 
-POSTMASTER settings take effect on restart: `database`, `mode`, `path`,
-`embedded_*`, `providers_path` and preload. `pg_reload_conf()` covers the
-SIGHUP settings.
+Only `shared_preload_libraries` needs a restart. `database`, `mode`, `path`,
+`embedded_*` and `providers_path` are read when a worker starts, so with a
+preloaded launcher they too take effect at the next restart. `pg_reload_conf()`
+covers every other setting.
 
 `providers_path` names the directory of
 [external provider](/docs/models/providers) connector files. It holds a path.

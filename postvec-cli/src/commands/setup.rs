@@ -286,6 +286,22 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
         }
     }
 
+    // Without a preloaded launcher the workers are started directly, so the
+    // databases are served now; the restart only makes that persistent.
+    let restarting_now =
+        activation == Activation::Restart && !args.no_restart && context.cluster.restart.is_some();
+    if !config::guc::list_contains_postvec(&snapshot.settings.preload_items()) && !restarting_now {
+        if let Some(database) = installed.first() {
+            context.db.reload_config(database).await?;
+        }
+        for database in &installed {
+            if context.db.start_worker(database).await? {
+                journal.record(format!("started the worker in {database}"));
+                output.progress(&format!("postvec: started the worker in {database}"));
+            }
+        }
+    }
+
     let previous_server = context.server.clone();
     match activation {
         Activation::Restart => {
@@ -1126,8 +1142,9 @@ async fn wait_for_worker(context: &mut Context, database: &str, deadline: Durati
         humantime::format_duration(deadline)
     ))
     .with_fix(
-        "check that postvec is preloaded and this database is in postvec.database, then read \
-         the PostgreSQL log; in embedded mode the engine loads models before serving",
+        "check that postvec is preloaded and this database is in postvec.database (or run \
+         SELECT postvec.start_worker()), then read the PostgreSQL log; in embedded mode the \
+         engine loads models before serving",
     ))
 }
 
@@ -1165,12 +1182,13 @@ fn describe_inference(inference: &InferenceSettings) -> String {
 fn next_restart_hint(context: &Context) -> String {
     match &context.cluster.restart {
         Some(restart) => format!(
-            "the configuration is in place but not active yet; restart with `{}` (or rerun \
-             `postvec setup` without --no-restart), then run `postvec doctor`",
+            "the workers are running, but survive a server restart only once postvec is \
+             preloaded; restart with `{}` (or rerun `postvec setup` without --no-restart), \
+             then run `postvec doctor`",
             restart.display()
         ),
-        None => "the configuration is in place but not active yet; restart the cluster, then \
-                 run `postvec doctor`"
+        None => "the workers are running, but survive a server restart only once postvec is \
+                 preloaded; restart the cluster, then run `postvec doctor`"
             .to_string(),
     }
 }

@@ -36,6 +36,7 @@ as it is.
 | `embed(input text, model text)` / `embed(inputs text[], model text)` | `real[]` / `setof real[]` |
 | `convert(embedding real[], source_model text, target_model text)` | `real[]` |
 | `refresh_models()` | `int` |
+| `start_worker()` | `bool`; superuser. Starts this database's worker without `shared_preload_libraries`; false if one is running. Restarted after a crash, not after a server restart |
 | `version()` / `build_info()` | `text` / `jsonb` |
 
 Guides: [enable](/docs/guides/enable) · [adopt](/docs/guides/adopt) ·
@@ -67,6 +68,7 @@ Untrusted cdylib. `CREATE EXTENSION` needs superuser.
 | Superuser | `uninstall()` |
 | PUBLIC | `search`, `search_with_vector`, `status`, `stats`, `version`, `build_info` |
 | Revoked from PUBLIC | `embed`, `convert`, `refresh_models` |
+| Superuser only | `uninstall`, `start_worker` |
 
 Non-owner DML on an enabled table needs `USAGE` on schema `postvec` and a
 column-scoped `INSERT (registry_id, pk_value)` on `postvec.jobs`. Those

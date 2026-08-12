@@ -300,6 +300,7 @@ pub fn router(metrics_enabled: bool, manage: bool) -> Router<Arc<ServerState>> {
     // `/{model_name}`. Body cap matches the gRPC decode ceiling.
     let api = crate::registry::router(manage)
         .route("/openai/embeddings", post(api::openai_embeddings))
+        .route("/convert", post(api::convert))
         .route("/:model_name", get(api::model_details).post(api::predict))
         .fallback(api::api_not_found)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));

@@ -99,6 +99,57 @@ pub async fn predict(
     }
 }
 
+#[derive(Deserialize)]
+pub struct ConvertPayload {
+    source_model: String,
+    target_model: String,
+    embeddings: Value,
+}
+
+/// `POST /api/convert`: the SQL `convert(embedding, source, target)` over
+/// HTTP, resolving the converter from the pair the way `migrate()` does.
+pub async fn convert(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConvertPayload>,
+) -> Response {
+    let envelope = crate::http::config_envelope(&state).await;
+    let models =
+        postvec_core::client::discovery::parse_config(&envelope.to_string()).unwrap_or_default();
+    let Some(model) = converter_for(&models, &payload.source_model, &payload.target_model) else {
+        return native_err(
+            StatusCode::NOT_FOUND,
+            format!(
+                "no converter from {:?} to {:?} on this node",
+                payload.source_model, payload.target_model
+            ),
+        );
+    };
+    let input = InputData::Json(json!({ "embeddings": payload.embeddings }));
+    match run_predict(&state, &model, input, headers).await {
+        Ok(Output::Json(data)) => native_ok(data),
+        Ok(Output::Binary { .. }) => native_err(StatusCode::OK, "converter returned binary output"),
+        Err(e) => native_err(StatusCode::OK, e.message()),
+    }
+}
+
+/// A local converter for the pair wins over a provider-backed one; ties by name.
+fn converter_for(
+    models: &[postvec_core::client::ModelInfo],
+    source: &str,
+    target: &str,
+) -> Option<String> {
+    models
+        .iter()
+        .filter(|m| {
+            m.model_type == "convert"
+                && m.source_model.as_deref() == Some(source)
+                && m.target_model.as_deref() == Some(target)
+        })
+        .min_by_key(|m| (!m.raw["extra"]["provider"].is_null(), m.name.clone()))
+        .map(|m| m.name.clone())
+}
+
 #[derive(Debug)]
 enum ApiError {
     BadRequest(String),
@@ -563,6 +614,23 @@ mod tests {
 
     fn parse(json: &str) -> Result<OpenAIEmbedPayload, serde_json::Error> {
         serde_json::from_str(json)
+    }
+
+    #[test]
+    fn converter_resolution_prefers_local_and_matches_the_pair() {
+        let models = postvec_core::client::discovery::parse_config(
+            &json!({"success": true, "data": {"models": [
+                {"name": "prov", "provider": "univec", "configuration": {"enabled": true, "params": {"model_type": "convert", "source_model": "a", "target_model": "b"}}},
+                {"name": "local", "configuration": {"enabled": true, "params": {"model_type": "convert", "source_model": "a", "target_model": "b"}}},
+                {"name": "other", "configuration": {"enabled": true, "params": {"model_type": "convert", "source_model": "a", "target_model": "c"}}},
+                {"name": "emb", "configuration": {"enabled": true, "params": {"model_type": "embed", "target_model": "b"}}}
+            ]}})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(converter_for(&models, "a", "b").as_deref(), Some("local"));
+        assert_eq!(converter_for(&models, "a", "c").as_deref(), Some("other"));
+        assert_eq!(converter_for(&models, "b", "a"), None);
     }
 
     #[test]

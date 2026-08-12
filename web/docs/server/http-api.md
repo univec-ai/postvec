@@ -12,6 +12,7 @@ routes. Two contracts are served:
 
 | Route | Contract |
 |---|---|
+| `POST /api/convert` | `{"source_model", "target_model", "embeddings": [[...]]}`: resolves the converter for the pair (a local one wins over a provider) and runs it; the SQL `convert()` over HTTP. `404` when no converter serves the pair. |
 | `POST /api/{model}` | Native. The request body is keyed like the model's `executor.inputs`; the reply is the `{success, data}` envelope. Works for every model type, converters included. |
 | `POST /api/openai/embeddings` | OpenAI `/v1/embeddings`. Embed models only. |
 | `GET /api/{model}` | The model's input and output layers, native envelope. |

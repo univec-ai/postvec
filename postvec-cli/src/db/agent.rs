@@ -259,6 +259,9 @@ fn describe(request: &DbRequest) -> String {
         DbRequest::RefreshModels { database } => {
             format!("postvec.refresh_models() in {database:?}")
         }
+        DbRequest::StartWorker { database } => {
+            format!("postvec.start_worker() in {database:?}")
+        }
         DbRequest::ReloadConfig { database } => format!("pg_reload_conf() via {database:?}"),
         other => format!("{other:?}"),
     }
