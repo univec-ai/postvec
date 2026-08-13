@@ -47,11 +47,38 @@ END $$;
 
 CREATE OR REPLACE FUNCTION postvec._enqueue() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE r postvec.registry; pk text; oldpk text; expr text; ignored text[]; item record;
+    nkey text; okey text; jpred text; op text;
 BEGIN
     SELECT * INTO r FROM postvec.registry WHERE id=TG_ARGV[0]::bigint AND state<>'disabled'
       AND (to_regclass(format('%I.%I',table_schema,table_name))=TG_RELID OR TG_RELID IN (SELECT relid FROM pg_partition_tree(to_regclass(format('%I.%I',table_schema,table_name)))));
     IF NOT FOUND THEN RETURN NULL; END IF;
-    SELECT array_agg(v) INTO ignored FROM (SELECT r.vector_column AS v UNION ALL SELECT new_column FROM postvec.migrations WHERE registry_id=r.id AND state IN ('running','awaiting_finalize','awaiting_index')) q;
+    SELECT coalesce(array_agg(v),ARRAY[]::text[]) INTO ignored FROM (SELECT r.vector_column AS v UNION ALL SELECT new_column FROM postvec.migrations WHERE registry_id=r.id AND state IN ('running','awaiting_finalize','awaiting_index')) q;
+    op := CASE WHEN r.chunking='recursive' THEN 'refresh' ELSE 'embed' END;
+    IF TG_LEVEL='STATEMENT' THEN
+        SELECT string_agg(format('n.%I',c),','), string_agg(format('o.%I',c),','), string_agg(format('n.%I=o.%I',c,c),' AND ')
+          INTO nkey, okey, jpred FROM unnest(r.pk_columns) c;
+        IF cardinality(r.pk_columns)>1 THEN nkey:='ROW('||nkey||')::text'; okey:='ROW('||okey||')::text';
+        ELSE nkey:=nkey||'::text'; okey:=okey||'::text'; END IF;
+        IF TG_OP='INSERT' THEN
+            EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,%s,%L FROM new_table n ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING', nkey, op) USING r.id;
+        ELSIF TG_OP='DELETE' THEN
+            EXECUTE format('DELETE FROM postvec.jobs_dead d USING old_table o WHERE d.registry_id=$1 AND d.pk_value=%s', okey) USING r.id;
+            EXECUTE format('DELETE FROM postvec.jobs j USING old_table o WHERE j.registry_id=$1 AND j.pk_value=%s AND j.claimed_at IS NULL', okey) USING r.id;
+            IF r.chunking='recursive' THEN
+                EXECUTE format('DELETE FROM %I.%I c USING old_table o WHERE c.postvec_source_pk=o.%I', r.destination_schema, r.destination_table, r.pk_columns[1]);
+            END IF;
+        ELSIF TG_OP='UPDATE' THEN
+            EXECUTE format(
+                'WITH changed AS (SELECT %s AS pk FROM new_table n JOIN old_table o ON %s WHERE (to_jsonb(n)-$2) IS DISTINCT FROM (to_jsonb(o)-$2))%s
+                 INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,pk,%L FROM changed
+                 ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING',
+                nkey, jpred,
+                CASE WHEN r.chunking='recursive' THEN format(', dc AS (DELETE FROM %I.%I c USING changed x WHERE c.postvec_source_pk=x.pk::%s), dj AS (DELETE FROM postvec.jobs j USING changed x WHERE j.registry_id=$1 AND j.op=''embed'' AND j.pk_value=x.pk), dd AS (DELETE FROM postvec.jobs_dead d USING changed x WHERE d.registry_id=$1 AND d.pk_value=x.pk)', r.destination_schema, r.destination_table, r.pk_types[1])
+                     ELSE ', dd AS (DELETE FROM postvec.jobs_dead d USING changed x WHERE d.registry_id=$1 AND d.pk_value=x.pk)' END,
+                op) USING r.id, ignored;
+        END IF;
+        PERFORM postvec.worker_kick(); RETURN NULL;
+    END IF;
     IF TG_OP='UPDATE' AND (to_jsonb(NEW)-ignored) IS NOT DISTINCT FROM (to_jsonb(OLD)-ignored) THEN RETURN NULL; END IF;
     SELECT string_agg(format('($1).%I',c),',') INTO expr FROM unnest(r.pk_columns) c;
     IF cardinality(r.pk_columns)>1 THEN expr:='ROW('||expr||')'; END IF;
@@ -68,18 +95,19 @@ BEGIN
         DELETE FROM postvec.jobs WHERE registry_id=r.id AND pk_value=oldpk AND claimed_at IS NULL;
     END IF;
     IF pk IS NOT NULL THEN
-        INSERT INTO postvec.jobs(registry_id,pk_value,op) VALUES(r.id,pk,CASE WHEN r.chunking='recursive' THEN 'refresh' ELSE 'embed' END)
+        INSERT INTO postvec.jobs(registry_id,pk_value,op) VALUES(r.id,pk,op)
         ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING;
     END IF;
     PERFORM postvec.worker_kick(); RETURN NULL;
 END $$;
 
-CREATE OR REPLACE FUNCTION postvec._register(relation regclass, col text, model_name text, vec text, adopted boolean, sync boolean, backfill text, distance text, fts text, fts_index boolean, template text, index_mode text, chunking text, chunk_size integer, chunk_overlap integer, destination text)
+DROP FUNCTION IF EXISTS postvec._register(regclass, text, text, text, boolean, boolean, text, text, text, boolean, text, text, text, integer, integer, text);
+CREATE OR REPLACE FUNCTION postvec._register(relation regclass, col text, model_name text, vec text, adopted boolean, trig_mode text, backfill text, distance text, fts text, fts_index boolean, template text, index_mode text, chunking text, chunk_size integer, chunk_overlap integer, destination text)
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE r postvec.registry; ns text; tbl text; vt text; dimension integer; keys text[]; types text[]; expr text; owner_oid oid; pkdef text; dest text[];
+DECLARE r postvec.registry; ns text; tbl text; vt text; dimension integer; keys text[]; types text[]; expr text; owner_oid oid; pkdef text; dest text[]; pkupd text; pkwhen text;
 BEGIN
     PERFORM postvec._owner(relation);
-    IF distance NOT IN ('cosine','l2','ip') OR index_mode NOT IN ('manual','auto','immediate') OR backfill NOT IN ('none','queue','cursor') OR chunking NOT IN ('none','recursive') THEN RAISE EXCEPTION 'invalid registry option'; END IF;
+    IF distance NOT IN ('cosine','l2','ip') OR index_mode NOT IN ('manual','auto','immediate') OR backfill NOT IN ('none','queue','cursor') OR chunking NOT IN ('none','recursive') OR trig_mode NOT IN ('statement','row','none') THEN RAISE EXCEPTION 'invalid registry option'; END IF;
     IF NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=col AND attnum>0 AND NOT attisdropped AND atttypid IN ('text'::regtype,'varchar'::regtype,'bpchar'::regtype)) THEN RAISE EXCEPTION 'source must be a text column'; END IF;
     SELECT n.nspname,c.relname,c.relowner INTO ns,tbl,owner_oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=relation;
     IF ns='postvec' OR ns LIKE 'pg_%' THEN RAISE EXCEPTION 'source must be a user table'; END IF;
@@ -91,7 +119,7 @@ BEGIN
     SELECT target_dim INTO dimension FROM postvec.models WHERE (target_model=model_name OR name=model_name) AND target_dim>0 ORDER BY (model_type='embed') DESC,name LIMIT 1;
     IF adopted THEN
         SELECT atttypmod INTO STRICT dimension FROM pg_attribute WHERE attrelid=relation AND attname=vec AND atttypid=vt::regtype AND NOT attisdropped AND attnum>0;
-        IF EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=vec AND (attgenerated<>'' OR attidentity<>'' OR atthasdef OR (attnotnull AND (sync OR backfill<>'none')))) THEN RAISE EXCEPTION 'vector column has incompatible generation, default or NOT NULL'; END IF;
+        IF EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=vec AND (attgenerated<>'' OR attidentity<>'' OR atthasdef OR (attnotnull AND (trig_mode<>'none' OR backfill<>'none')))) THEN RAISE EXCEPTION 'vector column has incompatible generation, default or NOT NULL'; END IF;
         IF EXISTS(SELECT FROM postvec.models WHERE (target_model=model_name OR name=model_name) AND target_dim IS NOT NULL AND target_dim<>dimension) THEN RAISE EXCEPTION 'model dimension contradicts vector column'; END IF;
     END IF;
     IF dimension IS NULL OR dimension NOT BETWEEN 1 AND 16000 THEN RAISE EXCEPTION 'model dimension unavailable; wait for model refresh'; END IF;
@@ -99,7 +127,7 @@ BEGIN
     PERFORM postvec._format(relation,template,col,chunking='recursive');
     IF chunking='recursive' AND (adopted OR cardinality(keys)<>1 OR col='chunk' OR chunk_size NOT BETWEEN 64 AND 100000 OR chunk_overlap<0 OR chunk_overlap>=chunk_size) THEN RAISE EXCEPTION 'invalid recursive configuration'; END IF;
     INSERT INTO postvec.registry(table_schema,table_name,source_column,vector_column,pk_columns,pk_types,model,dim,fts_config,distance,trigger_mode,backfill_mode,owns_vector_column,format,index_mode,chunking,chunk_size,chunk_overlap,destination_schema,destination_table,destination_view,destination_token)
-    VALUES(ns,tbl,col,vec,keys,types,model_name,dimension,fts::regconfig,distance,CASE WHEN sync THEN 'row' ELSE 'none' END,backfill,NOT adopted,template,index_mode,chunking,CASE WHEN chunking='recursive' THEN chunk_size END,CASE WHEN chunking='recursive' THEN chunk_overlap END,CASE WHEN chunking='recursive' THEN ns END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN gen_random_uuid()::text END) RETURNING * INTO r;
+    VALUES(ns,tbl,col,vec,keys,types,model_name,dimension,fts::regconfig,distance,trig_mode,backfill,NOT adopted,template,index_mode,chunking,CASE WHEN chunking='recursive' THEN chunk_size END,CASE WHEN chunking='recursive' THEN chunk_overlap END,CASE WHEN chunking='recursive' THEN ns END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN gen_random_uuid()::text END) RETURNING * INTO r;
     IF chunking='recursive' THEN
         dest:=parse_ident(coalesce(destination,tbl||'_'||col||'_chunks'));
         IF cardinality(dest) NOT IN (1,2) THEN RAISE EXCEPTION 'invalid destination'; END IF;
@@ -115,8 +143,17 @@ BEGIN
         EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY; CREATE POLICY postvec_source_visible ON %I.%I FOR SELECT USING(EXISTS(SELECT FROM %s s WHERE s.%I=postvec_source_pk))',r.destination_schema,r.destination_table,r.destination_schema,r.destination_table,relation,keys[1]);
     ELSIF NOT adopted THEN EXECUTE format('ALTER TABLE %s ADD COLUMN %I %s(%s)',relation,vec,vt,dimension);
     END IF;
-    IF sync THEN EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION postvec._enqueue(%L)','postvec_sync_'||r.id,relation,r.id); END IF;
     EXECUTE format('CREATE TRIGGER %I AFTER TRUNCATE ON %s FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_truncate(%L)','postvec_trunc_'||r.id,relation,r.id);
+    IF trig_mode='row' THEN
+        EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION postvec._enqueue(%L)','postvec_sync_'||r.id,relation,r.id);
+    ELSIF trig_mode='statement' THEN
+        SELECT string_agg(format('%I',c),','), string_agg(format('OLD.%I IS DISTINCT FROM NEW.%I',c,c),' OR ')
+          INTO pkupd, pkwhen FROM unnest(r.pk_columns) c;
+        EXECUTE format('CREATE TRIGGER %I AFTER INSERT ON %s REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION postvec._enqueue(%L)','postvec_ins_'||r.id,relation,r.id);
+        EXECUTE format('CREATE TRIGGER %I AFTER UPDATE ON %s REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION postvec._enqueue(%L)','postvec_upd_'||r.id,relation,r.id);
+        EXECUTE format('CREATE TRIGGER %I AFTER DELETE ON %s REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION postvec._enqueue(%L)','postvec_del_'||r.id,relation,r.id);
+        EXECUTE format('CREATE TRIGGER %I AFTER UPDATE OF %s ON %s FOR EACH ROW WHEN (%s) EXECUTE FUNCTION postvec._enqueue(%L)','postvec_pk_'||r.id,pkupd,relation,pkwhen,r.id);
+    END IF;
     IF backfill='queue' THEN
         SELECT string_agg(format('%I',c),',') INTO expr FROM unnest(keys) c;
         IF cardinality(keys)>1 THEN expr:='ROW('||expr||')'; END IF;
@@ -132,14 +169,14 @@ CREATE OR REPLACE FUNCTION postvec.enable(relation regclass,column_name text,mod
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 BEGIN
     IF trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid trigger mode'; END IF;
-    RETURN postvec._register(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'),false,true,CASE WHEN backfill THEN backfill_mode ELSE 'none' END,distance,fts_config,create_fts_index,format,index_mode,chunking,coalesce(chunk_size,1000),coalesce(chunk_overlap,200),destination);
+    RETURN postvec._register(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'),false,trigger_mode,CASE WHEN backfill THEN backfill_mode ELSE 'none' END,distance,fts_config,create_fts_index,format,index_mode,chunking,coalesce(chunk_size,1000),coalesce(chunk_overlap,200),destination);
 END $$;
 CREATE OR REPLACE FUNCTION postvec.adopt(relation regclass,column_name text,vector_column text,model text,sync boolean DEFAULT true,backfill text DEFAULT 'missing',backfill_mode text DEFAULT 'queue',distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,format text DEFAULT NULL,index_mode text DEFAULT 'manual')
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 DECLARE rid bigint;
 BEGIN
     IF backfill NOT IN ('missing','all','none') OR trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid adoption option'; END IF;
-    rid:=postvec._register(relation::regclass,column_name,model,vector_column,true,sync,CASE WHEN backfill='none' THEN 'none' ELSE backfill_mode END,distance,fts_config,create_fts_index,format,index_mode,'none',NULL,NULL,NULL);
+    rid:=postvec._register(relation::regclass,column_name,model,vector_column,true,CASE WHEN sync THEN trigger_mode ELSE 'none' END,CASE WHEN backfill='none' THEN 'none' ELSE backfill_mode END,distance,fts_config,create_fts_index,format,index_mode,'none',NULL,NULL,NULL);
     IF backfill='missing' AND backfill_mode='queue' THEN
         EXECUTE format('DELETE FROM postvec.jobs j WHERE registry_id=$1 AND EXISTS(SELECT FROM %s s WHERE %I IS NOT NULL AND %s=j.pk_value)',relation::regclass,vector_column,(SELECT CASE WHEN cardinality(pk_columns)>1 THEN 'ROW('||string_agg(quote_ident(c),',')||')' ELSE string_agg(quote_ident(c),',') END||'::text' FROM postvec.registry CROSS JOIN LATERAL unnest(pk_columns) c WHERE id=rid GROUP BY pk_columns)) USING rid;
     END IF;
@@ -240,7 +277,7 @@ BEGIN
     SELECT * INTO STRICT r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation::regclass AND source_column=column_name FOR UPDATE;
     IF r.state='migrating' THEN RAISE EXCEPTION 'abort or finalize migration first'; END IF;
     IF drop_destination THEN RAISE EXCEPTION 'retain destination and drop it explicitly after reviewing dependencies'; END IF;
-    FOR t IN SELECT tgname FROM pg_trigger WHERE tgrelid=relation::regclass AND tgname IN ('postvec_sync_'||r.id,'postvec_trunc_'||r.id) LOOP EXECUTE format('DROP TRIGGER %I ON %s',t.tgname,relation::regclass); END LOOP;
+    FOR t IN SELECT tgname FROM pg_trigger WHERE tgrelid=relation::regclass AND tgname IN ('postvec_sync_'||r.id,'postvec_trunc_'||r.id,'postvec_ins_'||r.id,'postvec_upd_'||r.id,'postvec_del_'||r.id,'postvec_pk_'||r.id) LOOP EXECUTE format('DROP TRIGGER %I ON %s',t.tgname,relation::regclass); END LOOP;
     IF drop_column AND r.owns_vector_column AND r.chunking='none' THEN EXECUTE format('ALTER TABLE %s DROP COLUMN %I RESTRICT',relation::regclass,r.vector_column); END IF;
     DELETE FROM postvec.registry WHERE id=r.id; DELETE FROM postvec.jobs_dead WHERE registry_id=r.id;
 END $$;

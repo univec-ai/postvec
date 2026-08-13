@@ -16,7 +16,9 @@ No postvec library, preload setting or database restart is required.
 Have the database administrator enable pgvector and create a login role with
 `CREATE` on the application database. Install as that role; it owns the managed
 schema. The worker needs ownership of source tables, or membership in their
-owning roles. The installer prints the applicable role grants for review.
+owning roles. The installer prints the applicable `GRANT owner TO worker`
+commands; a superuser (or a role with `ADMIN OPTION` on the table owner)
+must run them — a table owner cannot grant their own role.
 
 ```sh
 chmod 600 /etc/postvec-server/database.pw
@@ -75,9 +77,10 @@ SELECT postvec.migration_finalize(1);
 
 `adopt()` registers an existing vector column. `enable()` creates one, or a
 chunk destination with `chunking => 'recursive'`. `set_format()` refreshes the
-entry using a document template. Managed installations currently use row
-triggers for updates, including when `trigger_mode => 'statement'` is requested.
-Use `backfill_mode => 'cursor'` to bound the initial queue on large tables.
+entry using a document template. `trigger_mode => 'statement'` (the default)
+enqueues from transition tables, which is the right choice for bulk loads;
+`'row'` fires per changed row. Use `backfill_mode => 'cursor'` to bound the
+initial queue on large tables.
 
 Claims and source reads commit before inference. Write-back checks the source
 row version and migration target again. Transient/configuration failures retry
@@ -131,10 +134,9 @@ cost one embedding per execution.
 
 The proxy uses the node's TLS certificate, or plain TCP with `--insecure`, and
 connects to the database with the entry's `sslmode`. SCRAM channel binding
-cannot pass through a proxy: libpq clients (psql, psycopg, JDBC) connecting to
-the proxy over TLS against a TLS-only database must add
-`channel_binding=disable`; plain-TCP clients and drivers without channel
-binding are unaffected.
+cannot pass through a proxy, so the proxy never offers `SCRAM-SHA-256-PLUS`.
+Default libpq (`channel_binding=prefer`) falls back to `SCRAM-SHA-256`.
+Clients that set `channel_binding=require` will fail to authenticate.
 Metrics: `postvec_proxy_connections{db}` and
 `postvec_proxy_rewrites_total{db,kind}`.
 

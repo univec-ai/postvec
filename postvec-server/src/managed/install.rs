@@ -14,7 +14,7 @@ const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql")
 const FUNCTIONS: &str = include_str!("../../../postvec/sql/managed/functions.sql");
 
 pub(super) fn dsn_has_password(dsn: &str) -> bool {
-    dsn.contains("password=")
+    dsn.to_ascii_lowercase().contains("password=")
         || reqwest::Url::parse(dsn)
             .ok()
             .is_some_and(|u| u.password().is_some())
@@ -31,8 +31,14 @@ pub(super) fn options(args: &ConnectionArgs) -> Result<PgConnectOptions> {
             .open(path)
             .context("cannot open password file")?;
         let meta = file.metadata()?;
-        if !meta.is_file() || meta.mode() & 0o777 != 0o600 || meta.len() > 65536 {
-            bail!("password file must be a regular file with mode 0600, at most 65536 bytes");
+        if !meta.is_file()
+            || meta.uid() != unsafe { libc::getuid() }
+            || meta.mode() & 0o777 != 0o600
+            || meta.len() > 65536
+        {
+            bail!(
+                "password file must be a regular file owned by the current user, mode 0600, at most 65536 bytes"
+            );
         }
         let mut password = String::new();
         (&mut file).take(65537).read_to_string(&mut password)?;
@@ -140,10 +146,14 @@ pub async fn run(command: Command) -> Result<()> {
                     COMMENT ON SCHEMA postvec IS 'postvec managed schema'",
                 )
                 .await?;
-                for sql in [MODELS, CONTROL, TRIGGERS] {
+                for sql in [MODELS, CONTROL] {
                     tx.execute(sql).await?;
                 }
-                tx.execute(FUNCTIONS).await?;
+            }
+            for sql in [TRIGGERS, FUNCTIONS] {
+                tx.execute(sql).await?;
+            }
+            if !installed {
                 tx.execute("UPDATE postvec.schema_version SET mode = 'managed'")
                     .await?;
             }
@@ -172,7 +182,7 @@ pub async fn run(command: Command) -> Result<()> {
             if owners.is_empty() {
                 println!("The worker role already owns, or inherits ownership of, the existing source tables.");
             } else {
-                println!("Source owners can run the relevant grant below for tables this worker will manage:");
+                println!("A superuser (or a role with ADMIN OPTION on the table owner) must run the grant below so this worker can ALTER those tables:");
                 for owner in owners {
                     println!("GRANT {} TO {};", quote_ident(&owner), quote_ident(&role));
                 }
@@ -281,5 +291,12 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("cannot open password file"));
+    }
+
+    #[test]
+    fn dsn_password_detection_is_case_insensitive() {
+        assert!(dsn_has_password("postgresql://u:secret@localhost/db"));
+        assert!(dsn_has_password("host=localhost Password=secret user=u"));
+        assert!(!dsn_has_password("postgresql://u@localhost/db"));
     }
 }

@@ -194,8 +194,9 @@ struct Job {
 pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedDb) -> Result<bool> {
     let mut tx = conn.begin().await?;
     guard(&mut tx).await?;
-    tx.execute("WITH d AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-interval '5 minutes' AND attempts>=5 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,'worker repeatedly lost during inference',created_at FROM d").await?;
-    tx.execute("WITH old AS (DELETE FROM postvec.jobs WHERE claimed_at < now()-interval '5 minutes' RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,last_error) SELECT registry_id,pk_value,op,chunk_id,attempts,'reclaimed after worker loss' FROM old ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING").await?;
+    let vis = client.visibility_secs();
+    sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-make_interval(secs=>$1) AND attempts>=5 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,'worker repeatedly lost during inference',created_at FROM d").bind(vis).execute(&mut *tx).await?;
+    sqlx::query("WITH old AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-make_interval(secs=>$1) RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,last_error) SELECT registry_id,pk_value,op,chunk_id,attempts,'reclaimed after worker loss' FROM old ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING").bind(vis).execute(&mut *tx).await?;
     let id: Option<i64> = sqlx::query_scalar("SELECT j.registry_id FROM postvec.jobs j JOIN postvec.registry r ON r.id=j.registry_id WHERE j.op='embed' AND j.claimed_at IS NULL AND j.not_before<=now() AND r.state<>'disabled' ORDER BY j.not_before,j.id LIMIT 1") .fetch_optional(&mut *tx).await?;
     let Some(id) = id else {
         tx.commit().await?;

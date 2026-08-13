@@ -225,9 +225,16 @@ async fn migrate(
         .filter_map(|r| r.get::<Option<String>, _>("payload"))
         .collect();
     let mut parsed = Vec::new();
+    let mut parse_ok = Vec::new();
     if !reembed {
         for p in &payloads {
-            parsed.push(parse_vector(p).map_err(anyhow::Error::msg)?);
+            match parse_vector(p) {
+                Ok(v) => {
+                    parsed.push(v);
+                    parse_ok.push(true);
+                }
+                Err(_) => parse_ok.push(false),
+            }
         }
     }
     let target = if reembed {
@@ -267,13 +274,18 @@ async fn migrate(
         qi(&column)
     );
     let mut outcomes = results.into_iter();
+    let mut parse_ok = parse_ok.into_iter();
     let (mut done, mut skipped) = (0i64, 0i64);
     let mut watermark = last.clone();
     for row in rows {
         let pk: String = row.get("pk");
         let version: String = row.get("version");
         let result = if row.get::<Option<String>, _>("payload").is_some() {
-            outcomes.next()
+            if !reembed && parse_ok.next() != Some(true) {
+                None
+            } else {
+                outcomes.next()
+            }
         } else {
             None
         };

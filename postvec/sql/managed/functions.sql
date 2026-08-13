@@ -1,14 +1,14 @@
 -- SPDX-License-Identifier: PostgreSQL
-CREATE FUNCTION postvec.worker_kick() RETURNS void LANGUAGE sql
+CREATE OR REPLACE FUNCTION postvec.worker_kick() RETURNS void LANGUAGE sql
 SET search_path = pg_catalog, pg_temp AS $$ SELECT pg_catalog.pg_notify('postvec_kick', '') $$;
-CREATE FUNCTION postvec.refresh_models() RETURNS void LANGUAGE sql
+CREATE OR REPLACE FUNCTION postvec.refresh_models() RETURNS void LANGUAGE sql
 SET search_path = pg_catalog, pg_temp AS $$ SELECT pg_catalog.pg_notify('postvec_kick', 'refresh_models') $$;
 REVOKE ALL ON FUNCTION postvec.refresh_models() FROM PUBLIC;
 
 -- Served by the postvec-server proxy, which rewrites these calls before the
 -- database sees them; reaching the function means the call did not go
 -- through it.
-CREATE FUNCTION postvec.search(relation text, column_name text, query text, limit_n integer DEFAULT 10,
+CREATE OR REPLACE FUNCTION postvec.search(relation text, column_name text, query text, limit_n integer DEFAULT 10,
     semantic_weight real DEFAULT 0.5, rrf_k integer DEFAULT 60, candidates integer DEFAULT NULL, filter jsonb DEFAULT NULL)
 RETURNS TABLE(pk_value text, rrf_score double precision, semantic_rank bigint, fts_rank bigint,
               chunk_seq integer, chunk_start bigint, chunk_end bigint, chunk_text text)
@@ -18,10 +18,10 @@ BEGIN
         USING ERRCODE = 'feature_not_supported',
               HINT = 'Connect through the proxy with a literal or parameter query text, or embed the query with the server API and call postvec.search_with_vector().';
 END $$;
-CREATE FUNCTION postvec._proxy_error(message text) RETURNS void
+CREATE OR REPLACE FUNCTION postvec._proxy_error(message text) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN RAISE EXCEPTION '%', message USING ERRCODE = 'feature_not_supported'; END $$;
-CREATE FUNCTION postvec.embed(input text, model text) RETURNS real[]
+CREATE OR REPLACE FUNCTION postvec.embed(input text, model text) RETURNS real[]
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     RAISE EXCEPTION 'postvec: embed() is available through the postvec-server proxy port'
@@ -29,7 +29,7 @@ BEGIN
               HINT = 'Connect through the proxy with a literal or parameter text, or use the server''s /api/openai/embeddings endpoint.';
 END $$;
 
-CREATE FUNCTION postvec.retry_dead(relation regclass, column_name text, dead_ids bigint[] DEFAULT NULL)
+CREATE OR REPLACE FUNCTION postvec.retry_dead(relation regclass, column_name text, dead_ids bigint[] DEFAULT NULL)
 RETURNS bigint LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 DECLARE r postvec.registry; picked bigint[]; consumed bigint; q text;
 BEGIN
@@ -87,7 +87,7 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION postvec.retry_dead(regclass, text, bigint[]) FROM PUBLIC;
 
-CREATE FUNCTION postvec.search_with_vector(
+CREATE OR REPLACE FUNCTION postvec.search_with_vector(
     relation text, column_name text, query_vector real[], query_text text DEFAULT '',
     limit_n integer DEFAULT 10, semantic_weight real DEFAULT 0.5, rrf_k integer DEFAULT 60,
     candidates integer DEFAULT NULL, filter jsonb DEFAULT NULL)
@@ -122,11 +122,11 @@ BEGIN
        OR query_text IS NULL OR octet_length(query_text) > 16777216 THEN
         RAISE EXCEPTION 'postvec: invalid search arguments';
     END IF;
-    IF filter IS NOT NULL AND (jsonb_typeof(filter) <> 'object' OR octet_length(filter::text) > 65536) THEN
+    IF filter IS NOT NULL AND (pg_catalog.jsonb_typeof(filter) <> 'object' OR octet_length(filter::text) > 65536) THEN
         RAISE EXCEPTION 'postvec: filter must be an object of at most 65536 bytes';
     END IF;
-    IF (SELECT count(*) FROM jsonb_object_keys(filter)) > 32 THEN RAISE EXCEPTION 'postvec: filter exceeds 32 columns'; END IF;
-    FOR col, cond IN SELECT * FROM jsonb_each(filter) LOOP
+    IF (SELECT count(*) FROM pg_catalog.jsonb_object_keys(filter)) > 32 THEN RAISE EXCEPTION 'postvec: filter exceeds 32 columns'; END IF;
+    FOR col, cond IN SELECT * FROM pg_catalog.jsonb_each(filter) LOOP
         WITH RECURSIVE att AS (
             SELECT a.atttypid, pg_catalog.format_type(a.atttypid,a.atttypmod) AS declared
               FROM pg_catalog.pg_attribute a WHERE a.attrelid=rel AND a.attname=col AND a.attnum>0 AND NOT a.attisdropped
@@ -136,37 +136,37 @@ BEGIN
         ) SELECT att.declared,w.typcategory INTO typ,category FROM att,walk w WHERE w.typbasetype=0;
         IF NOT FOUND THEN RAISE EXCEPTION 'postvec: unknown filter column %', col; END IF;
         expr := pg_catalog.format('d.%I', col);
-        IF jsonb_typeof(cond) = 'array' THEN cond := jsonb_build_object('in', cond);
-        ELSIF jsonb_typeof(cond) <> 'object' THEN cond := jsonb_build_object('eq', cond);
+        IF pg_catalog.jsonb_typeof(cond) = 'array' THEN cond := pg_catalog.jsonb_build_object('in', cond);
+        ELSIF pg_catalog.jsonb_typeof(cond) <> 'object' THEN cond := pg_catalog.jsonb_build_object('eq', cond);
         ELSIF cond ? 'eq' THEN RAISE EXCEPTION 'postvec: use a scalar for equality'; END IF;
         IF cond = '{}'::jsonb THEN RAISE EXCEPTION 'postvec: empty filter condition'; END IF;
-        FOR key, term IN SELECT * FROM jsonb_each(cond) LOOP
+        FOR key, term IN SELECT * FROM pg_catalog.jsonb_each(cond) LOOP
             IF key = 'eq' AND term = 'null'::jsonb THEN pred := pred || ' AND ' || expr || ' IS NULL'; CONTINUE; END IF;
             IF key = 'is_not' THEN
                 IF term <> 'null'::jsonb THEN RAISE EXCEPTION 'postvec: is_not accepts only null'; END IF;
                 pred := pred || ' AND ' || expr || ' IS NOT NULL'; CONTINUE;
             END IF;
             IF key = 'in' THEN
-                IF jsonb_typeof(term) <> 'array' OR jsonb_array_length(term) = 0 OR jsonb_array_length(term) > 256 THEN
+                IF pg_catalog.jsonb_typeof(term) <> 'array' OR pg_catalog.jsonb_array_length(term) = 0 OR pg_catalog.jsonb_array_length(term) > 256 THEN
                     RAISE EXCEPTION 'postvec: in requires 1..256 scalar values';
                 END IF;
             ELSIF key NOT IN ('eq','neq','gt','gte','lt','lte','like','ilike') THEN
                 RAISE EXCEPTION 'postvec: unknown filter operator %', key;
-            ELSE term := jsonb_build_array(term);
+            ELSE term := pg_catalog.jsonb_build_array(term);
             END IF;
             items := ARRAY[]::text[];
-            FOR cond IN SELECT value FROM jsonb_array_elements(term) LOOP
-                IF jsonb_typeof(cond) NOT IN ('string','number','boolean') THEN
+            FOR cond IN SELECT value FROM pg_catalog.jsonb_array_elements(term) LOOP
+                IF pg_catalog.jsonb_typeof(cond) NOT IN ('string','number','boolean') THEN
                     RAISE EXCEPTION 'postvec: filter values must be non-NULL scalars';
                 END IF;
-                IF key IN ('like','ilike') AND (category <> 'S' OR jsonb_typeof(cond) <> 'string') THEN
+                IF key IN ('like','ilike') AND (category <> 'S' OR pg_catalog.jsonb_typeof(cond) <> 'string') THEN
                     RAISE EXCEPTION 'postvec: like/ilike requires a string column and pattern';
                 END IF;
                 IF NOT pg_catalog.pg_input_is_valid(cond #>> '{}', typ) THEN
                     RAISE EXCEPTION 'postvec: invalid filter value for column % (%)', col, typ;
                 END IF;
                 rhs := pg_catalog.format('($3->>%s)::%s', n, CASE WHEN key IN ('like','ilike') THEN 'text' ELSE typ END);
-                values_json := values_json || jsonb_build_array(cond); n := n + 1;
+                values_json := values_json || pg_catalog.jsonb_build_array(cond); n := n + 1;
                 items := array_append(items, rhs);
             END LOOP;
             pred := pred || ' AND ' || expr || CASE key WHEN 'in' THEN ' IN (' || array_to_string(items, ',') || ')'
@@ -228,7 +228,7 @@ BEGIN
     RETURN QUERY EXECUTE sql USING '[' || array_to_string(query_vector, ',') || ']', query_text, values_json;
 END $$;
 
-CREATE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint)
+CREATE OR REPLACE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint)
 LANGUAGE sql SET search_path = pg_catalog, pg_temp AS $$
 SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                         r.table_schema || '.' || r.table_name AS relation,
@@ -320,7 +320,7 @@ SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                   ORDER BY r.id
 $$;
 
-CREATE FUNCTION postvec.stats() RETURNS TABLE(worker_pid integer, worker_started_at text, worker_last_beat text, jobs_embedded bigint, jobs_nulled bigint, jobs_retried bigint, jobs_dead_lettered bigint, migration_rows_converted bigint, migration_rows_skipped bigint, model_refreshes bigint, worker_errors bigint, worker_last_error text, queue_pending bigint, queue_claimed bigint, queue_dead bigint, migrations_running bigint, documents_chunked bigint, chunks_created bigint)
+CREATE OR REPLACE FUNCTION postvec.stats() RETURNS TABLE(worker_pid integer, worker_started_at text, worker_last_beat text, jobs_embedded bigint, jobs_nulled bigint, jobs_retried bigint, jobs_dead_lettered bigint, migration_rows_converted bigint, migration_rows_skipped bigint, model_refreshes bigint, worker_errors bigint, worker_last_error text, queue_pending bigint, queue_claimed bigint, queue_dead bigint, migrations_running bigint, documents_chunked bigint, chunks_created bigint)
 LANGUAGE sql SET search_path = pg_catalog, pg_temp AS $$
 SELECT hb.pid, hb.started_at::text, hb.last_beat::text,
                         COALESCE(hb.jobs_embedded, 0), COALESCE(hb.jobs_nulled, 0),
@@ -337,7 +337,7 @@ SELECT hb.pid, hb.started_at::text, hb.last_beat::text,
                    LEFT JOIN (SELECT * FROM postvec.worker_heartbeat LIMIT 1) hb ON true
 $$;
 
-CREATE FUNCTION postvec.migration_status(migration_id bigint DEFAULT NULL) RETURNS TABLE(migration_id bigint, registry_id bigint, relation text, source_column text, old_model text, new_model text, strategy text, resolved_via text, state text, rows_total bigint, rows_done bigint, rows_skipped bigint, progress_pct double precision, error text, started_at text, finished_at text, suggested_index_sql text)
+CREATE OR REPLACE FUNCTION postvec.migration_status(migration_id bigint DEFAULT NULL) RETURNS TABLE(migration_id bigint, registry_id bigint, relation text, source_column text, old_model text, new_model text, strategy text, resolved_via text, state text, rows_total bigint, rows_done bigint, rows_skipped bigint, progress_pct double precision, error text, started_at text, finished_at text, suggested_index_sql text)
 LANGUAGE sql SET search_path = pg_catalog, pg_temp AS $$
 SELECT m.id, m.registry_id,
                         r.table_schema || '.' || r.table_name,

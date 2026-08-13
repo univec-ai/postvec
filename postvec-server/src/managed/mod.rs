@@ -46,7 +46,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgListener, Connection, Executor};
 use std::{
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock,
+    },
     time::Duration,
 };
 use tokio::time::Instant;
@@ -162,7 +165,7 @@ impl ManagedRuntime {
     pub fn snapshot(&self) -> Vec<DatabaseStatus> {
         self.status
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .cloned()
             .map(|mut s| {
@@ -221,7 +224,7 @@ impl ManagedRuntime {
     fn stats(&self, name: &str) -> Option<Arc<proxy::Stats>> {
         self.status
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|s| s.name == name)
             .and_then(|s| s.stats.clone())
@@ -230,7 +233,7 @@ impl ManagedRuntime {
         if let Some(s) = self
             .status
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter_mut()
             .find(|s| s.name == name)
         {
@@ -320,11 +323,15 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
     let mut listener: Option<PgListener> = None;
     let mut monitor: Option<AbortOnDrop> = None;
     let mut client = inference::Client::new(state);
+    let lost = Arc::new(AtomicBool::new(false));
     let mut refresh = Instant::now();
     let mut sampled = Instant::now();
     loop {
         if state.draining() {
             return Ok(());
+        }
+        if lost.load(Ordering::Relaxed) {
+            anyhow::bail!("leader session lost");
         }
         if monitor.is_none()
             && sqlx::query_scalar("SELECT pg_try_advisory_lock(1886615158, 2)")
@@ -336,7 +343,10 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
             sqlx::query("INSERT INTO postvec.settings(key,value) VALUES ('leader',to_jsonb($1::text)) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
                 .bind(&state.identity.grpc_address).execute(&mut *tx).await?;
             tx.execute("INSERT INTO postvec.worker_heartbeat(id,pid,started_at,last_beat,jobs_done,errors) VALUES (1,pg_backend_pid(),now(),now(),0,0) ON CONFLICT(id) DO UPDATE SET pid=pg_backend_pid(),started_at=now(),last_beat=now()").await?;
-            tx.execute("UPDATE postvec.jobs SET claimed_at=now()-interval '6 minutes' WHERE claimed_at IS NOT NULL").await?;
+            sqlx::query("UPDATE postvec.jobs SET claimed_at=now()-make_interval(secs=>$1) WHERE claimed_at IS NOT NULL")
+                .bind(client.visibility_secs() + 60)
+                .execute(&mut *tx)
+                .await?;
             let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
                 .fetch_one(&mut *tx)
                 .await?;
@@ -344,6 +354,7 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
             monitor = Some(AbortOnDrop(tokio::spawn(heartbeat(
                 state.clone(),
                 db.clone(),
+                lost.clone(),
                 pid,
             ))));
             if !db.poll_only {
@@ -397,14 +408,17 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
 /// The leader's heartbeat and status sampler, on its own connection so a
 /// long index build or inference call never lets the beat go stale. The beat
 /// is conditional on the leader session still holding its lock.
-async fn heartbeat(state: Arc<ServerState>, db: ManagedDb, pid: i32) {
+async fn heartbeat(state: Arc<ServerState>, db: ManagedDb, lost: Arc<AtomicBool>, pid: i32) {
     loop {
         let result = async {
             let mut conn = install::connect(&db.args()).await?;
             loop {
                 let beats = sqlx::query("UPDATE postvec.worker_heartbeat SET last_beat=now() WHERE id=1 AND pid=$1 AND EXISTS(SELECT FROM postvec.schema_version WHERE version=$2 AND mode='managed') AND EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND pid=$1 AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted)")
                     .bind(pid).bind(install::VERSION).execute(&mut conn).await?.rows_affected();
-                anyhow::ensure!(beats == 1, "leader session lost");
+                if beats != 1 {
+                    lost.store(true, Ordering::Relaxed);
+                    anyhow::bail!("leader session lost");
+                }
                 let status = admin::status(&mut conn).await?;
                 state.managed.update(&db.name, true, None, Some(status));
                 tokio::time::sleep(SAMPLE_INTERVAL).await;
@@ -422,6 +436,9 @@ async fn heartbeat(state: Arc<ServerState>, db: ManagedDb, pid: i32) {
             Some("Heartbeat unavailable; see server log".into()),
             None,
         );
+        if lost.load(Ordering::Relaxed) {
+            return;
+        }
         tokio::time::sleep(SAMPLE_INTERVAL).await;
     }
 }

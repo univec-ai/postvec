@@ -40,7 +40,7 @@
 --     superseded), except on plain content updates where the enqueued
 --     refresh replaces them anyway.
 
-CREATE FUNCTION postvec.trg_chunk_ins() RETURNS trigger LANGUAGE plpgsql
+CREATE OR REPLACE FUNCTION postvec.trg_chunk_ins() RETURNS trigger LANGUAGE plpgsql
 SECURITY DEFINER SET search_path = pg_catalog AS $body$
 DECLARE
     r record;
@@ -92,7 +92,7 @@ BEGIN
     RETURN NULL;
 END $body$;
 
-CREATE FUNCTION postvec.trg_chunk_upd() RETURNS trigger LANGUAGE plpgsql
+CREATE OR REPLACE FUNCTION postvec.trg_chunk_upd() RETURNS trigger LANGUAGE plpgsql
 SECURITY DEFINER SET search_path = pg_catalog AS $body$
 DECLARE
     r record;
@@ -188,7 +188,7 @@ END $body$;
 -- obsolete (including any pending refresh keyed by the old rendering — its
 -- key differs from the NEW-keyed insert, so deleting it is arbitration-safe);
 -- the NEW identity gets one refresh when the source is non-NULL.
-CREATE FUNCTION postvec.trg_chunk_pk() RETURNS trigger LANGUAGE plpgsql
+CREATE OR REPLACE FUNCTION postvec.trg_chunk_pk() RETURNS trigger LANGUAGE plpgsql
 SECURITY DEFINER SET search_path = pg_catalog AS $body$
 DECLARE
     r record;
@@ -242,7 +242,7 @@ BEGIN
     RETURN NULL;
 END $body$;
 
-CREATE FUNCTION postvec.trg_chunk_del() RETURNS trigger LANGUAGE plpgsql
+CREATE OR REPLACE FUNCTION postvec.trg_chunk_del() RETURNS trigger LANGUAGE plpgsql
 SECURITY DEFINER SET search_path = pg_catalog AS $body$
 DECLARE
     r record;

@@ -34,6 +34,9 @@ impl Client {
             cursor: AtomicUsize::new(0),
         }
     }
+    pub fn visibility_secs(&self) -> i64 {
+        (self.timeout.as_secs() as i64 + 60).max(300)
+    }
     pub async fn refresh(&mut self, state: &ServerState) -> anyhow::Result<()> {
         let envelope = crate::http::config_envelope(state).await;
         self.nodes = vec![(None, parse_config(&envelope.to_string())?)];

@@ -99,6 +99,8 @@ async fn exercise(dsn: &str) -> Result<()> {
         VALUES ('public','docs','body','v',ARRAY['id'],ARRAY['bigint'],'fixture',3);
         CREATE TRIGGER postvec_trunc_1 AFTER TRUNCATE ON docs FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_truncate('1');
         INSERT INTO postvec.jobs_dead (job_id,registry_id,pk_value,last_error) VALUES (1,1,'1','bad'),(2,1,'1','bad');
+    "#).await.context("create docs")?;
+    db.execute(r#"
         DO $$ BEGIN
             IF (SELECT worker_alive FROM postvec.status()) THEN RAISE EXCEPTION 'false liveness'; END IF;
             IF (SELECT queue_dead FROM postvec.stats()) <> 2 THEN RAISE EXCEPTION 'dead count'; END IF;
@@ -106,7 +108,7 @@ async fn exercise(dsn: &str) -> Result<()> {
             IF postvec.retry_dead('docs','body',ARRAY[1,1,2]) <> 2 THEN RAISE EXCEPTION 'retry count'; END IF;
             IF (SELECT count(*) FROM postvec.jobs) <> 1 THEN RAISE EXCEPTION 'dedup'; END IF;
         END $$;
-    "#).await?;
+    "#).await.context("status/retry assertions")?;
     for filter in [
         r#"{"category":"account"}"#,
         r#"{"category":{"neq":"billing"}}"#,
@@ -115,7 +117,7 @@ async fn exercise(dsn: &str) -> Result<()> {
         r#"{"id":{"gte":1,"lt":2}}"#,
     ] {
         let keys: Vec<String> = sqlx::query_scalar("SELECT pk_value FROM postvec.search_with_vector('docs','body',ARRAY[1,0,0]::real[], 'password', filter => $1::jsonb)")
-            .bind(filter).fetch_all(&mut db).await?;
+            .bind(filter).fetch_all(&mut db).await.with_context(|| format!("search filter {filter}"))?;
         ensure!(keys == ["1"], "filter mismatch: {filter}");
     }
     for query in [

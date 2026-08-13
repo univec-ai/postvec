@@ -3,9 +3,8 @@
 //! pgwire proxy: the client authenticates against the upstream database
 //! itself; the proxy relays bytes and rewrites `postvec.search()` and
 //! `postvec.embed()` calls, embedding their text on the way through.
-//! Authentication is relayed. SCRAM channel binding cannot survive a proxy:
-//! a plain client is not offered SCRAM-SHA-256-PLUS (libpq would refuse the
-//! offer), and libpq clients on TLS need `channel_binding=disable`.
+//! Authentication is relayed. SCRAM channel binding cannot survive a proxy,
+//! so SCRAM-SHA-256-PLUS is never offered; libpq falls back to SCRAM-SHA-256.
 
 use super::{
     inference::Client,
@@ -82,11 +81,7 @@ pub(super) async fn serve(
     };
     let options = install::options(&db.args())?;
     let proxy = Arc::new(Proxy {
-        root_cert: reqwest::Url::parse(&db.dsn).ok().and_then(|u| {
-            u.query_pairs()
-                .find(|(k, _)| k == "sslrootcert")
-                .map(|(_, v)| v.into_owned())
-        }),
+        root_cert: ssl_root_cert(&db.dsn),
         pool: PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
@@ -140,10 +135,10 @@ pub(super) async fn serve(
         tokio::spawn(async move {
             let _ = tcp.set_nodelay(true);
             proxy.stats.connections.fetch_add(1, Relaxed);
+            let _count = ConnCount(proxy.stats.clone());
             if let Err(e) = connection(&proxy, Box::new(tcp)).await {
                 log::info!("proxy {} {peer}: {e:#}", proxy.name);
             }
-            proxy.stats.connections.fetch_sub(1, Relaxed);
         });
     }
     refresh.abort();
@@ -151,7 +146,6 @@ pub(super) async fn serve(
 }
 
 async fn connection(proxy: &Proxy, mut client: Stream) -> Result<()> {
-    let mut client_tls = false;
     let startup = loop {
         let len = client.read_i32().await? as usize;
         ensure!((8..=10_000).contains(&len), "invalid startup message");
@@ -165,7 +159,6 @@ async fn connection(proxy: &Proxy, mut client: Stream) -> Result<()> {
                     let mut tls = tokio_openssl::SslStream::new(ssl, client)?;
                     Pin::new(&mut tls).accept().await.context("client TLS")?;
                     client = Box::new(tls);
-                    client_tls = true;
                 }
                 None => client.write_all(b"N").await?,
             },
@@ -189,7 +182,7 @@ async fn connection(proxy: &Proxy, mut client: Stream) -> Result<()> {
     let (ur, uw) = tokio::io::split(upstream);
     let shared = Arc::new(Shared::default());
     tokio::select! {
-        r = backend_to_client(ur, cw, shared.clone(), client_tls) => r,
+        r = backend_to_client(ur, cw, shared.clone()) => r,
         r = client_to_backend(proxy, cr, uw, shared) => r,
     }
 }
@@ -219,13 +212,16 @@ impl Proxy {
             ),
         };
         let mode = self.upstream.get_ssl_mode();
-        if socket.is_some() || matches!(mode, PgSslMode::Disable | PgSslMode::Allow) {
+        if socket.is_some() || matches!(mode, PgSslMode::Disable) {
             return Ok(stream);
         }
         stream.write_all(&8i32.to_be_bytes()).await?;
         stream.write_all(&SSL_REQUEST.to_be_bytes()).await?;
         if stream.read_u8().await? != b'S' {
-            ensure!(matches!(mode, PgSslMode::Prefer), "upstream refuses TLS");
+            ensure!(
+                matches!(mode, PgSslMode::Prefer | PgSslMode::Allow),
+                "upstream refuses TLS"
+            );
             return Ok(stream);
         }
         let mut builder = SslConnector::builder(SslMethod::tls_client())?;
@@ -357,24 +353,49 @@ fn cstr(body: &[u8]) -> Result<(&str, &[u8])> {
     Ok((std::str::from_utf8(&body[..end])?, &body[end + 1..]))
 }
 
+fn strip_sasl_plus(body: &[u8]) -> Vec<u8> {
+    let mut list = vec![0, 0, 0, 10];
+    for mech in body[4..].split(|b| *b == 0).filter(|m| !m.is_empty()) {
+        if mech != b"SCRAM-SHA-256-PLUS" {
+            list.extend_from_slice(mech);
+            list.push(0);
+        }
+    }
+    list.push(0);
+    list
+}
+
+fn ssl_root_cert(dsn: &str) -> Option<String> {
+    if let Ok(url) = reqwest::Url::parse(dsn) {
+        if let Some((_, v)) = url
+            .query_pairs()
+            .find(|(k, _)| k.eq_ignore_ascii_case("sslrootcert"))
+        {
+            return Some(v.into_owned());
+        }
+    }
+    dsn.split(|c: char| c.is_whitespace() || c == '&')
+        .filter_map(|part| part.split_once('='))
+        .find(|(k, _)| k.eq_ignore_ascii_case("sslrootcert"))
+        .map(|(_, v)| v.trim_matches('\'').to_string())
+}
+
+struct ConnCount(Arc<Stats>);
+impl Drop for ConnCount {
+    fn drop(&mut self) {
+        self.0.connections.fetch_sub(1, Relaxed);
+    }
+}
+
 async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut r: R,
     mut w: W,
     shared: Arc<Shared>,
-    client_tls: bool,
 ) -> Result<()> {
     while let Some((kind, mut body)) = read_message(&mut r).await? {
         match kind {
-            b'R' if !client_tls && body.len() > 4 && body[..4] == 10i32.to_be_bytes() => {
-                let mut list = vec![0, 0, 0, 10];
-                for mech in body[4..].split(|b| *b == 0).filter(|m| !m.is_empty()) {
-                    if mech != b"SCRAM-SHA-256-PLUS" {
-                        list.extend_from_slice(mech);
-                        list.push(0);
-                    }
-                }
-                list.push(0);
-                body = list;
+            b'R' if body.len() > 4 && body[..4] == 10i32.to_be_bytes() => {
+                body = strip_sasl_plus(&body);
             }
             b'1' if shared.swallow.load(Relaxed) > 0 => {
                 shared.swallow.fetch_sub(1, Relaxed);
@@ -469,7 +490,7 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                         bind.extend_from_slice(message.as_bytes());
                         bind.extend_from_slice(results);
                         (
-                            parse_body("", "SELECT postvec._proxy_error($1)", &[0, 0]),
+                            parse_body("", "SELECT postvec._proxy_error($1)", &[0, 1, 0, 0, 0, 25]),
                             bind,
                         )
                     }
@@ -536,4 +557,31 @@ fn bind_params(rest: &[u8]) -> Result<(Params<'_>, &[u8])> {
         });
     }
     Ok((params, &rest[at..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_channel_binding_from_sasl_list() {
+        let mut body = 10i32.to_be_bytes().to_vec();
+        body.extend_from_slice(b"SCRAM-SHA-256-PLUS\0SCRAM-SHA-256\0");
+        let out = strip_sasl_plus(&body);
+        assert_eq!(&out[..4], &10i32.to_be_bytes());
+        assert_eq!(&out[4..], b"SCRAM-SHA-256\0\0");
+    }
+
+    #[test]
+    fn sslrootcert_from_url_and_keyword_dsn() {
+        assert_eq!(
+            ssl_root_cert("postgresql://db.example/app?sslmode=verify-full&sslrootcert=/ca.pem")
+                .as_deref(),
+            Some("/ca.pem")
+        );
+        assert_eq!(
+            ssl_root_cert("host=db.example dbname=app sslrootcert=/ca.pem").as_deref(),
+            Some("/ca.pem")
+        );
+    }
 }
