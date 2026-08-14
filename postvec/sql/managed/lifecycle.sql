@@ -2,11 +2,12 @@
 CREATE OR REPLACE FUNCTION postvec._owner(relation regclass) RETURNS void LANGUAGE plpgsql
 SET search_path=pg_catalog AS $$
 BEGIN
+    PERFORM pg_advisory_xact_lock_shared(1886615158,1);
     IF NOT EXISTS(SELECT FROM pg_class WHERE oid=relation AND relkind IN ('r','p') AND pg_has_role(current_user,relowner,'USAGE')) THEN
         RAISE EXCEPTION 'table ownership is required';
     END IF;
     PERFORM pg_advisory_xact_lock(1886615158,3);
-    EXECUTE format('LOCK TABLE %s IN SHARE ROW EXCLUSIVE MODE',relation);
+    EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE',relation);
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec._format(relation regclass, template text, source_column text, chunked boolean)
@@ -47,20 +48,20 @@ END $$;
 
 CREATE OR REPLACE FUNCTION postvec._enqueue() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE r postvec.registry; pk text; oldpk text; expr text; ignored text[]; item record;
-    nkey text; okey text; jpred text; op text;
+    nkey text; okey text; jpred text; job_op text;
 BEGIN
     SELECT * INTO r FROM postvec.registry WHERE id=TG_ARGV[0]::bigint AND state<>'disabled'
       AND (to_regclass(format('%I.%I',table_schema,table_name))=TG_RELID OR TG_RELID IN (SELECT relid FROM pg_partition_tree(to_regclass(format('%I.%I',table_schema,table_name)))));
     IF NOT FOUND THEN RETURN NULL; END IF;
     SELECT coalesce(array_agg(v),ARRAY[]::text[]) INTO ignored FROM (SELECT r.vector_column AS v UNION ALL SELECT new_column FROM postvec.migrations WHERE registry_id=r.id AND state IN ('running','awaiting_finalize','awaiting_index')) q;
-    op := CASE WHEN r.chunking='recursive' THEN 'refresh' ELSE 'embed' END;
+    job_op := CASE WHEN r.chunking='recursive' THEN 'refresh' ELSE 'embed' END;
     IF TG_LEVEL='STATEMENT' THEN
         SELECT string_agg(format('n.%I',c),','), string_agg(format('o.%I',c),','), string_agg(format('n.%I=o.%I',c,c),' AND ')
           INTO nkey, okey, jpred FROM unnest(r.pk_columns) c;
         IF cardinality(r.pk_columns)>1 THEN nkey:='ROW('||nkey||')::text'; okey:='ROW('||okey||')::text';
         ELSE nkey:=nkey||'::text'; okey:=okey||'::text'; END IF;
         IF TG_OP='INSERT' THEN
-            EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,%s,%L FROM new_table n ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING', nkey, op) USING r.id;
+            EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,%s,%L FROM new_table n ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING', nkey, job_op) USING r.id;
         ELSIF TG_OP='DELETE' THEN
             EXECUTE format('DELETE FROM postvec.jobs_dead d USING old_table o WHERE d.registry_id=$1 AND d.pk_value=%s', okey) USING r.id;
             EXECUTE format('DELETE FROM postvec.jobs j USING old_table o WHERE j.registry_id=$1 AND j.pk_value=%s AND j.claimed_at IS NULL', okey) USING r.id;
@@ -75,7 +76,7 @@ BEGIN
                 nkey, jpred,
                 CASE WHEN r.chunking='recursive' THEN format(', dc AS (DELETE FROM %I.%I c USING changed x WHERE c.postvec_source_pk=x.pk::%s), dj AS (DELETE FROM postvec.jobs j USING changed x WHERE j.registry_id=$1 AND j.op=''embed'' AND j.pk_value=x.pk), dd AS (DELETE FROM postvec.jobs_dead d USING changed x WHERE d.registry_id=$1 AND d.pk_value=x.pk)', r.destination_schema, r.destination_table, r.pk_types[1])
                      ELSE ', dd AS (DELETE FROM postvec.jobs_dead d USING changed x WHERE d.registry_id=$1 AND d.pk_value=x.pk)' END,
-                op) USING r.id, ignored;
+                job_op) USING r.id, ignored;
         END IF;
         PERFORM postvec.worker_kick(); RETURN NULL;
     END IF;
@@ -95,7 +96,7 @@ BEGIN
         DELETE FROM postvec.jobs WHERE registry_id=r.id AND pk_value=oldpk AND claimed_at IS NULL;
     END IF;
     IF pk IS NOT NULL THEN
-        INSERT INTO postvec.jobs(registry_id,pk_value,op) VALUES(r.id,pk,op)
+        INSERT INTO postvec.jobs(registry_id,pk_value,op) VALUES(r.id,pk,job_op)
         ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING;
     END IF;
     PERFORM postvec.worker_kick(); RETURN NULL;
@@ -104,12 +105,15 @@ END $$;
 DROP FUNCTION IF EXISTS postvec._register(regclass, text, text, text, boolean, boolean, text, text, text, boolean, text, text, text, integer, integer, text);
 CREATE OR REPLACE FUNCTION postvec._register(relation regclass, col text, model_name text, vec text, adopted boolean, trig_mode text, backfill text, distance text, fts text, fts_index boolean, template text, index_mode text, chunking text, chunk_size integer, chunk_overlap integer, destination text)
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE r postvec.registry; ns text; tbl text; vt text; dimension integer; keys text[]; types text[]; expr text; owner_oid oid; pkdef text; dest text[]; pkupd text; pkwhen text;
+DECLARE r postvec.registry; ns text; tbl text; vt text; dimension integer; keys text[]; types text[]; expr text; owner_oid oid; pkdef text; dest text[]; pkwhen text;
 BEGIN
     PERFORM postvec._owner(relation);
     IF distance NOT IN ('cosine','l2','ip') OR index_mode NOT IN ('manual','auto','immediate') OR backfill NOT IN ('none','queue','cursor') OR chunking NOT IN ('none','recursive') OR trig_mode NOT IN ('statement','row','none') THEN RAISE EXCEPTION 'invalid registry option'; END IF;
     IF NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=col AND attnum>0 AND NOT attisdropped AND atttypid IN ('text'::regtype,'varchar'::regtype,'bpchar'::regtype)) THEN RAISE EXCEPTION 'source must be a text column'; END IF;
     SELECT n.nspname,c.relname,c.relowner INTO ns,tbl,owner_oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=relation;
+    IF trig_mode='statement' AND EXISTS(SELECT FROM pg_class WHERE oid=relation AND relkind='p') THEN
+        RAISE WARNING 'statement triggers cover writes through the parent only; use trigger_mode => row for direct partition writes';
+    END IF;
     IF ns='postvec' OR ns LIKE 'pg_%' THEN RAISE EXCEPTION 'source must be a user table'; END IF;
     SELECT array_agg(a.attname::text ORDER BY k.ord),array_agg(format_type(a.atttypid,a.atttypmod) ORDER BY k.ord)
       INTO keys,types FROM pg_index i CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum,ord)
@@ -147,12 +151,12 @@ BEGIN
     IF trig_mode='row' THEN
         EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %s FOR EACH ROW EXECUTE FUNCTION postvec._enqueue(%L)','postvec_sync_'||r.id,relation,r.id);
     ELSIF trig_mode='statement' THEN
-        SELECT string_agg(format('%I',c),','), string_agg(format('OLD.%I IS DISTINCT FROM NEW.%I',c,c),' OR ')
-          INTO pkupd, pkwhen FROM unnest(r.pk_columns) c;
+        SELECT string_agg(format('OLD.%I IS DISTINCT FROM NEW.%I',c,c),' OR ')
+          INTO pkwhen FROM unnest(r.pk_columns) c;
         EXECUTE format('CREATE TRIGGER %I AFTER INSERT ON %s REFERENCING NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION postvec._enqueue(%L)','postvec_ins_'||r.id,relation,r.id);
         EXECUTE format('CREATE TRIGGER %I AFTER UPDATE ON %s REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table FOR EACH STATEMENT EXECUTE FUNCTION postvec._enqueue(%L)','postvec_upd_'||r.id,relation,r.id);
         EXECUTE format('CREATE TRIGGER %I AFTER DELETE ON %s REFERENCING OLD TABLE AS old_table FOR EACH STATEMENT EXECUTE FUNCTION postvec._enqueue(%L)','postvec_del_'||r.id,relation,r.id);
-        EXECUTE format('CREATE TRIGGER %I AFTER UPDATE OF %s ON %s FOR EACH ROW WHEN (%s) EXECUTE FUNCTION postvec._enqueue(%L)','postvec_pk_'||r.id,pkupd,relation,pkwhen,r.id);
+        EXECUTE format('CREATE TRIGGER %I AFTER UPDATE ON %s FOR EACH ROW WHEN (%s) EXECUTE FUNCTION postvec._enqueue(%L)','postvec_pk_'||r.id,relation,pkwhen,r.id);
     END IF;
     IF backfill='queue' THEN
         SELECT string_agg(format('%I',c),',') INTO expr FROM unnest(keys) c;
@@ -177,6 +181,9 @@ DECLARE rid bigint;
 BEGIN
     IF backfill NOT IN ('missing','all','none') OR trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid adoption option'; END IF;
     rid:=postvec._register(relation::regclass,column_name,model,vector_column,true,CASE WHEN sync THEN trigger_mode ELSE 'none' END,CASE WHEN backfill='none' THEN 'none' ELSE backfill_mode END,distance,fts_config,create_fts_index,format,index_mode,'none',NULL,NULL,NULL);
+    IF backfill='all' AND backfill_mode='cursor' THEN
+        INSERT INTO postvec.settings(key,value) VALUES('backfill_all:'||rid,'true');
+    END IF;
     IF backfill='missing' AND backfill_mode='queue' THEN
         EXECUTE format('DELETE FROM postvec.jobs j WHERE registry_id=$1 AND EXISTS(SELECT FROM %s s WHERE %I IS NOT NULL AND %s=j.pk_value)',relation::regclass,vector_column,(SELECT CASE WHEN cardinality(pk_columns)>1 THEN 'ROW('||string_agg(quote_ident(c),',')||')' ELSE string_agg(quote_ident(c),',') END||'::text' FROM postvec.registry CROSS JOIN LATERAL unnest(pk_columns) c WHERE id=rid GROUP BY pk_columns)) USING rid;
     END IF;
@@ -261,8 +268,18 @@ BEGIN
     SELECT * INTO STRICT r FROM postvec.registry WHERE id=r.id FOR UPDATE;
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
     IF m.state NOT IN ('awaiting_finalize','awaiting_index') OR EXISTS(SELECT FROM postvec.jobs WHERE registry_id=r.id) THEN RAISE EXCEPTION 'migration has not drained'; END IF;
-    SELECT * INTO STRICT a FROM pg_attribute WHERE attrelid=target AND attname=r.vector_column AND NOT attisdropped;
-    IF a.attnotnull OR a.atthasdef OR a.attgenerated<>'' OR a.attidentity<>'' OR a.attacl IS NOT NULL OR col_description(target,a.attnum) IS NOT NULL OR EXISTS(SELECT FROM pg_constraint WHERE conrelid=target AND a.attnum=ANY(conkey)) THEN RAISE EXCEPTION 'old vector column has metadata or constraints; resolve before cutover'; END IF;
+    FOR a IN SELECT attr.*,t.typstorage FROM pg_attribute attr JOIN pg_type t ON t.oid=attr.atttypid
+        WHERE attr.attrelid IN (SELECT target UNION SELECT relid FROM pg_partition_tree(target))
+          AND attr.attname=r.vector_column AND NOT attr.attisdropped LOOP
+        IF a.attnotnull OR a.atthasdef OR a.attgenerated<>'' OR a.attidentity<>'' OR a.attacl IS NOT NULL
+           OR coalesce(a.attstattarget,-1)<>-1 OR a.attstorage<>a.typstorage OR a.attcompression<>'' OR a.attoptions IS NOT NULL
+           OR col_description(a.attrelid,a.attnum) IS NOT NULL
+           OR EXISTS(SELECT FROM pg_constraint WHERE conrelid=a.attrelid AND a.attnum=ANY(conkey))
+           OR EXISTS(SELECT FROM pg_seclabel WHERE classoid='pg_class'::regclass AND objoid=a.attrelid AND objsubid=a.attnum)
+           OR EXISTS(SELECT FROM pg_depend WHERE classid='pg_statistic_ext'::regclass AND refclassid='pg_class'::regclass AND refobjid=a.attrelid AND refobjsubid=a.attnum) THEN
+            RAISE EXCEPTION 'old vector column on % has metadata or constraints; resolve before cutover',a.attrelid::regclass;
+        END IF;
+    END LOOP;
     EXECUTE format('ALTER TABLE %s DROP COLUMN %I RESTRICT',target,r.vector_column);
     EXECUTE format('ALTER TABLE %s RENAME COLUMN %I TO %I',target,m.new_column,r.vector_column);
     UPDATE postvec.registry SET state='active',model=m.new_model,dim=m.new_dim,owns_vector_column=true WHERE id=r.id;
@@ -280,10 +297,23 @@ BEGIN
     FOR t IN SELECT tgname FROM pg_trigger WHERE tgrelid=relation::regclass AND tgname IN ('postvec_sync_'||r.id,'postvec_trunc_'||r.id,'postvec_ins_'||r.id,'postvec_upd_'||r.id,'postvec_del_'||r.id,'postvec_pk_'||r.id) LOOP EXECUTE format('DROP TRIGGER %I ON %s',t.tgname,relation::regclass); END LOOP;
     IF drop_column AND r.owns_vector_column AND r.chunking='none' THEN EXECUTE format('ALTER TABLE %s DROP COLUMN %I RESTRICT',relation::regclass,r.vector_column); END IF;
     DELETE FROM postvec.registry WHERE id=r.id; DELETE FROM postvec.jobs_dead WHERE registry_id=r.id;
+    DELETE FROM postvec.settings WHERE key IN ('backfill_all:'||r.id,'index:'||r.id);
 END $$;
 
 DO $$ DECLARE f record; BEGIN
     FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_format','_register','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f.signature);
+    END LOOP;
+END $$;
+
+DO $$ DECLARE r record; pred text; BEGIN
+    FOR r IN SELECT reg.* FROM postvec.registry reg JOIN pg_trigger t
+        ON t.tgrelid=to_regclass(format('%I.%I',reg.table_schema,reg.table_name))
+        AND t.tgname='postvec_pk_'||reg.id AND t.tgfoid='postvec._enqueue()'::regprocedure
+        WHERE t.tgattr<>''::int2vector LOOP
+        SELECT string_agg(format('OLD.%I IS DISTINCT FROM NEW.%I',c,c),' OR ') INTO pred FROM unnest(r.pk_columns) c;
+        EXECUTE format('DROP TRIGGER %I ON %I.%I','postvec_pk_'||r.id,r.table_schema,r.table_name);
+        EXECUTE format('CREATE TRIGGER %I AFTER UPDATE ON %I.%I FOR EACH ROW WHEN (%s) EXECUTE FUNCTION postvec._enqueue(%L)',
+            'postvec_pk_'||r.id,r.table_schema,r.table_name,pred,r.id);
     END LOOP;
 END $$;

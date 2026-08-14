@@ -37,6 +37,7 @@ Add this to `/etc/postvec-server/config.json`:
     "password_file": "/etc/postvec-server/database.pw",
     "sync": true,
     "proxy_port": 5433,
+    "proxy_max_connections": 256,
     "poll_interval_ms": 2000,
     "poll_only": false,
     "batch_size": 64,
@@ -49,8 +50,9 @@ Restart postvec-server. Its existing models, provider credentials and gossip
 fleet serve the worker. For one database, `postvec-server serve --sync <DSN>`
 is a shortcut; `--poll-only` disables LISTEN. Multiple databases use the file.
 Passwords never enter the schema or dashboard. Password files must be regular
-files, mode `0600`, readable by the service account; symlinks are refused.
-Relative password paths resolve against the engine root.
+files owned by the service account, mode `0600`; symlinks are refused.
+Relative password paths resolve against the engine root. DSNs use the
+`postgresql://` URI format; libpq keyword connection strings are not supported.
 
 Use a direct database endpoint, not a transaction-pooling endpoint: election
 requires a session advisory lock. All nodes configured for a database share
@@ -80,7 +82,9 @@ chunk destination with `chunking => 'recursive'`. `set_format()` refreshes the
 entry using a document template. `trigger_mode => 'statement'` (the default)
 enqueues from transition tables, which is the right choice for bulk loads;
 `'row'` fires per changed row. Use `backfill_mode => 'cursor'` to bound the
-initial queue on large tables.
+initial queue on large tables. Cursor adoption honors both `backfill => 'missing'`
+and `'all'`. On partitioned tables, use row triggers if applications write
+directly to partitions; statement triggers cover writes through the parent only.
 
 Claims and source reads commit before inference. Write-back checks the source
 row version and migration target again. Transient/configuration failures retry
@@ -103,7 +107,8 @@ index. PostgreSQL does not support concurrent index creation on partitioned
 parents; use a blocking build or manage partition indexes explicitly.
 
 Migration cutover is explicit and refuses old-column constraints or metadata
-that dropping the column would discard. Dependent views block cutover. Aborting
+that dropping the column would discard, including partition-local metadata,
+column storage settings and extended statistics. Dependent views block cutover. Aborting
 rebuilds the old model's vectors so writes received during migration converge.
 `disable()` retains user vectors and chunk data by default; managed destinations
 are dropped explicitly after reviewing their dependencies.
@@ -118,7 +123,8 @@ proxy rewrites each call into `search_with_vector()` or a vector literal,
 embedding the text with this node's models or the fleet, and forwards every
 other byte unchanged: authentication, transactions, prepared statements,
 `COPY` and cancellation all pass through. Clients authenticate against the
-database with their own credentials; the proxy has none of them.
+database with their own credentials; the proxy has none of them. Each proxy
+port accepts only the database configured in its managed entry.
 
 ```sql
 SELECT * FROM postvec.search('public.docs', 'body', 'reset password', limit_n => 5);
@@ -127,13 +133,18 @@ SELECT postvec.embed('reset password', 'your-model');
 ```
 
 The relation, column and model must be literals; the text may be a literal or
-a bind parameter. Calls in any other form, and calls made without the proxy,
+a bind parameter. Inference accepts UTF-8 text (`client_encoding=UTF8`, or UTF-8 bytes in a
+`SQL_ASCII` session); SQL string escapes
+follow the session’s `standard_conforming_strings` setting. Calls in any other form, and calls made without the proxy,
 raise an error naming the proxy. Unqualified relation names must be unique
 across schemas. Every execution embeds the text again, so prepared statements
 cost one embedding per execution.
 
-The proxy uses the node's TLS certificate, or plain TCP with `--insecure`, and
-connects to the database with the entry's `sslmode`. SCRAM channel binding
+The proxy requires client TLS when the node has a TLS certificate;
+`--insecure` permits plain TCP. Startup and TLS negotiation have a 10-second
+deadline. `proxy_max_connections` defaults to 256 per managed entry; connections
+over the limit are closed. Upstream TLS uses the entry's `sslmode`, root CA,
+and optional client certificate/key settings. SCRAM channel binding
 cannot pass through a proxy, so the proxy never offers `SCRAM-SHA-256-PLUS`.
 Default libpq (`channel_binding=prefer`) falls back to `SCRAM-SHA-256`.
 Clients that set `channel_binding=require` will fail to authenticate.
@@ -169,7 +180,9 @@ postvec-server managed uninstall --dsn <DSN> --password-file <PATH>
 ```
 
 Installation is transactional and repeatable. Rerun `managed install` to add the
-lifecycle functions to an earlier version-1 managed installation. The installer
+current SQL function bodies and repair legacy PK companions in an earlier
+version-1 managed installation. Lifecycle DDL acquires its source-table lock
+before registry rows; keep lifecycle transactions short. The installer
 refuses an extension database, unrelated schema or unsupported schema version.
 Workers park on schema-version mismatch. Uninstall removes managed triggers and
 schema objects, retains user vectors/chunks, and refuses external dependencies.

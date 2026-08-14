@@ -144,8 +144,9 @@ pub(super) fn pk_pred(e: &RegistryEntry, alias: &str, param: &str) -> String {
     } else {
         let prefix = if alias.is_empty() { "" } else { "." };
         format!(
-            "{alias}{prefix}{}={param}::{}",
+            "{alias}{prefix}{}=(CASE WHEN pg_input_is_valid({param},{}) THEN {param} END)::{}",
             quote_ident(&e.pk_columns[0]),
+            postvec_core::registry::quote_literal_estring(&e.pk_types[0]),
             e.pk_types[0]
         )
     }

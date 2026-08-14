@@ -64,6 +64,7 @@ pub struct ManagedDb {
     pub password_file: Option<PathBuf>,
     pub sync: bool,
     pub proxy_port: Option<u16>,
+    pub proxy_max_connections: usize,
     pub poll_interval_ms: u64,
     pub poll_only: bool,
     pub batch_size: i32,
@@ -84,6 +85,7 @@ impl Default for ManagedDb {
             password_file: None,
             sync: true,
             proxy_port: None,
+            proxy_max_connections: 256,
             poll_interval_ms: 2000,
             poll_only: false,
             batch_size: 64,
@@ -106,6 +108,9 @@ impl ManagedDb {
             || !(1..=512).contains(&self.batch_size)
         {
             return Err("managed poll_interval_ms must be 100–3600000 and batch_size 1–512".into());
+        }
+        if !(1..=65536).contains(&self.proxy_max_connections) {
+            return Err("managed proxy_max_connections must be 1–65536".into());
         }
         if self.proxy_port == Some(0) || (!self.sync && self.proxy_port.is_none()) {
             return Err("managed entry needs sync or a nonzero proxy_port".into());

@@ -179,6 +179,13 @@ async fn exercise(dsn: &str) -> Result<()> {
             .await?
             == "[5,1,2]"
     );
+    db.execute("INSERT INTO postvec.jobs(registry_id,pk_value) VALUES(1,'invalid-integer')")
+        .await?;
+    wait(
+        &mut db,
+        "SELECT NOT EXISTS(SELECT FROM postvec.jobs WHERE pk_value='invalid-integer')",
+    )
+    .await?;
     paused.store(true, Ordering::SeqCst);
     entered.store(false, Ordering::SeqCst);
     db.execute("UPDATE docs SET body='old' WHERE id=1").await?;
@@ -225,7 +232,15 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT state='awaiting_finalize' FROM postvec.migrations WHERE registry_id=1",
     )
     .await?;
-    db.execute("SELECT postvec.migration_finalize(1)").await?;
+    db.execute("ALTER TABLE docs ALTER COLUMN body_semantic SET STATISTICS 100")
+        .await?;
+    ensure!(
+        db.execute("SELECT postvec.migration_finalize(1)")
+            .await
+            .is_err(),
+        "cutover discarded custom statistics"
+    );
+    db.execute("ALTER TABLE docs ALTER COLUMN body_semantic SET STATISTICS -1;SELECT postvec.migration_finalize(1)").await?;
     ensure!(
         sqlx::query_scalar::<_, String>("SELECT model FROM postvec.registry WHERE id=1")
             .fetch_one(&mut db)
@@ -253,6 +268,13 @@ async fn exercise(dsn: &str) -> Result<()> {
     wait(
         &mut db,
         "SELECT body_semantic::text='[9,1,2]' FROM composite",
+    )
+    .await?;
+    db.execute("CREATE TABLE refill(id int PRIMARY KEY,body text,v vectors.vector(3));INSERT INTO refill VALUES(1,'refilled','[99,99,99]');SELECT postvec.adopt('refill','body','v','fixture',backfill=>'all',backfill_mode=>'cursor')").await?;
+    wait(&mut db, "SELECT v::text='[8,1,2]' FROM refill").await?;
+    wait(
+        &mut db,
+        "SELECT NOT EXISTS(SELECT FROM postvec.settings WHERE key LIKE 'backfill_all:%')",
     )
     .await?;
     paused.store(true, Ordering::SeqCst);
@@ -352,10 +374,34 @@ async fn exercise(dsn: &str) -> Result<()> {
         .await?;
         ensure!(extended == "3", "extended-query search: {extended}");
     }
+    for (text, expected) in [("hello", "{5,1,2}"), ("different", "{9,1,2}")] {
+        let embedded: String = sqlx::query_scalar("SELECT postvec.embed($1, 'fixture')::text")
+            .bind(text)
+            .fetch_one(&mut via)
+            .await?;
+        ensure!(embedded == expected, "parameterized embed: {embedded}");
+    }
     let embedded: String = sqlx::query_scalar("SELECT postvec.embed('hello', 'fixture')::text")
         .fetch_one(&mut via)
         .await?;
     ensure!(embedded == "{5,1,2}", "embed: {embedded}");
+    via.execute("SET standard_conforming_strings=off").await?;
+    let legacy = sqlx::raw_sql(r"SELECT postvec.embed('line\nnext','fixture')::text AS v")
+        .fetch_one(&mut via)
+        .await?;
+    ensure!(
+        legacy.get::<String, _>("v") == "{9,1,2}",
+        "legacy string was embedded literally"
+    );
+    via.execute("SET standard_conforming_strings=on;SET client_encoding=LATIN1")
+        .await?;
+    ensure!(
+        via.execute("SELECT postvec.embed('text','fixture')")
+            .await
+            .is_err(),
+        "non-UTF8 inference accepted"
+    );
+    via.execute("SET client_encoding=UTF8").await?;
     let rows = sqlx::raw_sql(
         "BEGIN; SELECT count(*) AS n FROM postvec.search('docs', 'body', 'x'); ROLLBACK;",
     )
@@ -453,7 +499,12 @@ async fn exercise(dsn: &str) -> Result<()> {
             managed::reserve(&fourth.settings).map_err(anyhow::Error::msg)?,
         ));
         proxied.set_port(Some(tls_port)).unwrap();
-        proxied.set_query(Some("sslmode=require&channel_binding=disable"));
+        proxied.set_query(Some("sslmode=disable"));
+        ensure!(
+            PgConnection::connect(proxied.as_str()).await.is_err(),
+            "TLS proxy accepted plaintext startup"
+        );
+        proxied.set_query(Some("sslmode=require"));
         let mut secure = PgConnection::connect(proxied.as_str())
             .await
             .context("TLS proxy")?;

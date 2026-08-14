@@ -17,13 +17,16 @@ use anyhow::{bail, ensure, Context, Result};
 use openssl::ssl::{Ssl, SslAcceptor, SslConnector, SslMethod, SslVerifyMode};
 use postvec_core::client::EmbedPurpose;
 use serde_json::{json, Value};
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode};
+use sqlx::{
+    postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode},
+    ConnectOptions,
+};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     pin::Pin,
     sync::{
-        atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering::Relaxed},
-        Arc,
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed},
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -55,7 +58,7 @@ impl Stats {
 struct Proxy {
     state: Arc<ServerState>,
     upstream: PgConnectOptions,
-    root_cert: Option<String>,
+    tls_files: HashMap<String, String>,
     acceptor: Option<SslAcceptor>,
     pool: PgPool,
     client: tokio::sync::RwLock<Client>,
@@ -81,7 +84,7 @@ pub(super) async fn serve(
     };
     let options = install::options(&db.args())?;
     let proxy = Arc::new(Proxy {
-        root_cert: ssl_root_cert(&db.dsn),
+        tls_files: tls_files(&options),
         pool: PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
@@ -101,7 +104,7 @@ pub(super) async fn serve(
         *proxy.client.write().await = client;
     }
     discover(&proxy).await;
-    let refresh = {
+    let _refresh = super::AbortOnDrop({
         let proxy = proxy.clone();
         tokio::spawn(async move {
             loop {
@@ -109,7 +112,7 @@ pub(super) async fn serve(
                 discover(&proxy).await;
             }
         })
-    };
+    });
     listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(listener)?;
     log::info!(
@@ -122,6 +125,7 @@ pub(super) async fn serve(
             "plain"
         }
     );
+    let slots = Arc::new(tokio::sync::Semaphore::new(db.proxy_max_connections));
     while !proxy.state.draining() {
         let (tcp, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -131,8 +135,12 @@ pub(super) async fn serve(
                 continue;
             }
         };
+        let Ok(slot) = slots.clone().try_acquire_owned() else {
+            continue;
+        };
         let proxy = proxy.clone();
         tokio::spawn(async move {
+            let _slot = slot;
             let _ = tcp.set_nodelay(true);
             proxy.stats.connections.fetch_add(1, Relaxed);
             let _count = ConnCount(proxy.stats.clone());
@@ -141,11 +149,28 @@ pub(super) async fn serve(
             }
         });
     }
-    refresh.abort();
     Ok(())
 }
 
-async fn connection(proxy: &Proxy, mut client: Stream) -> Result<()> {
+async fn connection(proxy: &Proxy, client: Stream) -> Result<()> {
+    let Some((client, upstream)) =
+        tokio::time::timeout(Duration::from_secs(10), handshake(proxy, client))
+            .await
+            .context("proxy handshake timed out")??
+    else {
+        return Ok(());
+    };
+    let (cr, cw) = tokio::io::split(client);
+    let (ur, uw) = tokio::io::split(upstream);
+    let shared = Arc::new(Shared::default());
+    tokio::select! {
+        r = backend_to_client(ur, cw, shared.clone()) => r,
+        r = client_to_backend(proxy, cr, uw, shared) => r,
+    }
+}
+
+async fn handshake(proxy: &Proxy, mut client: Stream) -> Result<Option<(Stream, Stream)>> {
+    let mut encrypted = false;
     let startup = loop {
         let len = client.read_i32().await? as usize;
         ensure!((8..=10_000).contains(&len), "invalid startup message");
@@ -153,23 +178,53 @@ async fn connection(proxy: &Proxy, mut client: Stream) -> Result<()> {
         client.read_exact(&mut body).await?;
         match i32::from_be_bytes(body[..4].try_into()?) {
             SSL_REQUEST => match &proxy.acceptor {
+                _ if encrypted || len != 8 => bail!("invalid SSL request"),
                 Some(acceptor) => {
                     client.write_all(b"S").await?;
                     let ssl = Ssl::new(acceptor.context())?;
                     let mut tls = tokio_openssl::SslStream::new(ssl, client)?;
                     Pin::new(&mut tls).accept().await.context("client TLS")?;
                     client = Box::new(tls);
+                    encrypted = true;
                 }
                 None => client.write_all(b"N").await?,
             },
-            GSSENC_REQUEST => client.write_all(b"N").await?,
-            CANCEL_REQUEST => {
+            GSSENC_REQUEST if !encrypted && len == 8 => client.write_all(b"N").await?,
+            CANCEL_REQUEST if len == 16 => {
                 let mut upstream = proxy.connect().await?;
                 upstream.write_all(&(len as i32).to_be_bytes()).await?;
                 upstream.write_all(&body).await?;
-                return Ok(());
+                return Ok(None);
             }
-            PROTOCOL_3 => break body,
+            PROTOCOL_3 => {
+                ensure!(
+                    encrypted || proxy.acceptor.is_none(),
+                    "client TLS is required"
+                );
+                let mut rest = &body[4..];
+                let (mut user, mut database) = (None, None);
+                while rest != b"\0" {
+                    let (key, tail) = cstr(rest)?;
+                    let (value, tail) = cstr(tail)?;
+                    match key {
+                        "user" => user = Some(value),
+                        "database" => database = Some(value),
+                        _ => {}
+                    }
+                    rest = tail;
+                }
+                ensure!(
+                    database.or(user)
+                        == Some(
+                            proxy
+                                .upstream
+                                .get_database()
+                                .unwrap_or(proxy.upstream.get_username())
+                        ),
+                    "proxy database does not match configured database"
+                );
+                break body;
+            }
             _ => bail!("unsupported protocol"),
         }
     };
@@ -178,13 +233,7 @@ async fn connection(proxy: &Proxy, mut client: Stream) -> Result<()> {
         .write_all(&(startup.len() as i32 + 4).to_be_bytes())
         .await?;
     upstream.write_all(&startup).await?;
-    let (cr, cw) = tokio::io::split(client);
-    let (ur, uw) = tokio::io::split(upstream);
-    let shared = Arc::new(Shared::default());
-    tokio::select! {
-        r = backend_to_client(ur, cw, shared.clone()) => r,
-        r = client_to_backend(proxy, cr, uw, shared) => r,
-    }
+    Ok(Some((client, upstream)))
 }
 
 impl Proxy {
@@ -217,7 +266,12 @@ impl Proxy {
         }
         stream.write_all(&8i32.to_be_bytes()).await?;
         stream.write_all(&SSL_REQUEST.to_be_bytes()).await?;
-        if stream.read_u8().await? != b'S' {
+        let reply = stream.read_u8().await?;
+        ensure!(
+            matches!(reply, b'S' | b'N'),
+            "invalid upstream SSL response"
+        );
+        if reply == b'N' {
             ensure!(
                 matches!(mode, PgSslMode::Prefer | PgSslMode::Allow),
                 "upstream refuses TLS"
@@ -225,8 +279,13 @@ impl Proxy {
             return Ok(stream);
         }
         let mut builder = SslConnector::builder(SslMethod::tls_client())?;
-        if let Some(path) = &self.root_cert {
-            builder.set_ca_file(path)?;
+        for (key, path) in &self.tls_files {
+            match key.as_str() {
+                "sslrootcert" => builder.set_ca_file(path)?,
+                "sslcert" => builder.set_certificate_chain_file(path)?,
+                "sslkey" => builder.set_private_key_file(path, openssl::ssl::SslFiletype::PEM)?,
+                _ => {}
+            }
         }
         let verify = matches!(mode, PgSslMode::VerifyCa | PgSslMode::VerifyFull);
         builder.set_verify(if verify {
@@ -246,7 +305,12 @@ impl Proxy {
         &self,
         calls: &[Call],
         params: &[Option<&[u8]>],
+        shared: &Shared,
     ) -> Result<Vec<Option<Vec<f32>>>> {
+        ensure!(
+            !shared.non_utf8.load(Relaxed),
+            "postvec proxy inference requires client_encoding=UTF8"
+        );
         let mut vectors = Vec::with_capacity(calls.len());
         for call in calls {
             let text = match &call.text {
@@ -320,8 +384,33 @@ impl Proxy {
 
 #[derive(Default)]
 struct Shared {
-    /// ParseComplete messages the client did not ask for.
-    swallow: AtomicUsize,
+    authenticated: AtomicBool,
+    legacy_strings: AtomicBool,
+    non_utf8: AtomicBool,
+    replies: Mutex<VecDeque<Option<(u8, bool)>>>,
+}
+
+impl Shared {
+    fn sent(&self, kind: u8, internal: bool) {
+        let entry = match kind {
+            b'P' => Some((b'1', internal)),
+            b'C' => Some((b'3', internal)),
+            b'S' | b'Q' => None,
+            _ => return,
+        };
+        self.replies.lock().unwrap().push_back(entry);
+    }
+    fn swallow(&self, kind: u8) -> bool {
+        let mut replies = self.replies.lock().unwrap();
+        match kind {
+            b'1' | b'3' => replies.pop_front() == Some(Some((kind, true))),
+            b'Z' => {
+                while matches!(replies.pop_front(), Some(Some(_))) {}
+                false
+            }
+            _ => false,
+        }
+    }
 }
 
 async fn read_message<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<(u8, Vec<u8>)>> {
@@ -332,8 +421,9 @@ async fn read_message<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<(u8, Vec
     };
     let len = r.read_i32().await? as usize;
     ensure!((4..=MAX_MESSAGE).contains(&len), "invalid message length");
-    let mut body = vec![0; len - 4];
-    r.read_exact(&mut body).await?;
+    let mut body = Vec::with_capacity((len - 4).min(8192));
+    r.take((len - 4) as u64).read_to_end(&mut body).await?;
+    ensure!(body.len() == len - 4, "truncated message");
     Ok(Some((kind, body)))
 }
 
@@ -365,19 +455,19 @@ fn strip_sasl_plus(body: &[u8]) -> Vec<u8> {
     list
 }
 
-fn ssl_root_cert(dsn: &str) -> Option<String> {
-    if let Ok(url) = reqwest::Url::parse(dsn) {
-        if let Some((_, v)) = url
-            .query_pairs()
-            .find(|(k, _)| k.eq_ignore_ascii_case("sslrootcert"))
-        {
-            return Some(v.into_owned());
-        }
-    }
-    dsn.split(|c: char| c.is_whitespace() || c == '&')
-        .filter_map(|part| part.split_once('='))
-        .find(|(k, _)| k.eq_ignore_ascii_case("sslrootcert"))
-        .map(|(_, v)| v.trim_matches('\'').to_string())
+fn tls_files(options: &PgConnectOptions) -> HashMap<String, String> {
+    options
+        .to_url_lossy()
+        .query_pairs()
+        .filter_map(|(key, value)| {
+            matches!(key.as_ref(), "sslrootcert" | "sslcert" | "sslkey").then(|| {
+                (
+                    key.into_owned(),
+                    value.strip_prefix("file: ").unwrap_or(&value).to_string(),
+                )
+            })
+        })
+        .collect()
 }
 
 struct ConnCount(Arc<Stats>);
@@ -394,14 +484,24 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 ) -> Result<()> {
     while let Some((kind, mut body)) = read_message(&mut r).await? {
         match kind {
+            b'S' => {
+                let (name, rest) = cstr(&body)?;
+                let (value, _) = cstr(rest)?;
+                match name {
+                    "standard_conforming_strings" => {
+                        shared.legacy_strings.store(value == "off", Relaxed)
+                    }
+                    "client_encoding" => shared
+                        .non_utf8
+                        .store(!matches!(value, "UTF8" | "SQL_ASCII"), Relaxed),
+                    _ => {}
+                }
+            }
+            b'R' if body == 0i32.to_be_bytes() => shared.authenticated.store(true, Relaxed),
             b'R' if body.len() > 4 && body[..4] == 10i32.to_be_bytes() => {
                 body = strip_sasl_plus(&body);
             }
-            b'1' if shared.swallow.load(Relaxed) > 0 => {
-                shared.swallow.fetch_sub(1, Relaxed);
-                continue;
-            }
-            b'Z' => shared.swallow.store(0, Relaxed),
+            b'1' | b'3' | b'Z' if shared.swallow(kind) => continue,
             _ => {}
         }
         w.write_all(&frame(kind, &body)).await?;
@@ -427,13 +527,22 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     shared: Arc<Shared>,
 ) -> Result<()> {
     let mut statements: HashMap<String, Prepared> = HashMap::new();
+    let internal = format!("postvec_{}", uuid::Uuid::new_v4().simple());
+    let mut close = vec![b'S'];
+    close.extend(cstring(&internal));
     while let Some((kind, body)) = read_message(&mut r).await? {
+        if !shared.authenticated.load(Relaxed) {
+            ensure!(matches!(kind, b'p' | b'X'), "authentication required");
+            w.write_all(&frame(kind, &body)).await?;
+            continue;
+        }
         let body = match kind {
             b'Q' => {
+                statements.remove("");
                 let (sql, _) = cstr(&body)?;
-                match rewrite::scan(sql) {
+                match rewrite::scan_with_strings(sql, !shared.legacy_strings.load(Relaxed)) {
                     Ok(calls) if !calls.is_empty() => {
-                        let sql = match proxy.embed_all(&calls, &[]).await {
+                        let sql = match proxy.embed_all(&calls, &[], &shared).await {
                             Ok(vectors) => rewrite::render(sql, &calls, &vectors),
                             Err(e) => format!("SELECT postvec._proxy_error({})", quote(&e)),
                         };
@@ -445,7 +554,7 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             b'P' => {
                 let (name, rest) = cstr(&body)?;
                 let (sql, types) = cstr(rest)?;
-                match rewrite::scan(sql) {
+                match rewrite::scan_with_strings(sql, !shared.legacy_strings.load(Relaxed)) {
                     Ok(calls) if !calls.is_empty() => {
                         let placeholders = vec![None; calls.len()];
                         let rewritten =
@@ -474,10 +583,10 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     continue;
                 };
                 let (params, results) = bind_params(rest)?;
-                let (parse, bind) = match proxy.embed_all(&prepared.calls, &params).await {
+                let (parse, bind) = match proxy.embed_all(&prepared.calls, &params, &shared).await {
                     Ok(vectors) => (
                         parse_body(
-                            "",
+                            &internal,
                             &rewrite::render(&prepared.sql, &prepared.calls, &vectors),
                             &prepared.types,
                         ),
@@ -490,17 +599,26 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                         bind.extend_from_slice(message.as_bytes());
                         bind.extend_from_slice(results);
                         (
-                            parse_body("", "SELECT postvec._proxy_error($1)", &[0, 1, 0, 0, 0, 25]),
+                            parse_body(
+                                &internal,
+                                "SELECT postvec._proxy_error($1)",
+                                &[0, 1, 0, 0, 0, 25],
+                            ),
                             bind,
                         )
                     }
                 };
+                shared.sent(b'C', true);
+                shared.sent(b'P', true);
+                w.write_all(&frame(b'C', &close)).await?;
                 w.write_all(&frame(b'P', &parse)).await?;
-                shared.swallow.fetch_add(1, Relaxed);
                 let mut body = cstring(portal);
-                body.push(0);
+                body.extend(cstring(&internal));
                 body.extend(bind);
-                body
+                w.write_all(&frame(b'B', &body)).await?;
+                shared.sent(b'C', true);
+                w.write_all(&frame(b'C', &close)).await?;
+                continue;
             }
             b'C' => {
                 if body.first() == Some(&b'S') {
@@ -510,6 +628,7 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             }
             _ => body,
         };
+        shared.sent(kind, false);
         w.write_all(&frame(kind, &body)).await?;
     }
     Ok(())
@@ -564,6 +683,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_replies_remain_ordered_across_pipelines_and_errors() {
+        let shared = Shared::default();
+        for (kind, internal) in [
+            (b'P', false),
+            (b'P', true),
+            (b'S', false),
+            (b'P', false),
+            (b'S', false),
+        ] {
+            shared.sent(kind, internal);
+        }
+        assert!(!shared.swallow(b'1'));
+        assert!(shared.swallow(b'1'));
+        assert!(!shared.swallow(b'Z'));
+        assert!(!shared.swallow(b'1'));
+        assert!(!shared.swallow(b'Z'));
+        for kind in [b'P', b'S', b'P', b'S'] {
+            shared.sent(kind, true);
+        }
+        assert!(!shared.swallow(b'E'));
+        assert!(!shared.swallow(b'Z'));
+        assert!(shared.swallow(b'1'));
+    }
+
+    #[test]
     fn strips_channel_binding_from_sasl_list() {
         let mut body = 10i32.to_be_bytes().to_vec();
         body.extend_from_slice(b"SCRAM-SHA-256-PLUS\0SCRAM-SHA-256\0");
@@ -573,15 +717,11 @@ mod tests {
     }
 
     #[test]
-    fn sslrootcert_from_url_and_keyword_dsn() {
-        assert_eq!(
-            ssl_root_cert("postgresql://db.example/app?sslmode=verify-full&sslrootcert=/ca.pem")
-                .as_deref(),
-            Some("/ca.pem")
-        );
-        assert_eq!(
-            ssl_root_cert("host=db.example dbname=app sslrootcert=/ca.pem").as_deref(),
-            Some("/ca.pem")
-        );
+    fn tls_options_use_sqlx_normalization() {
+        let options: PgConnectOptions = "postgresql://db.example/app?ssl-ca=/my%20ca.pem&ssl-cert=/client.pem&ssl-key=/client.key".parse().unwrap();
+        let pairs = tls_files(&options);
+        assert_eq!(pairs["sslrootcert"], "/my ca.pem");
+        assert_eq!(pairs["sslcert"], "/client.pem");
+        assert_eq!(pairs["sslkey"], "/client.key");
     }
 }

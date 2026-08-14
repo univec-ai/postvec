@@ -34,7 +34,7 @@ enum Tok<'a> {
 
 const HINT: &str = "Use literals or $n parameters for postvec.search(relation, column, text) and postvec.embed(text, model) through the proxy; other forms need search_with_vector().";
 
-fn lex(sql: &str) -> Result<Vec<(Tok<'_>, usize, usize)>, String> {
+fn lex(sql: &str, standard_strings: bool) -> Result<Vec<(Tok<'_>, usize, usize)>, String> {
     let b = sql.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -65,8 +65,8 @@ fn lex(sql: &str) -> Result<Vec<(Tok<'_>, usize, usize)>, String> {
                 return Err("unterminated comment".into());
             }
         } else if c == b'\'' || ((c == b'E' || c == b'e') && b.get(i + 1) == Some(&b'\'')) {
-            let escapes = c != b'\'';
-            i += if escapes { 2 } else { 1 };
+            let escapes = c != b'\'' || !standard_strings;
+            i += if c == b'\'' { 1 } else { 2 };
             let mut s = String::new();
             loop {
                 let Some(&ch) = b.get(i) else {
@@ -186,8 +186,8 @@ fn literal(toks: &[(Tok<'_>, usize, usize)]) -> Option<String> {
 
 /// Every rewritable call in `sql`, in source order. An error names the first
 /// call that cannot be rewritten.
-pub(super) fn scan(sql: &str) -> Result<Vec<Call>, String> {
-    let toks = lex(sql)?;
+pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Result<Vec<Call>, String> {
+    let toks = lex(sql, standard_strings)?;
     let mut calls = Vec::new();
     let mut i = 0;
     while i + 3 < toks.len() {
@@ -275,7 +275,12 @@ pub(super) fn render(sql: &str, calls: &[Call], vectors: &[Option<Vec<f32>>]) ->
             None => "NULL::real[]".into(),
         };
         if call.embed {
-            out.push_str(&vector);
+            match call.text {
+                Arg::Param(n) => out.push_str(&format!(
+                    "CASE WHEN ${n}::text IS NULL THEN NULL::real[] ELSE {vector} END"
+                )),
+                _ => out.push_str(&vector),
+            }
         } else {
             let text = match &call.text {
                 Arg::Literal(s) => quote(s),
@@ -302,6 +307,23 @@ fn quote(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn scan(sql: &str) -> Result<Vec<Call>, String> {
+        scan_with_strings(sql, true)
+    }
+
+    #[test]
+    fn honors_legacy_string_escaping() {
+        let sql = "SELECT postvec.embed('line\\nnext', 'm')";
+        assert_eq!(
+            scan_with_strings(sql, false).unwrap()[0].text,
+            Arg::Literal("line\nnext".into())
+        );
+        assert_eq!(
+            scan(sql).unwrap()[0].text,
+            Arg::Literal("line\\nnext".into())
+        );
+    }
+
     #[test]
     fn rewrites_literals_and_params() {
         let sql = "SELECT * FROM postvec.search('public.docs', 'body', E'reset\\'s', limit_n => 5, filter => '{\"a\":1}') s, postvec.embed($1, 'm') /* postvec.search( */ -- x\nWHERE 'postvec.search(' <> $$postvec.embed($$";
@@ -312,7 +334,7 @@ mod tests {
         assert_eq!(calls[1].text, Arg::Param(1));
         assert_eq!(calls[1].relation, "m");
         let out = render(sql, &calls, &[Some(vec![1.0, 2.5]), None]);
-        assert!(out.starts_with("SELECT * FROM postvec.search_with_vector(E'public.docs', E'body', ARRAY[1,2.5]::real[], E'reset\\'s', limit_n => 5, filter => '{\"a\":1}') s, NULL::real[] /*"));
+        assert!(out.starts_with("SELECT * FROM postvec.search_with_vector(E'public.docs', E'body', ARRAY[1,2.5]::real[], E'reset\\'s', limit_n => 5, filter => '{\"a\":1}') s, CASE WHEN $1::text IS NULL THEN NULL::real[] ELSE NULL::real[] END /*"));
         assert!(out.ends_with("WHERE 'postvec.search(' <> $$postvec.embed($$"));
     }
 

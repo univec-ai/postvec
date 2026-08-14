@@ -80,7 +80,21 @@ async fn exercise(dsn: &str) -> Result<()> {
     );
     db.execute("DROP SCHEMA postvec").await?;
     managed::run(command(dsn, "install")).await?;
+    let truncate: String =
+        sqlx::query_scalar("SELECT pg_get_functiondef('postvec.trg_truncate()'::regprocedure)")
+            .fetch_one(&mut db)
+            .await?;
+    db.execute("CREATE OR REPLACE FUNCTION postvec.trg_truncate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'stale'; END $$").await?;
     managed::run(command(dsn, "install")).await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT pg_get_functiondef('postvec.trg_truncate()'::regprocedure)"
+        )
+        .fetch_one(&mut db)
+        .await?
+            == truncate,
+        "truncate function was not refreshed"
+    );
     managed::run(command(dsn, "status")).await?;
     db.execute("UPDATE postvec.schema_version SET version = 2")
         .await?;
@@ -165,6 +179,53 @@ async fn exercise(dsn: &str) -> Result<()> {
             THEN RAISE EXCEPTION 'truncate cleanup'; END IF;
         END $$;
     "#).await?;
+    db.execute(r#"
+        INSERT INTO postvec.models(name,model_type,target_model,target_dim,raw) VALUES('fixture','embed','fixture',3,'{}');
+        CREATE TABLE pk_changes(id integer PRIMARY KEY,body text);
+        SELECT postvec.enable('pk_changes','body','fixture');
+        CREATE FUNCTION move_pk() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.id:=NEW.id+10; RETURN NEW; END $$;
+        CREATE TRIGGER move_pk BEFORE UPDATE ON pk_changes FOR EACH ROW EXECUTE FUNCTION move_pk();
+        INSERT INTO pk_changes VALUES(1,'before');
+        UPDATE pk_changes SET body='after';
+        DO $$ BEGIN
+            IF (SELECT array_agg(pk_value) FROM postvec.jobs WHERE registry_id=(SELECT id FROM postvec.registry WHERE table_name='pk_changes')) IS DISTINCT FROM ARRAY['11']
+            THEN RAISE EXCEPTION 'BEFORE-trigger primary key change was lost'; END IF;
+        END $$;
+        SELECT postvec.disable('pk_changes','body');
+    "#).await?;
+    db.execute(r#"
+        CREATE TABLE partitioned(id integer PRIMARY KEY,body text,v vectors.vector(3)) PARTITION BY RANGE(id);
+        CREATE TABLE partition_child PARTITION OF partitioned FOR VALUES FROM(0) TO(10);
+        SELECT postvec.adopt('partitioned','body','v','fixture',sync=>false,backfill=>'none');
+        ALTER TABLE partitioned ADD COLUMN new_v vectors.vector(3);
+        INSERT INTO postvec.migrations(registry_id,old_model,new_model,old_dim,new_dim,strategy,new_column,rows_total,state)
+            SELECT id,model,'next',3,3,'reembed','new_v',0,'awaiting_finalize' FROM postvec.registry WHERE table_name='partitioned';
+        COMMENT ON COLUMN partition_child.v IS 'retain this';
+    "#).await?;
+    ensure!(db.execute("SELECT postvec.migration_finalize(id) FROM postvec.migrations WHERE new_column='new_v'").await.is_err(), "cutover discarded partition metadata");
+    db.execute("COMMENT ON COLUMN partition_child.v IS NULL;SELECT postvec.migration_finalize(id) FROM postvec.migrations WHERE new_column='new_v'").await?;
+    let mut other = PgConnection::connect(dsn).await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut other)
+        .await?;
+    let mut tx = db.begin().await?;
+    tx.execute("LOCK TABLE partitioned IN ROW SHARE MODE;SELECT id FROM postvec.registry WHERE table_name='partitioned' FOR UPDATE").await?;
+    let lifecycle = tokio::spawn(async move {
+        other
+            .execute("SELECT postvec.disable('partitioned','body')")
+            .await
+    });
+    let waiting = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_locks WHERE pid=$1 AND relation='partitioned'::regclass AND mode='AccessExclusiveLock' AND NOT granted)")
+                .bind(pid).fetch_one(&mut *tx).await?;
+            if blocked { return Ok::<_, sqlx::Error>(()); }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await;
+    tx.rollback().await?;
+    lifecycle.await??;
+    waiting.context("lifecycle waited on the registry before taking its DDL lock")??;
     db.execute("CREATE VIEW user_dependency AS SELECT * FROM postvec.registry")
         .await?;
     ensure!(

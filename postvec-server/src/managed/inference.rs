@@ -52,7 +52,7 @@ impl Client {
                     continue;
                 }
                 let result = async {
-                    let response = http
+                    let mut response = http
                         .get(format!("{}/config", node.address.trim_end_matches('/')))
                         .send()
                         .await?
@@ -63,7 +63,15 @@ impl Client {
                     {
                         anyhow::bail!("discovery response too large");
                     }
-                    let models = parse_config(&response.text().await?)?;
+                    let mut body = Vec::new();
+                    while let Some(chunk) = response.chunk().await? {
+                        anyhow::ensure!(
+                            body.len() + chunk.len() <= 8 * 1024 * 1024,
+                            "discovery response too large"
+                        );
+                        body.extend_from_slice(&chunk);
+                    }
+                    let models = parse_config(std::str::from_utf8(&body)?)?;
                     let channel = Channel::from_shared(format!("http://{}", node.grpc))?
                         .connect_timeout(Duration::from_secs(3))
                         .timeout(self.timeout)

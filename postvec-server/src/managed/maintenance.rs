@@ -79,7 +79,13 @@ async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool>
                 .as_ref()
                 .map(|w| e.pk_watermark_clause("", w))
                 .unwrap_or_default();
-            let vector_pred = if e.is_recursive() {
+            let all: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT FROM postvec.settings WHERE key='backfill_all:'||$1::text)",
+            )
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+            let vector_pred = if e.is_recursive() || all {
                 String::new()
             } else {
                 format!(" AND {} IS NULL", qi(&e.vector_column))
@@ -94,6 +100,12 @@ async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool>
             .bind(if pks.is_empty() { "done" } else { "cursor" })
             .execute(&mut *tx)
             .await?;
+            if pks.is_empty() {
+                sqlx::query("DELETE FROM postvec.settings WHERE key='backfill_all:'||$1::text")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
             progress = true;
         }
     }
