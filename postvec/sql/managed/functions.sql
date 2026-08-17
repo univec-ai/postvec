@@ -202,9 +202,9 @@ BEGIN
         SELECT %s, row_number() OVER (ORDER BY %s %s %s) AS rank_sem FROM %s
          WHERE %s IS NOT NULL %s ORDER BY %s %s %s LIMIT %s
     ), fts AS (
-        SELECT %s, row_number() OVER (ORDER BY ts_rank_cd(to_tsvector(%s, %s), websearch_to_tsquery(%s, $2)) DESC) AS rank_fts
-          FROM %s WHERE to_tsvector(%s, %s) @@ websearch_to_tsquery(%s, $2) %s
-         ORDER BY ts_rank_cd(to_tsvector(%s, %s), websearch_to_tsquery(%s, $2)) DESC LIMIT %s
+        SELECT %s, row_number() OVER (ORDER BY pg_catalog.ts_rank_cd(pg_catalog.to_tsvector(%s, %s), pg_catalog.websearch_to_tsquery(%s, $2)) DESC) AS rank_fts
+          FROM %s WHERE pg_catalog.to_tsvector(%s, %s) @@ pg_catalog.websearch_to_tsquery(%s, $2) %s
+         ORDER BY pg_catalog.ts_rank_cd(pg_catalog.to_tsvector(%s, %s), pg_catalog.websearch_to_tsquery(%s, $2)) DESC LIMIT %s
     ), fused AS (
         SELECT coalesce(s.cid,f.cid) AS cid, coalesce(s.pk,f.pk) AS pk,
                coalesce(s.seq,f.seq) AS seq, coalesce(s.cs,f.cs) AS cs, coalesce(s.ce,f.ce) AS ce,

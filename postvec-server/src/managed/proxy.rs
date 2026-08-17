@@ -19,7 +19,7 @@ use postvec_core::client::EmbedPurpose;
 use serde_json::{json, Value};
 use sqlx::{
     postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgSslMode},
-    ConnectOptions,
+    ConnectOptions, Executor,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -88,6 +88,13 @@ pub(super) async fn serve(
         pool: PgPoolOptions::new()
             .max_connections(4)
             .acquire_timeout(Duration::from_secs(10))
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    conn.execute("SET statement_timeout='30s'; SET lock_timeout='5s'")
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect_lazy_with(options.clone()),
         upstream: options,
         acceptor,
@@ -136,6 +143,7 @@ pub(super) async fn serve(
             }
         };
         let Ok(slot) = slots.clone().try_acquire_owned() else {
+            log::warn!("proxy {}: connection cap reached, dropping {peer}", proxy.name);
             continue;
         };
         let proxy = proxy.clone();
