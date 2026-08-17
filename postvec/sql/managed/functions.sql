@@ -14,9 +14,9 @@ RETURNS TABLE(pk_value text, rrf_score double precision, semantic_rank bigint, f
               chunk_seq integer, chunk_start bigint, chunk_end bigint, chunk_text text)
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    RAISE EXCEPTION 'postvec: search(text) is available through the postvec-server proxy port'
+    RAISE EXCEPTION 'postvec: search(text) needs the postvec-server proxy port with literal relation and column arguments and a literal or $n query text'
         USING ERRCODE = 'feature_not_supported',
-              HINT = 'Connect through the proxy with a literal or parameter query text, or embed the query with the server API and call postvec.search_with_vector().';
+              HINT = 'Connect through the proxy, or embed the query with the server API and call postvec.search_with_vector().';
 END $$;
 CREATE OR REPLACE FUNCTION postvec._proxy_error(message text) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
@@ -24,9 +24,9 @@ BEGIN RAISE EXCEPTION '%', message USING ERRCODE = 'feature_not_supported'; END 
 CREATE OR REPLACE FUNCTION postvec.embed(input text, model text) RETURNS real[]
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    RAISE EXCEPTION 'postvec: embed() is available through the postvec-server proxy port'
+    RAISE EXCEPTION 'postvec: embed() needs the postvec-server proxy port with a literal model and a literal or $n text'
         USING ERRCODE = 'feature_not_supported',
-              HINT = 'Connect through the proxy with a literal or parameter text, or use the server''s /api/openai/embeddings endpoint.';
+              HINT = 'Connect through the proxy, or use the server''s /api/openai/embeddings endpoint.';
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec.retry_dead(relation regclass, column_name text, dead_ids bigint[] DEFAULT NULL)

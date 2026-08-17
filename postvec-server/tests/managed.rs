@@ -181,14 +181,33 @@ async fn exercise(dsn: &str) -> Result<()> {
     "#).await?;
     db.execute(r#"
         INSERT INTO postvec.models(name,model_type,target_model,target_dim,raw) VALUES('fixture','embed','fixture',3,'{}');
-        CREATE TABLE pk_changes(id integer PRIMARY KEY,body text);
+        CREATE TABLE pk_changes(id integer PRIMARY KEY,body text,note text);
         SELECT postvec.enable('pk_changes','body','fixture');
+        CREATE TABLE row_changes(id integer PRIMARY KEY,body text,note text);
+        SELECT postvec.enable('row_changes','body','fixture',trigger_mode=>'row',format=>'$note: $body');
+        INSERT INTO pk_changes VALUES(1,'before',NULL),(2,NULL,'no source');
+        INSERT INTO row_changes VALUES(1,'before',NULL),(2,NULL,'no source');
+        DO $$ BEGIN
+            IF (SELECT count(*) FROM postvec.jobs j JOIN postvec.registry r ON r.id=j.registry_id WHERE r.table_name IN ('pk_changes','row_changes')) <> 2
+            THEN RAISE EXCEPTION 'NULL-source insert enqueued'; END IF;
+        END $$;
+        DELETE FROM postvec.jobs;
+        UPDATE pk_changes SET note='unrelated';
+        UPDATE row_changes SET id=id;
+        DO $$ BEGIN
+            IF EXISTS(SELECT FROM postvec.jobs) THEN RAISE EXCEPTION 'unrelated column update enqueued'; END IF;
+        END $$;
+        UPDATE row_changes SET note='context';
+        DO $$ BEGIN
+            IF (SELECT count(*) FROM postvec.jobs WHERE registry_id=(SELECT id FROM postvec.registry WHERE table_name='row_changes')) <> 2
+            THEN RAISE EXCEPTION 'context column update was not enqueued'; END IF;
+        END $$;
+        SELECT postvec.disable('row_changes','body');
         CREATE FUNCTION move_pk() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.id:=NEW.id+10; RETURN NEW; END $$;
         CREATE TRIGGER move_pk BEFORE UPDATE ON pk_changes FOR EACH ROW EXECUTE FUNCTION move_pk();
-        INSERT INTO pk_changes VALUES(1,'before');
         UPDATE pk_changes SET body='after';
         DO $$ BEGIN
-            IF (SELECT array_agg(pk_value) FROM postvec.jobs WHERE registry_id=(SELECT id FROM postvec.registry WHERE table_name='pk_changes')) IS DISTINCT FROM ARRAY['11']
+            IF (SELECT array_agg(pk_value ORDER BY pk_value) FROM postvec.jobs WHERE registry_id=(SELECT id FROM postvec.registry WHERE table_name='pk_changes')) IS DISTINCT FROM ARRAY['11','12']
             THEN RAISE EXCEPTION 'BEFORE-trigger primary key change was lost'; END IF;
         END $$;
         SELECT postvec.disable('pk_changes','body');

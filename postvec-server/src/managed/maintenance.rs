@@ -109,62 +109,71 @@ async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool>
             progress = true;
         }
     }
-    let pending: i64=sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM postvec.jobs WHERE registry_id=$1 AND op='embed' LIMIT 10000) q").bind(id).fetch_one(&mut *tx).await?;
-    if pending < 10000 {
-        let job:Option<(i64,String)>=sqlx::query_as("UPDATE postvec.jobs SET claimed_at=now(),attempts=attempts+1 WHERE id=(SELECT id FROM postvec.jobs WHERE registry_id=$1 AND op='refresh' AND claimed_at IS NULL AND not_before<=now() ORDER BY not_before,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,pk_value") .bind(id).fetch_optional(&mut *tx).await?;
-        if let Some((jid, pk)) = job {
-            progress = true;
-            if !e.is_recursive() {
-                worker::finish(&mut tx, jid, Some("refresh on non-chunked entry"), true).await?;
-            } else {
-                let src = qi(&e.source_column);
-                let row:Option<(Option<String>,Option<i64>)>=sqlx::query_as(&format!("SELECT CASE WHEN octet_length({src}::text)<=$2 THEN {src}::text END,octet_length({src}::text)::bigint FROM {} WHERE {} FOR SHARE",e.qualified_table(),worker::pk_pred(&e,"","$1"))) .bind(&pk).bind(chunking::MAX_DOCUMENT_BYTES as i64).fetch_optional(&mut *tx).await?;
-                let text = row.as_ref().and_then(|r| r.0.as_deref()).unwrap_or("");
-                let chunks = if row
-                    .as_ref()
-                    .and_then(|r| r.1)
-                    .is_some_and(|n| n > chunking::MAX_DOCUMENT_BYTES as i64)
-                {
-                    Err("document exceeds splitter limit".into())
-                } else {
-                    chunking::split_recursive(
-                        text,
-                        e.chunk_size.context("missing chunk size")?,
-                        e.chunk_overlap.context("missing chunk overlap")?,
-                    )
-                    .map_err(|e| e.to_string())
-                };
-                match chunks {
-                    Err(error) => worker::finish(&mut tx, jid, Some(&error), true).await?,
-                    Ok(chunks) => {
-                        sqlx::query(&format!(
-                            "DELETE FROM {} WHERE postvec_source_pk=$1::{}",
-                            e.qualified_vector_table(),
-                            e.pk_types[0]
-                        ))
-                        .bind(&pk)
-                        .execute(&mut *tx)
-                        .await?;
-                        sqlx::query("DELETE FROM postvec.jobs WHERE registry_id=$1 AND pk_value=$2 AND op='embed'").bind(id).bind(&pk).execute(&mut *tx).await?;
-                        sqlx::query(
-                            "DELETE FROM postvec.jobs_dead WHERE registry_id=$1 AND pk_value=$2",
-                        )
-                        .bind(id)
-                        .bind(&pk)
-                        .execute(&mut *tx)
-                        .await?;
-                        let seqs: Vec<_> = chunks.iter().map(|c| c.seq).collect();
-                        let starts: Vec<_> = chunks.iter().map(|c| c.char_start).collect();
-                        let ends: Vec<_> = chunks.iter().map(|c| c.char_end).collect();
-                        let texts: Vec<_> = chunks.iter().map(|c| &c.text).collect();
-                        let ids:Vec<i64>=sqlx::query_scalar(&format!("INSERT INTO {}(postvec_source_pk,postvec_chunk_seq,postvec_char_start,postvec_char_end,chunk_text) SELECT $1::{},* FROM unnest($2::int[],$3::bigint[],$4::bigint[],$5::text[]) RETURNING postvec_chunk_id",e.qualified_vector_table(),e.pk_types[0])) .bind(&pk).bind(seqs).bind(starts).bind(ends).bind(texts).fetch_all(&mut *tx).await?;
-                        sqlx::query("INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id) SELECT $1,$2,'embed',unnest($3::bigint[])").bind(id).bind(&pk).bind(ids).execute(&mut *tx).await?;
-                        worker::finish(&mut tx, jid, None, false).await?;
-                        sqlx::query("UPDATE postvec.worker_heartbeat SET documents_chunked=documents_chunked+1,chunks_created=chunks_created+$1 WHERE id=1").bind(chunks.len() as i64).execute(&mut *tx).await?;
-                    }
-                }
-            }
+    let mut pending: i64=sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM postvec.jobs WHERE registry_id=$1 AND op='embed' LIMIT 10000) q").bind(id).fetch_one(&mut *tx).await?;
+    for _ in 0..db.batch_size {
+        if pending >= 10000 {
+            break;
         }
+        let job:Option<(i64,String)>=sqlx::query_as("UPDATE postvec.jobs SET claimed_at=now(),attempts=attempts+1 WHERE id=(SELECT id FROM postvec.jobs WHERE registry_id=$1 AND op='refresh' AND claimed_at IS NULL AND not_before<=now() ORDER BY not_before,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,pk_value") .bind(id).fetch_optional(&mut *tx).await?;
+        let Some((jid, pk)) = job else {
+            break;
+        };
+        progress = true;
+        if !e.is_recursive() {
+            worker::finish(&mut tx, jid, Some("refresh on non-chunked entry"), true).await?;
+            continue;
+        }
+        let src = qi(&e.source_column);
+        let row:Option<(Option<String>,Option<i64>)>=sqlx::query_as(&format!("SELECT CASE WHEN octet_length({src}::text)<=$2 THEN {src}::text END,octet_length({src}::text)::bigint FROM {} WHERE {} FOR SHARE",e.qualified_table(),worker::pk_pred(&e,"","$1"))) .bind(&pk).bind(chunking::MAX_DOCUMENT_BYTES as i64).fetch_optional(&mut *tx).await?;
+        let text = row.as_ref().and_then(|r| r.0.as_deref()).unwrap_or("");
+        let chunks = if row
+            .as_ref()
+            .and_then(|r| r.1)
+            .is_some_and(|n| n > chunking::MAX_DOCUMENT_BYTES as i64)
+        {
+            Err("document exceeds splitter limit".into())
+        } else {
+            chunking::split_recursive(
+                text,
+                e.chunk_size.context("missing chunk size")?,
+                e.chunk_overlap.context("missing chunk overlap")?,
+            )
+            .map_err(|e| e.to_string())
+        };
+        let chunks = match chunks {
+            Err(error) => {
+                worker::finish(&mut tx, jid, Some(&error), true).await?;
+                continue;
+            }
+            Ok(chunks) => chunks,
+        };
+        sqlx::query(&format!(
+            "DELETE FROM {} WHERE postvec_source_pk=$1::{}",
+            e.qualified_vector_table(),
+            e.pk_types[0]
+        ))
+        .bind(&pk)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM postvec.jobs WHERE registry_id=$1 AND pk_value=$2 AND op='embed'")
+            .bind(id)
+            .bind(&pk)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM postvec.jobs_dead WHERE registry_id=$1 AND pk_value=$2")
+            .bind(id)
+            .bind(&pk)
+            .execute(&mut *tx)
+            .await?;
+        let seqs: Vec<_> = chunks.iter().map(|c| c.seq).collect();
+        let starts: Vec<_> = chunks.iter().map(|c| c.char_start).collect();
+        let ends: Vec<_> = chunks.iter().map(|c| c.char_end).collect();
+        let texts: Vec<_> = chunks.iter().map(|c| &c.text).collect();
+        let ids:Vec<i64>=sqlx::query_scalar(&format!("INSERT INTO {}(postvec_source_pk,postvec_chunk_seq,postvec_char_start,postvec_char_end,chunk_text) SELECT $1::{},* FROM unnest($2::int[],$3::bigint[],$4::bigint[],$5::text[]) RETURNING postvec_chunk_id",e.qualified_vector_table(),e.pk_types[0])) .bind(&pk).bind(seqs).bind(starts).bind(ends).bind(texts).fetch_all(&mut *tx).await?;
+        sqlx::query("INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id) SELECT $1,$2,'embed',unnest($3::bigint[])").bind(id).bind(&pk).bind(&ids).execute(&mut *tx).await?;
+        worker::finish(&mut tx, jid, None, false).await?;
+        sqlx::query("UPDATE postvec.worker_heartbeat SET documents_chunked=documents_chunked+1,chunks_created=chunks_created+$1 WHERE id=1").bind(ids.len() as i64).execute(&mut *tx).await?;
+        pending += ids.len() as i64;
     }
     tx.commit().await?;
     Ok(progress)
@@ -338,7 +347,14 @@ async fn migrate(
 
 async fn index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<()> {
     let result = build_index(conn, id, db).await;
-    conn.execute("SET statement_timeout='30s'").await?;
+    conn.execute(
+        format!(
+            "SET statement_timeout='{t}s'; SET lock_timeout='{t}s'",
+            t = super::WORKER_TIMEOUT
+        )
+        .as_str(),
+    )
+    .await?;
     if let Err(error) = result {
         let mut tx = conn.begin().await?;
         worker::guard(&mut tx).await?;
@@ -422,7 +438,8 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
     } else {
         ""
     };
-    conn.execute("SET statement_timeout='1h'").await?;
+    conn.execute("SET statement_timeout='1h'; SET lock_timeout=0")
+        .await?;
     if existing.is_some() {
         conn.execute(format!("DROP INDEX {concurrently}{qualified}").as_str())
             .await?;

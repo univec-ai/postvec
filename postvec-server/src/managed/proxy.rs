@@ -541,14 +541,12 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 statements.remove("");
                 let (sql, _) = cstr(&body)?;
                 match rewrite::scan_with_strings(sql, !shared.legacy_strings.load(Relaxed)) {
-                    Ok(calls) if !calls.is_empty() => {
-                        let sql = match proxy.embed_all(&calls, &[], &shared).await {
-                            Ok(vectors) => rewrite::render(sql, &calls, &vectors),
-                            Err(e) => format!("SELECT postvec._proxy_error({})", quote(&e)),
-                        };
-                        cstring(&sql)
-                    }
-                    _ => body,
+                    Ok(calls) if calls.is_empty() => body,
+                    Ok(calls) => cstring(&match proxy.embed_all(&calls, &[], &shared).await {
+                        Ok(vectors) => rewrite::render(sql, &calls, &vectors),
+                        Err(e) => error_sql(&e),
+                    }),
+                    Err(e) => cstring(&error_sql(&anyhow::Error::msg(e))),
                 }
             }
             b'P' => {
@@ -634,8 +632,11 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-fn quote(e: &anyhow::Error) -> String {
-    postvec_core::registry::quote_literal_estring(&format!("{e:#}"))
+fn error_sql(e: &anyhow::Error) -> String {
+    format!(
+        "SELECT postvec._proxy_error({})",
+        postvec_core::registry::quote_literal_estring(&format!("{e:#}"))
+    )
 }
 
 fn cstring(s: &str) -> Vec<u8> {
@@ -657,11 +658,11 @@ fn parse_body(name: &str, sql: &str, types: &[u8]) -> Vec<u8> {
 /// text types), plus the result-format tail that follows them.
 type Params<'a> = Vec<Option<&'a [u8]>>;
 fn bind_params(rest: &[u8]) -> Result<(Params<'_>, &[u8])> {
-    let i16_at = |at: usize| -> Result<usize> {
-        Ok(i16::from_be_bytes(rest.get(at..at + 2).context("short Bind")?.try_into()?) as usize)
+    let u16_at = |at: usize| -> Result<usize> {
+        Ok(u16::from_be_bytes(rest.get(at..at + 2).context("short Bind")?.try_into()?) as usize)
     };
-    let mut at = 2 + i16_at(0)? * 2;
-    let count = i16_at(at)?;
+    let mut at = 2 + u16_at(0)? * 2;
+    let count = u16_at(at)?;
     at += 2;
     let mut params = Vec::with_capacity(count);
     for _ in 0..count {

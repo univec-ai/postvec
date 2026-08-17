@@ -185,9 +185,11 @@ fn literal(toks: &[(Tok<'_>, usize, usize)]) -> Option<String> {
 }
 
 /// Every rewritable call in `sql`, in source order. An error names the first
-/// call that cannot be rewritten.
+/// call that cannot be rewritten; SQL the lexer cannot follow is left alone.
 pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Result<Vec<Call>, String> {
-    let toks = lex(sql, standard_strings)?;
+    let Ok(toks) = lex(sql, standard_strings) else {
+        return Ok(Vec::new());
+    };
     let mut calls = Vec::new();
     let mut i = 0;
     while i + 3 < toks.len() {
@@ -345,6 +347,9 @@ mod tests {
         assert!(scan("SELECT postvec.search('d', 'body')").is_err());
         assert!(scan("SELECT postvec.embed(ARRAY['a'], 'm')").is_err());
         assert!(scan("SELECT postvec.search('d', 'body', 'x'").is_err());
+        assert!(scan("SELECT E'\\x41', postvec.search('d', 'body', 'x')")
+            .unwrap()
+            .is_empty());
         let calls = scan("SELECT \"postvec\".SEARCH('d'::text, 'body', $2::text)").unwrap();
         assert_eq!(calls[0].text, Arg::Param(2));
         assert!(scan("SELECT 1").unwrap().is_empty());

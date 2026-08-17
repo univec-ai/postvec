@@ -55,6 +55,9 @@ use std::{
 use tokio::time::Instant;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+/// Statement and lock timeout of worker connections: cursor scans over
+/// large, mostly embedded tables need minutes, not the CLI's seconds.
+const WORKER_TIMEOUT: u32 = 600;
 
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -124,7 +127,7 @@ impl ManagedDb {
         ConnectionArgs {
             dsn: self.dsn.clone(),
             password_file: self.password_file.clone(),
-            timeout: 30,
+            timeout: WORKER_TIMEOUT,
         }
     }
 }

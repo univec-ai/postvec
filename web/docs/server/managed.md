@@ -6,7 +6,7 @@ description: Run automatic embeddings and model migrations on PostgreSQL without
 # Managed PostgreSQL
 
 postvec-server runs the sync worker outside PostgreSQL, using a plain SQL schema
-and pgvector on PostgreSQL 16–18. It supports backfill, automatic updates,
+and pgvector 0.8 or newer on PostgreSQL 16–18. It supports backfill, automatic updates,
 recursive chunking, migration by conversion or re-embedding, fleet failover and
 a pgwire proxy for single-call `search(text)`.
 No postvec library, preload setting or database restart is required.
@@ -50,7 +50,8 @@ Restart postvec-server. Its existing models, provider credentials and gossip
 fleet serve the worker. For one database, `postvec-server serve --sync <DSN>`
 is a shortcut; `--poll-only` disables LISTEN. Multiple databases use the file.
 Passwords never enter the schema or dashboard. Password files must be regular
-files owned by the service account, mode `0600`; symlinks are refused.
+files owned by the service account and unreadable by group and others (mode
+`0600` or `0400`); symlinks are refused.
 Relative password paths resolve against the engine root. DSNs use the
 `postgresql://` URI format; libpq keyword connection strings are not supported.
 
@@ -81,13 +82,16 @@ SELECT postvec.migration_finalize(1);
 chunk destination with `chunking => 'recursive'`. `set_format()` refreshes the
 entry using a document template. `trigger_mode => 'statement'` (the default)
 enqueues from transition tables, which is the right choice for bulk loads;
-`'row'` fires per changed row. Use `backfill_mode => 'cursor'` to bound the
+`'row'` fires per changed row. Either mode re-embeds a row only when the source
+column, a column referenced by its format template, or its primary key changes;
+inserts with a NULL source enqueue nothing. Use `backfill_mode => 'cursor'` to bound the
 initial queue on large tables. Cursor adoption honors both `backfill => 'missing'`
 and `'all'`. On partitioned tables, use row triggers if applications write
 directly to partitions; statement triggers cover writes through the parent only.
 
 Claims and source reads commit before inference. Write-back checks the source
-row version and migration target again. Transient/configuration failures retry
+row version and migration target again. Worker statements and lock waits time
+out after ten minutes; index builds get an hour. Transient/configuration failures retry
 with exponential backoff; queue jobs dead-letter after five attempts. Oversized
 embedding inputs (1 MiB per item, 8 MiB per batch) dead-letter without loading
 the full value into the worker. Recursive splitting accepts documents up to
@@ -135,8 +139,8 @@ SELECT postvec.embed('reset password', 'your-model');
 The relation, column and model must be literals; the text may be a literal or
 a bind parameter. Inference accepts UTF-8 text (`client_encoding=UTF8`, or UTF-8 bytes in a
 `SQL_ASCII` session); SQL string escapes
-follow the session’s `standard_conforming_strings` setting. Calls in any other form, and calls made without the proxy,
-raise an error naming the proxy. Unqualified relation names must be unique
+follow the session’s `standard_conforming_strings` setting. Calls in any other form raise an error naming the supported forms; calls made
+without the proxy raise an error naming the proxy. Unqualified relation names must be unique
 across schemas. Every execution embeds the text again, so prepared statements
 cost one embedding per execution.
 

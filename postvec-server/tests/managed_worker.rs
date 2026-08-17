@@ -411,12 +411,30 @@ async fn exercise(dsn: &str) -> Result<()> {
         rows.len() == 1 && rows[0].get::<i64, _>("n") > 0,
         "search inside a transaction"
     );
+    let unsupported = sqlx::raw_sql("SELECT postvec.search(t.body, 'body', 'x') FROM docs t")
+        .execute(&mut via)
+        .await
+        .err()
+        .context("unsupported arguments accepted")?
+        .to_string();
+    ensure!(
+        unsupported.contains("not supported by the proxy"),
+        "unsupported arguments: {unsupported}"
+    );
     for bad in [
         "SELECT postvec.search(t.body, 'body', 'x') FROM docs t",
         "SELECT postvec.search('missing', 'body', 'x')",
         "SELECT postvec.embed('x', 'no-such-model')",
     ] {
-        ensure!(via.execute(bad).await.is_err(), "accepted: {bad}");
+        let error = via
+            .execute(bad)
+            .await
+            .err()
+            .context(format!("accepted: {bad}"))?;
+        ensure!(
+            error.to_string().contains("postvec"),
+            "unexpected error for {bad}: {error}"
+        );
         ensure!(
             sqlx::query_scalar::<_, i32>(bad)
                 .fetch_one(&mut via)

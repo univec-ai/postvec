@@ -10,11 +10,11 @@ BEGIN
     EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE',relation);
 END $$;
 
-CREATE OR REPLACE FUNCTION postvec._format(relation regclass, template text, source_column text, chunked boolean)
-RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE i integer:=1; c text; name text; closed boolean; referenced boolean:=false;
+CREATE OR REPLACE FUNCTION postvec._refs(template text) RETURNS text[] LANGUAGE plpgsql IMMUTABLE
+SET search_path=pg_catalog AS $$
+DECLARE i integer:=1; c text; name text; closed boolean; refs text[]:='{}';
 BEGIN
-    IF template IS NULL THEN RETURN; END IF;
+    IF template IS NULL THEN RETURN refs; END IF;
     IF octet_length(template) NOT BETWEEN 1 AND 16384 THEN RAISE EXCEPTION 'invalid format length'; END IF;
     WHILE i<=length(template) LOOP
         c:=substr(template,i,1); i:=i+1;
@@ -39,29 +39,44 @@ BEGIN
             END LOOP;
         END IF;
         IF name='' THEN RAISE EXCEPTION 'empty format reference'; END IF;
-        IF chunked AND name='chunk' THEN referenced:=true; CONTINUE; END IF;
-        IF NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=name AND attnum>0 AND NOT attisdropped AND atttypid IN ('text'::regtype,'varchar'::regtype,'bpchar'::regtype,'int2'::regtype,'int4'::regtype,'int8'::regtype,'float4'::regtype,'float8'::regtype,'numeric'::regtype,'bool'::regtype,'uuid'::regtype,'date'::regtype,'timestamp'::regtype,'timestamptz'::regtype)) THEN RAISE EXCEPTION 'unsupported format column %',name; END IF;
-        referenced:=referenced OR (NOT chunked AND name=source_column);
+        IF NOT name=ANY(refs) THEN refs:=refs||name; END IF;
     END LOOP;
-    IF NOT referenced THEN RAISE EXCEPTION 'format must reference %',CASE WHEN chunked THEN '$chunk' ELSE source_column END; END IF;
+    RETURN refs;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec._format(relation regclass, template text, source_column text, chunked boolean)
+RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE refs text[]; name text;
+BEGIN
+    IF template IS NULL THEN RETURN; END IF;
+    refs:=postvec._refs(template);
+    FOREACH name IN ARRAY refs LOOP
+        IF chunked AND name='chunk' THEN CONTINUE; END IF;
+        IF NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=name AND attnum>0 AND NOT attisdropped AND atttypid IN ('text'::regtype,'varchar'::regtype,'bpchar'::regtype,'int2'::regtype,'int4'::regtype,'int8'::regtype,'float4'::regtype,'float8'::regtype,'numeric'::regtype,'bool'::regtype,'uuid'::regtype,'date'::regtype,'timestamp'::regtype,'timestamptz'::regtype)) THEN RAISE EXCEPTION 'unsupported format column %',name; END IF;
+    END LOOP;
+    IF NOT (CASE WHEN chunked THEN 'chunk' ELSE source_column END)=ANY(refs) THEN RAISE EXCEPTION 'format must reference %',CASE WHEN chunked THEN '$chunk' ELSE source_column END; END IF;
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec._enqueue() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
-DECLARE r postvec.registry; pk text; oldpk text; expr text; ignored text[]; item record;
+DECLARE r postvec.registry; refs text[]; pk text; oldpk text; expr text; pred text; changed boolean; item record;
     nkey text; okey text; jpred text; job_op text;
 BEGIN
     SELECT * INTO r FROM postvec.registry WHERE id=TG_ARGV[0]::bigint AND state<>'disabled'
       AND (to_regclass(format('%I.%I',table_schema,table_name))=TG_RELID OR TG_RELID IN (SELECT relid FROM pg_partition_tree(to_regclass(format('%I.%I',table_schema,table_name)))));
     IF NOT FOUND THEN RETURN NULL; END IF;
-    SELECT coalesce(array_agg(v),ARRAY[]::text[]) INTO ignored FROM (SELECT r.vector_column AS v UNION ALL SELECT new_column FROM postvec.migrations WHERE registry_id=r.id AND state IN ('running','awaiting_finalize','awaiting_index')) q;
     job_op := CASE WHEN r.chunking='recursive' THEN 'refresh' ELSE 'embed' END;
+    IF TG_OP='UPDATE' THEN
+        refs := postvec._refs(r.format);
+        IF r.chunking='recursive' THEN refs := array_remove(refs,'chunk'); END IF;
+        IF NOT r.source_column=ANY(refs) THEN refs := r.source_column||refs; END IF;
+    END IF;
     IF TG_LEVEL='STATEMENT' THEN
         SELECT string_agg(format('n.%I',c),','), string_agg(format('o.%I',c),','), string_agg(format('n.%I=o.%I',c,c),' AND ')
           INTO nkey, okey, jpred FROM unnest(r.pk_columns) c;
         IF cardinality(r.pk_columns)>1 THEN nkey:='ROW('||nkey||')::text'; okey:='ROW('||okey||')::text';
         ELSE nkey:=nkey||'::text'; okey:=okey||'::text'; END IF;
         IF TG_OP='INSERT' THEN
-            EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,%s,%L FROM new_table n ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING', nkey, job_op) USING r.id;
+            EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,%s,%L FROM new_table n WHERE n.%I IS NOT NULL ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING', nkey, job_op, r.source_column) USING r.id;
         ELSIF TG_OP='DELETE' THEN
             EXECUTE format('DELETE FROM postvec.jobs_dead d USING old_table o WHERE d.registry_id=$1 AND d.pk_value=%s', okey) USING r.id;
             EXECUTE format('DELETE FROM postvec.jobs j USING old_table o WHERE j.registry_id=$1 AND j.pk_value=%s AND j.claimed_at IS NULL', okey) USING r.id;
@@ -69,22 +84,30 @@ BEGIN
                 EXECUTE format('DELETE FROM %I.%I c USING old_table o WHERE c.postvec_source_pk=o.%I', r.destination_schema, r.destination_table, r.pk_columns[1]);
             END IF;
         ELSIF TG_OP='UPDATE' THEN
+            SELECT string_agg(format('n.%1$I IS DISTINCT FROM o.%1$I',c),' OR ') INTO pred FROM unnest(refs) c;
             EXECUTE format(
-                'WITH changed AS (SELECT %s AS pk FROM new_table n JOIN old_table o ON %s WHERE (to_jsonb(n)-$2) IS DISTINCT FROM (to_jsonb(o)-$2))%s
+                'WITH changed AS (SELECT %s AS pk FROM new_table n JOIN old_table o ON %s WHERE %s)%s
                  INSERT INTO postvec.jobs(registry_id,pk_value,op) SELECT $1,pk,%L FROM changed
                  ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING',
-                nkey, jpred,
+                nkey, jpred, pred,
                 CASE WHEN r.chunking='recursive' THEN format(', dc AS (DELETE FROM %I.%I c USING changed x WHERE c.postvec_source_pk=x.pk::%s), dj AS (DELETE FROM postvec.jobs j USING changed x WHERE j.registry_id=$1 AND j.op=''embed'' AND j.pk_value=x.pk), dd AS (DELETE FROM postvec.jobs_dead d USING changed x WHERE d.registry_id=$1 AND d.pk_value=x.pk)', r.destination_schema, r.destination_table, r.pk_types[1])
                      ELSE ', dd AS (DELETE FROM postvec.jobs_dead d USING changed x WHERE d.registry_id=$1 AND d.pk_value=x.pk)' END,
-                job_op) USING r.id, ignored;
+                job_op) USING r.id;
         END IF;
         PERFORM postvec.worker_kick(); RETURN NULL;
     END IF;
-    IF TG_OP='UPDATE' AND (to_jsonb(NEW)-ignored) IS NOT DISTINCT FROM (to_jsonb(OLD)-ignored) THEN RETURN NULL; END IF;
     SELECT string_agg(format('($1).%I',c),',') INTO expr FROM unnest(r.pk_columns) c;
     IF cardinality(r.pk_columns)>1 THEN expr:='ROW('||expr||')'; END IF;
     IF TG_OP<>'INSERT' THEN EXECUTE 'SELECT ('||expr||')::text' INTO oldpk USING OLD; END IF;
     IF TG_OP<>'DELETE' THEN EXECUTE 'SELECT ('||expr||')::text' INTO pk USING NEW; END IF;
+    IF TG_OP='UPDATE' AND oldpk=pk THEN
+        SELECT string_agg(format('($1).%1$I IS DISTINCT FROM ($2).%1$I',c),' OR ') INTO pred FROM unnest(refs) c;
+        EXECUTE 'SELECT '||pred INTO changed USING NEW, OLD;
+        IF NOT changed THEN RETURN NULL; END IF;
+    ELSIF TG_OP='INSERT' THEN
+        EXECUTE format('SELECT ($1).%I IS NULL',r.source_column) INTO changed USING NEW;
+        IF changed THEN RETURN NULL; END IF;
+    END IF;
     FOR item IN SELECT DISTINCT x FROM unnest(ARRAY[oldpk,pk]) x WHERE x IS NOT NULL LOOP
         IF r.chunking='recursive' THEN
             EXECUTE format('DELETE FROM %I.%I WHERE postvec_source_pk=$1::%s',r.destination_schema,r.destination_table,r.pk_types[1]) USING item.x;
@@ -301,7 +324,7 @@ BEGIN
 END $$;
 
 DO $$ DECLARE f record; BEGIN
-    FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_format','_register','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
+    FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_refs','_format','_register','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f.signature);
     END LOOP;
 END $$;

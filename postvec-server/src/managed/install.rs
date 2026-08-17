@@ -33,11 +33,11 @@ pub(super) fn options(args: &ConnectionArgs) -> Result<PgConnectOptions> {
         let meta = file.metadata()?;
         if !meta.is_file()
             || meta.uid() != unsafe { libc::getuid() }
-            || meta.mode() & 0o777 != 0o600
+            || meta.mode() & 0o077 != 0
             || meta.len() > 65536
         {
             bail!(
-                "password file must be a regular file owned by the current user, mode 0600, at most 65536 bytes"
+                "password file must be a regular file owned by the current user, not readable by group or others (mode 0600), at most 65536 bytes"
             );
         }
         let mut password = String::new();
@@ -57,7 +57,7 @@ pub(super) fn options(args: &ConnectionArgs) -> Result<PgConnectOptions> {
 pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     let options = options(args)?;
     let mut connection = tokio::time::timeout(
-        Duration::from_secs(args.timeout.into()),
+        Duration::from_secs(args.timeout.min(30).into()),
         PgConnection::connect_with(&options),
     )
     .await
@@ -126,19 +126,19 @@ pub async fn run(command: Command) -> Result<()> {
     let installed = check(&mut tx).await?;
     match command {
         Command::Install(_) => {
-            let vector_schema: Option<String> = sqlx::query_scalar(
-                "SELECT n.nspname::text FROM pg_catalog.pg_extension e
-                 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'",
+            let vector: Option<(String, String, bool)> = sqlx::query_as(
+                "SELECT n.nspname::text, e.extversion::text, string_to_array(e.extversion, '.')::int[] >= '{0,8}'
+                 FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'",
             ).fetch_optional(&mut *tx).await?;
-            let vector_schema = vector_schema.context("pgvector is required; have the database administrator run CREATE EXTENSION vector first")?;
-            tx.execute(
-                format!(
-                    "SELECT {schema}.vector_dims('[0]'::{schema}.vector)",
-                    schema = quote_ident(&vector_schema)
-                )
-                .as_str(),
-            )
-            .await?;
+            let schema = match vector {
+                None => bail!("pgvector is required; have the database administrator run CREATE EXTENSION vector first"),
+                Some((_, version, false)) => bail!("pgvector {version} is installed; postvec needs pgvector 0.8 or newer"),
+                Some((schema, ..)) => quote_ident(&schema),
+            };
+            // Loads pgvector into this backend; the SET hnsw.* clauses below are
+            // otherwise unknown parameters a non-superuser cannot define.
+            tx.execute(format!("SELECT {schema}.vector_dims('[0]'::{schema}.vector)").as_str())
+                .await?;
             let platform = super::platform::detect(&mut tx).await?;
             if !installed {
                 tx.execute(
