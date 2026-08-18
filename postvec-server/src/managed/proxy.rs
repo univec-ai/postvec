@@ -143,7 +143,10 @@ pub(super) async fn serve(
             }
         };
         let Ok(slot) = slots.clone().try_acquire_owned() else {
-            log::warn!("proxy {}: connection cap reached, dropping {peer}", proxy.name);
+            log::warn!(
+                "proxy {}: connection cap reached, dropping {peer}",
+                proxy.name
+            );
             continue;
         };
         let proxy = proxy.clone();

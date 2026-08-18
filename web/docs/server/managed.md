@@ -104,7 +104,7 @@ Chunk destinations are private until the owner grants access; their SELECT
 policy checks source visibility for non-owner readers.
 
 `index_mode => 'auto'` waits for backfill and jobs to drain and builds an HNSW
-index concurrently by default. A saved build intent supports invalid-index
+index concurrently by default, on its own connection, so draining continues. A saved build intent supports invalid-index
 recovery. Other index errors appear in `index_error`; resolve the cause and
 clear that field to retry. `create_vector_index()` explicitly builds a blocking
 index. PostgreSQL does not support concurrent index creation on partitioned

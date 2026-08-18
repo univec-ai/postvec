@@ -17,7 +17,15 @@ use sqlx::{Connection, Executor, PgConnection, Row};
 
 /// Backfill cursors, chunk refreshes, migrations and index builds, for the
 /// entries that currently have such work. Each entry's failure is isolated.
-pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedDb) -> Result<bool> {
+pub(super) async fn step(
+    conn: &mut PgConnection,
+    client: &Client,
+    db: &ManagedDb,
+    build: &mut Option<super::AbortOnDrop>,
+) -> Result<bool> {
+    if build.as_ref().is_some_and(|b| b.0.is_finished()) {
+        *build = None;
+    }
     let plan: Vec<(i64, bool, bool, bool)> = sqlx::query_as(&format!(
         "SELECT r.id,
             (r.backfill_mode='cursor' AND r.state='active' AND NOT EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id))
@@ -36,7 +44,15 @@ pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedD
     .fetch_all(&mut *conn)
     .await?;
     let mut progress = false;
-    for (id, local_work, migrating, build) in plan {
+    for (id, local_work, migrating, wants_index) in plan {
+        if wants_index && build.is_none() {
+            let db = db.clone();
+            *build = Some(super::AbortOnDrop(tokio::spawn(async move {
+                if let Err(e) = index(&db, id).await {
+                    log::warn!("managed {} index build {id}: {e}", db.name);
+                }
+            })));
+        }
         let result = async {
             let mut work = false;
             if local_work {
@@ -44,9 +60,6 @@ pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedD
             }
             if migrating {
                 work |= migrate(conn, client, id, db).await?;
-            }
-            if build {
-                index(conn, id, db).await?;
             }
             Ok::<_, anyhow::Error>(work)
         }
@@ -345,17 +358,10 @@ async fn migrate(
     Ok(watermark != last)
 }
 
-async fn index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<()> {
-    let result = build_index(conn, id, db).await;
-    conn.execute(
-        format!(
-            "SET statement_timeout='{t}s'; SET lock_timeout='{t}s'",
-            t = super::WORKER_TIMEOUT
-        )
-        .as_str(),
-    )
-    .await?;
-    if let Err(error) = result {
+/// Builds run on their own connection so draining continues meanwhile.
+async fn index(db: &ManagedDb, id: i64) -> Result<()> {
+    let mut conn = super::install::connect(&db.args()).await?;
+    if let Err(error) = build_index(&mut conn, id, db).await {
         let mut tx = conn.begin().await?;
         worker::guard(&mut tx).await?;
         sqlx::query("UPDATE postvec.registry SET index_error=$2 WHERE id=$1")

@@ -330,6 +330,7 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
     let mut conn = install::connect(&db.args()).await?;
     let mut listener: Option<PgListener> = None;
     let mut monitor: Option<AbortOnDrop> = None;
+    let mut build: Option<AbortOnDrop> = None;
     let mut client = inference::Client::new(state);
     let lost = Arc::new(AtomicBool::new(false));
     let mut refresh = Instant::now();
@@ -385,8 +386,20 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
                 tx.commit().await?;
                 refresh = Instant::now() + Duration::from_secs(30);
             }
-            progress = worker::step(&mut conn, &client, db).await?;
-            progress |= maintenance::step(&mut conn, &client, db).await?;
+            let stepped = async {
+                Ok::<_, anyhow::Error>(
+                    worker::step(&mut conn, &client, db).await?
+                        | maintenance::step(&mut conn, &client, db, &mut build).await?,
+                )
+            }
+            .await;
+            progress = match stepped {
+                Err(e) if transient(&e) => {
+                    log::info!("managed {}: retrying after {e}", db.name);
+                    true
+                }
+                other => other?,
+            };
         } else if sampled <= Instant::now() {
             let status = admin::status(&mut conn).await?;
             state.managed.update(&db.name, false, None, Some(status));
@@ -449,6 +462,12 @@ async fn heartbeat(state: Arc<ServerState>, db: ManagedDb, lost: Arc<AtomicBool>
         }
         tokio::time::sleep(SAMPLE_INTERVAL).await;
     }
+}
+
+fn transient(e: &anyhow::Error) -> bool {
+    e.chain()
+        .filter_map(|c| c.downcast_ref::<sqlx::Error>()?.as_database_error())
+        .any(|d| matches!(d.code().as_deref(), Some("40001" | "40P01")))
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
