@@ -396,6 +396,8 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
             progress = match stepped {
                 Err(e) if transient(&e) => {
                     log::info!("managed {}: retrying after {e}", db.name);
+                    let _ = conn.execute("ROLLBACK").await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                     true
                 }
                 other => other?,
