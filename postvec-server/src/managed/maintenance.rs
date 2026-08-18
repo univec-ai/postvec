@@ -362,6 +362,9 @@ async fn migrate(
 async fn index(db: &ManagedDb, id: i64) -> Result<()> {
     let mut conn = super::install::connect(&db.args()).await?;
     if let Err(error) = build_index(&mut conn, id, db).await {
+        if super::transient(&error) {
+            return Ok(());
+        }
         let mut tx = conn.begin().await?;
         worker::guard(&mut tx).await?;
         sqlx::query("UPDATE postvec.registry SET index_error=$2 WHERE id=$1")
