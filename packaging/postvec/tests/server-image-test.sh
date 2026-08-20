@@ -114,7 +114,7 @@ docker run --detach --name "${RUN_ID}-db" --network "${RUN_ID}-net" \
     --env POSTGRES_HOST_AUTH_METHOD=trust --env POSTVEC_CREATE_EXTENSION=0 \
     --entrypoint docker-entrypoint.sh "${database_image}" \
     postgres -c shared_preload_libraries= >/dev/null
-for attempt in {1..60}; do
+for _ in {1..60}; do
     docker exec "${RUN_ID}-db" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
     sleep 1
 done

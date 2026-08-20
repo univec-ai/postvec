@@ -753,7 +753,7 @@ scenario_H_hosted_conversion() {
     wait_for "the migration to reach awaiting_finalize" 120 migration_state_is "${mid}" awaiting_finalize \
         || { bad "migration state: $(dbsql "SELECT state || ' ' || coalesce(error,'') FROM postvec.migration_status(${mid})")"; return; }
     dbsql "SELECT postvec.migration_finalize(${mid})" >/dev/null
-    migration_state_is "${mid}" done \
+    migration_state_is "${mid}" "done" \
         && ok "migration finalized" \
         || bad "state after finalize: $(dbsql "SELECT state FROM postvec.migration_status(${mid})")"
     [[ "$(dbsql "SELECT DISTINCT vector_dims(body_semantic) FROM e2e_convert")" == "${BUNDLED_MODEL_DIM}" ]] \

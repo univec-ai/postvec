@@ -44,10 +44,10 @@ pub mod models;
 pub mod net;
 pub mod state;
 
+pub mod registry;
 // Generated code returns `Result<_, tonic::Status>`; newer clippy flags the
 // error variant as large, and that signature is tonic's to choose.
 #[allow(clippy::result_large_err)]
-pub mod registry;
 pub mod proto {
     tonic::include_proto!("ninference");
 }

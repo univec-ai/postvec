@@ -711,7 +711,7 @@ mod tests {
         assert!(!shared.swallow(b'Z'));
         assert!(!shared.swallow(b'1'));
         assert!(!shared.swallow(b'Z'));
-        for kind in [b'P', b'S', b'P', b'S'] {
+        for kind in *b"PSPS" {
             shared.sent(kind, true);
         }
         assert!(!shared.swallow(b'E'));
