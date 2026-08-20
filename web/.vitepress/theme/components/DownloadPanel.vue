@@ -257,16 +257,17 @@ function assetUrl(name: string): string | null {
     </p>
     <CopyCommand :command="installCmd" :label="selectedDistro.family === 'deb' ? 'apt' : 'dnf'" />
     <p class="hint">
-      Use <code>apt</code> / <code>dnf</code>, not <code>dpkg</code> /
-      <code>rpm -i</code>, so PostgreSQL, pgvector and ELF dependencies
-      resolve. Packages install files only. They never restart the cluster or
-      create a database. Checksums and Sigstore attestations:
+      Use <code>apt</code> / <code>dnf</code> so PostgreSQL, pgvector and ELF
+      dependencies resolve. Packages copy binaries and libraries.
+      <a href="/docs/install/setup">postvec setup</a> then configures the
+      cluster. Checksums and Sigstore attestations:
       <a href="/docs/install/verify">verify artifacts</a>.
     </p>
 
-    <h3>Inference node (remote mode)</h3>
+    <h3>Inference node (postvec-server)</h3>
     <p class="hint">
-      <code>postvec-server</code> is the node the remote payload dials. One
+      <code>postvec-server</code> is the remote inference node and the
+      <a href="/docs/server/managed">managed PostgreSQL</a> worker. One
       package per distribution and architecture, no PostgreSQL major; the same
       release, the same checksums and attestations. Licensed under
       <strong>{{ SITE.serverLicense }}</strong>. The extension, CLI, runtime,

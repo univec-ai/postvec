@@ -8,10 +8,11 @@ description: Register a populated vector column without rewriting it.
 `adopt()` registers an application-owned `vector(N)` column and leaves
 stored bytes as they are.
 
-To keep an existing space such as ada-002 and continue searching it,
-name the original model and let embed-bridge produce query vectors. See
-[search a retired space](/docs/guides/bridge). To change the space,
-adopt then [`migrate()`](/docs/guides/migrate).
+After adopt, search the column as it is. For a retired or provider-only
+space such as ada-002, [search a retired space](/docs/guides/bridge)
+converts each query into that space (embed-bridge). Stored rows stay.
+[`migrate()`](/docs/guides/migrate) is a later step, once that search is
+working and you want a different stored model.
 
 ```sql
 SELECT postvec.adopt(

@@ -16,26 +16,28 @@ description: Supported environments and explicit limitations.
 
 ## Environment
 
-postvec needs `shared_preload_libraries = 'postvec'` and a host that can
-restart PostgreSQL. Tables must be ordinary or partitioned and have a
-primary key. The worker runs in its own session, so `TEMPORARY` tables
-are invisible to it.
+On a self-hosted cluster, postvec loads as
+`shared_preload_libraries = 'postvec'` and the host restarts PostgreSQL.
+Tables must be ordinary or partitioned and have a primary key. The
+worker runs in its own session, so `TEMPORARY` tables are invisible to
+it.
 
-## Out of scope
+On RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon,
+[managed PostgreSQL](/docs/server/managed) installs a plain SQL schema
+and runs the worker in `postvec-server`.
 
-- Chat / RAG completion as SQL. Generation stays in the application.
-- Provider API keys in PostgreSQL. Credentials live in the inference
-  layer; see [external providers](/docs/models/providers).
-- Document parsing (PDF, HTML, Office) inside the database.
-- A new index access method. Storage and ANN indexes are pgvector's.
-- AWS session tokens, instance profiles and the default credential
-  chain. The Bedrock signer takes static credentials.
-- A spend or token budget. `max_concurrent` bounds calls in flight.
-- A private or corporate CA for provider TLS. Connectors use rustls
-  with the bundled Mozilla root set.
-- Reranking providers and `Retry-After`-aware provider backoff.
-- Provider-backed converters in `embed-bridge` routes. Hosted converters
-  are direct `migrate()` / `convert()` routes.
+## Related work
+
+- Generation (`rag()`, chat completion) stays in the application.
+- Provider API keys live in the inference layer; see
+  [external providers](/docs/models/providers).
+- Document parsing (PDF, HTML, Office) stays in the ingest pipeline.
+- Storage and ANN indexes are pgvector's.
+- The Bedrock signer takes static credentials.
+- `max_concurrent` bounds provider calls in flight.
+- Connectors use rustls with the bundled Mozilla root set.
+- Hosted converters serve `migrate()` and `convert()`. Embed-bridge uses
+  local models.
 
 ## SQL refusals
 
@@ -65,7 +67,7 @@ are invisible to it.
 |---|---|
 | Extension, CLI, packages, PostgreSQL images | **PostgreSQL License** |
 | Embedded inference on the database host | The same stack, running in-process |
-| `postvec-server` (remote-mode node) | **Business Source License 1.1** |
+| `postvec-server` (remote-mode node and managed PostgreSQL) | **Business Source License 1.1** |
 | Converter catalogue | UniVec, under a separate license |
 | Bundled MiniLM | Upstream license, shipped in the model package |
 

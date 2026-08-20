@@ -179,22 +179,30 @@ listed as `UNKNOWN`.
 
 ## Adopt existing provider vectors
 
-```bash
-sudo postvec provider add openai --model text-embedding-ada-002
-```
+To keep searching an existing ada-002 (or similar) column, name that
+space at adopt time and [search the existing space](/docs/guides/bridge).
+Stored rows stay. A provider key is optional on that path.
 
 ```sql
 SELECT postvec.adopt('docs', 'body',
                      vector_column => 'body_vec',
-                     model => 'openai-text-embedding-ada-002');
+                     model => 'openai-text-embedding-ada-002',
+                     backfill => 'none');
 ```
 
 `adopt()` leaves stored bytes as they are. `model` is an assertion: a
 wrong name embeds later queries into the wrong space.
 [Adopt](/docs/guides/adopt) lists the checks.
 
-To keep searching without a key, [bridge](/docs/guides/bridge) the query
-into the stored space.
+To have the provider embed new writes and queries, add the key first:
+
+```bash
+sudo postvec provider add openai --model text-embedding-ada-002
+```
+
+Adding the key makes a direct embed route, so the column starts sending
+source text to the provider. `provider add` lists affected columns and
+asks first.
 
 ## Move a column off a provider
 

@@ -29,18 +29,18 @@ grows the eventual migration.
 
 That accumulated, deferred migration work is **embedding debt**.
 
-- [`migrate()`](/docs/guides/migrate) converts stored vectors without
-  replaying source text.
-- [Embedded mode](/docs/concepts/modes) runs local open-weight models on
-  the database host.
-- [Bridge search](/docs/guides/bridge) converts query vectors into the
-  stored space. The corpus stays.
+The first move is to keep the stored space and search it:
+
+- [Search a retired space](/docs/guides/bridge) converts each query
+  vector into the stored space (embed-bridge). The corpus stays.
 - [`search()`](/docs/guides/search) plus [filters](/docs/guides/filters)
   combines lexical and semantic retrieval.
+- [Embedded mode](/docs/concepts/modes) runs local open-weight models on
+  the database host.
 
-Bridge search keeps stored vectors as they are and converts new query
-vectors into that space. In-place migration converts the stored corpus
-to a new space. The column's model contract changes.
+If later you want the stored contract itself to change,
+[`migrate()`](/docs/guides/migrate) converts stored vectors without
+replaying source text. The column's model contract then changes.
 
 - [Embedded vs remote](/docs/concepts/modes)
 - [Search a retired space](/docs/guides/bridge)

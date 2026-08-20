@@ -10,7 +10,9 @@ description: Behavior and options for postvec.enable().
 triggers and optionally backfills existing rows.
 
 If the table already has a populated `vector(N)` column, use
-[`adopt()`](/docs/guides/adopt). `enable()` always adds a new column.
+[`adopt()`](/docs/guides/adopt). For a retired or provider-only space,
+[search the existing space](/docs/guides/bridge) after adopt. `enable()`
+always adds a new column.
 
 ## 1. Check the table and the model
 

@@ -160,9 +160,11 @@ Converter entries refuse `max_tokens`. They also refuse a missing name or
 dimension, identical source and target names, or a connector type other than
 `univec`. One invalid entry prevents the whole file from loading.
 
-Hosted converters are direct routes for `migrate()` and `convert()`. They do
-not take part in `embed-bridge` execution.
-[UniVec hosted models](/docs/models/univec) has the migration sequence.
+Hosted converters are direct routes for `migrate()` and `convert()`.
+Embed-bridge resolution uses local models. To search a retired space
+without migrating, see [search a retired space](/docs/guides/bridge).
+[UniVec hosted models](/docs/models/univec) has the hosted conversion
+sequence.
 
 ## Loading rules
 

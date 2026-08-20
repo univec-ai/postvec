@@ -62,7 +62,7 @@ sudo postvec doctor --database app
 
 Before anything is billed, the command tries an unbilled identity check
 against the registry route: a 401 or 403 stops it with nothing spent. That
-check is best-effort — a front without the route, or an outage, is only a
+check is best-effort: a front without the route, or an outage, is only a
 warning, and a failed inference request is not billed either. It then makes
 **one** paid embed request against the cheapest model it is adding, checks
 the measured width against the catalogue, writes the connector file, reloads
@@ -205,6 +205,11 @@ checks the target dimension. Each probe is a billable request.
 
 ## Migrate through the hosted converter
 
+To keep the stored corpus and convert only each query, use
+[search a retired space](/docs/guides/bridge). Embed-bridge uses local
+models. The hosted converter below is for a later
+[`migrate()`](/docs/guides/migrate), once that search is working.
+
 The source column must currently name the converter's `source_model`. The
 target model must also have a direct embedding route for new writes after the
 swap. In this example both embedding models are local; only the stored-vector
@@ -315,6 +320,6 @@ labels provider-backed embed and convert entries.
 
 - [External providers](/docs/models/providers)
 - [Connector files](/docs/models/providers-file)
-- [Migrate models](/docs/guides/migrate)
 - [Search a retired space](/docs/guides/bridge)
+- [Change the stored model](/docs/guides/migrate)
 - [Security](/docs/security)

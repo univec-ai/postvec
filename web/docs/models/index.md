@@ -30,11 +30,14 @@ When `model => 'some-name'` is supplied to `enable()`, `adopt()` or
    through an `embed-bridge` executor.
 
 A convert-only space such as `ada-002` can then accept new writes and
-query embeddings without the original provider or a corpus migration.
-See [search a retired space](/docs/guides/bridge).
+query embeddings with the original provider gone and the stored corpus
+unchanged. That is the usual first path for a populated column. See
+[search a retired space](/docs/guides/bridge).
 
 `convert()` and `strategy => 'convert'` migrations require a direct converter.
-That converter can be a local model or a UniVec hosted route.
+That converter can be a local model or a UniVec hosted route. Use
+[`migrate()`](/docs/guides/migrate) after search on the current space is
+working.
 
 ## Hosted models
 

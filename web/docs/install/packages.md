@@ -5,13 +5,19 @@ description: Package installation for Debian, Ubuntu and EL9, with copy-paste sn
 
 # Install packages
 
-Use packages when the host will keep postvec installed. Each install
-matches **one** release, **one** distribution, **one** architecture and
-**one** PostgreSQL major. Needs PostgreSQL 16, 17 or 18, pgvector >= 0.8,
+Use packages on an existing PostgreSQL host. Each install matches
+**one** release, **one** distribution, **one** architecture and **one**
+PostgreSQL major. Needs PostgreSQL 16, 17 or 18, pgvector >= 0.8,
 superuser and a restart. The [release artifacts](/download) page lists
 names and publication status.
 
-Packages install files. Then [configure the cluster](/docs/install/setup).
+Installation stages:
+
+- Local install - the packages below
+- Cluster configuration - [postvec setup](/docs/install/setup)
+
+RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
+[managed PostgreSQL](/docs/server/managed).
 
 Debian examples use the `+deb12` filename tag. Ubuntu files use
 `+ubuntu22.04` or `+ubuntu24.04` instead; the rest of the command is
@@ -53,13 +59,11 @@ inference:
 
 The nodes install from the same release: the `postvec-server` package plus
 the runtime and model packages, on hosts that need no PostgreSQL. See
-[run a node](/docs/server/node). That package is **Business Source License 1.1**
-(source-available; production use by an organization needs a commercial
-license); the
-identifier is on the [release page](/download#postvec-server).
+[run a node](/docs/server/node). That package is **Business Source
+License 1.1**; the identifier is on the [release page](/download#postvec-server).
 
 Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies
-resolve. `dpkg` / `rpm -i` skip that resolution.
+resolve.
 
 The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
 identifies the **target OS**. Pick the tag that matches the host.

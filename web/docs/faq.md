@@ -7,8 +7,18 @@ description: Short answers to common postvec questions.
 
 ## Are managed PostgreSQL services supported?
 
-postvec needs `shared_preload_libraries = 'postvec'`. A self-managed host
-or the [Docker image](/docs/install/docker) is required.
+Yes. RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon
+cannot load a third-party `.so`. [Managed PostgreSQL](/docs/server/managed)
+installs a plain SQL schema and runs the worker in `postvec-server`.
+Self-hosted clusters that can load the extension still use
+[packages](/docs/install/packages) and `postvec setup`.
+
+## I have vectors from a retired model. Do I need to migrate?
+
+[Adopt the column](/docs/guides/adopt) and
+[search the existing space](/docs/guides/bridge). Each query is converted
+into the stored space (embed-bridge). Stored rows stay. Migrate later
+if you want a different stored model.
 
 ## What are embedding debt and vector lock-in?
 
@@ -54,8 +64,8 @@ as a local model after that.
 ## Can an ada-002 corpus remain unchanged?
 
 Yes. [Adopt the column](/docs/guides/adopt) and name that space;
-[embed-bridge](/docs/guides/bridge) produces query vectors in it without a
-corpus re-embed or OpenAI call.
+[search a retired space](/docs/guides/bridge) produces query vectors in
+that space from a local embed-bridge route.
 
 Adding an OpenAI key later changes that: a direct embed route wins over a
 bridge, so the column starts being embedded by the provider. `provider add`
@@ -63,7 +73,7 @@ lists the affected columns and asks first.
 
 ## Does embedded inference require internet access?
 
-No. Models already present on disk run in the launcher. `model pull` and
+Models already present on disk run in the launcher. `model pull` and
 `ls --available` contact the registry when invoked. Air-gapped hosts are
 [supported](/docs/models/air-gapped).
 
@@ -71,9 +81,8 @@ No. Models already present on disk run in the launcher. `model pull` and
 
 Into `0600` connector files in a `providers.d` directory on the inference
 side: the database host in embedded mode, each `postvec-server` node in
-remote mode. Never a GUC, a catalog table or a SQL argument. The one setting
-involved, `postvec.providers_path`, holds a path.
-[External providers](/docs/models/providers).
+remote mode. The one setting involved, `postvec.providers_path`, holds a
+path. [External providers](/docs/models/providers).
 
 ## How do I run inference off the database host?
 
@@ -108,12 +117,12 @@ again.
 
 ## Does `model upgrade` rewrite stored vector columns?
 
-No. [`migrate()`](/docs/guides/migrate) or a re-embed changes stored
+[`migrate()`](/docs/guides/migrate) or a re-embed changes stored
 vectors. `model upgrade` replaces model files.
 
 ## Is the extension AGPL?
 
-No. The extension, CLI and packages use the PostgreSQL License, in either
+The extension, CLI and packages use the PostgreSQL License, in either
 inference mode. `postvec-server` is source-available under the Business
 Source License 1.1: free for development, testing, personal use and a 30-day
 production evaluation; production use by an organization needs a
@@ -126,7 +135,7 @@ PostgreSQL-licensed four years after release.
 
 ## Does `apt remove` drop database data?
 
-No. Package removal deletes files. The
+Package removal deletes files. The
 [uninstall procedure](/docs/install/uninstall) removes the worker from a
 database.
 

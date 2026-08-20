@@ -9,6 +9,10 @@ The image includes PostgreSQL, pgvector, postvec, the CLI, ONNX Runtime
 and MiniLM. The data-directory mount follows the official `postgres`
 image for the selected major.
 
+An existing self-hosted cluster uses [packages](/docs/install/packages).
+RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
+[managed PostgreSQL](/docs/server/managed).
+
 Commands use the planned `0.1.0-1` tags. The [release artifacts
 page](/download) reports whether they are published.
 

@@ -152,3 +152,9 @@ sudo postvec setup --database app \
 ```
 
 Engine files already on the database host stay in place in remote mode.
+
+## Managed PostgreSQL
+
+When the database cannot load `postvec.so`, the same SQL surface is
+installed as plain SQL and the worker runs inside `postvec-server`. See
+[managed PostgreSQL](/docs/server/managed).

@@ -117,6 +117,9 @@ The engineering row ranks highly despite almost no keyword overlap.
 docker rm -f postvec
 ```
 
-- [Packages](/docs/install/packages)
+An existing cluster uses [packages](/docs/install/packages) then
+[configure](/docs/install/setup). RDS, Aurora, Cloud SQL, Azure,
+Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
+
 - [SQL functions](/docs/guides/)
 - [Eventual consistency](/docs/concepts/consistency)

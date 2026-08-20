@@ -5,14 +5,16 @@ description: Adopt vectors in a retired or provider-only model space and search 
 
 # Search a retired space
 
-If the column is already in a retired or provider-only space, postvec
-can create each new query vector locally and convert that vector into
-the stored space with a local bridge chain.
+When a column already holds vectors from a retired or provider-only
+model, keep those vectors and search them as they are.
 
-An `openai-text-embedding-ada-002` corpus can stay byte-for-byte
-unchanged. `search()` embeds the query with an available open model,
-converts that one vector to ada-002 space, then runs pgvector and
-full-text search against the existing table.
+`adopt()` registers the column. `search()` then embeds each query with
+an available local model and converts that one vector into the stored
+space (embed-bridge). An `openai-text-embedding-ada-002` corpus stays
+byte-for-byte unchanged.
+
+If later you want the stored space itself to change,
+[`migrate()`](/docs/guides/migrate) converts the corpus in place.
 
 `search()` selects the bridge route.
 
@@ -205,15 +207,18 @@ bridge latency.
 FTS degradation can be disabled during timeout diagnosis. Warnings and
 returned rank columns also indicate whether the semantic leg ran.
 
-## Migration after bridge adoption
+## Later: change the stored model
+
+Search on the existing space is enough for many deployments. When you
+want the stored corpus itself on a new model:
 
 | Choice | Stored corpus | New queries | New writes with `sync => true` |
 |---|---|---|---|
-| Bridge search | unchanged | embedded, then converted into old space | embedded, then converted into old space |
+| Search a retired space (embed-bridge) | unchanged | embedded, then converted into old space | embedded, then converted into old space |
 | [`migrate()`](/docs/guides/migrate) | converted to the new space | embedded directly in new space | embedded directly in new space |
 
-A staged migration can adopt the existing column, validate search
-through the bridge and later migrate the stored vectors in place.
+A staged path: adopt the existing column, validate search through the
+bridge, then migrate the stored vectors in place if you choose to.
 
 :::: danger Confirm the source model separately from the dimension
 An incorrect 1536-dimensional model still represents an incompatible

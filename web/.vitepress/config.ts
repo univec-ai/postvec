@@ -60,6 +60,7 @@ export default defineConfig({
         items: [
           { text: "Docker", link: "/docs/install/docker" },
           { text: "Packages", link: "/docs/install/packages" },
+          { text: "Managed PostgreSQL", link: "/docs/server/managed" },
           { text: "From source", link: "/docs/install/source" },
           { text: "Configure", link: "/docs/install/setup" },
         ],
@@ -83,6 +84,7 @@ export default defineConfig({
           items: [
             { text: "Docker", link: "/docs/install/docker" },
             { text: "Packages", link: "/docs/install/packages" },
+            { text: "Managed PostgreSQL", link: "/docs/server/managed" },
             { text: "From source", link: "/docs/install/source" },
             { text: "Configure", link: "/docs/install/setup" },
             { text: "Upgrade", link: "/docs/install/upgrade" },
@@ -107,12 +109,20 @@ export default defineConfig({
             { text: "Templates", link: "/docs/guides/templates" },
             { text: "Chunking", link: "/docs/guides/chunking" },
             {
-              text: "Adopt",
+              text: "Adopt existing vectors",
               link: "/docs/guides/adopt",
-              collapsed: true,
-              items: [{ text: "Bridge", link: "/docs/guides/bridge" }],
+              collapsed: false,
+              items: [
+                {
+                  text: "Search a retired space",
+                  link: "/docs/guides/bridge",
+                },
+              ],
             },
-            { text: "Migrate", link: "/docs/guides/migrate" },
+            {
+              text: "Change the stored model",
+              link: "/docs/guides/migrate",
+            },
             {
               text: "Status",
               link: "/docs/guides/status",
@@ -166,7 +176,7 @@ export default defineConfig({
               ],
             },
             { text: "Fleet", link: "/docs/server/fleet" },
-            { text: "Managed schema", link: "/docs/server/managed" },
+            { text: "Managed PostgreSQL", link: "/docs/server/managed" },
             { text: "HTTP API", link: "/docs/server/http-api" },
             { text: "Node reference", link: "/docs/server/reference" },
           ],

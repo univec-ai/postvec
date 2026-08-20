@@ -1,16 +1,18 @@
 ---
-title: Migrate models
+title: Change the stored model
 description: In-place model migration via convert (or re-embed), finalize and abort.
 ---
 
-# Migrate models
+# Change the stored model
 
-Stored vectors move to a new model in place. The default strategy is
-`convert`: a local converter model or a direct UniVec hosted converter
-translates the stored vectors.
+`migrate()` converts stored vectors to a new model in place. Use it after
+the column is adopted and [search on the current space](/docs/guides/bridge)
+is working.
 
-To keep stored vectors as they are, [bridge search](/docs/guides/bridge)
-converts queries into the existing space.
+The default strategy is `convert`: a local converter model or a direct
+UniVec hosted converter translates the stored vectors. To keep stored
+vectors as they are and convert only each query, stay on
+[search a retired space](/docs/guides/bridge).
 
 A migration waits at two operator steps: `awaiting_finalize` (column
 swap) and, if an ANN index existed, `awaiting_index` (rebuild then a

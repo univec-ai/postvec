@@ -9,6 +9,9 @@ description: Cluster configuration and diagnostics with postvec setup and doctor
 starts the worker. Run it after [packages](/docs/install/packages),
 [Docker](/docs/install/docker) or a [source](/docs/install/source) copy.
 
+RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
+[managed PostgreSQL](/docs/server/managed).
+
 The command creates missing databases, installs the extension, merges
 `shared_preload_libraries`, writes `conf.d/99-postvec.conf`, validates
 it, restarts or reloads if a setting changed, refreshes models and

@@ -1,6 +1,6 @@
 ---
 title: SQL functions
-description: enable, adopt, bridge, migrate and chunking.
+description: enable, adopt, search a retired space, migrate and chunking.
 ---
 
 # SQL functions
@@ -9,8 +9,8 @@ description: enable, adopt, bridge, migrate and chunking.
 |---|---|---|
 | Text, no vectors | [`enable()`](/docs/guides/enable) | postvec creates and maintains a shadow `vector(N)` column |
 | A populated `vector(N)` column, same model | [`adopt()`](/docs/guides/adopt) | Existing bytes stay. Missing rows can backfill. |
-| Vectors in a retired or provider-only space | [Bridge search](/docs/guides/bridge) | Queries convert into that space. The corpus stays. |
-| Ready to change model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. |
+| Vectors in a retired or provider-only space | [Search a retired space](/docs/guides/bridge) | Adopt, then search. Each query is converted into that space (embed-bridge). The corpus stays. |
+| Ready to change the stored model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. Do this after search on the current space is working. |
 | Long source documents | [Recursive chunking](/docs/guides/chunking) | A managed 1:N destination stores passage vectors. Search still returns documents. |
 | Hosted embedding API (OpenAI, Gemini, ...) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
 
@@ -69,7 +69,7 @@ SELECT postvec.adopt(
 
 Name the original model at adopt time. `search()` embeds the query with
 an available local model and converts that one vector into the stored
-space.
+space (embed-bridge). Stored rows stay as they are.
 
 ```sql
 SELECT postvec.adopt(
@@ -91,6 +91,9 @@ vector has the stored dimension (1536 for classic ada-002).
 
 ## Change the stored model
 
+Once search on the current space is working, stored vectors can move to
+a new model:
+
 ```sql
 SELECT postvec.migrate(
   'public.docs', 'body',
@@ -100,7 +103,7 @@ SELECT postvec.migrate(
 
 Default strategy is `convert`: stored vectors are translated. The
 migration **stops and waits** at `awaiting_finalize`. You swap columns
-with `migration_finalize()`. See [migrate](/docs/guides/migrate).
+with `migration_finalize()`. See [change the stored model](/docs/guides/migrate).
 
 :::: tip Expected
 `migration_status()` reaches `awaiting_finalize`. After the first
@@ -133,4 +136,3 @@ refresh job; the worker splits it and fans out one embed job per chunk.
 - [Templates](/docs/guides/templates)
 - [Status](/docs/guides/status) / `postvec doctor`
 - [`retry_dead()`](/docs/guides/retry)
-

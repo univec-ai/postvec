@@ -172,4 +172,6 @@ and `doctor`. [Backup](/docs/guides/backup) has the checklist.
 - [Eventual consistency](/docs/concepts/consistency)
 - [Embedded vs remote](/docs/concepts/modes)
 - [Vector lock-in](/docs/concepts/lock-in)
+- [Search a retired space](/docs/guides/bridge)
+- [Managed PostgreSQL](/docs/server/managed)
 - [Enable a column](/docs/guides/enable)

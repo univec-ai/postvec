@@ -26,11 +26,14 @@ explicitly because an install from local files cannot fetch a
 recommended package by itself.
 
 ::: warning Licence
-`postvec-server` is **Business Source License 1.1** (source-available;
-production use by an organization needs a commercial license). The extension, CLI, runtime, model
-packages and PostgreSQL images stay under the PostgreSQL License. The
-package copyright file, the image label and the release manifest record
-the same identifier; see the [release page](/download#postvec-server).
+`postvec-server` is **Business Source License 1.1** (source-available).
+Personal production use, non-production environments and a 30-day
+production evaluation per organization are free. Production use by an
+organization needs [postvec Pro](https://univec.ai). The extension, CLI,
+runtime, model packages and PostgreSQL images stay under the PostgreSQL
+License. The package copyright file, the image label and the release
+manifest record the same identifier; see the
+[release page](/download#postvec-server).
 :::
 
 A checkout still builds it, and needs neither pgrx nor PostgreSQL headers:
@@ -44,7 +47,7 @@ sudo install -m 0755 target/release/postvec-server /usr/local/bin/
 
 A node needs ONNX Runtime and at least one model under the same root. The
 packaged unit reads **`/opt/postvec`**, which is exactly where these packages
-install and where `postvec model pull` writes — so the install line above
+install and where `postvec model pull` writes, so the install line above
 already put everything in place:
 
 | Artifact | Installs |
@@ -83,7 +86,7 @@ postvec-server \
 ```
 
 A pair dropped at `$root/certs/server.crt` and `$root/certs/server.key` is
-found without flags — for a node run from a checkout. **On a package
+found without flags, for a node run from a checkout. **On a package
 install** the engine root is `/opt/postvec`, root-owned and read-only for the
 service account, so the packaged configuration names the pair beside itself
 instead: `/etc/postvec-server/server.crt` and `server.key`, installed
@@ -95,7 +98,7 @@ prints the two `install` lines.
 ### As a container
 
 The published image is the packages above composed on Debian 12: the node,
-the CLI, ONNX Runtime and the bundled model — the same model bytes the
+the CLI, ONNX Runtime and the bundled model, the same model bytes the
 local postvec image runs in-process. It serves MiniLM out of the box:
 
 <PgSnippet id="docker-server" />

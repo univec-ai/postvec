@@ -10,8 +10,9 @@ are revoked from PUBLIC. Application search uses
 [`search()`](/docs/guides/search).
 
 Use these to prove a model loads, to translate one vector or to rebuild
-the SQL model cache. Use [`migrate()`](/docs/guides/migrate) to change a
-stored column.
+the SQL model cache. To keep searching an existing space, see
+[search a retired space](/docs/guides/bridge). To change a stored column
+after that, use [`migrate()`](/docs/guides/migrate).
 
 :::: code-group
 
@@ -64,5 +65,7 @@ the immediate path after `postvec model pull` (already done by the CLI
 on an embedded cluster) or after a remote fleet change.
 
 Column-level work stays on [`enable`](/docs/guides/enable),
-[`adopt`](/docs/guides/adopt) and [`migrate`](/docs/guides/migrate).
+[`adopt`](/docs/guides/adopt),
+[search a retired space](/docs/guides/bridge) and
+[`migrate`](/docs/guides/migrate).
 A one-shot `convert()` returns a vector.

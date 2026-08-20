@@ -96,3 +96,7 @@ error.
 
 `search()` embeds the **query** inline. Document vectors still fill after
 commit. See [eventual consistency](/docs/concepts/consistency).
+
+For a column whose stored model is retired or provider-only,
+[search a retired space](/docs/guides/bridge) converts each query into
+that space (embed-bridge). Stored rows stay.
