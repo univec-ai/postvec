@@ -410,10 +410,12 @@ fi
 stop_cluster
 if start_cluster; then ok "the cluster restarts with postvec preloaded"; else bad "restart failed: $(tail -5 /tmp/pg.log)"; fi
 
-# The worker is what a preload buys; prove it started.
+# The worker is what a preload buys; prove it started. `setup` already started
+# a worker before the restart, so the heartbeat row predates it: wait for the
+# recorded pid to be a live backend, not merely for a beat to exist.
 beat=""
 for _ in $(seq 1 30); do
-    beat="$(psql_ "-c 'SELECT worker_last_beat IS NOT NULL FROM postvec.stats()'" 2>/dev/null || true)"
+    beat="$(psql_ "-c 'SELECT worker_pid IN (SELECT pid FROM pg_stat_activity) FROM postvec.stats()'" 2>/dev/null || true)"
     [[ "${beat}" == t ]] && break
     sleep 1
 done
