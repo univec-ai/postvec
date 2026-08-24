@@ -125,6 +125,18 @@ BEGIN
     PERFORM postvec.worker_kick(); RETURN NULL;
 END $$;
 
+CREATE OR REPLACE FUNCTION postvec._existing(relation regclass, col text, model_name text, vec text) RETURNS bigint
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE r postvec.registry;
+BEGIN
+    SELECT * INTO r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation AND source_column=col AND state<>'disabled';
+    IF NOT FOUND THEN RETURN NULL; END IF;
+    IF r.model<>model_name OR r.vector_column<>vec THEN
+        RAISE EXCEPTION '%.% is already enabled with model % and vector column %',relation,col,r.model,r.vector_column;
+    END IF;
+    RETURN r.id;
+END $$;
+
 DROP FUNCTION IF EXISTS postvec._register(regclass, text, text, text, boolean, boolean, text, text, text, boolean, text, text, text, integer, integer, text);
 CREATE OR REPLACE FUNCTION postvec._register(relation regclass, col text, model_name text, vec text, adopted boolean, trig_mode text, backfill text, distance text, fts text, fts_index boolean, template text, index_mode text, chunking text, chunk_size integer, chunk_overlap integer, destination text)
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
@@ -134,6 +146,7 @@ BEGIN
     IF distance NOT IN ('cosine','l2','ip') OR index_mode NOT IN ('manual','auto','immediate') OR backfill NOT IN ('none','queue','cursor') OR chunking NOT IN ('none','recursive') OR trig_mode NOT IN ('statement','row','none') THEN RAISE EXCEPTION 'invalid registry option'; END IF;
     IF NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=col AND attnum>0 AND NOT attisdropped AND atttypid IN ('text'::regtype,'varchar'::regtype,'bpchar'::regtype)) THEN RAISE EXCEPTION 'source must be a text column'; END IF;
     SELECT n.nspname,c.relname,c.relowner INTO ns,tbl,owner_oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=relation;
+    IF EXISTS(SELECT FROM postvec.registry WHERE table_schema=ns AND table_name=tbl AND source_column=col) THEN RAISE EXCEPTION '%.%.% is already enabled (disable() it first)',ns,tbl,col; END IF;
     IF trig_mode='statement' AND EXISTS(SELECT FROM pg_class WHERE oid=relation AND relkind='p') THEN
         RAISE WARNING 'statement triggers cover writes through the parent only; use trigger_mode => row for direct partition writes';
     END IF;
@@ -192,17 +205,28 @@ BEGIN
     PERFORM postvec.worker_kick();RETURN r.id;
 END $$;
 
-CREATE OR REPLACE FUNCTION postvec.enable(relation regclass,column_name text,model text,vector_column text DEFAULT NULL,fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,backfill boolean DEFAULT true,distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',index_mode text DEFAULT 'manual',backfill_mode text DEFAULT 'queue',format text DEFAULT NULL,chunking text DEFAULT 'none',chunk_size integer DEFAULT NULL,chunk_overlap integer DEFAULT NULL,destination text DEFAULT NULL)
+DROP FUNCTION IF EXISTS postvec.enable(regclass,text,text,text,text,boolean,boolean,text,text,text,text,text,text,integer,integer,text);
+CREATE OR REPLACE FUNCTION postvec.enable(relation regclass,column_name text,model text,vector_column text DEFAULT NULL,fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,backfill boolean DEFAULT true,distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',index_mode text DEFAULT 'manual',backfill_mode text DEFAULT 'queue',format text DEFAULT NULL,chunking text DEFAULT 'none',chunk_size integer DEFAULT NULL,chunk_overlap integer DEFAULT NULL,destination text DEFAULT NULL,if_not_exists boolean DEFAULT false)
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE rid bigint;
 BEGIN
     IF trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid trigger mode'; END IF;
+    IF if_not_exists THEN
+        rid:=postvec._existing(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'));
+        IF rid IS NOT NULL THEN RETURN rid; END IF;
+    END IF;
     RETURN postvec._register(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'),false,trigger_mode,CASE WHEN backfill THEN backfill_mode ELSE 'none' END,distance,fts_config,create_fts_index,format,index_mode,chunking,coalesce(chunk_size,1000),coalesce(chunk_overlap,200),destination);
 END $$;
-CREATE OR REPLACE FUNCTION postvec.adopt(relation regclass,column_name text,vector_column text,model text,sync boolean DEFAULT true,backfill text DEFAULT 'missing',backfill_mode text DEFAULT 'queue',distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,format text DEFAULT NULL,index_mode text DEFAULT 'manual')
+DROP FUNCTION IF EXISTS postvec.adopt(regclass,text,text,text,boolean,text,text,text,text,text,boolean,text,text);
+CREATE OR REPLACE FUNCTION postvec.adopt(relation regclass,column_name text,vector_column text,model text,sync boolean DEFAULT true,backfill text DEFAULT 'missing',backfill_mode text DEFAULT 'queue',distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,format text DEFAULT NULL,index_mode text DEFAULT 'manual',if_not_exists boolean DEFAULT false)
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 DECLARE rid bigint;
 BEGIN
     IF backfill NOT IN ('missing','all','none') OR trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid adoption option'; END IF;
+    IF if_not_exists THEN
+        rid:=postvec._existing(relation::regclass,column_name,model,vector_column);
+        IF rid IS NOT NULL THEN RETURN rid; END IF;
+    END IF;
     rid:=postvec._register(relation::regclass,column_name,model,vector_column,true,CASE WHEN sync THEN trigger_mode ELSE 'none' END,CASE WHEN backfill='none' THEN 'none' ELSE backfill_mode END,distance,fts_config,create_fts_index,format,index_mode,'none',NULL,NULL,NULL);
     IF backfill='all' AND backfill_mode='cursor' THEN
         INSERT INTO postvec.settings(key,value) VALUES('backfill_all:'||rid,'true');
@@ -272,7 +296,7 @@ BEGIN
     PERFORM postvec._owner(to_regclass(format('%I.%I',r.table_schema,r.table_name)));
     SELECT * INTO STRICT r FROM postvec.registry WHERE id=r.id FOR UPDATE;
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
-    IF m.state IN ('done','aborted') THEN RETURN; END IF;
+    IF m.state NOT IN ('running','awaiting_finalize','failed') THEN RAISE EXCEPTION 'migration % is %; only running, awaiting_finalize or failed migrations can abort',m.id,m.state; END IF;
     EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I RESTRICT',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name),m.new_column);
     UPDATE postvec.migrations SET state='aborted',finished_at=now() WHERE id=m.id;
     UPDATE postvec.registry SET state='active',backfill_mode='cursor',backfill_watermark=NULL WHERE id=r.id;
@@ -281,7 +305,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec.migration_finalize(migration_id bigint) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE m postvec.migrations; r postvec.registry; target regclass; a record;
+DECLARE m postvec.migrations; r postvec.registry; target regclass; a record; had_index boolean;
 BEGIN
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id;
     SELECT * INTO STRICT r FROM postvec.registry WHERE id=m.registry_id;
@@ -291,6 +315,11 @@ BEGIN
     SELECT * INTO STRICT r FROM postvec.registry WHERE id=r.id FOR UPDATE;
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
     IF m.state NOT IN ('awaiting_finalize','awaiting_index') OR EXISTS(SELECT FROM postvec.jobs WHERE registry_id=r.id) THEN RAISE EXCEPTION 'migration has not drained'; END IF;
+    had_index:=postvec._has_vector_index(target,r.vector_column);
+    IF m.state='awaiting_index' THEN
+        IF NOT had_index THEN RAISE EXCEPTION 'migration % awaits its vector index; see migration_status(%).suggested_index_sql',m.id,m.id; END IF;
+        UPDATE postvec.migrations SET state='done',finished_at=now() WHERE id=m.id; RETURN;
+    END IF;
     FOR a IN SELECT attr.*,t.typstorage FROM pg_attribute attr JOIN pg_type t ON t.oid=attr.atttypid
         WHERE attr.attrelid IN (SELECT target UNION SELECT relid FROM pg_partition_tree(target))
           AND attr.attname=r.vector_column AND NOT attr.attisdropped LOOP
@@ -306,8 +335,13 @@ BEGIN
     EXECUTE format('ALTER TABLE %s DROP COLUMN %I RESTRICT',target,r.vector_column);
     EXECUTE format('ALTER TABLE %s RENAME COLUMN %I TO %I',target,m.new_column,r.vector_column);
     UPDATE postvec.registry SET state='active',model=m.new_model,dim=m.new_dim,owns_vector_column=true WHERE id=r.id;
+    IF m.reindex='blocking' THEN PERFORM postvec.create_vector_index(format('%I.%I',r.table_schema,r.table_name)::regclass,r.source_column);
+    ELSIF had_index THEN
+        UPDATE postvec.migrations SET state='awaiting_index' WHERE id=m.id;
+        RAISE NOTICE 'migration % awaits its vector index: build it (migration_status(%).suggested_index_sql) and call migration_finalize again, or let a worker with index_mode => auto finish it',m.id,m.id;
+        RETURN;
+    END IF;
     UPDATE postvec.migrations SET state='done',finished_at=now() WHERE id=m.id;
-    IF m.reindex='blocking' THEN PERFORM postvec.create_vector_index(format('%I.%I',r.table_schema,r.table_name)::regclass,r.source_column); END IF;
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec.disable(relation regclass,column_name text,drop_column boolean DEFAULT false,drop_destination boolean DEFAULT false) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
@@ -324,7 +358,7 @@ BEGIN
 END $$;
 
 DO $$ DECLARE f record; BEGIN
-    FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_refs','_format','_register','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
+    FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_refs','_format','_existing','_register','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f.signature);
     END LOOP;
 END $$;

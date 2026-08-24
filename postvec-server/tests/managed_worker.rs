@@ -264,6 +264,32 @@ async fn exercise(dsn: &str) -> Result<()> {
             == "[11,12,13]",
         "conversion output"
     );
+    db.execute("SELECT postvec.migrate('docs','body','fixture',strategy=>'reembed')")
+        .await?;
+    wait(
+        &mut db,
+        "SELECT state='awaiting_finalize' FROM postvec.migrations WHERE id=3",
+    )
+    .await?;
+    db.execute("SELECT postvec.migration_finalize(3)").await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT state FROM postvec.migrations WHERE id=3")
+            .fetch_one(&mut db)
+            .await?
+            == "awaiting_index",
+        "cutover with an indexed old column must await the rebuilt index"
+    );
+    ensure!(
+        db.execute("SELECT postvec.migration_abort(3)")
+            .await
+            .is_err(),
+        "abort accepted after the column swap"
+    );
+    wait(
+        &mut db,
+        "SELECT state='done' FROM postvec.migrations WHERE id=3",
+    )
+    .await?;
     db.execute("CREATE TABLE composite(a text,b int,body text,PRIMARY KEY(a,b));INSERT INTO composite VALUES(E'back\\\\slash''quote',1,'composite');SELECT postvec.enable('composite','body','fixture',backfill_mode=>'cursor')").await?;
     wait(
         &mut db,

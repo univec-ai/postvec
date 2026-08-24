@@ -46,6 +46,7 @@ invalid vectors without an explicit error.
 | `sync` | `true` | Install enqueue triggers |
 | `backfill` | `missing` | `missing` / `all` / `none` |
 | `backfill_mode` | `queue` | `cursor` refused with `all` |
+| `if_not_exists` | `false` | Return the existing id for a matching model and vector column |
 | others | same as `enable()` | distance, FTS, format, index_mode |
 
 `sync` and `backfill` are independent options.

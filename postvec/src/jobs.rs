@@ -1337,7 +1337,7 @@ fn unclaim_jobs_inner(
              SELECT registry_id, pk_value, op, chunk_id,
                     CASE WHEN $5 THEN greatest(attempts - 1, 0) ELSE attempts END,
                     now() + make_interval(secs => $2),
-                    CASE WHEN $4 THEN COALESCE(last_error, $3) ELSE $3 END,
+                    CASE WHEN $4 THEN COALESCE(last_error, left($3, 1024)) ELSE left($3, 1024) END,
                     created_at
                FROM dedup
              ON CONFLICT (registry_id, op, pk_value, chunk_id)
@@ -1436,7 +1436,7 @@ pub(crate) fn move_to_dead(ids: &[i64], err: &str) {
                  (job_id, registry_id, pk_value, op, chunk_id, attempts,
                   not_before, claimed_at, last_error, created_at)
              SELECT id, registry_id, pk_value, op, chunk_id, attempts,
-                    not_before, claimed_at, $2, created_at
+                    not_before, claimed_at, left($2, 1024), created_at
                FROM postvec.jobs WHERE id = ANY($1)",
             None,
             &[ids.to_vec().into(), err.into()],

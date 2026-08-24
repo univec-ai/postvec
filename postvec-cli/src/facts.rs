@@ -271,6 +271,9 @@ pub struct WorkerFacts {
     pub model_refreshes: i64,
     /// Whether the heartbeat pid is a live backend of this cluster.
     pub pid_is_live: bool,
+    /// The last beat was written before the current postmaster started.
+    #[serde(default)]
+    pub predates_restart: bool,
     /// A second heartbeat sample, taken only under `--deep`.
     pub second_beat_age_s: Option<f64>,
     pub advanced: Option<bool>,

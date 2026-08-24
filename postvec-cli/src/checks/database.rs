@@ -284,6 +284,15 @@ fn worker_pid(input: &DatabaseInput<'_>, scope: &str) -> Option<CheckResult> {
         Some(pid) if worker.pid_is_live => {
             CheckResult::pass("worker.pid", scope, format!("worker pid {pid} is running"))
         }
+        Some(pid) if worker.predates_restart => CheckResult::warn(
+            "worker.pid",
+            scope,
+            format!("the heartbeat (pid {pid}) predates the last PostgreSQL restart"),
+        )
+        .with_fix(
+            "a preloaded worker beats within seconds of startup: rerun doctor, then check \
+             shared_preload_libraries and the PostgreSQL log if this persists",
+        ),
         Some(pid) => CheckResult::fail(
             "worker.pid",
             scope,
@@ -902,6 +911,7 @@ mod tests {
                 jobs_dead_lettered: 0,
                 model_refreshes: 3,
                 pid_is_live: true,
+                predates_restart: false,
                 second_beat_age_s: None,
                 advanced: None,
             }),

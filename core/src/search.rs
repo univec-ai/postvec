@@ -49,6 +49,8 @@ pub fn hybrid_rows_sql(
     let fts_cte = format!(
         "fts AS (
              SELECT {pk} AS pk,
+                    ts_rank_cd(to_tsvector({cfg}::regconfig, {col}::text),
+                               websearch_to_tsquery({cfg}::regconfig, $2))::float8 AS score_fts,
                     row_number() OVER (
                         ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, {col}::text),
                                             websearch_to_tsquery({cfg}::regconfig, $2)) DESC
@@ -65,7 +67,7 @@ pub fn hybrid_rows_sql(
     let sql = if has_vector {
         format!(
             "WITH semantic AS (
-                 SELECT {pk} AS pk,
+                 SELECT {pk} AS pk, ({sem} {op} {qparam})::float8 AS dist,
                         row_number() OVER (ORDER BY {sem} {op} {qparam}) AS rank_sem
                    FROM {tbl} {d}
                   WHERE {vec} IS NOT NULL{fpred}
@@ -77,11 +79,11 @@ pub fn hybrid_rows_sql(
                  SELECT COALESCE(s.pk, f.pk) AS pk,
                         COALESCE({w}::float8 / ({k} + s.rank_sem), 0)
                       + COALESCE((1 - {w}::float8) / ({k} + f.rank_fts), 0) AS rrf_score,
-                        s.rank_sem, f.rank_fts
+                        s.rank_sem, f.rank_fts, s.dist, f.score_fts
                    FROM semantic s FULL OUTER JOIN fts f USING (pk)
              )
-             SELECT pk, rrf_score, rank_sem, rank_fts
-               FROM fused ORDER BY rrf_score DESC NULLS LAST LIMIT {limit_n}"
+             SELECT pk, rrf_score, rank_sem, rank_fts, dist, score_fts
+               FROM fused ORDER BY rrf_score DESC NULLS LAST, pk LIMIT {limit_n}"
         )
     } else {
         // Degraded: FTS only. rrf_score is 1/(k+rank_fts); rank_sem NULL.
@@ -89,11 +91,11 @@ pub fn hybrid_rows_sql(
             "WITH {fts_cte},
              fused AS (
                  SELECT pk, (1.0 / ({k} + rank_fts))::float8 AS rrf_score,
-                        NULL::bigint AS rank_sem, rank_fts
+                        NULL::bigint AS rank_sem, rank_fts, NULL::float8 AS dist, score_fts
                    FROM fts
              )
-             SELECT pk, rrf_score, rank_sem, rank_fts
-               FROM fused ORDER BY rrf_score DESC LIMIT {limit_n}"
+             SELECT pk, rrf_score, rank_sem, rank_fts, dist, score_fts
+               FROM fused ORDER BY rrf_score DESC, pk LIMIT {limit_n}"
         )
     };
 
@@ -134,6 +136,8 @@ pub fn chunk_hybrid_rows_sql(
     let fts_cte = format!(
         "fts_chunks AS (
              SELECT {chunk_fields},
+                    ts_rank_cd(to_tsvector({cfg}::regconfig, c.chunk_text),
+                               websearch_to_tsquery({cfg}::regconfig, $2))::float8 AS score_fts,
                     row_number() OVER (
                         ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, c.chunk_text),
                                             websearch_to_tsquery({cfg}::regconfig, $2)) DESC
@@ -157,7 +161,7 @@ pub fn chunk_hybrid_rows_sql(
     let sql = if has_vector {
         format!(
             "WITH semantic_chunks AS (
-                 SELECT {chunk_fields},
+                 SELECT {chunk_fields}, ({sem} {op} {qparam})::float8 AS dist,
                         row_number() OVER (ORDER BY {sem} {op} {qparam}) AS rank_sem
                    FROM {qdest} c JOIN {qsrc} {d} ON {src_join}
                   WHERE {vec} IS NOT NULL{fpred}
@@ -173,16 +177,16 @@ pub fn chunk_hybrid_rows_sql(
                         COALESCE(s.ce, f.ce) AS ce,
                         COALESCE({w}::float8 / ({k} + s.rank_sem), 0)
                       + COALESCE((1 - {w}::float8) / ({k} + f.rank_fts), 0) AS rrf_score,
-                        s.rank_sem, f.rank_fts
+                        s.rank_sem, f.rank_fts, s.dist, f.score_fts
                    FROM semantic_chunks s FULL OUTER JOIN fts_chunks f USING (cid)
              ),
              best_per_document AS (
                  SELECT *, {doc_window} FROM fused_chunks
              )
-             SELECT cid, pk, rrf_score, rank_sem, rank_fts, seq, cs, ce
+             SELECT cid, pk, rrf_score, rank_sem, rank_fts, seq, cs, ce, dist, score_fts
                FROM best_per_document
               WHERE doc_row = 1
-              ORDER BY rrf_score DESC NULLS LAST LIMIT {limit_n}"
+              ORDER BY rrf_score DESC NULLS LAST, pk LIMIT {limit_n}"
         )
     } else {
         // Degraded: lexical chunks only, same document collapse.
@@ -191,16 +195,16 @@ pub fn chunk_hybrid_rows_sql(
              fused_chunks AS (
                  SELECT cid, pk, seq, cs, ce,
                         (1.0 / ({k} + rank_fts))::float8 AS rrf_score,
-                        NULL::bigint AS rank_sem, rank_fts
+                        NULL::bigint AS rank_sem, rank_fts, NULL::float8 AS dist, score_fts
                    FROM fts_chunks
              ),
              best_per_document AS (
                  SELECT *, {doc_window} FROM fused_chunks
              )
-             SELECT cid, pk, rrf_score, rank_sem, rank_fts, seq, cs, ce
+             SELECT cid, pk, rrf_score, rank_sem, rank_fts, seq, cs, ce, dist, score_fts
                FROM best_per_document
               WHERE doc_row = 1
-              ORDER BY rrf_score DESC LIMIT {limit_n}"
+              ORDER BY rrf_score DESC, pk LIMIT {limit_n}"
         )
     };
 

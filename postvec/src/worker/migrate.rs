@@ -656,7 +656,7 @@ pub fn set_migration_error(migration_id: i64, msg: &str) {
     // must keep its terminal state — never have its audit row rewritten.
     Spi::run_with_args(
         "UPDATE postvec.migrations
-            SET error = $2,
+            SET error = left($2, 1024),
                 retry_failures = retry_failures + 1,
                 not_before = now() + make_interval(secs =>
                     LEAST($3 * power(2::float8, LEAST(retry_failures, 10)::float8), 300.0))

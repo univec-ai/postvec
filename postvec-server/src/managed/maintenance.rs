@@ -26,6 +26,7 @@ pub(super) async fn step(
     if build.as_ref().is_some_and(|b| b.0.is_finished()) {
         *build = None;
     }
+    conn.execute("UPDATE postvec.migrations m SET state='done',finished_at=now() FROM postvec.registry r WHERE m.registry_id=r.id AND m.state='awaiting_index' AND postvec._has_vector_index(to_regclass(format('%I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name))),r.vector_column)").await?;
     let plan: Vec<(i64, bool, bool, bool)> = sqlx::query_as(&format!(
         "SELECT r.id,
             (r.backfill_mode='cursor' AND r.state='active' AND NOT EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id))
@@ -338,11 +339,11 @@ async fn migrate(
                 done += 1;
             }
             Some(Outcome::Retry(error)) => {
-                sqlx::query("UPDATE postvec.migrations SET retry_failures=retry_failures+1,not_before=now()+make_interval(secs=>least(60,power(2,least(retry_failures+1,6)))),error=$2 WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
+                sqlx::query("UPDATE postvec.migrations SET retry_failures=retry_failures+1,not_before=now()+make_interval(secs=>least(60,power(2,least(retry_failures+1,6)))),error=left($2,1024) WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
                 break;
             }
             Some(Outcome::Failed(error)) => {
-                sqlx::query("UPDATE postvec.migrations SET state='failed',error=$2,finished_at=now() WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
+                sqlx::query("UPDATE postvec.migrations SET state='failed',error=left($2,1024),finished_at=now() WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
                 break;
             }
             Some(Outcome::Dead(_)) | None => skipped += 1,
@@ -367,7 +368,7 @@ async fn index(db: &ManagedDb, id: i64) -> Result<()> {
         }
         let mut tx = conn.begin().await?;
         worker::guard(&mut tx).await?;
-        sqlx::query("UPDATE postvec.registry SET index_error=$2 WHERE id=$1")
+        sqlx::query("UPDATE postvec.registry SET index_error=left($2,1024) WHERE id=$1")
             .bind(id)
             .bind(error.to_string())
             .execute(&mut *tx)

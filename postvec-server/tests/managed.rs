@@ -134,6 +134,9 @@ async fn exercise(dsn: &str) -> Result<()> {
             .bind(filter).fetch_all(&mut db).await.with_context(|| format!("search filter {filter}"))?;
         ensure!(keys == ["1"], "filter mismatch: {filter}");
     }
+    let scored: bool = sqlx::query_scalar("SELECT semantic_distance=0 AND fts_score>0 FROM postvec.search_with_vector('docs','body',ARRAY[1,0,0]::real[],'password') WHERE pk_value='1'")
+        .fetch_one(&mut db).await?;
+    ensure!(scored, "per-leg scores");
     for query in [
         "SELECT * FROM postvec.search_with_vector('docs','body',ARRAY[1,0]::real[])",
         "SELECT * FROM postvec.search_with_vector('docs','body',ARRAY[1,NULL,0]::real[])",
@@ -183,6 +186,10 @@ async fn exercise(dsn: &str) -> Result<()> {
         INSERT INTO postvec.models(name,model_type,target_model,target_dim,raw) VALUES('fixture','embed','fixture',3,'{}');
         CREATE TABLE pk_changes(id integer PRIMARY KEY,body text,note text);
         SELECT postvec.enable('pk_changes','body','fixture');
+        DO $$ BEGIN
+            IF postvec.enable('pk_changes','body','fixture',if_not_exists=>true)<>(SELECT id FROM postvec.registry WHERE table_name='pk_changes')
+            THEN RAISE EXCEPTION 'if_not_exists returned another id'; END IF;
+        END $$;
         CREATE TABLE row_changes(id integer PRIMARY KEY,body text,note text);
         SELECT postvec.enable('row_changes','body','fixture',trigger_mode=>'row',format=>'$note: $body');
         INSERT INTO pk_changes VALUES(1,'before',NULL),(2,NULL,'no source');
@@ -210,8 +217,23 @@ async fn exercise(dsn: &str) -> Result<()> {
             IF (SELECT array_agg(pk_value ORDER BY pk_value) FROM postvec.jobs WHERE registry_id=(SELECT id FROM postvec.registry WHERE table_name='pk_changes')) IS DISTINCT FROM ARRAY['11','12']
             THEN RAISE EXCEPTION 'BEFORE-trigger primary key change was lost'; END IF;
         END $$;
-        SELECT postvec.disable('pk_changes','body');
     "#).await?;
+    for repeat in [
+        "SELECT postvec.enable('pk_changes','body','fixture')",
+        "SELECT postvec.enable('pk_changes','body','other',if_not_exists=>true)",
+    ] {
+        let error = db
+            .execute(repeat)
+            .await
+            .err()
+            .context(format!("accepted: {repeat}"))?;
+        ensure!(
+            error.to_string().contains("already enabled"),
+            "{repeat}: {error}"
+        );
+    }
+    db.execute("SELECT postvec.disable('pk_changes','body')")
+        .await?;
     db.execute(r#"
         CREATE TABLE partitioned(id integer PRIMARY KEY,body text,v vectors.vector(3)) PARTITION BY RANGE(id);
         CREATE TABLE partition_child PARTITION OF partitioned FOR VALUES FROM(0) TO(10);

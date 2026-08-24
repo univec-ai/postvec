@@ -113,6 +113,7 @@ pub const START_WORKER: &str = "SELECT postvec.start_worker() AS started";
 pub const HEARTBEAT: &str = "\
 SELECT pid,
        EXTRACT(EPOCH FROM (now() - last_beat))::float8 AS age_s,
+       last_beat < pg_postmaster_start_time()          AS predates_restart,
        started_at::text                                AS started_at,
        last_error,
        COALESCE(errors, 0)          AS errors,

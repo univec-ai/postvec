@@ -15,13 +15,15 @@ use crate::registry::{quote_ident, serialize_vector, RegistryEntry};
 use pgrx::prelude::*;
 use pgrx::JsonB;
 
-/// One fused result row: the four original fields plus nullable
-/// winning-chunk metadata (all NULL for a column-mode entry).
+/// One fused result row: the fused fields, the raw per-leg scores, then
+/// nullable winning-chunk metadata (all NULL for a column-mode entry).
 type Row = (
     String,
     f64,
     Option<i64>,
     Option<i64>,
+    Option<f64>,
+    Option<f64>,
     Option<i32>,
     Option<i64>,
     Option<i64>,
@@ -494,6 +496,8 @@ pub(crate) fn hybrid_rows(
                     r.get::<f64>(2).unwrap().unwrap_or(0.0),
                     r.get::<i64>(3).unwrap(),
                     r.get::<i64>(4).unwrap(),
+                    r.get::<f64>(5).unwrap(),
+                    r.get::<f64>(6).unwrap(),
                     None,
                     None,
                     None,
@@ -554,6 +558,8 @@ fn chunk_hybrid_rows(
                 r.get::<f64>(3).unwrap().unwrap_or(0.0),
                 r.get::<i64>(4).unwrap(),
                 r.get::<i64>(5).unwrap(),
+                r.get::<f64>(9).unwrap(),
+                r.get::<f64>(10).unwrap(),
                 r.get::<i32>(6).unwrap(),
                 r.get::<i64>(7).unwrap(),
                 r.get::<i64>(8).unwrap(),
@@ -638,7 +644,7 @@ fn chunk_hybrid_rows(
                 };
                 for (row, cid) in rows.iter_mut().zip(cids.iter()) {
                     // A chunk deleted between phases simply keeps NULL.
-                    row.7 = texts.remove(cid);
+                    row.9 = texts.remove(cid);
                 }
             }
         }
@@ -700,6 +706,8 @@ fn search(
         name!(rrf_score, f64),
         name!(semantic_rank, Option<i64>),
         name!(fts_rank, Option<i64>),
+        name!(semantic_distance, Option<f64>),
+        name!(fts_score, Option<f64>),
         name!(chunk_seq, Option<i32>),
         name!(chunk_start, Option<i64>),
         name!(chunk_end, Option<i64>),
@@ -784,6 +792,8 @@ fn search_with_vector<'a>(
         name!(rrf_score, f64),
         name!(semantic_rank, Option<i64>),
         name!(fts_rank, Option<i64>),
+        name!(semantic_distance, Option<f64>),
+        name!(fts_score, Option<f64>),
         name!(chunk_seq, Option<i32>),
         name!(chunk_start, Option<i64>),
         name!(chunk_end, Option<i64>),
@@ -953,7 +963,7 @@ mod tests {
         assert_eq!(
             sql,
             r#"WITH semantic AS (
-                 SELECT d."id"::text AS pk,
+                 SELECT d."id"::text AS pk, (d."body_semantic" <=> $1::vector)::float8 AS dist,
                         row_number() OVER (ORDER BY d."body_semantic" <=> $1::vector) AS rank_sem
                    FROM "public"."docs" d
                   WHERE d."body_semantic" IS NOT NULL
@@ -963,6 +973,8 @@ mod tests {
              ),
              fts AS (
              SELECT d."id"::text AS pk,
+                    ts_rank_cd(to_tsvector('english'::regconfig, d."body"::text),
+                               websearch_to_tsquery('english'::regconfig, $2))::float8 AS score_fts,
                     row_number() OVER (
                         ORDER BY ts_rank_cd(to_tsvector('english'::regconfig, d."body"::text),
                                             websearch_to_tsquery('english'::regconfig, $2)) DESC
@@ -979,11 +991,11 @@ mod tests {
                  SELECT COALESCE(s.pk, f.pk) AS pk,
                         COALESCE(0.5::float8 / (60 + s.rank_sem), 0)
                       + COALESCE((1 - 0.5::float8) / (60 + f.rank_fts), 0) AS rrf_score,
-                        s.rank_sem, f.rank_fts
+                        s.rank_sem, f.rank_fts, s.dist, f.score_fts
                    FROM semantic s FULL OUTER JOIN fts f USING (pk)
              )
-             SELECT pk, rrf_score, rank_sem, rank_fts
-               FROM fused ORDER BY rrf_score DESC NULLS LAST LIMIT 10"#
+             SELECT pk, rrf_score, rank_sem, rank_fts, dist, score_fts
+               FROM fused ORDER BY rrf_score DESC NULLS LAST, pk LIMIT 10"#
         );
     }
 
@@ -1864,9 +1876,9 @@ mod tests {
             "doc 1's two high-ranking chunks collapse to one row: {pks:?}"
         );
         assert_eq!(rows[0].0, "1", "doc 1 wins (closest chunk)");
-        assert_eq!(rows[0].4, Some(0), "the winning chunk is seq 0");
-        assert_eq!(rows[0].7.as_deref(), Some("one alpha"));
-        assert_eq!((rows[0].5, rows[0].6), (Some(0), Some(9)));
+        assert_eq!(rows[0].6, Some(0), "the winning chunk is seq 0");
+        assert_eq!(rows[0].9.as_deref(), Some("one alpha"));
+        assert_eq!((rows[0].7, rows[0].8), (Some(0), Some(9)));
         assert_eq!(rows[1].0, "2", "doc 2 second");
     }
 
@@ -1921,7 +1933,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "3", "lexical hit on chunk text");
         assert!(rows[0].2.is_none(), "no semantic rank in degraded mode");
-        assert_eq!(rows[0].7.as_deref(), Some("three keyword"));
+        assert_eq!(rows[0].9.as_deref(), Some("three keyword"));
     }
 
     /// Metadata filters constrain both chunk legs before fusion.
@@ -1986,6 +1998,7 @@ mod tests {
         let row = Spi::get_one::<bool>(
             "SELECT chunk_seq IS NOT NULL AND chunk_start IS NOT NULL
                     AND chunk_end IS NOT NULL AND chunk_text IS NOT NULL
+                    AND semantic_distance IS NOT NULL AND fts_score IS NULL
                FROM postvec.search_with_vector('cdocs','body', ARRAY[1,0,0]::real[])
               LIMIT 1",
         )

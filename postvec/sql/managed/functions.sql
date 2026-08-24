@@ -8,9 +8,12 @@ REVOKE ALL ON FUNCTION postvec.refresh_models() FROM PUBLIC;
 -- Served by the postvec-server proxy, which rewrites these calls before the
 -- database sees them; reaching the function means the call did not go
 -- through it.
+DROP FUNCTION IF EXISTS postvec.search(text,text,text,integer,real,integer,integer,jsonb);
+DROP FUNCTION IF EXISTS postvec.search_with_vector(text,text,real[],text,integer,real,integer,integer,jsonb);
 CREATE OR REPLACE FUNCTION postvec.search(relation text, column_name text, query text, limit_n integer DEFAULT 10,
     semantic_weight real DEFAULT 0.5, rrf_k integer DEFAULT 60, candidates integer DEFAULT NULL, filter jsonb DEFAULT NULL)
 RETURNS TABLE(pk_value text, rrf_score double precision, semantic_rank bigint, fts_rank bigint,
+              semantic_distance double precision, fts_score double precision,
               chunk_seq integer, chunk_start bigint, chunk_end bigint, chunk_text text)
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
@@ -92,6 +95,7 @@ CREATE OR REPLACE FUNCTION postvec.search_with_vector(
     limit_n integer DEFAULT 10, semantic_weight real DEFAULT 0.5, rrf_k integer DEFAULT 60,
     candidates integer DEFAULT NULL, filter jsonb DEFAULT NULL)
 RETURNS TABLE(pk_value text, rrf_score double precision, semantic_rank bigint, fts_rank bigint,
+              semantic_distance double precision, fts_score double precision,
               chunk_seq integer, chunk_start bigint, chunk_end bigint, chunk_text text)
 LANGUAGE plpgsql SET hnsw.iterative_scan = 'relaxed_order' AS $$
 DECLARE r postvec.registry; rel regclass; dest text; src text; pk text; cid text; fields text;
@@ -199,33 +203,54 @@ BEGIN
     END IF;
     op := pg_catalog.format('OPERATOR(%I.%s)', vector_schema, CASE r.distance WHEN 'l2' THEN '<->' WHEN 'ip' THEN '<#>' ELSE '<=>' END);
     sql := pg_catalog.format('WITH semantic AS (
-        SELECT %s, row_number() OVER (ORDER BY %s %s %s) AS rank_sem FROM %s
+        SELECT %s, (%s %s %s)::float8 AS dist, row_number() OVER (ORDER BY %s %s %s) AS rank_sem FROM %s
          WHERE %s IS NOT NULL %s ORDER BY %s %s %s LIMIT %s
     ), fts AS (
-        SELECT %s, row_number() OVER (ORDER BY pg_catalog.ts_rank_cd(pg_catalog.to_tsvector(%s, %s), pg_catalog.websearch_to_tsquery(%s, $2)) DESC) AS rank_fts
+        SELECT %s, pg_catalog.ts_rank_cd(pg_catalog.to_tsvector(%s, %s), pg_catalog.websearch_to_tsquery(%s, $2))::float8 AS score_fts,
+               row_number() OVER (ORDER BY pg_catalog.ts_rank_cd(pg_catalog.to_tsvector(%s, %s), pg_catalog.websearch_to_tsquery(%s, $2)) DESC) AS rank_fts
           FROM %s WHERE pg_catalog.to_tsvector(%s, %s) @@ pg_catalog.websearch_to_tsquery(%s, $2) %s
          ORDER BY pg_catalog.ts_rank_cd(pg_catalog.to_tsvector(%s, %s), pg_catalog.websearch_to_tsquery(%s, $2)) DESC LIMIT %s
     ), fused AS (
         SELECT coalesce(s.cid,f.cid) AS cid, coalesce(s.pk,f.pk) AS pk,
                coalesce(s.seq,f.seq) AS seq, coalesce(s.cs,f.cs) AS cs, coalesce(s.ce,f.ce) AS ce,
                coalesce(%s::float8/(%s+s.rank_sem),0) + coalesce((1-%s::float8)/(%s+f.rank_fts),0) AS score,
-               s.rank_sem, f.rank_fts FROM semantic s FULL JOIN fts f USING(cid)
+               s.rank_sem, f.rank_fts, s.dist, f.score_fts FROM semantic s FULL JOIN fts f USING(cid)
     ), ranked AS (
         SELECT *, row_number() OVER (PARTITION BY pk ORDER BY score DESC,
             coalesce(rank_sem,9223372036854775807), coalesce(rank_fts,9223372036854775807), seq, cid) AS rn FROM fused
     ), winners AS (
-        SELECT * FROM ranked WHERE rn=1 ORDER BY score DESC NULLS LAST LIMIT %s
-    ) SELECT w.pk,w.score,w.rank_sem,w.rank_fts,w.seq,w.cs,w.ce,',
-        fields,vec,op,qvec,join_sql,vec,pred,vec,op,qvec,cand,
-        fields,cfg,lex,cfg,join_sql,cfg,lex,cfg,pred,cfg,lex,cfg,cand,
+        SELECT * FROM ranked WHERE rn=1 ORDER BY score DESC NULLS LAST, pk LIMIT %s
+    ) SELECT w.pk,w.score,w.rank_sem,w.rank_fts,w.dist,w.score_fts,w.seq,w.cs,w.ce,',
+        fields,vec,op,qvec,vec,op,qvec,join_sql,vec,pred,vec,op,qvec,cand,
+        fields,cfg,lex,cfg,cfg,lex,cfg,join_sql,cfg,lex,cfg,pred,cfg,lex,cfg,cand,
         semantic_weight,rrf_k,semantic_weight,rrf_k,limit_n);
     IF r.chunking = 'recursive' THEN
         sql := sql || pg_catalog.format('CASE WHEN sum(octet_length(c.chunk_text)) OVER (
             ORDER BY w.score DESC NULLS LAST, w.pk ROWS UNBOUNDED PRECEDING) <= 67108864 THEN c.chunk_text END
-            FROM winners w LEFT JOIN %s c ON c.postvec_chunk_id = w.cid::bigint ORDER BY w.score DESC NULLS LAST', dest);
-    ELSE sql := sql || 'NULL::text FROM winners w ORDER BY w.score DESC NULLS LAST';
+            FROM winners w LEFT JOIN %s c ON c.postvec_chunk_id = w.cid::bigint ORDER BY w.score DESC NULLS LAST, w.pk', dest);
+    ELSE sql := sql || 'NULL::text FROM winners w ORDER BY w.score DESC NULLS LAST, w.pk';
     END IF;
     RETURN QUERY EXECUTE sql USING '[' || array_to_string(query_vector, ',') || ']', query_text, values_json;
+END $$;
+
+CREATE OR REPLACE FUNCTION postvec._has_vector_index(target regclass, col text) RETURNS boolean
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
+    SELECT EXISTS (
+        SELECT FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam
+         WHERE i.indrelid = target AND am.amname IN ('hnsw', 'ivfflat')
+           AND i.indisvalid AND i.indisready AND i.indislive
+           AND (EXISTS (SELECT FROM pg_attribute a WHERE a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) AND a.attname = col)
+                OR EXISTS (SELECT FROM pg_depend d JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = d.refobjsubid
+                            WHERE d.classid = 'pg_class'::regclass AND d.objid = i.indexrelid
+                              AND d.refclassid = 'pg_class'::regclass AND d.refobjid = i.indrelid AND a.attname = col)))
+$$;
+
+CREATE OR REPLACE FUNCTION postvec.convert(embedding real[], source_model text, target_model text) RETURNS real[]
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    RAISE EXCEPTION 'postvec: convert() is not available on managed PostgreSQL'
+        USING ERRCODE = 'feature_not_supported',
+              HINT = 'POST {"source_model","target_model","embeddings"} to the postvec-server /api/convert endpoint.';
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint)
@@ -237,39 +262,7 @@ SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                         COALESCE(j.pending, 0)::bigint,
                         COALESCE(jd.dead, 0)::bigint,
                         EXTRACT(EPOCH FROM (now() - j.oldest))::float8,
-                        COALESCE(EXISTS (
-             SELECT 1
-               FROM pg_index i
-               JOIN pg_class ic ON ic.oid = i.indexrelid
-               JOIN pg_am am ON am.oid = ic.relam
-              WHERE i.indrelid = to_regclass(format('%I.%I', COALESCE(r.destination_schema,r.table_schema), COALESCE(r.destination_table,r.table_name)))
-                AND am.amname IN ('hnsw', 'ivfflat')
-                -- a failed CREATE INDEX CONCURRENTLY leaves an invalid index
-                -- PostgreSQL will not use; it must not satisfy status(),
-                -- migration finalization, or the adopt-time advisory
-                AND i.indisvalid AND i.indisready AND i.indislive
-                AND (
-                    EXISTS (
-                        SELECT 1
-                          FROM pg_attribute a
-                         WHERE a.attrelid = i.indrelid
-                           AND a.attnum = ANY(i.indkey)
-                           AND a.attname = r.vector_column
-                    )
-                    OR EXISTS (
-                        SELECT 1
-                          FROM pg_depend d
-                          JOIN pg_attribute a
-                            ON a.attrelid = i.indrelid
-                           AND a.attnum = d.refobjsubid
-                         WHERE d.classid = 'pg_class'::regclass
-                           AND d.objid = i.indexrelid
-                           AND d.refclassid = 'pg_class'::regclass
-                           AND d.refobjid = i.indrelid
-                           AND a.attname = r.vector_column
-                    )
-                )
-        ), false) AS has_vector_index,
+                        postvec._has_vector_index(to_regclass(format('%I.%I', COALESCE(r.destination_schema,r.table_schema), COALESCE(r.destination_table,r.table_name))), r.vector_column) AS has_vector_index,
                         mm.last_seen::text,
                         je.last_error,
                         hb.pid, hb.last_beat::text,

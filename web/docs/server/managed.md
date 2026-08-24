@@ -166,8 +166,12 @@ builds an HNSW index concurrently by default, on its own connection.
 concurrent index creation on partitioned parents; use a blocking build
 or manage partition indexes explicitly.
 
-Migration cutover is explicit. `disable()` retains user vectors and
-chunk data by default.
+Migration cutover is explicit. After the swap, an entry that had an ANN
+index waits in `awaiting_index`; with `index_mode => 'auto'` the server
+builds it concurrently and completes the migration, otherwise build it and
+call `migration_finalize()` again. `disable()` retains user vectors and
+chunk data by default. `convert()` is not available in SQL on managed
+databases; the stub names the server's `/api/convert` endpoint.
 
 ## 5. Search
 

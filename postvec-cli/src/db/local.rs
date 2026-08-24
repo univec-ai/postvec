@@ -394,6 +394,9 @@ impl Direct {
         let mut worker = WorkerFacts {
             pid,
             last_beat_age_s: row.try_get("age_s")?,
+            predates_restart: row
+                .try_get::<Option<bool>, _>("predates_restart")?
+                .unwrap_or(false),
             started_at: row.try_get("started_at")?,
             last_error: row.try_get("last_error")?,
             errors: row.try_get("errors")?,

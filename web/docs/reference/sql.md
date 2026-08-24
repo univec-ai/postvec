@@ -19,13 +19,13 @@ as it is.
 
 | Function | Returns |
 |---|---|
-| `enable(relation, column_name, model, vector_column DEFAULT NULL, fts_config DEFAULT 'pg_catalog.english', create_fts_index DEFAULT false, backfill DEFAULT true, distance DEFAULT 'cosine', trigger_mode DEFAULT 'statement', index_mode DEFAULT 'manual', backfill_mode DEFAULT 'queue', format DEFAULT NULL, chunking DEFAULT 'none', chunk_size DEFAULT NULL, chunk_overlap DEFAULT NULL, destination DEFAULT NULL)` | `bigint` registry id |
-| `adopt(relation, column_name, vector_column, model, sync DEFAULT true, backfill DEFAULT 'missing', backfill_mode DEFAULT 'queue', distance DEFAULT 'cosine', trigger_mode DEFAULT 'statement', fts_config DEFAULT 'pg_catalog.english', create_fts_index DEFAULT false, format DEFAULT NULL, index_mode DEFAULT 'manual')` | `bigint` registry id |
+| `enable(relation, column_name, model, vector_column DEFAULT NULL, fts_config DEFAULT 'pg_catalog.english', create_fts_index DEFAULT false, backfill DEFAULT true, distance DEFAULT 'cosine', trigger_mode DEFAULT 'statement', index_mode DEFAULT 'manual', backfill_mode DEFAULT 'queue', format DEFAULT NULL, chunking DEFAULT 'none', chunk_size DEFAULT NULL, chunk_overlap DEFAULT NULL, destination DEFAULT NULL, if_not_exists DEFAULT false)` | `bigint` registry id |
+| `adopt(relation, column_name, vector_column, model, sync DEFAULT true, backfill DEFAULT 'missing', backfill_mode DEFAULT 'queue', distance DEFAULT 'cosine', trigger_mode DEFAULT 'statement', fts_config DEFAULT 'pg_catalog.english', create_fts_index DEFAULT false, format DEFAULT NULL, index_mode DEFAULT 'manual', if_not_exists DEFAULT false)` | `bigint` registry id |
 | `set_format(relation, column_name, format)` | `void` |
 | `disable(relation, column_name, drop_column DEFAULT false, drop_destination DEFAULT false)` | `void` |
 | `uninstall(drop_columns DEFAULT false, drop_destinations DEFAULT false)` | `bigint` entries torn down; superuser |
 | `create_vector_index(relation, column_name)` | `void` |
-| `search(relation, column_name, query, limit_n DEFAULT 10, semantic_weight DEFAULT 0.5, rrf_k DEFAULT 60, candidates DEFAULT NULL, filter DEFAULT NULL)` | `TABLE(pk_value text, rrf_score float8, semantic_rank bigint, fts_rank bigint, chunk_seq int, chunk_start bigint, chunk_end bigint, chunk_text text)` |
+| `search(relation, column_name, query, limit_n DEFAULT 10, semantic_weight DEFAULT 0.5, rrf_k DEFAULT 60, candidates DEFAULT NULL, filter DEFAULT NULL)` | `TABLE(pk_value text, rrf_score float8, semantic_rank bigint, fts_rank bigint, semantic_distance float8, fts_score float8, chunk_seq int, chunk_start bigint, chunk_end bigint, chunk_text text)` |
 | `search_with_vector(relation, column_name, query_vector real[], query_text DEFAULT '', ...same including filter...)` | same |
 | `retry_dead(relation regclass, column_name, dead_ids bigint[] DEFAULT NULL)` | `bigint` dead rows consumed |
 | `migrate(relation, column_name, new_model, strategy DEFAULT 'convert', reindex DEFAULT 'manual', observed_writes_quiesced DEFAULT false)` | `bigint` migration id |

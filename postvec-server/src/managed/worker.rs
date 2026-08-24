@@ -120,7 +120,7 @@ pub(super) struct Routing {
     pub migration: Option<i64>,
 }
 pub(super) async fn routing(conn: &mut PgConnection, e: &RegistryEntry) -> Result<Routing> {
-    let m: Option<(i64,String,String,i32)> = sqlx::query_as("SELECT id,new_model,new_column,new_dim FROM postvec.migrations WHERE registry_id=$1 AND state IN ('running','awaiting_finalize','awaiting_index') ORDER BY id DESC LIMIT 1") .bind(e.id).fetch_optional(conn).await?;
+    let m: Option<(i64,String,String,i32)> = sqlx::query_as("SELECT id,new_model,new_column,new_dim FROM postvec.migrations WHERE registry_id=$1 AND state IN ('running','awaiting_finalize') ORDER BY id DESC LIMIT 1") .bind(e.id).fetch_optional(conn).await?;
     Ok(match m {
         Some((id, model, column, dim)) => Routing {
             model,
@@ -480,9 +480,9 @@ pub(super) async fn finish(
     dead: bool,
 ) -> Result<()> {
     if dead {
-        sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE id=$1 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,not_before,claimed_at,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,not_before,claimed_at,$2,created_at FROM d") .bind(id).bind(error).execute(&mut *conn).await?;
+        sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE id=$1 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,not_before,claimed_at,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,not_before,claimed_at,left($2,1024),created_at FROM d") .bind(id).bind(error).execute(&mut *conn).await?;
         sqlx::query(
-            "UPDATE postvec.worker_heartbeat SET jobs_dead=jobs_dead+1,last_error=$1 WHERE id=1",
+            "UPDATE postvec.worker_heartbeat SET jobs_dead=jobs_dead+1,last_error=left($1,1024) WHERE id=1",
         )
         .bind(error)
         .execute(conn)
@@ -508,9 +508,9 @@ pub(super) async fn release(
     if backoff && attempts.is_some_and(|n| n >= 5) {
         return finish(conn, id, Some(error), true).await;
     }
-    sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE id=$1 RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,not_before,last_error,created_at) SELECT registry_id,pk_value,op,chunk_id,CASE WHEN $3 THEN attempts ELSE greatest(attempts-1,0) END,now()+make_interval(secs=>CASE WHEN $3 THEN least(60,power(2,least(attempts,6))) ELSE 0 END),$2,created_at FROM d ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING") .bind(id).bind(error).bind(backoff).execute(&mut *conn).await?;
+    sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE id=$1 RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,not_before,last_error,created_at) SELECT registry_id,pk_value,op,chunk_id,CASE WHEN $3 THEN attempts ELSE greatest(attempts-1,0) END,now()+make_interval(secs=>CASE WHEN $3 THEN least(60,power(2,least(attempts,6))) ELSE 0 END),left($2,1024),created_at FROM d ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING") .bind(id).bind(error).bind(backoff).execute(&mut *conn).await?;
     sqlx::query(
-        "UPDATE postvec.worker_heartbeat SET jobs_retried=jobs_retried+1,last_error=$1 WHERE id=1",
+        "UPDATE postvec.worker_heartbeat SET jobs_retried=jobs_retried+1,last_error=left($1,1024) WHERE id=1",
     )
     .bind(error)
     .execute(conn)
@@ -536,12 +536,14 @@ pub(super) async fn quarantine_or_error(
     log::warn!("managed entry {id} disabled: {error}");
     let mut tx = conn.begin().await?;
     guard(&mut tx).await?;
-    sqlx::query("UPDATE postvec.registry SET state='disabled',index_error=$2 WHERE id=$1")
-        .bind(id)
-        .bind(error.to_string())
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE postvec.migrations SET state='failed',error=$2,finished_at=now() WHERE registry_id=$1 AND state IN ('running','awaiting_finalize','awaiting_index')").bind(id).bind(error.to_string()).execute(&mut *tx).await?;
+    sqlx::query(
+        "UPDATE postvec.registry SET state='disabled',index_error=left($2,1024) WHERE id=$1",
+    )
+    .bind(id)
+    .bind(error.to_string())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE postvec.migrations SET state='failed',error=left($2,1024),finished_at=now() WHERE registry_id=$1 AND state IN ('running','awaiting_finalize')").bind(id).bind(error.to_string()).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM postvec.jobs WHERE registry_id=$1")
         .bind(id)
         .execute(&mut *tx)

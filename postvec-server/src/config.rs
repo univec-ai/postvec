@@ -629,11 +629,28 @@ pub fn resolve(
         return Err("--proxy needs --sync or --proxy-upstream to name the database".into());
     }
     let mut names = std::collections::HashSet::new();
+    let mut targets: Vec<(String, (String, u16, String))> = Vec::new();
     for db in &mut managed {
         db.validate()?;
         if !names.insert(db.name.clone()) {
             return Err("managed database names must be unique".into());
         }
+        let o: sqlx::postgres::PgConnectOptions = db
+            .dsn
+            .parse()
+            .map_err(|_| "invalid managed PostgreSQL DSN")?;
+        let target = (
+            o.get_host().to_string(),
+            o.get_port(),
+            o.get_database().unwrap_or(o.get_username()).to_string(),
+        );
+        if let Some((other, _)) = targets.iter().find(|(_, t)| *t == target) {
+            return Err(format!(
+                "managed databases {other} and {} point at the same database; use one entry",
+                db.name
+            ));
+        }
+        targets.push((db.name.clone(), target));
         db.password_file = db.password_file.as_ref().map(|p| against_root(&root, p));
         if let Some(port) = db.proxy_port {
             if let Some((other, _)) = seen.iter().find(|(_, p)| *p == port) {
@@ -1174,6 +1191,21 @@ mod tests {
         assert_eq!(s.managed.len(), 1);
         assert!(!s.managed[0].sync);
         assert_eq!(s.managed[0].proxy_port, Some(5433));
+        let twice = FileConfig {
+            managed: Some(
+                ["a", "b"]
+                    .map(|name| crate::managed::ManagedDb {
+                        name: name.into(),
+                        dsn: "postgresql://u@db/app".into(),
+                        ..Default::default()
+                    })
+                    .to_vec(),
+            ),
+            ..Default::default()
+        };
+        assert!(resolve_with(ServeArgs::default(), twice, &[])
+            .unwrap_err()
+            .contains("same database"));
         for flags in [
             ServeArgs {
                 proxy: Some(5433),

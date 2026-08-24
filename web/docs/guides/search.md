@@ -45,7 +45,10 @@ SELECT d.id, d.body, s.rrf_score
 :::: tip Expected
 Rows that mean the same thing rank above rows that merely share a word.
 `semantic_rank` / `fts_rank` are 1-based positions in each leg; either
-can be NULL if that leg missed the row.
+can be NULL if that leg missed the row. `semantic_distance` is the raw
+pgvector distance in the entry's metric (`<=>`, `<->` or `<#>`) and
+`fts_score` the raw `ts_rank_cd`, for thresholds and debugging. Ties on
+`rrf_score` order by `pk_value`, so paging is stable.
 ::::
 
 Cast `pk_value` back to the PK type (`::bigint`, `::uuid`, ...).

@@ -88,6 +88,7 @@ reason search is slow. See [indexes](/docs/guides/indexes).
 | `backfill_mode` | `queue` | `cursor` for a huge existing table |
 | `format` | raw column | See [templates](/docs/guides/templates) |
 | `chunking` | `none` | See [chunking](/docs/guides/chunking) |
+| `if_not_exists` | `false` | Return the existing id when the same model and vector column are already enabled; scripts that rerun |
 
 Statement triggers fire on the publisher. Subscriber-applied logical
 replication skips them, so run postvec on the **publisher**. On a

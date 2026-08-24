@@ -324,7 +324,7 @@ pub fn record_build_failure(id: i64, err: &str) {
         return;
     }
     Spi::run_with_args(
-        "UPDATE postvec.registry SET index_error = $2
+        "UPDATE postvec.registry SET index_error = left($2, 1024)
           WHERE id = $1 AND state = 'active' AND index_mode = 'auto'",
         &[id.into(), err.into()],
     )

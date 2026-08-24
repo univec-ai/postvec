@@ -1516,7 +1516,7 @@ pub(crate) fn heartbeat_upsert(
               jobs_embedded, jobs_nulled, jobs_retried, jobs_dead,
               rows_converted, rows_skipped, model_refreshes, last_error,
               documents_chunked, chunks_created, models_refreshed_at)
-         VALUES (1, $1, now(), $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+         VALUES (1, $1, now(), $2::timestamptz, $3, $4, $5, $6, $7, $8, $9, $10, $11, left($12, 1024),
                  $13, $14, CASE WHEN $15 THEN now() END)
          ON CONFLICT (id) DO UPDATE SET
              pid = EXCLUDED.pid, last_beat = EXCLUDED.last_beat,

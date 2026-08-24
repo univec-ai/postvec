@@ -1667,6 +1667,7 @@ fn enable(
     chunk_size: default!(Option<i32>, "NULL"),
     chunk_overlap: default!(Option<i32>, "NULL"),
     destination: default!(Option<String>, "NULL"),
+    if_not_exists: default!(bool, false),
 ) -> i64 {
     apply_ddl_lock_timeout();
     let rel = resolve_relation(relation);
@@ -1698,6 +1699,23 @@ fn enable(
         &index_mode,
     );
     let recursive = chunk_spec.is_some();
+    if if_not_exists {
+        if let Some(prior) = RegistryEntry::load_active(&rel.schema, &rel.table, column_name) {
+            if prior.missing_dependency(&[]).is_none() && !prior.triggers_missing() {
+                let expected = vector_column
+                    .clone()
+                    .unwrap_or_else(|| format!("{column_name}_semantic"));
+                if prior.model == model && prior.vector_column == expected {
+                    return prior.id;
+                }
+                error!(
+                    "postvec: {}.{}.{column_name} is already enabled with model {:?} and vector \
+                     column {:?}",
+                    rel.schema, rel.table, prior.model, prior.vector_column
+                );
+            }
+        }
+    }
 
     let plan = plan_entry(
         rel,
@@ -1846,6 +1864,7 @@ fn adopt(
     create_fts_index: default!(bool, false),
     format: default!(Option<String>, "NULL"),
     index_mode: default!(&str, "'manual'"),
+    if_not_exists: default!(bool, false),
 ) -> i64 {
     apply_ddl_lock_timeout();
     let rel = resolve_relation(relation);
@@ -1908,6 +1927,16 @@ fn adopt(
                         create_fts_index,
                         format.as_deref(),
                         &index_mode,
+                    );
+                }
+                if if_not_exists {
+                    if prior.model == model && prior.vector_column == vector_column {
+                        return prior.id;
+                    }
+                    error!(
+                        "postvec: {}.{}.{column_name} is already enabled with model {:?} and \
+                         vector column {:?}",
+                        rel.schema, rel.table, prior.model, prior.vector_column
                     );
                 }
                 error!(
@@ -5579,6 +5608,32 @@ mod tests {
             .ok();
         });
         assert!(r.is_err(), "an already-synced entry refuses re-adoption");
+    }
+
+    #[pg_test]
+    fn if_not_exists_returns_the_matching_entry() {
+        seed_model("m", 4);
+        make_adoptable_docs();
+        let id = Spi::get_one::<i64>(
+            "SELECT postvec.adopt('docs','body', vector_column => 'embedding', model => 'm')",
+        )
+        .unwrap();
+        for repeat in [
+            "SELECT postvec.adopt('docs','body', vector_column => 'embedding', model => 'm', \
+             if_not_exists => true)",
+            "SELECT postvec.enable('docs','body','m', vector_column => 'embedding', \
+             if_not_exists => true)",
+        ] {
+            assert_eq!(Spi::get_one::<i64>(repeat).unwrap(), id, "{repeat}");
+        }
+        let r = std::panic::catch_unwind(|| {
+            Spi::get_one::<i64>(
+                "SELECT postvec.enable('docs','body','other', vector_column => 'embedding', \
+                 if_not_exists => true)",
+            )
+            .ok();
+        });
+        assert!(r.is_err(), "a different model is still refused");
     }
 
     #[pg_test]
