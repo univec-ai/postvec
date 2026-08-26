@@ -8,12 +8,12 @@
 //! fused as `w/(k+rank_sem) + (1-w)/(k+rank_fts)`.
 
 use crate::api::embed::embed_texts;
-use crate::api::registry::{resolve_relation, RelInfo};
+use crate::api::registry::{RelInfo, resolve_relation};
 use crate::gucs;
 use crate::registry::RegistryEntryDb as _;
-use crate::registry::{quote_ident, serialize_vector, RegistryEntry};
-use pgrx::prelude::*;
+use crate::registry::{RegistryEntry, quote_ident, serialize_vector};
 use pgrx::JsonB;
+use pgrx::prelude::*;
 
 /// One fused result row: the fused fields, the raw per-leg scores, then
 /// nullable winning-chunk metadata (all NULL for a column-mode entry).
@@ -435,6 +435,7 @@ pub(crate) fn render_filter(
     }
 }
 
+use postvec_core::search::SEARCH_ALIAS;
 /// The semantic leg's match expressions: `(column side, query-parameter
 /// side)`. Plain `col <op> $1::vector` up to pgvector's 2000-dim HNSW limit;
 /// above it the only buildable ANN index is the halfvec expression form that
@@ -446,7 +447,6 @@ pub(crate) fn render_filter(
 /// to the column).
 #[cfg(any(test, feature = "pg_test"))]
 pub(crate) use postvec_core::search::semantic_match_exprs;
-use postvec_core::search::SEARCH_ALIAS;
 
 /// Build and run the hybrid (or, when `qvec` is `None`, FTS-only) query.
 /// The same filter predicate sits inside both candidate CTEs, before their
@@ -908,7 +908,7 @@ fn degrade_or_error(reason: &str) -> Option<Vec<f32>> {
 #[pg_schema]
 mod tests {
     use crate::registry::RegistryEntryDb as _;
-    use crate::registry::{serialize_vector, RegistryEntry};
+    use crate::registry::{RegistryEntry, serialize_vector};
     use pgrx::prelude::*;
 
     fn setup() -> RegistryEntry {
@@ -949,7 +949,7 @@ mod tests {
     }
 
     #[pg_test]
-    fn core_search_sql_matches_pre_extraction_query() {
+    fn core_search_sql_uses_lexical_score() {
         let entry = setup();
         let sql = postvec_core::search::hybrid_rows_sql(
             &entry,
@@ -960,42 +960,13 @@ mod tests {
             50,
             Some("d.\"id\" > $3::bigint"),
         );
-        assert_eq!(
-            sql,
-            r#"WITH semantic AS (
-                 SELECT d."id"::text AS pk, (d."body_semantic" <=> $1::vector)::float8 AS dist,
-                        row_number() OVER (ORDER BY d."body_semantic" <=> $1::vector) AS rank_sem
-                   FROM "public"."docs" d
-                  WHERE d."body_semantic" IS NOT NULL
-                AND (d."id" > $3::bigint)
-                  ORDER BY d."body_semantic" <=> $1::vector
-                  LIMIT 50
-             ),
-             fts AS (
-             SELECT d."id"::text AS pk,
-                    ts_rank_cd(to_tsvector('english'::regconfig, d."body"::text),
-                               websearch_to_tsquery('english'::regconfig, $2))::float8 AS score_fts,
-                    row_number() OVER (
-                        ORDER BY ts_rank_cd(to_tsvector('english'::regconfig, d."body"::text),
-                                            websearch_to_tsquery('english'::regconfig, $2)) DESC
-                    ) AS rank_fts
-               FROM "public"."docs" d
-              WHERE to_tsvector('english'::regconfig, d."body"::text)
-                    @@ websearch_to_tsquery('english'::regconfig, $2)
-                AND (d."id" > $3::bigint)
-              ORDER BY ts_rank_cd(to_tsvector('english'::regconfig, d."body"::text),
-                                  websearch_to_tsquery('english'::regconfig, $2)) DESC
-              LIMIT 50
-         ),
-             fused AS (
-                 SELECT COALESCE(s.pk, f.pk) AS pk,
-                        COALESCE(0.5::float8 / (60 + s.rank_sem), 0)
-                      + COALESCE((1 - 0.5::float8) / (60 + f.rank_fts), 0) AS rrf_score,
-                        s.rank_sem, f.rank_fts, s.dist, f.score_fts
-                   FROM semantic s FULL OUTER JOIN fts f USING (pk)
-             )
-             SELECT pk, rrf_score, rank_sem, rank_fts, dist, score_fts
-               FROM fused ORDER BY rrf_score DESC NULLS LAST, pk LIMIT 10"#
+        assert!(sql.contains("postvec.lexical_score"), "{sql}");
+        assert!(sql.contains("postvec._query_terms"), "{sql}");
+        assert!(sql.contains("websearch_to_tsquery"), "{sql}");
+        assert!(sql.contains("d.\"id\" > $3::bigint"), "{sql}");
+        assert!(
+            sql.contains(&format!("registry_id = {}", entry.id)),
+            "{sql}"
         );
     }
 
@@ -1016,6 +987,75 @@ mod tests {
         );
         assert!(!rows.is_empty());
         assert_eq!(rows[0].0, "1", "closest vector ranks first");
+    }
+
+    #[pg_test]
+    fn bm25_score_ranks_shorter_exact_match_first() {
+        Spi::run(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('m','embed','m',3,'{}'::jsonb) ON CONFLICT (name) DO NOTHING",
+        )
+        .unwrap();
+        Spi::run("CREATE TABLE bmdocs (id bigint PRIMARY KEY, body text)").unwrap();
+        Spi::run(
+            "INSERT INTO bmdocs (id, body) VALUES
+               (1, 'widget widget widget'),
+               (2, 'sku42'),
+               (3, 'sku42 appears in a much longer widget widget widget widget document')",
+        )
+        .unwrap();
+        Spi::get_one::<i64>(
+            "SELECT postvec.enable('bmdocs','body','m', backfill => false,
+                                   fts_config => 'simple')",
+        )
+        .unwrap();
+        let entry = RegistryEntry::load_active("public", "bmdocs", "body").unwrap();
+        let before = super::hybrid_rows(
+            &entry,
+            None,
+            "sku42",
+            10,
+            0.0,
+            60,
+            50,
+            &super::RenderedFilter::none(),
+        );
+        assert_eq!(
+            before.len(),
+            2,
+            "ts_rank fallback still matches before stats"
+        );
+        Spi::run("SELECT postvec.refresh_lexical_stats('bmdocs','body')").unwrap();
+        let n = Spi::get_one::<i64>("SELECT n FROM postvec.lexical_stats").unwrap();
+        assert_eq!(n, Some(3));
+        let rows = super::hybrid_rows(
+            &entry,
+            None,
+            "sku42",
+            10,
+            0.0,
+            60,
+            50,
+            &super::RenderedFilter::none(),
+        );
+        assert_eq!(rows[0].0, "2", "shorter exact match ranks first");
+        Spi::run("SELECT postvec.disable('bmdocs','body', drop_column => true)").unwrap();
+        let leftover = Spi::get_one::<i64>(
+            "SELECT count(*) FROM postvec.lexical_stats s
+              JOIN postvec.registry r ON r.id = s.registry_id
+             WHERE r.state <> 'disabled'",
+        )
+        .unwrap();
+        assert_eq!(leftover, Some(0));
+    }
+
+    #[pg_test]
+    fn bm25_score_unit_is_positive_for_matching_term() {
+        let s = Spi::get_one::<f64>(
+            "SELECT postvec.bm25_score(to_tsvector('simple','red'), ARRAY['red'], ARRAY[1], 3, 2)",
+        )
+        .unwrap();
+        assert!(s.unwrap() > 0.0);
     }
 
     /// FTS stays anchored on the raw source column. Words that exist only

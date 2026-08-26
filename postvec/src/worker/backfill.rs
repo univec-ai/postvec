@@ -13,7 +13,7 @@
 //! (not the backfiller's) responsibility, exactly like queue-mode backfill.
 
 use crate::registry::RegistryEntryDb as _;
-use crate::registry::{quote_ident, RegistryEntry};
+use crate::registry::{RegistryEntry, quote_ident};
 use pgrx::prelude::*;
 
 /// Enqueue the next chunk for every cursor-backfilling entry whose queue is

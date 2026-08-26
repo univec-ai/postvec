@@ -2,6 +2,8 @@
 --
 -- The RRF query shape that postvec.search() wraps: two LIMITed candidate
 -- legs, fused on the document key. Handy as a standalone reference.
+-- postvec.search() ranks the lexical leg with BM25 (ts_rank_cd until the
+-- first refresh_lexical_stats / worker stats pass).
 --
 -- Prereqs:
 --   * a running inference node with an embed model (set :model below)

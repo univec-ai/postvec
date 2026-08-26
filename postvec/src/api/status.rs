@@ -35,6 +35,8 @@ fn status() -> TableIterator<
         name!(destination_view, Option<String>),
         name!(pending_refresh_jobs, i64),
         name!(pending_embed_jobs, i64),
+        name!(lexical_docs, i64),
+        name!(lexical_stats_age_seconds, Option<f64>),
     ),
 > {
     // has_vector_index inlines registry::vector_index_probe_sql, the same
@@ -70,8 +72,11 @@ fn status() -> TableIterator<
                              THEN r.destination_schema || '.' || r.destination_view
                         END AS destination_view,
                         COALESCE(j.pending_refresh, 0)::bigint,
-                        COALESCE(j.pending_embed, 0)::bigint
+                        COALESCE(j.pending_embed, 0)::bigint,
+                        COALESCE(ls.n, 0)::bigint,
+                        EXTRACT(EPOCH FROM (now() - ls.refreshed_at))::float8
                    FROM postvec.registry r
+                   LEFT JOIN postvec.lexical_stats ls ON ls.registry_id = r.id
                    LEFT JOIN (
                         SELECT registry_id, count(*) AS pending, min(created_at) AS oldest,
                                count(*) FILTER (WHERE op = 'refresh') AS pending_refresh,
@@ -139,6 +144,8 @@ fn status() -> TableIterator<
                     r.get::<String>(23).unwrap(),
                     r.get::<i64>(24).unwrap().unwrap_or(0),
                     r.get::<i64>(25).unwrap().unwrap_or(0),
+                    r.get::<i64>(26).unwrap().unwrap_or(0),
+                    r.get::<f64>(27).unwrap(),
                 )
             })
             .collect::<Vec<_>>()

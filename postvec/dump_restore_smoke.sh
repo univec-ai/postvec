@@ -105,6 +105,9 @@ BEGIN
        OR r.destination_token IS NULL THEN
         RAISE EXCEPTION 'registry row did not restore: %', r;
     END IF;
+    IF NOT EXISTS (SELECT FROM postvec.lexical_stats s WHERE s.registry_id = r.id) THEN
+        RAISE EXCEPTION 'lexical_stats row did not restore';
+    END IF;
     tok := r.destination_token;
 
     -- 2. Chunk rows with their exact identities.

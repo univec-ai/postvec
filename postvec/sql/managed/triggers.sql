@@ -88,6 +88,7 @@ BEGIN
              WHERE claimed_at IS NULL DO NOTHING',
             r.pk_col, r.source_column) USING rid, NEW;
     END IF;
+    PERFORM postvec._lexical_touch(rid);
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $body$;
@@ -179,6 +180,7 @@ BEGIN
              WHERE claimed_at IS NULL DO NOTHING',
             r.pk_col, r.source_column, r.qdest) USING rid, OLD, NEW;
     END IF;
+    PERFORM postvec._lexical_touch(rid);
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $body$;
@@ -238,6 +240,7 @@ BEGIN
          ON CONFLICT (registry_id, op, pk_value, chunk_id)
          WHERE claimed_at IS NULL DO NOTHING',
         r.pk_col, r.source_column, r.qdest) USING rid, OLD, NEW;
+    PERFORM postvec._lexical_touch(rid);
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $body$;
@@ -303,6 +306,7 @@ BEGIN
               WHERE j.registry_id = $1 AND j.pk_value = ($2).%1$I::text',
             r.pk_col, r.qdest) USING rid, OLD;
     END IF;
+    PERFORM postvec._lexical_touch(rid);
     RETURN NULL;
 END $body$;
 
@@ -365,5 +369,6 @@ BEGIN
          WHERE registry_id = TG_ARGV[0]::bigint
            AND claimed_at IS NULL;
     END IF;
+    PERFORM postvec._lexical_touch(TG_ARGV[0]::bigint);
     RETURN NULL;
 END $body$;

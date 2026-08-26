@@ -79,7 +79,7 @@ reason search is slow. See [indexes](/docs/guides/indexes).
 | Option | Default | Change when |
 |---|---|---|
 | `vector_column` | `{col}_semantic` | A specific column name is required |
-| `create_fts_index` | `false` | Hybrid search should have a GIN |
+| `create_fts_index` | `false` | Hybrid / BM25 should have a GIN |
 | `fts_config` | `pg_catalog.english` | Non-English lexical |
 | `distance` | `cosine` | Search and index use another metric |
 | `trigger_mode` | `statement` | Use `row` on partitioned tables |

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PostgreSQL
-use crate::registry::{quote_ident, quote_literal, RegistryEntry};
+use crate::registry::{RegistryEntry, quote_ident, quote_literal};
 pub fn semantic_match_exprs(entry: &RegistryEntry, alias: &str) -> (String, String) {
     let prefix = if alias.is_empty() {
         String::new()
@@ -21,6 +21,32 @@ pub fn semantic_match_exprs(entry: &RegistryEntry, alias: &str) -> (String, Stri
 /// The fixed internal alias the searched table carries in both candidate
 /// CTEs — also the alias [`render_filter`] renders its predicate against.
 pub const SEARCH_ALIAS: &str = "d";
+
+fn lexical_prefix(entry: &RegistryEntry) -> String {
+    let cfg = quote_literal(&entry.fts_config);
+    let id = entry.id;
+    format!(
+        "q AS (
+             SELECT websearch_to_tsquery({cfg}::regconfig, $2) AS tsq,
+                    postvec._query_terms({cfg}::regconfig, $2) AS terms
+         ),
+         stats AS (
+             SELECT q.tsq, q.terms, s.n, s.avgdl,
+                    COALESCE((
+                        SELECT array_agg(COALESCE(d.df, 0) ORDER BY u.ord)
+                          FROM unnest(q.terms) WITH ORDINALITY u(term, ord)
+                          LEFT JOIN postvec.lexical_df d
+                            ON d.registry_id = {id} AND d.term = u.term
+                    ), ARRAY[]::int[]) AS dfs
+               FROM q
+               LEFT JOIN postvec.lexical_stats s ON s.registry_id = {id}
+         )"
+    )
+}
+
+fn lexical_score_sql(tsv: &str) -> String {
+    format!("postvec.lexical_score({tsv}, st.tsq, st.terms, st.dfs, st.n, st.avgdl)")
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn hybrid_rows_sql(
@@ -45,28 +71,28 @@ pub fn hybrid_rows_sql(
     let fpred = predicate
         .map(|p| format!("\n                AND ({p})"))
         .unwrap_or_default();
+    let tsv = format!("to_tsvector({cfg}::regconfig, {col}::text)");
+    let score = lexical_score_sql(&tsv);
+    let prep = lexical_prefix(entry);
 
     let fts_cte = format!(
         "fts AS (
-             SELECT {pk} AS pk,
-                    ts_rank_cd(to_tsvector({cfg}::regconfig, {col}::text),
-                               websearch_to_tsquery({cfg}::regconfig, $2))::float8 AS score_fts,
-                    row_number() OVER (
-                        ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, {col}::text),
-                                            websearch_to_tsquery({cfg}::regconfig, $2)) DESC
-                    ) AS rank_fts
-               FROM {tbl} {d}
-              WHERE to_tsvector({cfg}::regconfig, {col}::text)
-                    @@ websearch_to_tsquery({cfg}::regconfig, $2){fpred}
-              ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, {col}::text),
-                                  websearch_to_tsquery({cfg}::regconfig, $2)) DESC
+             SELECT pk, score_fts,
+                    row_number() OVER (ORDER BY score_fts DESC) AS rank_fts
+               FROM (
+                    SELECT {pk} AS pk, {score} AS score_fts
+                      FROM {tbl} {d}, stats st
+                     WHERE {tsv} @@ st.tsq{fpred}
+               ) scored
+              ORDER BY score_fts DESC
               LIMIT {candidates}
          )"
     );
 
-    let sql = if has_vector {
+    if has_vector {
         format!(
-            "WITH semantic AS (
+            "WITH {prep},
+             semantic AS (
                  SELECT {pk} AS pk, ({sem} {op} {qparam})::float8 AS dist,
                         row_number() OVER (ORDER BY {sem} {op} {qparam}) AS rank_sem
                    FROM {tbl} {d}
@@ -86,9 +112,9 @@ pub fn hybrid_rows_sql(
                FROM fused ORDER BY rrf_score DESC NULLS LAST, pk LIMIT {limit_n}"
         )
     } else {
-        // Degraded: FTS only. rrf_score is 1/(k+rank_fts); rank_sem NULL.
         format!(
-            "WITH {fts_cte},
+            "WITH {prep},
+             {fts_cte},
              fused AS (
                  SELECT pk, (1.0 / ({k} + rank_fts))::float8 AS rrf_score,
                         NULL::bigint AS rank_sem, rank_fts, NULL::float8 AS dist, score_fts
@@ -97,9 +123,7 @@ pub fn hybrid_rows_sql(
              SELECT pk, rrf_score, rank_sem, rank_fts, dist, score_fts
                FROM fused ORDER BY rrf_score DESC, pk LIMIT {limit_n}"
         )
-    };
-
-    sql
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -125,6 +149,9 @@ pub fn chunk_hybrid_rows_sql(
     let fpred = predicate
         .map(|p| format!("\n                AND ({p})"))
         .unwrap_or_default();
+    let prep = lexical_prefix(entry);
+    let tsv = format!("to_tsvector({cfg}::regconfig, c.chunk_text)");
+    let score = lexical_score_sql(&tsv);
 
     // Deliberately NO chunk_text here: projecting it through the candidate
     // and fusion CTEs would materialize candidate-pool × chunk-size bytes in
@@ -135,22 +162,17 @@ pub fn chunk_hybrid_rows_sql(
                     c.postvec_char_end AS ce";
     let fts_cte = format!(
         "fts_chunks AS (
-             SELECT {chunk_fields},
-                    ts_rank_cd(to_tsvector({cfg}::regconfig, c.chunk_text),
-                               websearch_to_tsquery({cfg}::regconfig, $2))::float8 AS score_fts,
-                    row_number() OVER (
-                        ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, c.chunk_text),
-                                            websearch_to_tsquery({cfg}::regconfig, $2)) DESC
-                    ) AS rank_fts
-               FROM {qdest} c JOIN {qsrc} {d} ON {src_join}
-              WHERE to_tsvector({cfg}::regconfig, c.chunk_text)
-                    @@ websearch_to_tsquery({cfg}::regconfig, $2){fpred}
-              ORDER BY ts_rank_cd(to_tsvector({cfg}::regconfig, c.chunk_text),
-                                  websearch_to_tsquery({cfg}::regconfig, $2)) DESC
+             SELECT cid, pk, seq, cs, ce, score_fts,
+                    row_number() OVER (ORDER BY score_fts DESC) AS rank_fts
+               FROM (
+                    SELECT {chunk_fields}, {score} AS score_fts
+                      FROM {qdest} c JOIN {qsrc} {d} ON {src_join}, stats st
+                     WHERE {tsv} @@ st.tsq{fpred}
+               ) scored
+              ORDER BY score_fts DESC
               LIMIT {candidates}
          )"
     );
-    // The deterministic winning-chunk order inside each document.
     let doc_window = "row_number() OVER (
                         PARTITION BY pk
                         ORDER BY rrf_score DESC,
@@ -158,9 +180,10 @@ pub fn chunk_hybrid_rows_sql(
                                  COALESCE(rank_fts, 9223372036854775807),
                                  seq, cid) AS doc_row";
 
-    let sql = if has_vector {
+    if has_vector {
         format!(
-            "WITH semantic_chunks AS (
+            "WITH {prep},
+             semantic_chunks AS (
                  SELECT {chunk_fields}, ({sem} {op} {qparam})::float8 AS dist,
                         row_number() OVER (ORDER BY {sem} {op} {qparam}) AS rank_sem
                    FROM {qdest} c JOIN {qsrc} {d} ON {src_join}
@@ -189,9 +212,9 @@ pub fn chunk_hybrid_rows_sql(
               ORDER BY rrf_score DESC NULLS LAST, pk LIMIT {limit_n}"
         )
     } else {
-        // Degraded: lexical chunks only, same document collapse.
         format!(
-            "WITH {fts_cte},
+            "WITH {prep},
+             {fts_cte},
              fused_chunks AS (
                  SELECT cid, pk, seq, cs, ce,
                         (1.0 / ({k} + rank_fts))::float8 AS rrf_score,
@@ -206,7 +229,5 @@ pub fn chunk_hybrid_rows_sql(
               WHERE doc_row = 1
               ORDER BY rrf_score DESC, pk LIMIT {limit_n}"
         )
-    };
-
-    sql
+    }
 }

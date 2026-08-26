@@ -19,8 +19,8 @@
 //! expansion.
 
 use crate::registry::RegistryEntryDb as _;
-use crate::registry::{quote_ident, RegistryEntry};
-use crate::worker::{try_transaction, Counters};
+use crate::registry::{RegistryEntry, quote_ident};
+use crate::worker::{Counters, try_transaction};
 use pgrx::prelude::*;
 
 /// `max(batch_size * 8, 1000)`, derived from the operator's inference

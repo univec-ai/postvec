@@ -21,7 +21,7 @@
 //! `create_vector_index()`, whose readiness-first wrapper clears the error.
 
 use crate::registry::{RegistryEntry, RegistryEntryDb};
-use crate::worker::{try_transaction, Counters};
+use crate::worker::{Counters, try_transaction};
 use pgrx::prelude::*;
 
 /// Registry ids whose entries are candidates for one automatic build, in id

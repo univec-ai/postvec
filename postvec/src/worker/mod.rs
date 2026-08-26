@@ -26,12 +26,12 @@ pub mod index;
 pub mod migrate;
 
 use crate::{gucs, jobs};
+use pgrx::PgTryBuilder;
 use pgrx::bgworkers::{
     BackgroundWorker, BackgroundWorkerBuilder, DynamicBackgroundWorker, SignalWakeFlags,
 };
 use pgrx::pg_sys::panic::CaughtError;
 use pgrx::prelude::*;
-use pgrx::PgTryBuilder;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::time::{Duration, Instant};
 
@@ -804,6 +804,7 @@ fn worker_wake(state: &mut WorkerState<'_>) -> WakeOutcome {
                 index::step(&mut state.counters);
                 state.next_auto_index_scan = Instant::now() + auto_index_scan_interval();
             }
+            refresh_lexical_stats(&mut state.counters);
             write_heartbeat(&state.counters, state.started_at.as_deref(), &mut state.hb);
             return WakeOutcome::Continue;
         }
@@ -873,8 +874,49 @@ fn worker_wake(state: &mut WorkerState<'_>) -> WakeOutcome {
             index::step(&mut state.counters);
             state.next_auto_index_scan = Instant::now() + auto_index_scan_interval();
         }
+        refresh_lexical_stats(&mut state.counters);
         write_heartbeat(&state.counters, state.started_at.as_deref(), &mut state.hb);
         WakeOutcome::Continue
+    }
+}
+
+fn refresh_lexical_stats(counters: &mut Counters) {
+    let ids = match try_transaction(|| {
+        Spi::connect(|c| {
+            let t = c
+                .select(
+                    "SELECT s.registry_id FROM postvec.lexical_stats s
+                      JOIN postvec.registry r ON r.id = s.registry_id
+                     WHERE r.state <> 'disabled'
+                       AND s.dirty_at IS NOT NULL
+                       AND s.dirty_at < now() - interval '10 seconds'
+                       AND (s.refreshed_at IS NULL OR s.refreshed_at < now() - interval '30 seconds')
+                     ORDER BY s.dirty_at
+                     LIMIT 8",
+                    None,
+                    &[],
+                )
+                .expect("postvec: lexical stats scan failed");
+            t.into_iter()
+                .map(|r| r.get::<i64>(1).unwrap().unwrap())
+                .collect::<Vec<_>>()
+        })
+    }) {
+        Ok(v) => v,
+        Err(e) => {
+            warning!("postvec: lexical stats scan failed (will retry): {e}");
+            counters.error(format!("lexical stats scan: {e}"));
+            return;
+        }
+    };
+    for id in ids {
+        if let Err(e) = try_transaction(|| {
+            Spi::run_with_args("SELECT postvec._refresh_lexical_stats($1)", &[id.into()])
+                .expect("postvec: lexical stats refresh");
+        }) {
+            warning!("postvec: lexical stats refresh for entry {id} failed: {e}");
+            counters.error(format!("lexical stats {id}: {e}"));
+        }
     }
 }
 

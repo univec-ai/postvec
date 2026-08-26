@@ -47,8 +47,9 @@ Rows that mean the same thing rank above rows that merely share a word.
 `semantic_rank` / `fts_rank` are 1-based positions in each leg; either
 can be NULL if that leg missed the row. `semantic_distance` is the raw
 pgvector distance in the entry's metric (`<=>`, `<->` or `<#>`) and
-`fts_score` the raw `ts_rank_cd`, for thresholds and debugging. Ties on
-`rrf_score` order by `pk_value`, so paging is stable.
+`fts_score` is BM25 (or `ts_rank_cd` until the first lexical-stats
+refresh), for thresholds and debugging. Ties on `rrf_score` order by
+`pk_value`, so paging is stable.
 ::::
 
 Cast `pk_value` back to the PK type (`::bigint`, `::uuid`, ...).
@@ -85,7 +86,18 @@ SELECT postvec.create_vector_index('public.docs', 'body');
 ```
 
 See [indexes](/docs/guides/indexes). A missing FTS index only hurts the
-lexical leg. `create_fts_index => true` at enable time builds one.
+lexical (BM25) leg. `create_fts_index => true` at enable time builds a
+GIN; keyword traffic needs it the same way ANN traffic needs HNSW.
+
+After a bulk load, refresh corpus statistics before judging ranks:
+
+```sql
+SELECT postvec.refresh_lexical_stats('public.docs', 'body');
+```
+
+Stats otherwise catch up after ~10s of quiet writes plus a worker wake.
+Stale IDF is still IDF; `n = 0` (just after `enable()`) falls back to
+`ts_rank_cd`.
 
 ## Lexical-only results
 

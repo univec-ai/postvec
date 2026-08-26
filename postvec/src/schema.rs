@@ -22,18 +22,26 @@ extension_sql_file!(
     requires = ["postvec_control_tables"]
 );
 
+extension_sql_file!(
+    "../sql/managed/lexical.sql",
+    name = "postvec_lexical",
+    requires = ["postvec_control_tables"]
+);
+
 extension_sql!(
     r#"SELECT pg_catalog.pg_extension_config_dump('postvec.registry', '');
 SELECT pg_catalog.pg_extension_config_dump('postvec.jobs', '');
 SELECT pg_catalog.pg_extension_config_dump('postvec.jobs_dead', '');
 SELECT pg_catalog.pg_extension_config_dump('postvec.migrations', '');
+SELECT pg_catalog.pg_extension_config_dump('postvec.lexical_stats', '');
+SELECT pg_catalog.pg_extension_config_dump('postvec.lexical_df', '');
 SELECT pg_catalog.pg_extension_config_dump(pg_catalog.pg_get_serial_sequence('postvec.registry', 'id')::regclass, '');
 SELECT pg_catalog.pg_extension_config_dump(pg_catalog.pg_get_serial_sequence('postvec.jobs', 'id')::regclass, '');
 SELECT pg_catalog.pg_extension_config_dump(pg_catalog.pg_get_serial_sequence('postvec.jobs_dead', 'dead_id')::regclass, '');
 SELECT pg_catalog.pg_extension_config_dump(pg_catalog.pg_get_serial_sequence('postvec.migrations', 'id')::regclass, '');
 "#,
     name = "postvec_config_dump",
-    requires = ["postvec_control_tables"]
+    requires = ["postvec_control_tables", "postvec_lexical"]
 );
 
 #[cfg(any(test, feature = "pg_test"))]
@@ -48,6 +56,8 @@ mod tests {
             "postvec.jobs",
             "postvec.jobs_dead",
             "postvec.migrations",
+            "postvec.lexical_stats",
+            "postvec.lexical_df",
             "postvec.models",
             "postvec.worker_heartbeat",
         ] {
@@ -71,12 +81,13 @@ mod tests {
               WHERE e.extname = 'postvec'
                 AND c.relname IN (
                     'registry', 'jobs', 'jobs_dead', 'migrations',
+                    'lexical_stats', 'lexical_df',
                     'registry_id_seq', 'jobs_id_seq',
                     'jobs_dead_dead_id_seq', 'migrations_id_seq'
                 )",
         )
         .unwrap();
-        assert_eq!(count, Some(8));
+        assert_eq!(count, Some(10));
     }
 
     /// Exact queue/dead index inventory. Claim, probe and invalidation

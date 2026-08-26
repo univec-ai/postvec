@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 use super::{Command, ConnectionArgs};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use postvec_core::registry::quote_ident;
-use sqlx::{postgres::PgConnectOptions, Connection, Executor, PgConnection, Row};
+use sqlx::{Connection, Executor, PgConnection, Row, postgres::PgConnectOptions};
 use std::{io::Read, str::FromStr, time::Duration};
 
 pub(super) const VERSION: i32 = 1;
@@ -11,6 +11,7 @@ const MARKER: &str = "postvec managed schema";
 const MODELS: &str = include_str!("../../../postvec/sql/managed/models.sql");
 const CONTROL: &str = include_str!("../../../postvec/sql/managed/control.sql");
 const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql");
+const LEXICAL: &str = include_str!("../../../postvec/sql/managed/lexical.sql");
 const FUNCTIONS: &str = include_str!("../../../postvec/sql/managed/functions.sql");
 
 pub(super) fn dsn_has_password(dsn: &str) -> bool {
@@ -104,7 +105,10 @@ pub(super) async fn check(connection: &mut PgConnection) -> Result<bool> {
             .await
             .context("invalid managed schema version table")?;
     if version != (VERSION, "managed".into()) {
-        bail!("unsupported managed schema version {}; this server supports {VERSION}; no changes made", version.0);
+        bail!(
+            "unsupported managed schema version {}; this server supports {VERSION}; no changes made",
+            version.0
+        );
     }
     Ok(true)
 }
@@ -131,8 +135,12 @@ pub async fn run(command: Command) -> Result<()> {
                  FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'",
             ).fetch_optional(&mut *tx).await?;
             let schema = match vector {
-                None => bail!("pgvector is required; have the database administrator run CREATE EXTENSION vector first"),
-                Some((_, version, false)) => bail!("pgvector {version} is installed; postvec needs pgvector 0.8 or newer"),
+                None => bail!(
+                    "pgvector is required; have the database administrator run CREATE EXTENSION vector first"
+                ),
+                Some((_, version, false)) => {
+                    bail!("pgvector {version} is installed; postvec needs pgvector 0.8 or newer")
+                }
                 Some((schema, ..)) => quote_ident(&schema),
             };
             // Loads pgvector into this backend; the SET hnsw.* clauses below are
@@ -150,7 +158,7 @@ pub async fn run(command: Command) -> Result<()> {
                     tx.execute(sql).await?;
                 }
             }
-            for sql in [TRIGGERS, FUNCTIONS] {
+            for sql in [TRIGGERS, LEXICAL, FUNCTIONS] {
                 tx.execute(sql).await?;
             }
             if !installed {
@@ -178,16 +186,24 @@ pub async fn run(command: Command) -> Result<()> {
                     AND d.objid=c.oid AND d.deptype='e') ORDER BY r.rolname::text")
                 .fetch_all(&mut *tx).await?;
             tx.commit().await?;
-            println!("Managed schema v{VERSION} ready ({platform}). Configure managed[] or serve --sync to start the worker.");
+            println!(
+                "Managed schema v{VERSION} ready ({platform}). Configure managed[] or serve --sync to start the worker."
+            );
             if owners.is_empty() {
-                println!("The worker role already owns, or inherits ownership of, the existing source tables.");
+                println!(
+                    "The worker role already owns, or inherits ownership of, the existing source tables."
+                );
             } else {
-                println!("A superuser (or a role with ADMIN OPTION on the table owner) must run the grant below so this worker can ALTER those tables:");
+                println!(
+                    "A superuser (or a role with ADMIN OPTION on the table owner) must run the grant below so this worker can ALTER those tables:"
+                );
                 for owner in owners {
                     println!("GRANT {} TO {};", quote_ident(&owner), quote_ident(&role));
                 }
             }
-            println!("Organization production use requires postvec Pro; personal noncommercial use, non-production use and one 30-day production evaluation per organization are free. https://github.com/univec-ai/postvec/blob/main/LICENSING.md");
+            println!(
+                "Organization production use requires postvec Pro; personal noncommercial use, non-production use and one 30-day production evaluation per organization are free. https://github.com/univec-ai/postvec/blob/main/LICENSING.md"
+            );
         }
         Command::Status(_) => {
             if !installed {
@@ -271,26 +287,32 @@ mod tests {
             timeout: 1,
         };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(connect(&args)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("0600"));
+        assert!(
+            connect(&args)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("0600")
+        );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::write(&path, "first\nsecond").unwrap();
-        assert!(connect(&args)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("one nonempty password"));
+        assert!(
+            connect(&args)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("one nonempty password")
+        );
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(path, &link).unwrap();
         args.password_file = Some(link);
-        assert!(connect(&args)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("cannot open password file"));
+        assert!(
+            connect(&args)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("cannot open password file")
+        );
     }
 
     #[test]
