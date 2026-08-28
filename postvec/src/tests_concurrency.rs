@@ -188,6 +188,7 @@ mod tests {
     /// Bounded wait (≤ 10 s) until `pid` blocks on a heavyweight lock.
     fn wait_until_blocked(pid: i32) {
         for _ in 0..200 {
+            Spi::run("SELECT pg_stat_clear_snapshot()").unwrap();
             let blocked = Spi::get_one_with_args::<bool>(
                 "SELECT coalesce(bool_or(wait_event_type = 'Lock'), false)
                    FROM pg_stat_activity WHERE pid = $1",
@@ -222,6 +223,73 @@ mod tests {
         )
         .unwrap()
         .get(0)
+    }
+
+    #[pg_test]
+    fn lexical_refresh_revalidates_after_disable_and_allows_writes() {
+        let fx = Fixture::new("cc_lexical");
+        let mut owner = fx.session();
+        let rid = setup_entry(&mut owner, "cc_lexical", "", "");
+        owner.batch_execute("BEGIN").unwrap();
+        owner
+            .query_one(
+                "SELECT id FROM postvec.registry WHERE id=$1 FOR NO KEY UPDATE",
+                &[&rid],
+            )
+            .unwrap();
+        let mut refresh = fx.session();
+        let pid = backend_pid(&mut refresh);
+        let run = std::thread::spawn(move || {
+            refresh
+                .query_one("SELECT postvec._refresh_lexical_stats($1)", &[&rid])
+                .map(|r| r.get::<_, Option<String>>(0))
+                .map_err(err_text)
+        });
+        wait_until_blocked(pid);
+        let mut writer = fx.session();
+        writer
+            .batch_execute("INSERT INTO cc_lexical(body) VALUES ('red red')")
+            .unwrap();
+        owner.batch_execute("COMMIT").unwrap();
+        assert_eq!(run.join().unwrap().unwrap(), None);
+        assert_eq!(
+            owner
+                .query_one(
+                    "SELECT n FROM postvec.lexical_stats WHERE registry_id=$1",
+                    &[&rid]
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            1
+        );
+
+        owner
+            .batch_execute("BEGIN; SELECT postvec.disable('cc_lexical','body')")
+            .unwrap();
+        let mut refresh = fx.session();
+        let pid = backend_pid(&mut refresh);
+        let run = std::thread::spawn(move || {
+            refresh
+                .query_one("SELECT postvec._refresh_lexical_stats($1)", &[&rid])
+                .map(|r| r.get::<_, Option<String>>(0))
+                .map_err(err_text)
+        });
+        wait_until_blocked(pid);
+        owner.batch_execute("COMMIT").unwrap();
+        assert_eq!(run.join().unwrap().unwrap(), None);
+        assert_eq!(
+            owner
+                .query_one(
+                    "SELECT count(*) FROM postvec.lexical_stats WHERE registry_id=$1",
+                    &[&rid]
+                )
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        drop(owner);
+        drop(writer);
+        fx.cleanup();
     }
 
     /// Two concurrent `retry_dead()` calls for the same explicit ids

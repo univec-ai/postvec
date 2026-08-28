@@ -40,7 +40,7 @@ cargo pgrx test "$PG"
 # cannot (retry_dead serialization, set_format's refresh boundary, DML
 # racing an index build, and the auto-index lifecycle serialization).
 echo "== cargo pgrx test ($PG, cross-session concurrency) =="
-cargo pgrx test "$PG" --features pg_test_concurrency tests_concurrency
+RUST_TEST_THREADS=1 cargo pgrx test "$PG" --features pg_test_concurrency tests_concurrency
 
 if [[ "${POSTVEC_SKIP_EMBEDDED:-0}" != "1" ]]; then
   echo "== clippy ($PG, embedded) =="

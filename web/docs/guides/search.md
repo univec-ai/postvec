@@ -100,10 +100,29 @@ tuple counters have moved and the previous refresh is old enough: at
 least 30 s, or ten times as long as that refresh took, so a large corpus
 is re-tokenized rarely. A refresh is one `to_tsvector` pass over the
 text; it runs inside the worker and delays embedding for that long.
-Stale IDF is still IDF; until the first refresh (and for an entry whose
-refresh failed, see `status().lexical_error`) the leg scores with
-`ts_rank_cd`. Term frequencies come from the tsvector, so its usual
-limits apply: at most 256 positions per lexeme.
+Until the first successful refresh the leg scores with `ts_rank_cd`.
+A failed background refresh preserves the previous good BM25 statistics;
+check `status().lexical_error`. Automatic retries back off for ten minutes.
+Manual refresh raises on failure; its error record rolls back with the
+failed statement.
+With row-level security enabled on the source, search uses `ts_rank_cd`
+and does not expose global term frequencies. Ordinary readers can see
+corpus statistics only with table-level SELECT on a source without RLS.
+
+BM25 scores positive query lexemes; `OR`, exclusions and quoted phrases
+keep PostgreSQL's `websearch_to_tsquery` matching semantics. A purely
+negative query has no positive BM25 terms and ties at zero. Statistics
+cover non-NULL documents (chunks for recursive entries), including empty
+and stopword-only text. Metadata filters do not redefine the corpus.
+Term frequencies use stored tsvector positions: at most 256 per lexeme,
+with positions capped at 16383. This is BM25 over PostgreSQL text search,
+not an exact reproduction of another engine's tokenizer or length norms.
+
+Automatic change detection requires `track_counts = on`. Vector updates
+also count, so backfills can cause redundant, throttled refreshes. TRUNCATE
+alone does not move the tuple counters; refresh manually after truncation,
+partition changes or text-search dictionary changes when immediate stats
+accuracy matters. Otherwise the next counted write triggers a refresh.
 
 ## Lexical-only results
 

@@ -19,11 +19,19 @@ CREATE TABLE IF NOT EXISTS postvec.lexical_stats (
 CREATE TABLE IF NOT EXISTS postvec.lexical_df (
     registry_id bigint NOT NULL
                 REFERENCES postvec.registry(id) ON DELETE CASCADE,
-    term        text NOT NULL,
+    term        text COLLATE "C" NOT NULL,
     df          integer NOT NULL,
     PRIMARY KEY (registry_id, term)
 );
 GRANT SELECT ON postvec.lexical_stats TO PUBLIC;
+ALTER TABLE postvec.lexical_stats ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS lexical_stats_reader ON postvec.lexical_stats;
+CREATE POLICY lexical_stats_reader ON postvec.lexical_stats FOR SELECT USING (
+    EXISTS (SELECT FROM postvec.registry r JOIN pg_class c
+                ON c.oid = to_regclass(format('%I.%I', r.table_schema, r.table_name))
+             WHERE r.id = registry_id AND NOT c.relrowsecurity
+               AND has_table_privilege(current_user, c.oid, 'SELECT'))
+);
 
 -- The role that called the outermost SQL, seen from inside SECURITY DEFINER.
 CREATE OR REPLACE FUNCTION postvec._invoker() RETURNS name
@@ -43,7 +51,7 @@ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$
                    coalesce(pg_catalog.array_length(positions, 1), 1)::float8 AS tf,
                    pg_catalog.sum(coalesce(pg_catalog.array_length(positions, 1), 1)) OVER () AS dl
               FROM pg_catalog.unnest(tsv)) d
-      JOIN ROWS FROM (pg_catalog.unnest(terms), pg_catalog.unnest(dfs)) t(term, df) ON t.term = d.lexeme
+      JOIN ROWS FROM (pg_catalog.unnest(terms), pg_catalog.unnest(dfs)) t(term, df) ON t.term = d.lexeme COLLATE "C"
 $$;
 
 CREATE OR REPLACE FUNCTION postvec.lexical_score(
@@ -60,7 +68,7 @@ CREATE OR REPLACE FUNCTION postvec._lexical_terms(rid bigint, cfg regconfig, q t
     OUT terms text[], OUT dfs integer[], OUT n bigint, OUT avgdl float8)
 LANGUAGE plpgsql STABLE SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp AS $$
-DECLARE rel regclass;
+DECLARE rel regclass; token text; negate boolean := false; depth integer := 0;
 BEGIN
     SELECT to_regclass(format('%I.%I', r.table_schema, r.table_name)) INTO rel
       FROM postvec.registry r WHERE r.id = rid;
@@ -68,7 +76,28 @@ BEGIN
         RAISE EXCEPTION 'postvec: permission denied for lexical stats of entry %', rid
             USING ERRCODE = 'insufficient_privilege';
     END IF;
-    terms := tsvector_to_array(to_tsvector(cfg, coalesce(q, '')));
+    terms := '{}';
+    FOR token IN SELECT m[1] FROM regexp_matches(
+        websearch_to_tsquery(cfg, coalesce(q, ''))::text,
+        $re$'(?:[^'\\]|\\.|'')*'|!|\(|\)$re$, 'g') m
+    LOOP
+        IF token = '!' THEN negate := true;
+        ELSIF token = '(' THEN
+            IF negate OR depth > 0 THEN depth := depth + 1; END IF;
+            negate := false;
+        ELSIF token = ')' THEN depth := greatest(depth - 1, 0);
+        ELSE
+            IF NOT negate AND depth = 0 THEN
+                terms := terms || tsvector_to_array(token::tsvector);
+            END IF;
+            negate := false;
+        END IF;
+    END LOOP;
+    SELECT coalesce(array_agg(DISTINCT t COLLATE "C"), '{}') INTO terms FROM unnest(terms) t;
+    -- Global frequencies reveal rows hidden by policies; use local ranking.
+    IF (SELECT relrowsecurity FROM pg_class WHERE oid = rel) THEN
+        dfs := '{}'; RETURN;
+    END IF;
     SELECT s.n, s.avgdl INTO n, avgdl
       FROM postvec.lexical_stats s WHERE s.registry_id = rid AND s.n > 0;
     SELECT coalesce(array_agg(coalesce(d.df, 1) ORDER BY u.ord), '{}') INTO dfs
@@ -97,9 +126,9 @@ LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
             OR (now() >= CASE WHEN s.error IS NULL
                      THEN s.refreshed_at + greatest(interval '30 seconds', 10 * (s.refreshed_at - s.attempted_at))
                      ELSE s.attempted_at + interval '10 minutes' END
-                AND s.mods IS DISTINCT FROM postvec._lexical_mods(to_regclass(format('%I.%I',
+                AND (s.error IS NOT NULL OR s.mods IS DISTINCT FROM postvec._lexical_mods(to_regclass(format('%I.%I',
                         coalesce(r.destination_schema, r.table_schema),
-                        coalesce(r.destination_table, r.table_name))))))
+                        coalesce(r.destination_table, r.table_name)))))))
      ORDER BY s.refreshed_at NULLS FIRST, r.id LIMIT 1
 $$;
 
@@ -107,9 +136,9 @@ $$;
 -- instead of raising, after recording it, so callers can back off.
 CREATE OR REPLACE FUNCTION postvec._refresh_lexical_stats(rid bigint) RETURNS text
 LANGUAGE plpgsql SECURITY DEFINER
-SET search_path = pg_catalog, pg_temp AS $$
+SET search_path = pg_catalog, pg_temp SET row_security = off AS $$
 DECLARE
-    r postvec.registry; rel regclass; col text; mods bigint; docs bigint; tokens bigint;
+    r postvec.registry; initial postvec.registry; rel regclass; col text; mods bigint; docs bigint; tokens bigint;
     t0 timestamptz := clock_timestamp();
 BEGIN
     SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled';
@@ -119,18 +148,30 @@ BEGIN
     ELSE
         rel := to_regclass(format('%I.%I', r.table_schema, r.table_name)); col := r.source_column;
     END IF;
-    IF rel IS NULL THEN RETURN NULL; END IF;
-    PERFORM pg_advisory_xact_lock(hashtext('postvec_lexical:' || rid));
+    IF rel IS NULL THEN RAISE EXCEPTION 'postvec: lexical relation is missing'; END IF;
+    initial := r;
+    EXECUTE format('LOCK TABLE %I.%I IN ACCESS SHARE MODE', r.table_schema, r.table_name);
+    IF r.chunking = 'recursive' THEN
+        EXECUTE format('LOCK TABLE %s IN ACCESS SHARE MODE', rel);
+    END IF;
+    SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled' FOR NO KEY UPDATE;
+    IF NOT FOUND OR r IS DISTINCT FROM initial THEN RETURN NULL; END IF;
     mods := postvec._lexical_mods(rel);
-    EXECUTE format('SELECT count(*) FROM %s WHERE %I IS NOT NULL', rel, col) INTO docs;
     DELETE FROM postvec.lexical_df WHERE registry_id = rid;
-    WITH s AS MATERIALIZED (
-        SELECT word, ndoc, nentry
-          FROM ts_stat(format('SELECT to_tsvector(%L::regconfig, %I::text) FROM %s', r.fts_config, col, rel))
-    ), i AS (INSERT INTO postvec.lexical_df SELECT rid, word, ndoc FROM s WHERE ndoc > 1)
-    SELECT coalesce(sum(nentry), 0) INTO tokens FROM s;
+    EXECUTE format($sql$
+        WITH s AS MATERIALIZED (
+            SELECT lexeme COLLATE "C" AS word, count(*) AS ndoc,
+                   sum(coalesce(array_length(positions, 1), 1)) AS nentry
+              FROM %s CROSS JOIN LATERAL unnest(to_tsvector(%L::regconfig, %I::text))
+             GROUP BY lexeme COLLATE "C"
+        ), i AS (
+            INSERT INTO postvec.lexical_df SELECT $1, word, ndoc FROM s WHERE ndoc > 1
+        )
+        SELECT (SELECT count(*) FROM %s WHERE %I IS NOT NULL),
+               coalesce(sum(nentry), 0)::bigint FROM s
+    $sql$, rel, r.fts_config, col, rel, col) INTO docs, tokens USING rid;
     INSERT INTO postvec.lexical_stats (registry_id, n, avgdl, mods, attempted_at, refreshed_at)
-    VALUES (rid, docs, CASE WHEN docs > 0 THEN greatest(tokens::float8 / docs, 1) ELSE 1 END,
+    VALUES (rid, docs, CASE WHEN docs > 0 AND tokens > 0 THEN tokens::float8 / docs ELSE 1 END,
             mods, t0, clock_timestamp())
     ON CONFLICT (registry_id) DO UPDATE
        SET n = excluded.n, avgdl = excluded.avgdl, mods = excluded.mods,
@@ -138,7 +179,8 @@ BEGIN
     RETURN NULL;
 EXCEPTION WHEN OTHERS THEN
     INSERT INTO postvec.lexical_stats (registry_id, attempted_at, error)
-    VALUES (rid, now(), left(SQLERRM, 1024))
+    SELECT rid, clock_timestamp(), left(SQLERRM, 1024) FROM postvec.registry
+     WHERE id = rid AND state <> 'disabled' FOR NO KEY UPDATE
     ON CONFLICT (registry_id) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error;
     RETURN SQLERRM;
 END $$;

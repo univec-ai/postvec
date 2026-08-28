@@ -1104,7 +1104,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(n, Some(1));
+        Spi::run("RESET ROLE; ALTER TABLE privdocs ENABLE ROW LEVEL SECURITY; SET ROLE lex_app")
+            .unwrap();
+        let hidden = Spi::get_one::<bool>(
+            "SELECT n IS NULL AND avgdl IS NULL AND dfs = '{}'::integer[]
+               FROM postvec._lexical_terms(
+                (SELECT id FROM postvec.registry WHERE table_name = 'privdocs'), 'english', 'merger')",
+        ).unwrap();
+        assert_eq!(hidden, Some(true), "RLS must not expose global frequencies");
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM postvec.lexical_stats").unwrap(),
+            Some(0)
+        );
         Spi::run("RESET ROLE").unwrap();
+    }
+
+    #[pg_test]
+    fn bm25_query_terms_sparse_stats_and_retry() {
+        Spi::run(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('m','embed','m',3,'{}') ON CONFLICT DO NOTHING;
+             CREATE TABLE bm_sparse (id bigint PRIMARY KEY, body text);
+             INSERT INTO bm_sparse VALUES (1,'red'), (2,''), (3,NULL), (4,'');
+             SELECT postvec.enable('bm_sparse','body','m',backfill => false,fts_config => 'simple');
+             SELECT postvec.refresh_lexical_stats('bm_sparse','body')",
+        )
+        .unwrap();
+        let (n, avgdl) =
+            Spi::get_two::<i64, f64>("SELECT n, avgdl FROM postvec.lexical_stats").unwrap();
+        assert_eq!(n, Some(3));
+        assert!((avgdl.unwrap() - 1.0 / 3.0).abs() < 1e-12);
+        for (query, expected) in [
+            ("red OR blue -green", vec!["blue", "red"]),
+            ("red -\"blue green\"", vec!["red"]),
+            ("-red", vec![]),
+            ("red red", vec!["red"]),
+            ("\"red blue\" OR green", vec!["blue", "green", "red"]),
+        ] {
+            let terms = Spi::get_one_with_args::<Vec<String>>(
+                "SELECT terms FROM postvec._lexical_terms(
+                    (SELECT id FROM postvec.registry WHERE table_name='bm_sparse'), 'simple', $1)",
+                &[query.into()],
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(terms, expected, "{query}");
+        }
+        Spi::run("UPDATE postvec.lexical_stats SET error='transient', attempted_at=now()-interval '11 minutes'").unwrap();
+        assert!(Spi::get_one::<i64>("SELECT postvec._lexical_stale()")
+            .unwrap()
+            .is_some());
+        Spi::run("SELECT postvec.refresh_lexical_stats('bm_sparse','body')").unwrap();
+        assert!(
+            Spi::get_one::<String>("SELECT error FROM postvec.lexical_stats")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[pg_test]
