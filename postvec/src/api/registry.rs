@@ -10,7 +10,7 @@
 
 use crate::api::embed::embed_texts;
 use crate::registry::RegistryEntryDb as _;
-use crate::registry::{RegistryEntry, quote_ident, quote_literal};
+use crate::registry::{quote_ident, quote_literal, RegistryEntry};
 use pgrx::prelude::*;
 
 pub(crate) struct RelInfo {
@@ -425,7 +425,9 @@ pub(crate) fn teardown_entry_objects(entry: &RegistryEntry, relation_exists: boo
     ddl.push_str(&format!(
         "DROP FUNCTION IF EXISTS postvec.trg_ins_{id}();\n\
          DROP FUNCTION IF EXISTS postvec.trg_upd_{id}();\n\
-         DROP FUNCTION IF EXISTS postvec.trg_pk_{id}();",
+         DROP FUNCTION IF EXISTS postvec.trg_pk_{id}();\n\
+         DELETE FROM postvec.lexical_df WHERE registry_id = {id};\n\
+         DELETE FROM postvec.lexical_stats WHERE registry_id = {id};",
     ));
     Spi::run(&ddl).unwrap_or_else(|e| error!("postvec: entry teardown failed: {e}"));
     // Generated indexes are dropped by *identity*, not by name: a same-named
@@ -1186,7 +1188,7 @@ pub(crate) fn insert_registry_row(
         ),
         None => ("none", None, None, None, None, None, None),
     };
-    let id = pgrx::PgTryBuilder::new(|| {
+    pgrx::PgTryBuilder::new(|| {
         Spi::get_one_with_args::<i64>(
             "INSERT INTO postvec.registry
                  (table_schema, table_name, source_column, vector_column,
@@ -1233,13 +1235,7 @@ pub(crate) fn insert_registry_row(
                  (a concurrent enable()/adopt() raced this call); see postvec.registry"
         )
     })
-    .execute();
-    Spi::run_with_args(
-        "INSERT INTO postvec.lexical_stats (registry_id, dirty_at) VALUES ($1, now())",
-        &[id.into()],
-    )
-    .unwrap_or_else(|e| error!("postvec: lexical_stats insert failed: {e}"));
-    id
+    .execute()
 }
 
 /// The resolved recursive-chunking request, validated before any DDL or
@@ -2799,7 +2795,6 @@ BEGIN
     IF NEW.{col} IS NOT NULL THEN
         INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
         ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
-        PERFORM postvec._lexical_touch({id});
         PERFORM postvec.worker_kick();
     END IF;
     RETURN NULL;
@@ -2811,7 +2806,6 @@ CREATE FUNCTION postvec.trg_upd_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
-    PERFORM postvec._lexical_touch({id});
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $pv$;
@@ -2827,7 +2821,6 @@ CREATE FUNCTION postvec.trg_pk_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
-    PERFORM postvec._lexical_touch({id});
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $pv$;
@@ -2844,7 +2837,6 @@ BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value)
     SELECT {id}, {pk_n} FROM new_table n WHERE n.{col} IS NOT NULL
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
-    PERFORM postvec._lexical_touch({id});
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $pv$;
@@ -2859,7 +2851,6 @@ BEGIN
       FROM new_table n JOIN old_table o ON {pk_join}
      WHERE {stmt_change_pred}
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
-    PERFORM postvec._lexical_touch({id});
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $pv$;
@@ -2873,7 +2864,6 @@ CREATE FUNCTION postvec.trg_pk_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
-    PERFORM postvec._lexical_touch({id});
     PERFORM postvec.worker_kick();
     RETURN NULL;
 END $pv$;

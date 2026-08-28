@@ -94,7 +94,7 @@ BEGIN
                      ELSE ', dd AS (DELETE FROM postvec.jobs_dead d USING changed x WHERE d.registry_id=$1 AND d.pk_value=x.pk)' END,
                 job_op) USING r.id;
         END IF;
-        PERFORM postvec._lexical_touch(r.id); PERFORM postvec.worker_kick(); RETURN NULL;
+        PERFORM postvec.worker_kick(); RETURN NULL;
     END IF;
     SELECT string_agg(format('($1).%I',c),',') INTO expr FROM unnest(r.pk_columns) c;
     IF cardinality(r.pk_columns)>1 THEN expr:='ROW('||expr||')'; END IF;
@@ -122,7 +122,7 @@ BEGIN
         INSERT INTO postvec.jobs(registry_id,pk_value,op) VALUES(r.id,pk,job_op)
         ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING;
     END IF;
-    PERFORM postvec._lexical_touch(r.id); PERFORM postvec.worker_kick(); RETURN NULL;
+    PERFORM postvec.worker_kick(); RETURN NULL;
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec._existing(relation regclass, col text, model_name text, vec text) RETURNS bigint
@@ -201,7 +201,6 @@ BEGIN
     END IF;
     IF fts_index THEN EXECUTE format('CREATE INDEX %I ON %s USING gin(to_tsvector(%L::regconfig,coalesce(%I::text,'''')))','postvec_fts_'||r.id,CASE WHEN chunking='recursive' THEN format('%I.%I',r.destination_schema,r.destination_table) ELSE relation::text END,fts,CASE WHEN chunking='recursive' THEN 'chunk_text' ELSE col END); END IF;
     IF index_mode='immediate' THEN PERFORM postvec.create_vector_index(relation,col); END IF;
-    INSERT INTO postvec.lexical_stats(registry_id, dirty_at) VALUES (r.id, now());
     RAISE NOTICE 'Source text is sent to the configured postvec-server inference fleet';
     PERFORM postvec.worker_kick();RETURN r.id;
 END $$;

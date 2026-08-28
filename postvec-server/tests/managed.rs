@@ -64,11 +64,15 @@ async fn managed_lifecycle() -> Result<()> {
         Ok(())
     }
     .await;
-    admin
-        .execute(format!("DROP DATABASE {name} WITH (FORCE)").as_str())
-        .await?;
-    admin.execute(format!("DROP ROLE {name}").as_str()).await?;
-    result
+    let cleanup = async {
+        admin
+            .execute(format!("DROP DATABASE {name} WITH (FORCE)").as_str())
+            .await?;
+        admin.execute(format!("DROP ROLE {name}").as_str()).await?;
+        Ok(())
+    }
+    .await;
+    result.and(cleanup)
 }
 
 async fn exercise(dsn: &str) -> Result<()> {

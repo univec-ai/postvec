@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 use super::{
-    ManagedDb,
     inference::Client,
     worker::{self, Outcome},
+    ManagedDb,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use postvec_core::{
     chunking,
     registry::{
@@ -14,6 +14,7 @@ use postvec_core::{
     },
 };
 use sqlx::{Connection, Executor, PgConnection, Row};
+use tokio::time::{Duration, Instant};
 
 /// Backfill cursors, chunk refreshes, migrations and index builds, for the
 /// entries that currently have such work. Each entry's failure is isolated.
@@ -22,6 +23,7 @@ pub(super) async fn step(
     client: &Client,
     db: &ManagedDb,
     build: &mut Option<super::AbortOnDrop>,
+    lexical: &mut Instant,
 ) -> Result<bool> {
     if build.as_ref().is_some_and(|b| b.0.is_finished()) {
         *build = None;
@@ -70,53 +72,20 @@ pub(super) async fn step(
             Err(error) => worker::quarantine_or_error(conn, id, error).await?,
         };
     }
-    lexical_refresh(conn, db).await;
-    Ok(progress)
-}
-
-async fn lexical_refresh(conn: &mut PgConnection, db: &ManagedDb) {
-    let ids = match sqlx::query_scalar::<_, i64>(
-        "SELECT s.registry_id FROM postvec.lexical_stats s
-          JOIN postvec.registry r ON r.id = s.registry_id
-         WHERE r.state <> 'disabled'
-           AND s.dirty_at IS NOT NULL
-           AND s.dirty_at < now() - interval '10 seconds'
-           AND (s.refreshed_at IS NULL OR s.refreshed_at < now() - interval '30 seconds')
-         ORDER BY s.dirty_at LIMIT 8",
-    )
-    .fetch_all(&mut *conn)
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            log::warn!("managed {} lexical stats scan: {e}", db.name);
-            return;
-        }
-    };
-    for id in ids {
-        let mut tx = match conn.begin().await {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("managed {} lexical stats begin: {e}", db.name);
-                return;
-            }
-        };
-        match sqlx::query("SELECT postvec._refresh_lexical_stats($1)")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-        {
-            Ok(_) => {
-                if let Err(e) = tx.commit().await {
-                    log::warn!("managed {} lexical stats commit {id}: {e}", db.name);
-                }
-            }
-            Err(e) => {
-                let _ = tx.rollback().await;
-                log::warn!("managed {} lexical stats {id}: {e}", db.name);
-            }
+    if *lexical <= Instant::now() {
+        *lexical = Instant::now() + Duration::from_secs(10);
+        let mut tx = conn.begin().await?;
+        worker::guard(&mut tx).await?;
+        let error: Option<String> =
+            sqlx::query_scalar("SELECT postvec._refresh_lexical_stats(postvec._lexical_stale())")
+                .fetch_one(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        if let Some(e) = error {
+            log::warn!("managed {} lexical stats: {e}", db.name);
         }
     }
+    Ok(progress)
 }
 
 async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool> {

@@ -6,13 +6,15 @@ description: Data included in pg_dump and the post-restore checklist.
 # Backup and restore
 
 `pg_dump` carries the durable control tables (`registry`, `jobs`,
-`jobs_dead`, `migrations`, `lexical_stats`, `lexical_df`) and their identity sequences. Generated
+`jobs_dead`, `migrations`) and their identity sequences. Generated
 triggers dump as ordinary database objects. A chunked destination, its
 identity sequence, join view, ownership-marker comments, RLS policy
 and triggers dump normally.
 
 Caches rebuilt after restore:
 
+- BM25 corpus statistics (`lexical_stats`, `lexical_df`): the worker rebuilds
+  them at its first wake; searches use `ts_rank_cd` until then
 - `postvec.models` (discovery cache)
 - the worker heartbeat
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PostgreSQL
-use crate::registry::{RegistryEntry, quote_ident, quote_literal};
+use crate::registry::{quote_ident, quote_literal, RegistryEntry};
 pub fn semantic_match_exprs(entry: &RegistryEntry, alias: &str) -> (String, String) {
     let prefix = if alias.is_empty() {
         String::new()
@@ -22,30 +22,43 @@ pub fn semantic_match_exprs(entry: &RegistryEntry, alias: &str) -> (String, Stri
 /// CTEs — also the alias [`render_filter`] renders its predicate against.
 pub const SEARCH_ALIAS: &str = "d";
 
-fn lexical_prefix(entry: &RegistryEntry) -> String {
+/// The lexical leg's per-query CTE: query lexemes with their document
+/// frequencies and the entry's corpus stats (`postvec._lexical_terms`).
+fn stats_cte(entry: &RegistryEntry) -> String {
     let cfg = quote_literal(&entry.fts_config);
-    let id = entry.id;
     format!(
-        "q AS (
-             SELECT websearch_to_tsquery({cfg}::regconfig, $2) AS tsq,
-                    postvec._query_terms({cfg}::regconfig, $2) AS terms
-         ),
-         stats AS (
-             SELECT q.tsq, q.terms, s.n, s.avgdl,
-                    COALESCE((
-                        SELECT array_agg(COALESCE(d.df, 0) ORDER BY u.ord)
-                          FROM unnest(q.terms) WITH ORDINALITY u(term, ord)
-                          LEFT JOIN postvec.lexical_df d
-                            ON d.registry_id = {id} AND d.term = u.term
-                    ), ARRAY[]::int[]) AS dfs
-               FROM q
-               LEFT JOIN postvec.lexical_stats s ON s.registry_id = {id}
-         )"
+        "stats AS (SELECT * FROM postvec._lexical_terms({}, {cfg}::regconfig, $2))",
+        entry.id
     )
 }
 
-fn lexical_score_sql(tsv: &str) -> String {
-    format!("postvec.lexical_score({tsv}, st.tsq, st.terms, st.dfs, st.n, st.avgdl)")
+#[allow(clippy::too_many_arguments)]
+/// `fts` candidate CTE: `@@` matches scored by BM25 (`ts_rank_cd` before the
+/// first stats refresh), top `candidates` ranked with a deterministic tiebreak.
+fn fts_cte(
+    name: &str,
+    fields: &str,
+    from: &str,
+    tsv: &str,
+    cfg: &str,
+    key: &str,
+    fpred: &str,
+    candidates: i32,
+) -> String {
+    let tsq = format!("websearch_to_tsquery({cfg}::regconfig, $2)");
+    format!(
+        "{name} AS (
+             SELECT *, row_number() OVER (ORDER BY score_fts DESC, {key}) AS rank_fts
+               FROM (
+                    SELECT {fields},
+                           postvec.lexical_score({tsv}, {tsq}, st.terms, st.dfs, st.n, st.avgdl) AS score_fts
+                      FROM {from}, stats st
+                     WHERE {tsv} @@ {tsq}{fpred}
+                     ORDER BY score_fts DESC, {key}
+                     LIMIT {candidates}
+               ) scored
+         )"
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -71,22 +84,16 @@ pub fn hybrid_rows_sql(
     let fpred = predicate
         .map(|p| format!("\n                AND ({p})"))
         .unwrap_or_default();
-    let tsv = format!("to_tsvector({cfg}::regconfig, {col}::text)");
-    let score = lexical_score_sql(&tsv);
-    let prep = lexical_prefix(entry);
-
-    let fts_cte = format!(
-        "fts AS (
-             SELECT pk, score_fts,
-                    row_number() OVER (ORDER BY score_fts DESC) AS rank_fts
-               FROM (
-                    SELECT {pk} AS pk, {score} AS score_fts
-                      FROM {tbl} {d}, stats st
-                     WHERE {tsv} @@ st.tsq{fpred}
-               ) scored
-              ORDER BY score_fts DESC
-              LIMIT {candidates}
-         )"
+    let prep = stats_cte(entry);
+    let fts_cte = fts_cte(
+        "fts",
+        &format!("{pk} AS pk"),
+        &format!("{tbl} {d}"),
+        &format!("to_tsvector({cfg}::regconfig, {col}::text)"),
+        &cfg,
+        "pk",
+        &fpred,
+        candidates,
     );
 
     if has_vector {
@@ -149,9 +156,7 @@ pub fn chunk_hybrid_rows_sql(
     let fpred = predicate
         .map(|p| format!("\n                AND ({p})"))
         .unwrap_or_default();
-    let prep = lexical_prefix(entry);
-    let tsv = format!("to_tsvector({cfg}::regconfig, c.chunk_text)");
-    let score = lexical_score_sql(&tsv);
+    let prep = stats_cte(entry);
 
     // Deliberately NO chunk_text here: projecting it through the candidate
     // and fusion CTEs would materialize candidate-pool × chunk-size bytes in
@@ -160,18 +165,15 @@ pub fn chunk_hybrid_rows_sql(
     let chunk_fields = "c.postvec_chunk_id AS cid, c.postvec_source_pk::text AS pk,
                     c.postvec_chunk_seq AS seq, c.postvec_char_start AS cs,
                     c.postvec_char_end AS ce";
-    let fts_cte = format!(
-        "fts_chunks AS (
-             SELECT cid, pk, seq, cs, ce, score_fts,
-                    row_number() OVER (ORDER BY score_fts DESC) AS rank_fts
-               FROM (
-                    SELECT {chunk_fields}, {score} AS score_fts
-                      FROM {qdest} c JOIN {qsrc} {d} ON {src_join}, stats st
-                     WHERE {tsv} @@ st.tsq{fpred}
-               ) scored
-              ORDER BY score_fts DESC
-              LIMIT {candidates}
-         )"
+    let fts_cte = fts_cte(
+        "fts_chunks",
+        chunk_fields,
+        &format!("{qdest} c JOIN {qsrc} {d} ON {src_join}"),
+        &format!("to_tsvector({cfg}::regconfig, c.chunk_text)"),
+        &cfg,
+        "cid",
+        &fpred,
+        candidates,
     );
     let doc_window = "row_number() OVER (
                         PARTITION BY pk

@@ -179,6 +179,17 @@ async fn exercise(dsn: &str) -> Result<()> {
             .await?
             == "[5,1,2]"
     );
+    wait(
+        &mut db,
+        "SELECT n=1 FROM postvec.lexical_stats WHERE registry_id=1",
+    )
+    .await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT fts_score>0 AND fts_rank=1 FROM postvec.search_with_vector('docs','body',ARRAY[1,0,0]::real[],'hello') WHERE pk_value='1'")
+            .fetch_one(&mut db)
+            .await?,
+        "BM25 lexical leg after the worker's first stats pass"
+    );
     db.execute("INSERT INTO postvec.jobs(registry_id,pk_value) VALUES(1,'invalid-integer')")
         .await?;
     wait(

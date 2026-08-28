@@ -27,9 +27,9 @@ use crate::api::migrate::Migration;
 use crate::client::grpc::GrpcClient;
 use crate::client::{EmbedRoute, ErrorClass, InferenceClient, PvError, RavennaCode};
 use crate::registry::RegistryEntryDb as _;
-use crate::registry::{RegistryEntry, parse_vector, quote_ident};
+use crate::registry::{parse_vector, quote_ident, RegistryEntry};
 use crate::runtime;
-use crate::worker::{Counters, try_transaction};
+use crate::worker::{try_transaction, Counters};
 use pgrx::prelude::*;
 
 /// One readable batch of migration work.

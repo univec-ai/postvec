@@ -37,6 +37,7 @@ fn status() -> TableIterator<
         name!(pending_embed_jobs, i64),
         name!(lexical_docs, i64),
         name!(lexical_stats_age_seconds, Option<f64>),
+        name!(lexical_error, Option<String>),
     ),
 > {
     // has_vector_index inlines registry::vector_index_probe_sql, the same
@@ -74,7 +75,8 @@ fn status() -> TableIterator<
                         COALESCE(j.pending_refresh, 0)::bigint,
                         COALESCE(j.pending_embed, 0)::bigint,
                         COALESCE(ls.n, 0)::bigint,
-                        EXTRACT(EPOCH FROM (now() - ls.refreshed_at))::float8
+                        EXTRACT(EPOCH FROM (now() - ls.refreshed_at))::float8,
+                        ls.error
                    FROM postvec.registry r
                    LEFT JOIN postvec.lexical_stats ls ON ls.registry_id = r.id
                    LEFT JOIN (
@@ -146,6 +148,7 @@ fn status() -> TableIterator<
                     r.get::<i64>(25).unwrap().unwrap_or(0),
                     r.get::<i64>(26).unwrap().unwrap_or(0),
                     r.get::<f64>(27).unwrap(),
+                    r.get::<String>(28).unwrap(),
                 )
             })
             .collect::<Vec<_>>()

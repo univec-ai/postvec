@@ -25,14 +25,14 @@ as it is.
 | `disable(relation, column_name, drop_column DEFAULT false, drop_destination DEFAULT false)` | `void` |
 | `uninstall(drop_columns DEFAULT false, drop_destinations DEFAULT false)` | `bigint` entries torn down; superuser |
 | `create_vector_index(relation, column_name)` | `void` |
-| `refresh_lexical_stats(relation, column_name)` | `void`; table owner. Rebuilds BM25 corpus stats now |
+| `refresh_lexical_stats(relation regclass, column_name)` | `void`; table owner. Rebuilds BM25 corpus stats now, raising the worker's last error if the pass fails |
 | `search(relation, column_name, query, limit_n DEFAULT 10, semantic_weight DEFAULT 0.5, rrf_k DEFAULT 60, candidates DEFAULT NULL, filter DEFAULT NULL)` | `TABLE(pk_value text, rrf_score float8, semantic_rank bigint, fts_rank bigint, semantic_distance float8, fts_score float8, chunk_seq int, chunk_start bigint, chunk_end bigint, chunk_text text)` |
 | `search_with_vector(relation, column_name, query_vector real[], query_text DEFAULT '', ...same including filter...)` | same |
 | `retry_dead(relation regclass, column_name, dead_ids bigint[] DEFAULT NULL)` | `bigint` dead rows consumed |
 | `migrate(relation, column_name, new_model, strategy DEFAULT 'convert', reindex DEFAULT 'manual', observed_writes_quiesced DEFAULT false)` | `bigint` migration id |
 | `migration_status(migration_id DEFAULT NULL)` | route in `resolved_via`, progress, state and `suggested_index_sql` |
 | `migration_finalize(id)` / `migration_abort(id)` | `void` |
-| `status()` | per-entry health (includes chunk + index columns, `lexical_docs`, `lexical_stats_age_seconds`) |
+| `status()` | per-entry health (includes chunk + index columns, `lexical_docs`, `lexical_stats_age_seconds`, `lexical_error`) |
 | `stats()` | worker / queue counters |
 | `embed(input text, model text)` / `embed(inputs text[], model text)` | `real[]` / `setof real[]` |
 | `convert(embedding real[], source_model text, target_model text)` | `real[]` |

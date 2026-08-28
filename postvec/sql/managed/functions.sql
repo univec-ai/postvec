@@ -202,27 +202,20 @@ BEGIN
         qvec := pg_catalog.format('$1::%I.halfvec(%s)', vector_schema, r.dim);
     END IF;
     op := pg_catalog.format('OPERATOR(%I.%s)', vector_schema, CASE r.distance WHEN 'l2' THEN '<->' WHEN 'ip' THEN '<#>' ELSE '<=>' END);
-    sql := pg_catalog.format('WITH q AS (
-        SELECT pg_catalog.websearch_to_tsquery(%s, $2) AS tsq, postvec._query_terms(%s, $2) AS terms
-    ), stats AS (
-        SELECT q.tsq, q.terms, s.n, s.avgdl,
-               COALESCE((SELECT array_agg(COALESCE(d.df, 0) ORDER BY u.ord)
-                           FROM unnest(q.terms) WITH ORDINALITY u(term, ord)
-                           LEFT JOIN postvec.lexical_df d ON d.registry_id = %s AND d.term = u.term),
-                        ARRAY[]::int[]) AS dfs
-          FROM q LEFT JOIN postvec.lexical_stats s ON s.registry_id = %s
+    sql := pg_catalog.format('WITH stats AS (
+        SELECT * FROM postvec._lexical_terms(%s, %s, $2)
     ), semantic AS (
         SELECT %s, (%s %s %s)::float8 AS dist, row_number() OVER (ORDER BY %s %s %s) AS rank_sem FROM %s
          WHERE %s IS NOT NULL %s ORDER BY %s %s %s LIMIT %s
     ), fts AS (
-        SELECT cid, pk, seq, cs, ce, score_fts,
-               row_number() OVER (ORDER BY score_fts DESC) AS rank_fts
+        SELECT *, row_number() OVER (ORDER BY score_fts DESC, cid) AS rank_fts
           FROM (
-            SELECT %s, postvec.lexical_score(pg_catalog.to_tsvector(%s, %s), st.tsq, st.terms, st.dfs, st.n, st.avgdl) AS score_fts
+            SELECT %s, postvec.lexical_score(pg_catalog.to_tsvector(%s, %s), pg_catalog.websearch_to_tsquery(%s, $2),
+                                             st.terms, st.dfs, st.n, st.avgdl) AS score_fts
               FROM %s, stats st
-             WHERE pg_catalog.to_tsvector(%s, %s) @@ st.tsq %s
+             WHERE pg_catalog.to_tsvector(%s, %s) @@ pg_catalog.websearch_to_tsquery(%s, $2) %s
+             ORDER BY score_fts DESC, cid LIMIT %s
           ) scored
-         ORDER BY score_fts DESC LIMIT %s
     ), fused AS (
         SELECT coalesce(s.cid,f.cid) AS cid, coalesce(s.pk,f.pk) AS pk,
                coalesce(s.seq,f.seq) AS seq, coalesce(s.cs,f.cs) AS cs, coalesce(s.ce,f.ce) AS ce,
@@ -234,9 +227,9 @@ BEGIN
     ), winners AS (
         SELECT * FROM ranked WHERE rn=1 ORDER BY score DESC NULLS LAST, pk LIMIT %s
     ) SELECT w.pk,w.score,w.rank_sem,w.rank_fts,w.dist,w.score_fts,w.seq,w.cs,w.ce,',
-        cfg, cfg, r.id, r.id,
+        r.id, cfg,
         fields,vec,op,qvec,vec,op,qvec,join_sql,vec,pred,vec,op,qvec,cand,
-        fields,cfg,lex,join_sql,cfg,lex,pred,cand,
+        fields,cfg,lex,cfg,join_sql,cfg,lex,cfg,pred,cand,
         semantic_weight,rrf_k,semantic_weight,rrf_k,limit_n);
     IF r.chunking = 'recursive' THEN
         sql := sql || pg_catalog.format('CASE WHEN sum(octet_length(c.chunk_text)) OVER (
@@ -268,7 +261,7 @@ BEGIN
 END $$;
 
 DROP FUNCTION IF EXISTS postvec.status();
-CREATE OR REPLACE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint, lexical_docs bigint, lexical_stats_age_seconds double precision)
+CREATE OR REPLACE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint, lexical_docs bigint, lexical_stats_age_seconds double precision, lexical_error text)
 LANGUAGE sql SET search_path = pg_catalog, pg_temp AS $$
 SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                         r.table_schema || '.' || r.table_name AS relation,
@@ -292,7 +285,8 @@ SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                         COALESCE(j.pending_refresh, 0)::bigint,
                         COALESCE(j.pending_embed, 0)::bigint,
                         COALESCE(ls.n, 0)::bigint,
-                        EXTRACT(EPOCH FROM (now() - ls.refreshed_at))::float8
+                        EXTRACT(EPOCH FROM (now() - ls.refreshed_at))::float8,
+                        ls.error
                    FROM postvec.registry r
                    LEFT JOIN postvec.lexical_stats ls ON ls.registry_id = r.id
                    LEFT JOIN (

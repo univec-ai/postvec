@@ -335,6 +335,7 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
     let lost = Arc::new(AtomicBool::new(false));
     let mut refresh = Instant::now();
     let mut sampled = Instant::now();
+    let mut lexical = Instant::now();
     loop {
         if state.draining() {
             return Ok(());
@@ -389,7 +390,8 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
             let stepped = async {
                 Ok::<_, anyhow::Error>(
                     worker::step(&mut conn, &client, db).await?
-                        | maintenance::step(&mut conn, &client, db, &mut build).await?,
+                        | maintenance::step(&mut conn, &client, db, &mut build, &mut lexical)
+                            .await?,
                 )
             }
             .await;

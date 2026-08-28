@@ -95,9 +95,15 @@ After a bulk load, refresh corpus statistics before judging ranks:
 SELECT postvec.refresh_lexical_stats('public.docs', 'body');
 ```
 
-Stats otherwise catch up after ~10s of quiet writes plus a worker wake.
-Stale IDF is still IDF; `n = 0` (just after `enable()`) falls back to
-`ts_rank_cd`.
+The worker otherwise rebuilds the stats on its own once the table's
+tuple counters have moved and the previous refresh is old enough: at
+least 30 s, or ten times as long as that refresh took, so a large corpus
+is re-tokenized rarely. A refresh is one `to_tsvector` pass over the
+text; it runs inside the worker and delays embedding for that long.
+Stale IDF is still IDF; until the first refresh (and for an entry whose
+refresh failed, see `status().lexical_error`) the leg scores with
+`ts_rank_cd`. Term frequencies come from the tsvector, so its usual
+limits apply: at most 256 positions per lexeme.
 
 ## Lexical-only results
 

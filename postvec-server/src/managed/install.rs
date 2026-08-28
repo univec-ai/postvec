@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 use super::{Command, ConnectionArgs};
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use postvec_core::registry::quote_ident;
-use sqlx::{Connection, Executor, PgConnection, Row, postgres::PgConnectOptions};
+use sqlx::{postgres::PgConnectOptions, Connection, Executor, PgConnection, Row};
 use std::{io::Read, str::FromStr, time::Duration};
 
 pub(super) const VERSION: i32 = 1;
@@ -259,7 +259,7 @@ pub async fn run(command: Command) -> Result<()> {
                     .await?;
             }
             tx.execute(
-                "DROP TABLE postvec.migrations, postvec.jobs_dead, postvec.jobs,
+                "DROP TABLE postvec.lexical_df, postvec.lexical_stats, postvec.migrations, postvec.jobs_dead, postvec.jobs,
                 postvec.registry, postvec.worker_heartbeat, postvec.models, postvec.settings,
                 postvec.schema_version RESTRICT; DROP SCHEMA postvec RESTRICT",
             )
@@ -287,32 +287,26 @@ mod tests {
             timeout: 1,
         };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(
-            connect(&args)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("0600")
-        );
+        assert!(connect(&args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("0600"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::write(&path, "first\nsecond").unwrap();
-        assert!(
-            connect(&args)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("one nonempty password")
-        );
+        assert!(connect(&args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("one nonempty password"));
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(path, &link).unwrap();
         args.password_file = Some(link);
-        assert!(
-            connect(&args)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("cannot open password file")
-        );
+        assert!(connect(&args)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("cannot open password file"));
     }
 
     #[test]

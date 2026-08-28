@@ -8,12 +8,12 @@
 //! fused as `w/(k+rank_sem) + (1-w)/(k+rank_fts)`.
 
 use crate::api::embed::embed_texts;
-use crate::api::registry::{RelInfo, resolve_relation};
+use crate::api::registry::{resolve_relation, RelInfo};
 use crate::gucs;
 use crate::registry::RegistryEntryDb as _;
-use crate::registry::{RegistryEntry, quote_ident, serialize_vector};
-use pgrx::JsonB;
+use crate::registry::{quote_ident, serialize_vector, RegistryEntry};
 use pgrx::prelude::*;
+use pgrx::JsonB;
 
 /// One fused result row: the fused fields, the raw per-leg scores, then
 /// nullable winning-chunk metadata (all NULL for a column-mode entry).
@@ -435,7 +435,6 @@ pub(crate) fn render_filter(
     }
 }
 
-use postvec_core::search::SEARCH_ALIAS;
 /// The semantic leg's match expressions: `(column side, query-parameter
 /// side)`. Plain `col <op> $1::vector` up to pgvector's 2000-dim HNSW limit;
 /// above it the only buildable ANN index is the halfvec expression form that
@@ -447,6 +446,7 @@ use postvec_core::search::SEARCH_ALIAS;
 /// to the column).
 #[cfg(any(test, feature = "pg_test"))]
 pub(crate) use postvec_core::search::semantic_match_exprs;
+use postvec_core::search::SEARCH_ALIAS;
 
 /// Build and run the hybrid (or, when `qvec` is `None`, FTS-only) query.
 /// The same filter predicate sits inside both candidate CTEs, before their
@@ -908,7 +908,7 @@ fn degrade_or_error(reason: &str) -> Option<Vec<f32>> {
 #[pg_schema]
 mod tests {
     use crate::registry::RegistryEntryDb as _;
-    use crate::registry::{RegistryEntry, serialize_vector};
+    use crate::registry::{serialize_vector, RegistryEntry};
     use pgrx::prelude::*;
 
     fn setup() -> RegistryEntry {
@@ -961,11 +961,11 @@ mod tests {
             Some("d.\"id\" > $3::bigint"),
         );
         assert!(sql.contains("postvec.lexical_score"), "{sql}");
-        assert!(sql.contains("postvec._query_terms"), "{sql}");
+        assert!(sql.contains("postvec._lexical_terms"), "{sql}");
         assert!(sql.contains("websearch_to_tsquery"), "{sql}");
         assert!(sql.contains("d.\"id\" > $3::bigint"), "{sql}");
         assert!(
-            sql.contains(&format!("registry_id = {}", entry.id)),
+            sql.contains(&format!("postvec._lexical_terms({},", entry.id)),
             "{sql}"
         );
     }
@@ -1025,9 +1025,18 @@ mod tests {
             2,
             "ts_rank fallback still matches before stats"
         );
+        let stale = Spi::get_one::<i64>("SELECT postvec._lexical_stale()").unwrap();
+        assert_eq!(stale, Some(entry.id), "never refreshed: due");
         Spi::run("SELECT postvec.refresh_lexical_stats('bmdocs','body')").unwrap();
-        let n = Spi::get_one::<i64>("SELECT n FROM postvec.lexical_stats").unwrap();
-        assert_eq!(n, Some(3));
+        let (n, avgdl, df) = Spi::get_three::<i64, f64, i64>(
+            "SELECT n, avgdl, (SELECT df FROM postvec.lexical_df WHERE term = 'widget')
+               FROM postvec.lexical_stats",
+        )
+        .unwrap();
+        assert_eq!((n, df), (Some(3), Some(2)), "df stored only above 1");
+        assert_eq!(avgdl, Some(5.0), "avgdl counts tokens (15 over 3 docs)");
+        let stale = Spi::get_one::<i64>("SELECT postvec._lexical_stale()").unwrap();
+        assert_eq!(stale, None, "fresh stats are not due");
         let rows = super::hybrid_rows(
             &entry,
             None,
@@ -1042,11 +1051,60 @@ mod tests {
         Spi::run("SELECT postvec.disable('bmdocs','body', drop_column => true)").unwrap();
         let leftover = Spi::get_one::<i64>(
             "SELECT count(*) FROM postvec.lexical_stats s
-              JOIN postvec.registry r ON r.id = s.registry_id
-             WHERE r.state <> 'disabled'",
+              FULL JOIN postvec.lexical_df d USING (registry_id)",
         )
         .unwrap();
-        assert_eq!(leftover, Some(0));
+        assert_eq!(leftover, Some(0), "disable() drops the entry's stats");
+    }
+
+    /// Stats are owner-refreshed and readable only with SELECT on the
+    /// source table; `SET ROLE` is honoured through the definer switch.
+    #[pg_test]
+    fn lexical_stats_follow_table_privileges() {
+        Spi::run(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('m','embed','m',3,'{}'::jsonb) ON CONFLICT (name) DO NOTHING",
+        )
+        .unwrap();
+        Spi::run("CREATE TABLE privdocs (id bigint PRIMARY KEY, body text)").unwrap();
+        Spi::run("INSERT INTO privdocs VALUES (1, 'secret merger')").unwrap();
+        Spi::get_one::<i64>("SELECT postvec.enable('privdocs','body','m', backfill => false)")
+            .unwrap();
+        Spi::run("SELECT postvec.refresh_lexical_stats('privdocs','body')").unwrap();
+        Spi::run("CREATE ROLE lex_app").unwrap();
+        Spi::run("SET ROLE lex_app").unwrap();
+        for (sql, why) in [
+            (
+                "PERFORM postvec.refresh_lexical_stats('privdocs','body')",
+                "non-owner refresh",
+            ),
+            (
+                "PERFORM postvec._lexical_terms(
+                    (SELECT id FROM postvec.registry WHERE table_name = 'privdocs'),
+                    'english', 'merger')",
+                "df lookup without SELECT on the table",
+            ),
+            (
+                "PERFORM count(*) FROM postvec.lexical_df",
+                "reading lexical_df",
+            ),
+        ] {
+            Spi::run(&format!(
+                "DO $$ BEGIN {sql}; RAISE EXCEPTION 'accepted: {why}';
+                 EXCEPTION WHEN insufficient_privilege THEN NULL; END $$"
+            ))
+            .unwrap_or_else(|e| panic!("{why}: {e}"));
+        }
+        Spi::run("RESET ROLE").unwrap();
+        Spi::run("GRANT SELECT ON privdocs TO lex_app").unwrap();
+        Spi::run("SET ROLE lex_app").unwrap();
+        let n = Spi::get_one::<i64>(
+            "SELECT n FROM postvec._lexical_terms(
+                (SELECT id FROM postvec.registry WHERE table_name = 'privdocs'), 'english', 'merger')",
+        )
+        .unwrap();
+        assert_eq!(n, Some(1));
+        Spi::run("RESET ROLE").unwrap();
     }
 
     #[pg_test]
