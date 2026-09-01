@@ -157,17 +157,17 @@ DECLARE
 BEGIN
     SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled';
     IF NOT FOUND THEN RETURN NULL; END IF;
+    EXECUTE format('LOCK TABLE %I.%I IN ACCESS SHARE MODE', r.table_schema, r.table_name);
+    SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled';
+    IF NOT FOUND THEN RETURN NULL; END IF;
     IF r.chunking = 'recursive' THEN
         rel := to_regclass(format('%I.%I', r.destination_schema, r.destination_table)); col := 'chunk_text';
     ELSE
         rel := to_regclass(format('%I.%I', r.table_schema, r.table_name)); col := r.source_column;
     END IF;
     IF rel IS NULL THEN RAISE EXCEPTION 'postvec: lexical relation is missing'; END IF;
-    -- disable() needs ACCESS EXCLUSIVE on the source (trigger drops), so once
-    -- this lock is held the entry cannot be torn down under the refresh.
-    EXECUTE format('LOCK TABLE %I.%I IN ACCESS SHARE MODE', r.table_schema, r.table_name);
-    PERFORM FROM postvec.registry WHERE id = rid AND state <> 'disabled';
-    IF NOT FOUND THEN RETURN NULL; END IF;
+    EXECUTE format('LOCK TABLE %s IN ACCESS SHARE MODE', rel);
+    PERFORM pg_advisory_xact_lock(hashtextextended('postvec lexical ' || rid, 0));
     mods := postvec._lexical_mods(rel);
     DELETE FROM postvec.lexical_df WHERE registry_id = rid;
     EXECUTE format($sql$
@@ -192,8 +192,9 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     INSERT INTO postvec.lexical_stats (registry_id, attempted_at, error)
     SELECT rid, clock_timestamp(), left(SQLERRM, 1024) FROM postvec.registry
-     WHERE id = rid AND state <> 'disabled'
-    ON CONFLICT (registry_id) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error;
+     WHERE id = rid AND state <> 'disabled' FOR NO KEY UPDATE
+    ON CONFLICT (registry_id) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error
+        WHERE lexical_stats.attempted_at <= t0;
     RETURN SQLERRM;
 END $$;
 REVOKE ALL ON FUNCTION postvec._refresh_lexical_stats(bigint) FROM PUBLIC;

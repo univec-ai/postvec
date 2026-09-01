@@ -365,5 +365,7 @@ BEGIN
          WHERE registry_id = TG_ARGV[0]::bigint
            AND claimed_at IS NULL;
     END IF;
+    DELETE FROM postvec.lexical_stats WHERE registry_id = TG_ARGV[0]::bigint;
+    PERFORM postvec.worker_kick();
     RETURN NULL;
 END $body$;

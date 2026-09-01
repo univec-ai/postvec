@@ -1048,6 +1048,24 @@ mod tests {
             &super::RenderedFilter::none(),
         );
         assert_eq!(rows[0].0, "2", "shorter exact match ranks first");
+        Spi::run("TRUNCATE bmdocs").unwrap();
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM postvec.lexical_stats").unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT postvec._lexical_stale()").unwrap(),
+            Some(entry.id)
+        );
+        Spi::run("SELECT postvec.refresh_lexical_stats('bmdocs','body')").unwrap();
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT n FROM postvec.lexical_stats").unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM postvec.lexical_df").unwrap(),
+            Some(0)
+        );
         Spi::run("SELECT postvec.disable('bmdocs','body', drop_column => true)").unwrap();
         let leftover = Spi::get_one::<i64>(
             "SELECT count(*) FROM postvec.lexical_stats s
@@ -1129,6 +1147,46 @@ mod tests {
     }
 
     #[pg_test]
+    fn lexical_rls_bypass_respects_force_and_inherited_ownership() {
+        Spi::run("CREATE ROLE lex_owner; CREATE ROLE lex_member IN ROLE lex_owner; CREATE ROLE lex_bypass BYPASSRLS; CREATE ROLE lex_reader;
+            CREATE TABLE lex_visibility(body text); ALTER TABLE lex_visibility OWNER TO lex_owner;
+            ALTER TABLE lex_visibility ENABLE ROW LEVEL SECURITY").unwrap();
+        for (role, expected) in [
+            ("lex_owner", true),
+            ("lex_member", true),
+            ("lex_bypass", true),
+            ("lex_reader", false),
+        ] {
+            assert_eq!(
+                Spi::get_one_with_args::<bool>(
+                    "SELECT postvec._sees_full_corpus('lex_visibility',$1::name)",
+                    &[role.into()]
+                )
+                .unwrap(),
+                Some(expected),
+                "{role}"
+            );
+        }
+        Spi::run("ALTER TABLE lex_visibility FORCE ROW LEVEL SECURITY").unwrap();
+        for (role, expected) in [
+            ("lex_owner", false),
+            ("lex_member", false),
+            ("lex_bypass", true),
+            ("lex_reader", false),
+        ] {
+            assert_eq!(
+                Spi::get_one_with_args::<bool>(
+                    "SELECT postvec._sees_full_corpus('lex_visibility',$1::name)",
+                    &[role.into()]
+                )
+                .unwrap(),
+                Some(expected),
+                "FORCE RLS: {role}"
+            );
+        }
+    }
+
+    #[pg_test]
     fn bm25_query_terms_sparse_stats_and_retry() {
         Spi::run(
             "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
@@ -1172,12 +1230,20 @@ mod tests {
     }
 
     #[pg_test]
-    fn bm25_score_unit_is_positive_for_matching_term() {
-        let s = Spi::get_one::<f64>(
-            "SELECT postvec.bm25_score(to_tsvector('simple','red'), ARRAY['red'], ARRAY[1], 3, 2)",
-        )
-        .unwrap();
-        assert!(s.unwrap() > 0.0);
+    fn bm25_score_matches_formula_and_clamps_stale_df() {
+        let score = Spi::get_one::<f64>(
+            "SELECT postvec.bm25_score(to_tsvector('simple','red red blue'), ARRAY['red'], ARRAY[2], 10, 4)",
+        ).unwrap().unwrap();
+        let expected =
+            (1.0_f64 + 8.5 / 2.5).ln() * 2.0 * 2.2 / (2.0 + 1.2 * (0.25 + 0.75 * 3.0 / 4.0));
+        assert!((score - expected).abs() < 1e-12);
+        assert_eq!(Spi::get_one::<bool>(
+            "SELECT postvec.bm25_score(to_tsvector('simple','red'), ARRAY['red'], ARRAY[20], 10, 1)
+                  = postvec.bm25_score(to_tsvector('simple','red'), ARRAY['red'], ARRAY[10], 10, 1)",
+        ).unwrap(), Some(true));
+        assert_eq!(Spi::get_one::<f64>(
+            "SELECT postvec.bm25_score(to_tsvector('simple','blue'), ARRAY['red'], ARRAY[2], 10, 4)",
+        ).unwrap(), Some(0.0));
     }
 
     /// FTS stays anchored on the raw source column. Words that exist only

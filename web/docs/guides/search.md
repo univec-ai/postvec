@@ -122,9 +122,10 @@ not an exact reproduction of another engine's tokenizer or length norms.
 
 Automatic change detection requires `track_counts = on`. Vector updates
 also count, so backfills can cause redundant, throttled refreshes. TRUNCATE
-alone does not move the tuple counters; refresh manually after truncation,
-partition changes or text-search dictionary changes when immediate stats
-accuracy matters. Otherwise the next counted write triggers a refresh.
+on the registered source invalidates its statistics immediately and wakes
+the worker to rebuild them. Refresh manually after truncating an individual
+partition, changing partition membership or changing text-search dictionaries
+when immediate accuracy matters. Those changes may not move tuple counters.
 
 ## Lexical-only results
 
