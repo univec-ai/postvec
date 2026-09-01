@@ -23,21 +23,34 @@ CREATE TABLE IF NOT EXISTS postvec.lexical_df (
     df          integer NOT NULL,
     PRIMARY KEY (registry_id, term)
 );
+-- The role that called the outermost SQL, seen from inside SECURITY DEFINER.
+CREATE OR REPLACE FUNCTION postvec._invoker() RETURNS name
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
+    SELECT coalesce(nullif(current_setting('role', true), 'none'), session_user::text)::name
+$$;
+
+-- True when u sees every row of rel (RLS off, or u bypasses it).
+CREATE OR REPLACE FUNCTION postvec._sees_full_corpus(rel regclass, u name)
+RETURNS boolean
+LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
+    SELECT NOT coalesce(c.relrowsecurity, true)
+           OR coalesce(r.rolsuper OR r.rolbypassrls, false)
+           OR (NOT c.relforcerowsecurity AND pg_has_role(u, c.relowner, 'USAGE'))
+      FROM (SELECT rel AS oid) x
+      LEFT JOIN pg_class c ON c.oid = x.oid
+      LEFT JOIN pg_roles r ON r.rolname = u
+$$;
+
 GRANT SELECT ON postvec.lexical_stats TO PUBLIC;
 ALTER TABLE postvec.lexical_stats ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS lexical_stats_reader ON postvec.lexical_stats;
 CREATE POLICY lexical_stats_reader ON postvec.lexical_stats FOR SELECT USING (
     EXISTS (SELECT FROM postvec.registry r JOIN pg_class c
                 ON c.oid = to_regclass(format('%I.%I', r.table_schema, r.table_name))
-             WHERE r.id = registry_id AND NOT c.relrowsecurity
-               AND has_table_privilege(current_user, c.oid, 'SELECT'))
+             WHERE r.id = registry_id
+               AND has_table_privilege(current_user, c.oid, 'SELECT')
+               AND postvec._sees_full_corpus(c.oid, current_user))
 );
-
--- The role that called the outermost SQL, seen from inside SECURITY DEFINER.
-CREATE OR REPLACE FUNCTION postvec._invoker() RETURNS name
-LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
-    SELECT coalesce(nullif(current_setting('role', true), 'none'), session_user::text)::name
-$$;
 
 -- Lucene IDF, k1 = 1.2, b = 0.75. dl counts token positions, as avgdl does.
 CREATE OR REPLACE FUNCTION postvec.bm25_score(
@@ -93,9 +106,10 @@ BEGIN
             negate := false;
         END IF;
     END LOOP;
-    SELECT coalesce(array_agg(DISTINCT t COLLATE "C"), '{}') INTO terms FROM unnest(terms) t;
+    SELECT coalesce(array_agg(DISTINCT t COLLATE "C" ORDER BY t COLLATE "C"), '{}')
+      INTO terms FROM unnest(terms) t;
     -- Global frequencies reveal rows hidden by policies; use local ranking.
-    IF (SELECT relrowsecurity FROM pg_class WHERE oid = rel) THEN
+    IF NOT postvec._sees_full_corpus(rel, postvec._invoker()) THEN
         dfs := '{}'; RETURN;
     END IF;
     SELECT s.n, s.avgdl INTO n, avgdl

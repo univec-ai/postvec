@@ -106,8 +106,10 @@ check `status().lexical_error`. Automatic retries back off for ten minutes.
 Manual refresh raises on failure; its error record rolls back with the
 failed statement.
 With row-level security enabled on the source, search uses `ts_rank_cd`
-and does not expose global term frequencies. Ordinary readers can see
-corpus statistics only with table-level SELECT on a source without RLS.
+and does not expose global term frequencies — except for roles that
+already see every row (table owner unless FORCE RLS, `BYPASSRLS`,
+superuser). Ordinary readers can see corpus statistics in `status()`
+only when they would get BM25.
 
 BM25 scores positive query lexemes; `OR`, exclusions and quoted phrases
 keep PostgreSQL's `websearch_to_tsquery` matching semantics. A purely

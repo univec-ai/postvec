@@ -8,12 +8,12 @@
 //! fused as `w/(k+rank_sem) + (1-w)/(k+rank_fts)`.
 
 use crate::api::embed::embed_texts;
-use crate::api::registry::{resolve_relation, RelInfo};
+use crate::api::registry::{RelInfo, resolve_relation};
 use crate::gucs;
 use crate::registry::RegistryEntryDb as _;
-use crate::registry::{quote_ident, serialize_vector, RegistryEntry};
-use pgrx::prelude::*;
+use crate::registry::{RegistryEntry, quote_ident, serialize_vector};
 use pgrx::JsonB;
+use pgrx::prelude::*;
 
 /// One fused result row: the fused fields, the raw per-leg scores, then
 /// nullable winning-chunk metadata (all NULL for a column-mode entry).
@@ -435,6 +435,7 @@ pub(crate) fn render_filter(
     }
 }
 
+use postvec_core::search::SEARCH_ALIAS;
 /// The semantic leg's match expressions: `(column side, query-parameter
 /// side)`. Plain `col <op> $1::vector` up to pgvector's 2000-dim HNSW limit;
 /// above it the only buildable ANN index is the halfvec expression form that
@@ -446,7 +447,6 @@ pub(crate) fn render_filter(
 /// to the column).
 #[cfg(any(test, feature = "pg_test"))]
 pub(crate) use postvec_core::search::semantic_match_exprs;
-use postvec_core::search::SEARCH_ALIAS;
 
 /// Build and run the hybrid (or, when `qvec` is `None`, FTS-only) query.
 /// The same filter predicate sits inside both candidate CTEs, before their
@@ -908,7 +908,7 @@ fn degrade_or_error(reason: &str) -> Option<Vec<f32>> {
 #[pg_schema]
 mod tests {
     use crate::registry::RegistryEntryDb as _;
-    use crate::registry::{serialize_vector, RegistryEntry};
+    use crate::registry::{RegistryEntry, serialize_vector};
     use pgrx::prelude::*;
 
     fn setup() -> RegistryEntry {
@@ -1117,6 +1117,15 @@ mod tests {
             Some(0)
         );
         Spi::run("RESET ROLE").unwrap();
+        assert_eq!(
+            Spi::get_one::<i64>(
+                "SELECT n FROM postvec._lexical_terms(
+                    (SELECT id FROM postvec.registry WHERE table_name = 'privdocs'), 'english', 'merger')"
+            )
+            .unwrap(),
+            Some(1),
+            "owners and BYPASSRLS still use corpus BM25"
+        );
     }
 
     #[pg_test]
@@ -1151,9 +1160,11 @@ mod tests {
             assert_eq!(terms, expected, "{query}");
         }
         Spi::run("UPDATE postvec.lexical_stats SET error='transient', attempted_at=now()-interval '11 minutes'").unwrap();
-        assert!(Spi::get_one::<i64>("SELECT postvec._lexical_stale()")
-            .unwrap()
-            .is_some());
+        assert!(
+            Spi::get_one::<i64>("SELECT postvec._lexical_stale()")
+                .unwrap()
+                .is_some()
+        );
         Spi::run("SELECT postvec.refresh_lexical_stats('bm_sparse','body')").unwrap();
         assert!(
             Spi::get_one::<String>("SELECT error FROM postvec.lexical_stats")
