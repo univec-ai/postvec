@@ -152,7 +152,7 @@ CREATE OR REPLACE FUNCTION postvec._refresh_lexical_stats(rid bigint) RETURNS te
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp SET row_security = off AS $$
 DECLARE
-    r postvec.registry; initial postvec.registry; rel regclass; col text; mods bigint; docs bigint; tokens bigint;
+    r postvec.registry; rel regclass; col text; mods bigint; docs bigint; tokens bigint;
     t0 timestamptz := clock_timestamp();
 BEGIN
     SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled';
@@ -163,13 +163,11 @@ BEGIN
         rel := to_regclass(format('%I.%I', r.table_schema, r.table_name)); col := r.source_column;
     END IF;
     IF rel IS NULL THEN RAISE EXCEPTION 'postvec: lexical relation is missing'; END IF;
-    initial := r;
+    -- disable() needs ACCESS EXCLUSIVE on the source (trigger drops), so once
+    -- this lock is held the entry cannot be torn down under the refresh.
     EXECUTE format('LOCK TABLE %I.%I IN ACCESS SHARE MODE', r.table_schema, r.table_name);
-    IF r.chunking = 'recursive' THEN
-        EXECUTE format('LOCK TABLE %s IN ACCESS SHARE MODE', rel);
-    END IF;
-    SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled' FOR NO KEY UPDATE;
-    IF NOT FOUND OR r IS DISTINCT FROM initial THEN RETURN NULL; END IF;
+    PERFORM FROM postvec.registry WHERE id = rid AND state <> 'disabled';
+    IF NOT FOUND THEN RETURN NULL; END IF;
     mods := postvec._lexical_mods(rel);
     DELETE FROM postvec.lexical_df WHERE registry_id = rid;
     EXECUTE format($sql$
@@ -194,7 +192,7 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     INSERT INTO postvec.lexical_stats (registry_id, attempted_at, error)
     SELECT rid, clock_timestamp(), left(SQLERRM, 1024) FROM postvec.registry
-     WHERE id = rid AND state <> 'disabled' FOR NO KEY UPDATE
+     WHERE id = rid AND state <> 'disabled'
     ON CONFLICT (registry_id) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error;
     RETURN SQLERRM;
 END $$;

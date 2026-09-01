@@ -225,11 +225,17 @@ mod tests {
         .get(0)
     }
 
+    /// A refresh holds only ACCESS SHARE on the source: registry row locks
+    /// (set_format, migrate) and writers do not stall it, and an in-flight
+    /// disable() makes it wait, revalidate and leave no stats behind.
     #[pg_test]
-    fn lexical_refresh_revalidates_after_disable_and_allows_writes() {
+    fn lexical_refresh_ignores_row_locks_and_revalidates_after_disable() {
         let fx = Fixture::new("cc_lexical");
         let mut owner = fx.session();
         let rid = setup_entry(&mut owner, "cc_lexical", "", "");
+        owner
+            .batch_execute("INSERT INTO cc_lexical(body) VALUES ('red red')")
+            .unwrap();
         owner.batch_execute("BEGIN").unwrap();
         owner
             .query_one(
@@ -238,35 +244,24 @@ mod tests {
             )
             .unwrap();
         let mut refresh = fx.session();
-        let pid = backend_pid(&mut refresh);
-        let run = std::thread::spawn(move || {
-            refresh
-                .query_one("SELECT postvec._refresh_lexical_stats($1)", &[&rid])
-                .map(|r| r.get::<_, Option<String>>(0))
-                .map_err(err_text)
-        });
-        wait_until_blocked(pid);
-        let mut writer = fx.session();
-        writer
-            .batch_execute("INSERT INTO cc_lexical(body) VALUES ('red red')")
-            .unwrap();
+        let refreshed: Option<String> = refresh
+            .query_one("SELECT postvec._refresh_lexical_stats($1)", &[&rid])
+            .unwrap()
+            .get(0);
+        assert_eq!(refreshed, None, "a locked registry row must not block");
         owner.batch_execute("COMMIT").unwrap();
-        assert_eq!(run.join().unwrap().unwrap(), None);
-        assert_eq!(
-            owner
-                .query_one(
-                    "SELECT n FROM postvec.lexical_stats WHERE registry_id=$1",
-                    &[&rid]
-                )
-                .unwrap()
-                .get::<_, i64>(0),
-            1
-        );
+        let n: i64 = owner
+            .query_one(
+                "SELECT n FROM postvec.lexical_stats WHERE registry_id=$1",
+                &[&rid],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 1);
 
         owner
             .batch_execute("BEGIN; SELECT postvec.disable('cc_lexical','body')")
             .unwrap();
-        let mut refresh = fx.session();
         let pid = backend_pid(&mut refresh);
         let run = std::thread::spawn(move || {
             refresh
@@ -277,18 +272,15 @@ mod tests {
         wait_until_blocked(pid);
         owner.batch_execute("COMMIT").unwrap();
         assert_eq!(run.join().unwrap().unwrap(), None);
-        assert_eq!(
-            owner
-                .query_one(
-                    "SELECT count(*) FROM postvec.lexical_stats WHERE registry_id=$1",
-                    &[&rid]
-                )
-                .unwrap()
-                .get::<_, i64>(0),
-            0
-        );
+        let left: i64 = owner
+            .query_one(
+                "SELECT count(*) FROM postvec.lexical_stats WHERE registry_id=$1",
+                &[&rid],
+            )
+            .unwrap()
+            .get(0);
+        assert_eq!(left, 0);
         drop(owner);
-        drop(writer);
         fx.cleanup();
     }
 

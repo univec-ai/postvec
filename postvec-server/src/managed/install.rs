@@ -250,6 +250,12 @@ pub async fn run(command: Command) -> Result<()> {
                 )
                 .await?;
             }
+            tx.execute(
+                "DROP TABLE postvec.lexical_df, postvec.lexical_stats, postvec.migrations, postvec.jobs_dead, postvec.jobs,
+                postvec.registry, postvec.worker_heartbeat, postvec.models, postvec.settings,
+                postvec.schema_version RESTRICT",
+            )
+            .await?;
             let functions: Vec<String> = sqlx::query_scalar(
                 "SELECT p.oid::regprocedure::text FROM pg_catalog.pg_proc p
                  JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'postvec'"
@@ -258,12 +264,7 @@ pub async fn run(command: Command) -> Result<()> {
                 tx.execute(format!("DROP FUNCTION {function} RESTRICT").as_str())
                     .await?;
             }
-            tx.execute(
-                "DROP TABLE postvec.lexical_df, postvec.lexical_stats, postvec.migrations, postvec.jobs_dead, postvec.jobs,
-                postvec.registry, postvec.worker_heartbeat, postvec.models, postvec.settings,
-                postvec.schema_version RESTRICT; DROP SCHEMA postvec RESTRICT",
-            )
-            .await?;
+            tx.execute("DROP SCHEMA postvec RESTRICT").await?;
             tx.commit().await?;
             println!("Managed schema removed. User tables and vector columns retained.");
         }
