@@ -805,7 +805,8 @@ h1 {
   padding: 1.5rem 1.25rem 1rem;
   border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-1);
 }
 
 .topo svg {
@@ -989,6 +990,11 @@ h1 {
 
 .band--story { padding: 4.25rem 0; }
 
+html:not(.dark) .band--story,
+html:not(.dark) .home-page > .band:nth-child(4) {
+  background: var(--vp-c-bg-alt);
+}
+
 .home-page h2 {
   margin: 0;
   padding: 0;
@@ -1094,6 +1100,8 @@ h1 {
   border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
   overflow: hidden;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-1);
 }
 
 .tabs__bar {
@@ -1138,7 +1146,7 @@ h1 {
 .tabs__code {
   display: flex;
   align-items: flex-start;
-  padding: 0.6rem 0.75rem;
+  padding: 1rem 1.15rem;
 }
 
 .tabs__code :deep(div[class*="language-"]) {
@@ -1147,15 +1155,24 @@ h1 {
   margin: 0;
   border: 0 !important;
   background: transparent;
+  box-shadow: none;
 }
 
 .tabs__code :deep(pre) {
-  padding: 0.85rem 1rem;
-  font-size: 0.82rem;
-  line-height: 1.66;
+  padding: 0;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.tabs__code :deep(code) {
+  padding: 0 !important;
+  font-size: inherit !important;
+  line-height: inherit;
 }
 
 .tabs__code :deep(.lang),
+.tabs__code :deep(.copy),
 .tabs__code :deep(.line-numbers-wrapper) { display: none; }
 
 .tabs__why {
@@ -1175,7 +1192,7 @@ h1 {
   border: 1px solid var(--vp-c-border);
   border-left: 0.25em solid var(--vp-c-tip-1);
   border-radius: var(--home-radius);
-  background: var(--vp-c-bg);
+  background: var(--vp-c-tip-soft);
   font-size: 0.86rem;
   color: var(--vp-c-text-1);
 }
@@ -1206,7 +1223,8 @@ h1 {
   padding: 1rem 1.15rem;
   border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-1);
 }
 
 .defs dt {
@@ -1234,7 +1252,8 @@ h1 {
   padding: 1.1rem 1.15rem 1.15rem;
   border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-1);
 }
 
 .pledge p {
@@ -1261,7 +1280,8 @@ h1 {
   padding: 1.25rem 1.4rem 1rem;
   border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-1);
 }
 
 .dir__card h3 {

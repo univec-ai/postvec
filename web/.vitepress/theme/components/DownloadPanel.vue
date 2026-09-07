@@ -318,7 +318,7 @@ function assetUrl(name: string): string | null {
   border-left-width: 0.25em;
   border-radius: 6px;
   margin-bottom: 1.5rem;
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
 }
 
 .release-note p {
@@ -347,6 +347,8 @@ function assetUrl(name: string): string | null {
   border-radius: 6px;
   margin-bottom: 2rem;
   overflow: hidden;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-1);
 }
 
 label {
@@ -403,6 +405,8 @@ h3 {
   border: 1px solid var(--vp-c-border);
   border-radius: 6px;
   overflow: hidden;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-1);
   font-family: var(--vp-font-family-mono);
   font-size: 0.8125rem;
 }

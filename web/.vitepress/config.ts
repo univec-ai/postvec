@@ -15,7 +15,7 @@ export default defineConfig({
   },
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
-    ["meta", { name: "theme-color", content: "#ffffff" }],
+    ["meta", { name: "theme-color", content: "#f3f5f1" }],
     ["meta", { name: "color-scheme", content: "light dark" }],
     ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
     [

@@ -1,4 +1,5 @@
 /* GitHub Primer surfaces + GitHub markdown rendering.
+   Light: sage paper with white elevated blocks. Dark unchanged.
    IBM Plex stays: wordmark, body, and code. Brand green is the
    Quick start button and every hyperlink. Info alerts keep Primer blue. */
 
@@ -7,14 +8,14 @@
   --pv-radius-sm: 4px;
   --pv-font-display: "IBM Plex Serif", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
 
-  --pv-canvas: #ffffff;
-  --pv-canvas-subtle: #f6f8fa;
-  --pv-canvas-inset: #eff2f5;
+  --pv-canvas: #f3f5f1;
+  --pv-canvas-subtle: #e8ece6;
+  --pv-canvas-inset: #e4e8e2;
   --pv-fg: #1f2328;
-  --pv-fg-muted: #656d76;
-  --pv-fg-subtle: #6e7781;
-  --pv-border: #d0d7de;
-  --pv-border-muted: #d8dee4;
+  --pv-fg-muted: #3d4a58;
+  --pv-fg-subtle: #66707c;
+  --pv-border: #d3d9d0;
+  --pv-border-muted: #dde3d9;
   --pv-accent: #0969da;
   --pv-accent-emphasis: #0550ae;
   --pv-accent-subtle: #ddf4ff;
@@ -27,12 +28,12 @@
   --pv-danger-emphasis: #cf222e;
   --pv-danger-subtle: #ffebe9;
   --pv-done: #8250df;
-  --pv-shadow-rest: 0 1px 0 rgba(31, 35, 40, 0.04);
-  --pv-code-inline-bg: #818b981f;
-  --pv-code-block-bg: #f6f8fa;
-  --pv-btn-bg: #f6f8fa;
-  --pv-btn-border: #d0d7de;
-  --pv-btn-hover: #f3f4f6;
+  --pv-shadow-rest: 0 1px 2px rgba(31, 35, 40, 0.06);
+  --pv-code-inline-bg: rgb(31 136 61 / 12%);
+  --pv-code-block-bg: #ffffff;
+  --pv-btn-bg: #ffffff;
+  --pv-btn-border: #d3d9d0;
+  --pv-btn-hover: #eef1eb;
   --pv-mark: #1a7f37;
   --pv-field: #1f883d;
 
@@ -41,24 +42,24 @@
   --vp-c-brand-3: #116329;
   --vp-c-brand-soft: rgb(31 136 61 / 12%);
 
-  --vp-c-bg: #ffffff;
-  --vp-c-bg-alt: #f6f8fa;
+  --vp-c-bg: #f3f5f1;
+  --vp-c-bg-alt: #e8ece6;
   --vp-c-bg-elv: #ffffff;
-  --vp-c-bg-soft: #f6f8fa;
+  --vp-c-bg-soft: #e8ece6;
 
-  --vp-c-text-1: #1f2328;
-  --vp-c-text-2: #656d76;
-  --vp-c-text-3: #6e7781;
+  --vp-c-text-1: #1a2330;
+  --vp-c-text-2: #3d4a58;
+  --vp-c-text-3: #66707c;
 
-  --vp-c-divider: #d0d7de;
-  --vp-c-gutter: #f6f8fa;
-  --vp-c-border: #d0d7de;
-  --vp-c-border-soft: rgb(31 35 40 / 8%);
+  --vp-c-divider: #d3d9d0;
+  --vp-c-gutter: #e8ece6;
+  --vp-c-border: #d3d9d0;
+  --vp-c-border-soft: rgb(26 35 48 / 8%);
 
   --vp-c-tip-1: #1a7f37;
   --vp-c-tip-2: #116329;
   --vp-c-tip-3: #0f5329;
-  --vp-c-tip-soft: #dafbe1;
+  --vp-c-tip-soft: #e8f6ee;
 
   --vp-c-warning-1: #9a6700;
   --vp-c-warning-2: #7d5200;
@@ -68,20 +69,20 @@
   --vp-c-danger-2: #a40e26;
   --vp-c-danger-soft: #ffebe9;
 
-  --vp-c-default-soft: #f6f8fa;
+  --vp-c-default-soft: #e8ece6;
 
-  --vp-sidebar-bg-color: #ffffff;
+  --vp-sidebar-bg-color: #e8ece6;
   --vp-nav-bg-color: rgb(255 255 255 / 92%);
-  --vp-code-bg: #818b981f;
-  --vp-code-color: #1f2328;
-  --vp-code-block-bg: #f6f8fa;
-  --vp-code-block-color: #1f2328;
-  --vp-code-copy-code-bg: #ffffff;
-  --vp-code-copy-code-hover-bg: #f3f4f6;
-  --pv-code-fg: #1f2328;
-  --pv-code-btn-border: #d0d7de;
-  --pv-code-btn-bg: #f6f8fa;
-  --pv-code-btn-fg: #656d76;
+  --vp-code-bg: rgb(31 136 61 / 12%);
+  --vp-code-color: #1a2330;
+  --vp-code-block-bg: #ffffff;
+  --vp-code-block-color: #1a2330;
+  --vp-code-copy-code-bg: #f3f5f1;
+  --vp-code-copy-code-hover-bg: #e8ece6;
+  --pv-code-fg: #1a2330;
+  --pv-code-btn-border: #d3d9d0;
+  --pv-code-btn-bg: #f3f5f1;
+  --pv-code-btn-fg: #3d4a58;
 
   --vp-button-brand-bg: #1f883d;
   --vp-button-brand-hover-bg: #1a7f37;
@@ -95,9 +96,9 @@
 
   --vp-home-hero-name-color: #1f2328;
   --vp-home-hero-name-background: none;
-  --vp-shadow-1: 0 1px 0 rgba(31, 35, 40, 0.04);
-  --vp-shadow-2: 0 3px 6px rgba(140, 149, 159, 0.15);
-  --vp-shadow-3: 0 8px 24px rgba(140, 149, 159, 0.2);
+  --vp-shadow-1: 0 1px 2px rgba(26, 35, 48, 0.06);
+  --vp-shadow-2: 0 3px 8px rgba(26, 35, 48, 0.08);
+  --vp-shadow-3: 0 8px 24px rgba(26, 35, 48, 0.1);
 }
 
 .dark {
@@ -270,20 +271,33 @@ html.dark {
 .VPSidebarItem.level-0 > .item .text {
   font-family: var(--vp-font-family-base);
   font-weight: 600;
-  font-size: 0.75rem;
-  color: var(--vp-c-text-3);
-}
-
-.VPSidebarItem .item .text {
   font-size: 0.875rem;
+  color: var(--vp-c-text-1);
 }
 
-.VPSidebarItem .link {
+.VPSidebarItem.level-1 > .item .text,
+.VPSidebarItem.level-2 > .item .text,
+.VPSidebarItem.level-3 > .item .text {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.VPSidebarItem .link,
+.VPSidebarItem.level-0:not(.is-link) > .item {
+  padding: 0.2rem 0.7rem;
   border-radius: var(--pv-radius);
 }
 
 .VPSidebarItem.is-active > .item .link {
-  background: var(--vp-c-bg-soft);
+  background: var(--vp-c-bg-elv);
+}
+
+html:not(.dark) .VPSidebarItem .link:hover {
+  background: rgb(26 35 48 / 6%);
+}
+
+html.dark .VPSidebarItem .link:hover {
+  background: rgb(240 246 252 / 6%);
 }
 
 .VPSidebarItem.is-active > .item .text {
@@ -293,10 +307,6 @@ html.dark {
 
 .VPSidebarItem .indicator {
   display: none;
-}
-
-.VPSidebarItem .link:hover {
-  background: var(--vp-c-bg-soft);
 }
 
 .VPSidebarItem.collapsible.is-link > .item > .link:hover .text,
@@ -478,12 +488,18 @@ html.dark {
 }
 
 .vp-doc tr {
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
   border-top: 1px solid var(--pv-border-muted);
 }
 
 .vp-doc tr:nth-child(2n) {
   background: var(--vp-c-bg-alt);
+}
+
+html:not(.dark) .vp-doc table {
+  background: var(--vp-c-bg-elv);
+  border-radius: var(--pv-radius);
+  box-shadow: var(--vp-shadow-1);
 }
 
 .vp-doc :not(pre) > code {
@@ -502,6 +518,7 @@ html.dark {
   border: 1px solid var(--vp-c-border);
   border-radius: var(--pv-radius);
   background: var(--vp-code-block-bg);
+  box-shadow: var(--vp-shadow-1);
 }
 
 .vp-doc div[class*="language-"] pre {
@@ -570,8 +587,28 @@ html.dark {
   border: 1px solid var(--vp-c-border);
   border-left-width: 0.25em;
   box-shadow: none;
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
   padding: 0.5rem 1rem;
+}
+
+html:not(.dark) .custom-block.info {
+  background: #eef6fc;
+  border-color: #cfe3f2;
+}
+
+html:not(.dark) .custom-block.tip {
+  background: #e8f6ee;
+  border-color: #c5e3d0;
+}
+
+html:not(.dark) .custom-block.warning {
+  background: #fff8e8;
+  border-color: #ecd9a8;
+}
+
+html:not(.dark) .custom-block.danger {
+  background: #fff5f4;
+  border-color: #f0c8c5;
 }
 
 .custom-block .custom-block-title {
@@ -627,7 +664,17 @@ html.dark {
   border: 1px solid var(--vp-c-border);
   border-left-width: 0.25em;
   border-radius: var(--pv-radius);
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-elv);
+}
+
+html:not(.dark) .expected {
+  background: #e8f6ee;
+  border-color: #c5e3d0;
+}
+
+html:not(.dark) .dont {
+  background: #fff5f4;
+  border-color: #f0c8c5;
 }
 
 .expected {
