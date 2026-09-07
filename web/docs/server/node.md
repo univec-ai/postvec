@@ -1,12 +1,15 @@
 ---
-title: Run a node
+title: Install postvec-server
 description: Install the files, choose TLS or --insecure, start postvec-server and read its boot log.
 ---
 
-# Run a node
+# Install postvec-server
 
-One node, from an empty directory. The result is a process serving gRPC on
-`33333` and discovery on `22222`, with at least one model loaded.
+postvec-server is the companion inference process. After this page you
+have a process serving gRPC on `33333` and discovery on `22222`, with at
+least one model loaded. Point PostgreSQL at it with
+[Connect PostgreSQL](/docs/server/connect), or attach a managed database
+with [managed PostgreSQL](/docs/server/managed).
 
 ## 1. Install the package
 
@@ -61,7 +64,7 @@ already put everything in place:
 A node built from a checkout, or a unit without the packaged drop-in, defaults
 to `/var/lib/postvec-server` instead: point `--root` at `/opt/postvec`, or copy
 the tree there to keep the node's inventory separate from any local cluster.
-See [models on a node](/docs/server/models) for pulling more.
+See [models on postvec-server](/docs/server/models) for pulling more.
 
 ## 3. TLS
 
@@ -188,6 +191,6 @@ curl -sk https://127.0.0.1:22222/ready
 Next: [connect PostgreSQL](/docs/server/connect).
 
 - [Dashboard](/docs/server/dashboard)
-- [Models on a node](/docs/server/models)
-- [Node reference](/docs/server/reference)
+- [Models on postvec-server](/docs/server/models)
+- [Reference](/docs/server/reference)
 - [Packages](/docs/install/packages)

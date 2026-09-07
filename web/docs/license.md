@@ -19,7 +19,9 @@ evaluation and every non-production environment are free, including
 inside a company. Each `postvec-server` version converts to the
 PostgreSQL License four years after release.
 
-The extension is unrestricted at runtime. Private-model terms are
+The extension is unrestricted at runtime. It includes local inference,
+public-catalogue models and BYOK connectors for OpenAI, Cohere, Amazon
+Bedrock, Gemini, Mistral, OpenRouter and UniVec. Private-model terms are
 accepted at `model pull` (`--accept-license`). Server compliance is
 contractual.
 
@@ -44,7 +46,8 @@ parties and OEM need an enterprise order.
 | Situation | What you run | What you pay |
 |---|---|---|
 | Self-hosted PostgreSQL, local models, public catalogue | Extension + `postvec setup --embedded` | Nothing |
-| Hosted OpenAI / Cohere / Gemini / ... (your key) | Extension or server + a `providers.d` file | The provider's bill |
+| Self-hosted, inference in [postvec-server](/docs/server/) | Extension + postvec-server | Pro for organization production; personal and non-production free |
+| Hosted OpenAI, Cohere, Bedrock, Gemini, Mistral, OpenRouter or UniVec (your key) | Extension or [postvec-server](/docs/server/) + a `providers.d` file | The provider's bill |
 | RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | `postvec-server` in [managed](/docs/server/managed) mode | Pro, from the first production deployment |
 | Personal production | Either | Nothing |
 | 30-day production evaluation (one per organization) | Either | Nothing for those 30 days |

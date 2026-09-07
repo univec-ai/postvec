@@ -1,10 +1,10 @@
 ---
-title: Node reference
+title: postvec-server reference
 description: postvec-server flags, environment and file keys, health routes, metrics and troubleshooting.
 outline: deep
 ---
 
-# Node reference
+# postvec-server reference
 
 `postvec-server --help` is the authority. This page is for reading what a
 setting does and where it can be set.
@@ -155,7 +155,7 @@ embed entry sends text.
 | Refuses to start over a configuration key | Unknown keys are fatal by design. The error names the key; prefix it with `//` if you meant a comment |
 | Requests queue and time out under load | `postvec_server_requests_in_flight` sitting at `--max-inflight` with rising `TIMEOUT`. Raise it if the box has headroom, or add nodes. Lowering `--predict-timeout-ms` makes the failures faster, not fewer |
 
-- [Run a node](/docs/server/node)
+- [Install postvec-server](/docs/server/node)
 - [Dashboard](/docs/server/dashboard)
-- [Run a fleet](/docs/server/fleet)
+- [Fleet](/docs/server/fleet)
 - [Troubleshooting](/docs/troubleshooting)

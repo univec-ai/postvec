@@ -141,6 +141,6 @@ budget is `--predict-timeout-ms` (default 30 s). Neither route is rate
 limited; put a proxy in front if the network is not yours.
 
 - [Dashboard](/docs/server/dashboard)
-- [Models on a node](/docs/server/models)
-- [Node reference](/docs/server/reference)
+- [Models on postvec-server](/docs/server/models)
+- [Reference](/docs/server/reference)
 - [External providers](/docs/models/providers)

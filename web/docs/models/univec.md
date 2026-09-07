@@ -5,6 +5,11 @@ description: Use UniVec for hosted embeddings or direct vector-space conversion 
 
 # UniVec hosted models
 
+UniVec is one of the [external providers](/docs/models/providers). It is
+the connector that serves hosted embeddings **and** hosted vector
+conversion. Other connectors (OpenAI, Cohere, Amazon Bedrock, Gemini,
+Mistral, OpenRouter) serve embeddings only.
+
 The `univec` connector serves two model types:
 
 | Model type | Provider route | Data sent |
@@ -275,7 +280,7 @@ that finds one offers it (default no); scripts opt in with
 `--api-key-from-login`. The key is **copied** to
 `/etc/postvec/keys/<name>.key` (or `<server-root>/keys/<name>.key`, one per
 connector file, `univec.key` by default) and referenced from the connector
-file, so `postvec logout` does not remove a serving key and two connector
+file. `postvec logout` leaves serving keys in place. Two connector
 files never share one credential. An existing key file holding a different
 key is never replaced; `--replace-copied-key` rotates a key this command
 copied for exactly this connector, verifying the new key before the old one
@@ -304,10 +309,10 @@ moves to `postvec.jobs_dead`. Migrations keep retrying configuration failures.
 Provider `max_concurrent` limits requests in flight. Billing and spending
 limits are enforced by the UniVec account.
 
-## Remote nodes
+## On postvec-server
 
-For `postvec-server`, put the same `univec.toml` on every node under
-`$root/providers.d`. Reload through each node's loopback admin port:
+Put the same `univec.toml` on every [postvec-server](/docs/server/)
+under `$root/providers.d`. Reload through each loopback admin port:
 
 ```bash
 curl --fail --silent --show-error \
@@ -319,7 +324,11 @@ A node that lacks the converter fails requests routed to it. The fleet report
 labels provider-backed embed and convert entries.
 
 - [External providers](/docs/models/providers)
+- [OpenAI](/docs/models/openai) · [Cohere](/docs/models/cohere) ·
+  [Amazon Bedrock](/docs/models/aws) · [Gemini](/docs/models/gemini) ·
+  [Mistral](/docs/models/mistral) · [OpenRouter](/docs/models/openrouter)
 - [Connector files](/docs/models/providers-file)
+- [postvec-server](/docs/server/)
 - [Search a retired space](/docs/guides/bridge)
 - [Change the stored model](/docs/guides/migrate)
 - [Security](/docs/security)

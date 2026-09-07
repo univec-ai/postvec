@@ -28,7 +28,7 @@ risk of changing that dependency.
 
 ## Is a UniVec API key required?
 
-No key is required for the bundled MiniLM model or local search. A key and
+The bundled MiniLM model and local search run without a key. A key and
 `postvec login` are required to pull **private-catalogue** models. That route
 is identity-only, so a dedicated key with a $0 spending limit is suitable.
 
@@ -39,10 +39,14 @@ stored separately. Account details: [univec.ai](https://univec.ai).
 
 ## Can postvec use hosted embedding APIs?
 
-Yes. The built-in connectors cover OpenAI, OpenRouter, Mistral, Gemini,
-Cohere, AWS Bedrock and UniVec. The connector file and the key live on the
-inference side; PostgreSQL holds neither.
-[External providers](/docs/models/providers) is the walkthrough.
+Yes. The built-in connectors cover [OpenAI](/docs/models/openai),
+[Cohere](/docs/models/cohere), [Amazon Bedrock](/docs/models/aws),
+[Gemini](/docs/models/gemini), [Mistral](/docs/models/mistral),
+[OpenRouter](/docs/models/openrouter) and [UniVec](/docs/models/univec).
+The connector file and the key live on the inference side; PostgreSQL
+holds neither. [External providers](/docs/models/providers) is the
+walkthrough. On a remote cluster the files live on
+[postvec-server](/docs/server/).
 
 ## Can UniVec convert stored vectors without a local converter?
 
@@ -51,15 +55,25 @@ route to `migrate()`. Stored vectors leave the inference host for conversion.
 Hosted converters are for `migrate()` / `convert()` only; embed-bridge
 uses local models. See [UniVec hosted models](/docs/models/univec).
 
-## How do I add OpenAI to an existing cluster?
+## How do I add a hosted provider?
 
-```bash
-sudo postvec provider add openai --model text-embedding-3-small
-```
+Each connector is a copy-paste page. The key is prompted for without
+echo:
 
-Then `enable()` the column with `model => 'openai-text-embedding-3-small'`.
+| Provider | Command |
+|---|---|
+| [OpenAI](/docs/models/openai) | `sudo postvec provider add openai --model text-embedding-3-small` |
+| [Cohere](/docs/models/cohere) | `sudo postvec provider add cohere --model embed-v4.0` |
+| [Amazon Bedrock](/docs/models/aws) | `sudo postvec provider add aws --model amazon.titan-embed-text-v2:0 --region us-east-1` |
+| [Gemini](/docs/models/gemini) | `sudo postvec provider add google --model gemini-embedding-001` |
+| [Mistral](/docs/models/mistral) | `sudo postvec provider add mistral --model mistral-embed` |
+| [OpenRouter](/docs/models/openrouter) | `sudo postvec provider add openrouter --model openai/text-embedding-3-small` |
+| [UniVec](/docs/models/univec) | `sudo postvec provider add univec --model baai-bge-m3` |
+
+Then `enable()` the column with the SQL name printed by `provider ls`.
 The call emits a NOTICE that source text will leave the host. Same SQL
-as a local model after that.
+as a local model after that. On postvec-server, add `--path <server-root>
+--acknowledge-in-use`.
 
 ## Can an ada-002 corpus remain unchanged?
 
@@ -80,17 +94,17 @@ Models already present on disk run in the launcher. `model pull` and
 ## Where do provider keys go?
 
 Into `0600` connector files in a `providers.d` directory on the inference
-side: the database host in embedded mode, each `postvec-server` node in
+side: the database host in embedded mode, each `postvec-server` in
 remote mode. The one setting involved, `postvec.providers_path`, holds a
 path. [External providers](/docs/models/providers).
 
 ## How do I run inference off the database host?
 
-Run one or more `postvec-server` nodes and point the cluster at them with
-`postvec setup --grpc ... --http ...`. [Remote inference](/docs/server/) is
-the walkthrough, from one node to a fleet. The node also serves a
-[dashboard](/docs/server/dashboard) on port `22222` for querying loaded
-models and for registry operations.
+Install [postvec-server](/docs/server/node) and point the cluster at it
+with `postvec setup --grpc ... --http ...`. [postvec-server](/docs/server/)
+covers one process, a [fleet](/docs/server/fleet), the
+[dashboard](/docs/server/dashboard) on port `22222`, and
+[managed PostgreSQL](/docs/server/managed).
 
 ## Why is the vector NULL right after INSERT?
 

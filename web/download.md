@@ -15,7 +15,7 @@ Publication channels:
 |---|---|
 | [GitHub Releases](https://github.com/univec-ai/postvec/releases) tagged `postvec-v*` | `.deb` / `.rpm` packages (including `postvec-server`), `SHA256SUMS`, Sigstore attestations, `postvec-prerequisites.sh` |
 | [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pgNN-local` / `-pgNN-remote`) |
-| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec-server) `ghcr.io/univec-ai/postvec-server` | The remote inference node (`0.1.0-1`, moving tag `latest`) |
+| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec-server) `ghcr.io/univec-ai/postvec-server` | postvec-server (`0.1.0-1`, moving tag `latest`) |
 
 The selector reads `univec-ai/postvec` releases tagged `postvec-v*` and
 links assets only when they exist. Install from the downloaded files.
@@ -35,20 +35,20 @@ planned later.
 | `postvec-model-minilm-l6-v2` | Bundled 384-d model; independently versioned (`2.1.0` = registry revision 2, bundle 1) |
 | `postvec-extras` | Metapackage pinning ONNX Runtime and the bundled model. Install it with the extension and CLI. |
 | `postvec-server` | `/usr/bin/postvec-server`, its systemd unit and configuration; one per distribution and architecture, no PostgreSQL major |
-| `...-pgNN-remote` image | PostgreSQL + pgvector + postvec + CLI, remote mode |
+| `...-pgNN-remote` image | PostgreSQL + pgvector + postvec + CLI, remote mode (points at postvec-server) |
 | `...-pgNN-local` image | The above plus ONNX Runtime and MiniLM (both modes) |
-| `postvec-server` image | The node, the CLI, ONNX Runtime and MiniLM, from the packages above |
+| `postvec-server` image | postvec-server, the CLI, ONNX Runtime and MiniLM, from the packages above |
 
 The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
 identifies the target OS. Pick the tag that matches the host.
 
 ## postvec-server
 
-The [remote inference node](/docs/server/) ships with every release, as a
-package and as an image, built from the same commit as the extension and
-tested against it: the release's remote-mode images are smoke-tested through
-this exact node image, and the clean-host install test starts the packaged
-node against the packaged model on every distribution.
+[postvec-server](/docs/server/) ships with every release, as a package
+and as an image, built from the same commit as the extension and tested
+against it: the release's remote-mode images are smoke-tested through
+this exact server image, and the clean-host install test starts the
+packaged server against the packaged model on every distribution.
 
 The same binary includes [managed PostgreSQL](/docs/server/managed):
 schema install, the sync worker and the optional `search(text)` proxy
@@ -63,8 +63,8 @@ runtime and model packages and the PostgreSQL images stay under the
 PostgreSQL License in either inference mode.
 
 Every debug package has a `postvec-server-dbgsym` / `-debuginfo` sibling.
-[Run a node](/docs/server/node) covers installation; the selector above lists
-the file for the chosen distribution and architecture.
+[Install postvec-server](/docs/server/node) covers installation; the selector
+above lists the file for the chosen distribution and architecture.
 
 [Configure the cluster](/docs/install/setup).
 [Docker](/docs/install/docker).

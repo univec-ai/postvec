@@ -16,19 +16,21 @@ as ONNX Runtime from the install.
 
 ## Registry credentials
 
-Remote inference reaches the configured `postvec-server` nodes on the
-deployment network. The registry credential used by `postvec login` and
-`model pull` is stored `0600` per effective user. It is separate from any
-inference credential in `providers.d`, and neither enters a PostgreSQL GUC.
+Remote inference reaches the configured [postvec-server](/docs/server/)
+processes on the deployment network. The registry credential used by
+`postvec login` and `model pull` is stored `0600` per effective user. It
+is separate from any inference credential in `providers.d`, and neither
+enters a PostgreSQL GUC.
 
 Presigned registry URLs are omitted from terminal output, JSON and receipts.
 
 ## Provider credentials
 
-Keys for [external providers](/docs/models/providers) live in `0600`
+Keys for [external providers](/docs/models/providers) (OpenAI, Cohere,
+Amazon Bedrock, Gemini, Mistral, OpenRouter, UniVec) live in `0600`
 connector files in a `0700` directory, owned by the account the inference
 process runs as: the database host in embedded mode, each `postvec-server`
-node in remote mode. A connector file, or a key file it references, whose
+in remote mode. A connector file, or a key file it references, whose
 mode grants group or other bits is refused by name.
 
 The directory itself must not be group- or world-writable, and every
@@ -42,10 +44,10 @@ error message. `postvec.providers_path` holds a path. A key is never a
 command-line argument, and `provider ls` prints the key source rather than
 its value.
 
-SQL connection backends do not dial providers. The inference host makes the
-outbound HTTPS request only for configured models. In embedded mode that host
-is the launcher, which is a PostgreSQL process. In remote mode it is a
-`postvec-server` node.
+The inference host makes the outbound HTTPS request for configured
+models. SQL backends talk to that host over the existing gRPC path. In
+embedded mode that host is the launcher, which is a PostgreSQL process.
+In remote mode it is postvec-server.
 
 A provider-backed embed model receives source text for worker writes and a
 query string for `search()`. A UniVec hosted converter receives stored

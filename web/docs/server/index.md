@@ -1,27 +1,42 @@
 ---
-title: Remote inference
-description: postvec-server ports, disk layout, remote mode and managed PostgreSQL.
+title: postvec-server
+description: Companion inference server for remote mode, GPU fleets, crash isolation and managed PostgreSQL.
 ---
 
-# Remote inference
+# postvec-server
 
-Default mode (`embedded`) runs the engine inside the PostgreSQL launcher.
-Remote mode (`grpc`) runs it in `postvec-server`. PostgreSQL talks to that
-process over gRPC. SQL, the job queue and the wire contract are the same.
-Switching is `postvec.mode` plus a restart.
+postvec-server is the companion inference server for a postvec-enabled
+database. The extension stays in PostgreSQL. The server loads models,
+answers embed and convert requests, and can run the worker for
+[managed PostgreSQL](/docs/server/managed) hosts that cannot load a
+native extension.
 
-Use remote mode for crash isolation (an ONNX fault stays in the node
-process), a dedicated CPU or memory budget, GPU, sharing one engine
-across databases, or a replica that should search.
+The default install runs inference inside PostgreSQL (embedded mode).
+Point the cluster at postvec-server (`postvec.mode = grpc`) when you
+want to:
 
-The same binary also serves [managed PostgreSQL](/docs/server/managed):
-RDS, Aurora, Cloud SQL, Azure, Supabase, Neon and similar hosts that
-cannot load a native extension. There the server installs a plain SQL
-schema and runs the worker itself.
+- Keep a model fault in a separate process from PostgreSQL
+- Run multi-threaded inference beside PostgreSQL on the same VM (the
+  embedded engine is one thread inside the database process)
+- Serve models from CPU or GPU hosts on the network, including a mixed
+  fleet
+- Manage models from the [dashboard](/docs/server/dashboard) or HTTP API
+- Run postvec on RDS, Aurora, Cloud SQL, Azure, Supabase or Neon
 
-One process: loads models from a directory, serves three ports, optionally
-joins a gossip group. Queue, scheduler and SQL stay in PostgreSQL (or, on
-managed hosts, in the plain SQL schema).
+SQL, the job queue and the wire contract stay the same. Switching is
+`postvec setup --grpc` / `--http` plus a restart.
+
+One process: loads models from a directory, serves three ports,
+optionally joins a gossip group. Queue, scheduler and SQL stay in
+PostgreSQL (or, on managed hosts, in the plain SQL schema).
+
+| Situation | Path |
+|---|---|
+| First node on a VM or in Docker | [Install postvec-server](/docs/server/node) |
+| Point an existing cluster at it | [Connect PostgreSQL](/docs/server/connect) |
+| Several nodes | [Fleet](/docs/server/fleet) |
+| RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) |
+| Hosted OpenAI / Cohere / Gemini / ... | Same [provider](/docs/models/providers) files, on each server |
 
 ## Ports
 
@@ -48,14 +63,14 @@ The model layout is the same one embedded mode uses. A tree that
 `postvec model pull` already wrote into works unchanged: name it with
 `--root` or `POSTVEC_SERVER_ROOT`.
 
-- [Run a node](/docs/server/node)
+- [Install postvec-server](/docs/server/node)
 - [Dashboard](/docs/server/dashboard)
 - [Connect PostgreSQL](/docs/server/connect)
-- [Models on a node](/docs/server/models)
-- [Run a fleet](/docs/server/fleet)
+- [Models](/docs/server/models)
+- [Fleet](/docs/server/fleet)
 - [Managed PostgreSQL](/docs/server/managed)
 - [HTTP API](/docs/server/http-api)
-- [Node reference](/docs/server/reference)
+- [Reference](/docs/server/reference)
 
 ## License
 

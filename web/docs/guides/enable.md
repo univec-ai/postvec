@@ -37,9 +37,9 @@ SELECT postvec.enable(
 ```
 
 The function returns the registry identifier. A
-[provider-backed](/docs/models/providers) model also emits a NOTICE
-naming the provider and the column, because source text will leave the
-host.
+[provider-backed](/docs/models/providers) model (OpenAI, Cohere, Bedrock,
+Gemini, Mistral, OpenRouter or UniVec) also emits a NOTICE naming the
+provider and the column, because source text will leave the host.
 
 ## 3. Wait for the worker
 

@@ -24,13 +24,19 @@ it.
 
 On RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon,
 [managed PostgreSQL](/docs/server/managed) installs a plain SQL schema
-and runs the worker in `postvec-server`.
+and runs the worker in [postvec-server](/docs/server/). The same binary
+is the remote inference process for self-hosted clusters
+([install postvec-server](/docs/server/node)).
 
 ## Related work
 
 - Generation (`rag()`, chat completion) stays in the application.
 - Provider API keys live in the inference layer; see
-  [external providers](/docs/models/providers).
+  [external providers](/docs/models/providers)
+  ([OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
+  [Amazon Bedrock](/docs/models/aws), [Gemini](/docs/models/gemini),
+  [Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter),
+  [UniVec](/docs/models/univec)).
 - Document parsing (PDF, HTML, Office) stays in the ingest pipeline.
 - Storage and ANN indexes are pgvector's.
 - The Bedrock signer takes static credentials.

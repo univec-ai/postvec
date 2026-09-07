@@ -11,6 +11,11 @@ PostgreSQL major. Needs PostgreSQL 16, 17 or 18, pgvector >= 0.8,
 superuser and a restart. The [release artifacts](/download) page lists
 names and publication status.
 
+Embedded mode (section 2) runs inference inside PostgreSQL.
+[postvec-server](/docs/server/) (section 3) is the companion process for
+remote mode: a separate process, GPU hosts, a fleet, or
+[managed PostgreSQL](/docs/server/managed).
+
 Installation stages:
 
 - Local install - the packages below
@@ -50,17 +55,18 @@ Extension, CLI, ONNX Runtime and the bundled MiniLM model.
 Default installation directory is `/opt/postvec`. MiniLM is 384-d.
 Embedded mode starts with `postvec setup --embedded`.
 
-## 3. Extension + CLI only
+## 3. Extension + CLI only (remote mode)
 
-This payload is for remote mode, where `postvec-server` nodes perform
-inference:
+This payload is for remote mode, where [postvec-server](/docs/server/)
+performs inference on this host or on another machine:
 
 <PgSnippet id="packages-remote" />
 
-The nodes install from the same release: the `postvec-server` package plus
-the runtime and model packages, on hosts that need no PostgreSQL. See
-[run a node](/docs/server/node). That package is **Business Source
-License 1.1**; the identifier is on the [release page](/download#postvec-server).
+Install postvec-server from the same release: the `postvec-server`
+package plus the runtime and model packages, on hosts that need no
+PostgreSQL. See [install postvec-server](/docs/server/node). That
+package is **Business Source License 1.1**; the identifier is on the
+[release page](/download#postvec-server).
 
 Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies
 resolve.

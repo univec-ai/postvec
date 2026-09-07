@@ -118,8 +118,10 @@ docker rm -f postvec
 ```
 
 An existing cluster uses [packages](/docs/install/packages) then
-[configure](/docs/install/setup). RDS, Aurora, Cloud SQL, Azure,
-Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
+[configure](/docs/install/setup). To run inference in a separate
+process, or on a GPU host, install [postvec-server](/docs/server/node)
+and [connect PostgreSQL](/docs/server/connect). RDS, Aurora, Cloud SQL,
+Azure, Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
 
 A populated vector column uses [`adopt()`](/docs/guides/adopt). For a
 retired or provider-only space, [search that space](/docs/guides/bridge)

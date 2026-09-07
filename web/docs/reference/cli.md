@@ -11,9 +11,9 @@ postvec [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 ```
 
 A package install places files on disk. Cluster and database configuration
-happen through the `postvec` CLI. The inference node is a separate
-binary; see [node reference](/docs/server/reference) and
-[dashboard](/docs/server/dashboard).
+happen through the `postvec` CLI. [postvec-server](/docs/server/) is a
+separate binary; see [postvec-server reference](/docs/server/reference)
+and [dashboard](/docs/server/dashboard).
 
 | Goal | Command |
 |---|---|

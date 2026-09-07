@@ -1,12 +1,13 @@
 ---
-title: Run a fleet
-description: Several postvec-server nodes, the inventory parity rule, drift detection and rolling restarts.
+title: Fleet
+description: Several postvec-server processes, the inventory parity rule, drift detection and rolling restarts.
 ---
 
-# Run a fleet
+# Fleet
 
-Every node in a fleet is identical: same command, same ports, same models.
-Gossip answers one question, which is who else is alive.
+A fleet is several postvec-server processes with the same models, serving
+the same cluster. Every member is identical: same command, same ports,
+same models. Gossip answers who else is alive.
 
 ## Start the nodes
 
@@ -118,5 +119,5 @@ firewalls forget it.
 
 - [Connect PostgreSQL](/docs/server/connect)
 - [Dashboard](/docs/server/dashboard)
-- [Models on a node](/docs/server/models)
-- [Node reference](/docs/server/reference)
+- [Models on postvec-server](/docs/server/models)
+- [Reference](/docs/server/reference)

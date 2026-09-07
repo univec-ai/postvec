@@ -10,13 +10,15 @@ Installation stages:
 - Local install - docker image, packages or manual install
 - Cluster configuration - `postvec setup`
 
-Managed cloud databases use [postvec-server](/docs/server/managed) with
-a plain SQL schema.
+[postvec-server](/docs/server/) is a separate install: the companion
+inference process for remote mode, GPU hosts and managed cloud
+databases.
 
 | Host | Path |
 |---|---|
 | Try it locally | [Docker](/docs/install/docker) or [quick start](/docs/quickstart) |
 | Self-hosted PostgreSQL 16, 17 or 18 | [Packages](/docs/install/packages), then [configure](/docs/install/setup) |
+| Inference off the database (GPU, isolation, fleet) | [Install postvec-server](/docs/server/node), then [connect PostgreSQL](/docs/server/connect) |
 | RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon | [Managed PostgreSQL](/docs/server/managed) |
 | Development tree | [From source](/docs/install/source) |
 

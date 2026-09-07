@@ -48,10 +48,11 @@ Use the `-remote` tag and point at your `postvec-server` nodes:
 
 <PgSnippet id="docker-remote" />
 
-The node itself is published too, as `ghcr.io/univec-ai/postvec-server`,
-composed of the same packages and serving the bundled model out of the box.
-[Run a node](/docs/server/node) covers it; the release's remote images are
-smoke-tested against exactly that image.
+The companion server is published too, as
+`ghcr.io/univec-ai/postvec-server`, composed of the same packages and
+serving the bundled model out of the box.
+[Install postvec-server](/docs/server/node) covers it; the release's
+remote images are smoke-tested against exactly that image.
 
 ## Volume path
 
@@ -94,7 +95,8 @@ listeners stay loopback-only.
 
 ## External providers
 
-To serve a hosted model from a container, give it a `providers.d` and a key.
+To serve a hosted model from a container (OpenAI, Cohere, Bedrock, Gemini,
+Mistral, OpenRouter or UniVec), give it a `providers.d` and a key.
 The lighter path keeps the key out of the filesystem and names a variable the
 postmaster already has:
 
@@ -120,8 +122,12 @@ Kubernetes projected secret volumes are symlinks into a `..data` directory
 and are mounted world-readable, so they cannot be referenced as
 `api_key_file`. Use `api_key_env` there.
 
-Format and walkthrough: [external providers](/docs/models/providers).
-UniVec conversion entries use the same mount and permissions.
+Walkthrough: [external providers](/docs/models/providers). Per-provider
+setup: [OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
+[Amazon Bedrock](/docs/models/aws), [Gemini](/docs/models/gemini),
+[Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter),
+[UniVec](/docs/models/univec). Conversion entries use the same mount and
+permissions.
 
 ## Adding another database
 

@@ -13,7 +13,8 @@ description: enable, adopt, search a retired space, BM25, migrate and chunking.
 | Hybrid, keyword or vector search | [`search()`](/docs/guides/search), [BM25](/docs/guides/bm25) | One call. `semantic_weight` mixes vector and BM25. |
 | Ready to change the stored model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. Do this after search on the current space is working. |
 | Long source documents | [Recursive chunking](/docs/guides/chunking) | A managed 1:N destination stores passage vectors. Search still returns documents. |
-| Hosted embedding API (OpenAI, Gemini, ...) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
+| Hosted embedding API (OpenAI, Cohere, Bedrock, Gemini, Mistral, OpenRouter, UniVec) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
+| GPU, process isolation, a fleet | [postvec-server](/docs/server/) | Companion inference process. SQL is unchanged. |
 | RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) | Plain SQL schema. Worker runs in `postvec-server`. |
 
 Functions live in the `postvec` schema (`postvec.enable(...)`).
@@ -134,6 +135,7 @@ refresh job; the worker splits it and fans out one embed job per chunk.
 ::::
 
 - [External providers](/docs/models/providers)
+- [postvec-server](/docs/server/)
 - [BM25](/docs/guides/bm25)
 - [Filters](/docs/guides/filters)
 - [Templates](/docs/guides/templates)

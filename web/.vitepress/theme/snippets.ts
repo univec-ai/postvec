@@ -166,8 +166,8 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         `Pinned, remote:    ${t.image}`,
         `Moving, local:     ${t.imageMoving}`,
         `Moving, remote:    ${t.imageMovingRemote}`,
-        `Pinned, node:      ${t.imageServer}`,
-        `Moving, node:      ${t.imageServerMoving}`,
+        `Pinned, postvec-server:  ${t.imageServer}`,
+        `Moving, postvec-server:  ${t.imageServerMoving}`,
       ].join("\n"),
   },
 

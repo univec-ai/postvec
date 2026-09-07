@@ -7,7 +7,11 @@ description: providers.d format, key sources, loading rules, model names and doc
 
 One TOML file per provider. The host serves what the file declares.
 
-Walkthrough: [external providers](/docs/models/providers).
+Copy-paste setup: [OpenAI](/docs/models/openai),
+[Cohere](/docs/models/cohere), [Amazon Bedrock](/docs/models/aws),
+[Gemini](/docs/models/gemini), [Mistral](/docs/models/mistral),
+[OpenRouter](/docs/models/openrouter), [UniVec](/docs/models/univec).
+Shared rules: [external providers](/docs/models/providers).
 
 ## File format
 
@@ -102,9 +106,9 @@ A few AWS specifics:
   `bedrock-runtime.<region>.amazonaws.com` from it, so `base_url` does
   not apply to `aws` and `provider add` refuses the flag. A region is
   restricted to `[a-z0-9-]`.
-- Bedrock's `InvokeModel` does not batch, so `max_batch` is 1. On a
-  Titan-backed column, lower `postvec.batch_size` rather than raising
-  the timeout.
+- Bedrock's `InvokeModel` sends one text per request, so `max_batch` is
+  1. On a Titan-backed column, lower `postvec.batch_size` rather than
+  raising the timeout.
 - `provider add` and `provider test` probe the **bearer-token**
   variant. A SigV4 file is served normally but cannot be probed from
   the CLI. Use `--no-verify` and confirm with `provider ls` plus a
@@ -177,8 +181,8 @@ sequence.
   connector with no credential, an `aws` file with no `region`, an
   implausible `dim` or an unusable `base_url` skips the entire file,
   including its other models.
-- The schema is per connector. A field the chosen connector does not
-  read is refused.
+- The schema is per connector. Unknown fields for that connector type
+  are refused.
 - `enabled = false` parses and serves nothing.
 - A public name may appear once. Two entries in one file: the file is
   refused. Two files claiming the same name: neither serves until one
@@ -248,10 +252,9 @@ UniVec ids are not in the CLI's built-in catalogue. `provider add univec`
 measures an embed model's dimension. For example, `--model baai-bge-m3`
 becomes `univec-baai-bge-m3`.
 
-For an id the catalogue does not know, the name is derived
-mechanically: lowercase, and every character outside `[a-z0-9._-]`
-becomes `-`. `provider_model_id` keeps the id exactly as the API
-expects it.
+For an unlisted id, the name is derived mechanically: lowercase, and
+every character outside `[a-z0-9._-]` becomes `-`. `provider_model_id`
+keeps the id exactly as the API expects it.
 
 `gemini` is accepted as an alias for `google`, and `amazon` for `aws`.
 The file always records the canonical name. An alias never changes
@@ -275,7 +278,7 @@ Useful options on `add`:
 | `--api-key-file P` / `--api-key-env VAR` / `--key-stdin` | Choose the key source. Without any of them and with a TTY, a hidden prompt asks |
 | `--base-url URL` | Gateways, Azure-shaped fronts or a mock server. Not accepted for `aws` |
 | `--region` | Required for `aws`, and only valid there |
-| `--dim N` | For a single model the built-in catalogue does not know, together with `--no-verify` |
+| `--dim N` | For a single unlisted model, together with `--no-verify` |
 | `--convert-source ID --convert-target ID` | UniVec provider ids for a hosted converter |
 | `--source-model NAME --target-model NAME --source-dim N` | Postvec route names and the input dimension for a hosted converter |
 | `--converter-name NAME` | Override the derived `univec-convert-<source>-to-<target>` name |
@@ -326,7 +329,7 @@ reported as disabled. `REFUSES`: the file will not load. `ls` and
 | `provider.directory` | **Fails** when the directory is group- or world-writable, or when ownership or ancestors fail the write-safety rules. **Warns** on mere read/execute bits. "Does not exist" is a **pass** |
 | `provider.file` | A file the serving host would refuse: mode, unknown fields, two sources for one secret, an unknown type, no credential, a bad `dim` / `region` / `base_url`, no `[[models]]`. **Warns** on a plaintext `base_url` to a non-loopback host |
 | `provider.key-source` | A referenced key file that is missing, a symlink or too permissive, or a named variable that is absent. Every source, including both halves of an AWS SigV4 pair |
-| `provider.served` | A configured model the running host does not currently serve. Skipped for `enabled = false` files |
+| `provider.served` | A configured model missing from the running host. Skipped for `enabled = false` files |
 
 A complaint about an environment variable can be a false alarm.
 `doctor` observes its own environment, and the postmaster's is what
@@ -337,28 +340,25 @@ reload. When no host answers on a cluster target, the result is
 partial (exit 3): the files are correct and a restart applies them. On
 a `--path` target the same situation is a note, not a partial result.
 
-## Not supported
+## Limits
 
-| | Why |
+| Topic | What the product does |
 |---|---|
-| Provider API keys as GUCs, catalog rows or SQL arguments | The product position. Not a missing feature |
-| A spend or token budget | `max_concurrent` bounds calls in flight, not money |
-| AWS session tokens, instance profiles, IMDS, the credential chain | The signer takes static credentials |
-| Vertex AI as a distinct connector, Azure OpenAI beyond `base_url` | Deferred. `base_url` already fronts OpenAI-shaped endpoints |
-| Cohere int8 and binary embeddings | Deferred |
-| Gemini models other than `gemini-embedding-001` | Refused at load. The contracts are not uniform |
-| `Retry-After`-aware backoff, per-provider token budgets | Deferred |
-| Reranking providers | A separate roadmap item |
-| Provider-backed converters in `embed-bridge` routes | Hosted converters are direct conversion routes. Embed-bridge resolves local engine models only |
-| A private or corporate CA for provider TLS | The connectors use rustls with the bundled Mozilla root set, not the system trust store |
-| Authenticated inference transport | Loopback gRPC (embedded) and node gRPC (remote) are plaintext and unauthenticated. Restrict the node's gRPC port. Use provider-side quotas as the spend control |
-
-Provider outputs are not covered by the golden-vector suite. Hosted
-models are not reproducible, and pinning them would test the provider
-rather than postvec.
+| Credentials | Keys live in `providers.d` on the inference host. PostgreSQL holds a path |
+| Spend control | `max_concurrent` bounds calls in flight. Set quotas on the provider |
+| AWS auth | Static SigV4 pair or a Bedrock bearer token |
+| Azure OpenAI | `base_url` fronts the `/openai/v1` API |
+| Gemini | `gemini-embedding-001` only (the documented contract) |
+| Hosted converters | Direct routes for `migrate()` and `convert()`. Embed-bridge uses local models |
+| Provider TLS | rustls with the bundled Mozilla root set |
+| Inference transport | Loopback gRPC (embedded) and postvec-server gRPC (remote) are plaintext. Restrict the gRPC port. Use provider-side quotas as the spend control |
 
 - [External providers](/docs/models/providers)
+- [OpenAI](/docs/models/openai) · [Cohere](/docs/models/cohere) ·
+  [Amazon Bedrock](/docs/models/aws) · [Gemini](/docs/models/gemini) ·
+  [Mistral](/docs/models/mistral) · [OpenRouter](/docs/models/openrouter)
 - [UniVec hosted models](/docs/models/univec)
+- [postvec-server](/docs/server/)
 - [CLI](/docs/reference/cli)
 - [GUCs](/docs/reference/gucs)
 - [Docker](/docs/install/docker#external-providers)

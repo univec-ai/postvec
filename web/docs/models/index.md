@@ -8,8 +8,8 @@ description: Discovery, embed versus convert and which CLI commands apply in eac
 `postvec.models` caches what the engine currently advertises.
 
 On an embedded host, add models with `postvec model pull`. In remote
-mode, administer them on the `postvec-server` nodes ([models on a
-node](/docs/server/models)). Models load from the engine root on disk.
+mode, administer them on [postvec-server](/docs/server/models). Models
+load from the engine root on disk.
 
 Workers refresh the cache on an interval and prune stale entries only
 after **every** discovery endpoint succeeded.
@@ -42,16 +42,19 @@ working.
 ## Hosted models
 
 A model in `postvec.models` can also come from a connector file on the
-inference side. Those files declare embed models served by OpenAI, Gemini,
-Cohere, Mistral, AWS Bedrock, OpenRouter or UniVec. UniVec can also declare
-direct converters. They appear in the same cache with `model_type`, source
-and target names and dimensions. The connector file is what the host
-serves. There is no `pull` or `activate` step.
+inference side. Those files declare embed models served by
+[OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
+[Amazon Bedrock](/docs/models/aws), [Gemini](/docs/models/gemini),
+[Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter)
+or [UniVec](/docs/models/univec). UniVec can also declare direct
+converters. They appear in the same cache with `model_type`, source and
+target names and dimensions. `provider add` writes the connector file
+and the host serves it. `pull` / `activate` apply to local models.
 
 The credential lives in that file, never in PostgreSQL.
 [External providers](/docs/models/providers) is the walkthrough;
-[connector files](/docs/models/providers-file) is the format. See
-[UniVec hosted models](/docs/models/univec) for direct conversion.
+each provider page is a copy-paste setup. In remote mode the files live
+on [postvec-server](/docs/server/).
 
 Two connector files that claim the same public name serve neither. A name
 a loaded local model already owns stays local.
@@ -79,7 +82,7 @@ bundled MiniLM package works without the registry. The
 | Mode | Install / activate / remove / upgrade |
 |---|---|
 | Embedded | `postvec model pull / activate / deactivate / upgrade / rm` on this host |
-| Remote | Each `postvec-server` node, via the CLI or the [dashboard](/docs/server/dashboard). Cluster-local `model pull` is refused. See [models on a node](/docs/server/models) |
+| Remote | Each `postvec-server`, via the CLI or the [dashboard](/docs/server/dashboard). Cluster-local `model pull` is refused. See [models on postvec-server](/docs/server/models) |
 | Either | `model ls` - local inventory, or node-advertised names in remote |
 
 `pull` installs a model **deactivated**. `model activate` / `deactivate`
@@ -108,5 +111,9 @@ Upgrading the extension is a separate lifecycle.
 - [Login](/docs/models/login)
 - [Air-gapped](/docs/models/air-gapped)
 - [External providers](/docs/models/providers)
+- [OpenAI](/docs/models/openai) · [Cohere](/docs/models/cohere) ·
+  [Amazon Bedrock](/docs/models/aws) · [Gemini](/docs/models/gemini) ·
+  [Mistral](/docs/models/mistral) · [OpenRouter](/docs/models/openrouter)
 - [UniVec hosted models](/docs/models/univec)
 - [Connector files](/docs/models/providers-file)
+- [postvec-server](/docs/server/)

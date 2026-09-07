@@ -6,9 +6,10 @@ description: Operational differences between embedded inference and remote gRPC 
 # Embedded vs remote
 
 Embedded is the default: inference on the database host. Remote mode
-runs inference on `postvec-server` nodes. Use remote to isolate
-inference from PostgreSQL (crash domain, CPU, GPU) or to share one
-engine across databases.
+runs inference on [postvec-server](/docs/server/). Use postvec-server
+when you want a separate process from PostgreSQL, multi-threaded
+inference on the same VM, a CPU or GPU fleet, model management from the
+dashboard, or postvec on a managed cloud database.
 
 <figure class="pvd">
 <svg viewBox="0 0 632 368" role="img" aria-labelledby="pvd-modes-title pvd-modes-desc">
@@ -64,16 +65,16 @@ engine across databases.
 restart. SQL, the job queue, retry policy and the gRPC wire contract
 stay the same.
 
-| | Embedded | Remote (`grpc`) |
+| | Embedded | Remote (`grpc`) with postvec-server |
 |---|---|---|
-| Inference | One engine inside the PostgreSQL launcher | `postvec-server` nodes you operate |
-| Discovery | Loopback HTTP on the launcher | `GET /config` on those nodes |
+| Inference | One engine inside the PostgreSQL launcher (one thread) | `postvec-server`, multi-threaded, CPU or GPU |
+| Discovery | Loopback HTTP on the launcher | `GET /config` on those servers |
 | DB-host assets | Extension, CLI, ONNX Runtime, models | Extension + CLI |
-| Raw text leaves the DB host | Stays on the host, except columns bound to an [external provider](/docs/models/providers) | Goes to the configured nodes. Provider-bound columns continue to the hosted provider |
-| Model commands | `postvec model pull / upgrade / rm / activate` | On each node: CLI or [dashboard](/docs/server/dashboard) |
-| Engine crash | Restarts the launcher | Isolated in the node process |
-| Dashboard | | Port `22222` on the node |
-| Typical use | Single-node, private, edge, air-gapped, regulated | Crash-domain isolation, GPU, one engine shared by several databases |
+| Raw text leaves the DB host | Stays on the host, except columns bound to an [external provider](/docs/models/providers) | Goes to the configured servers. Provider-bound columns continue to the hosted provider |
+| Model commands | `postvec model pull / upgrade / rm / activate` | On each server: CLI or [dashboard](/docs/server/dashboard) |
+| Model fault | Restarts the launcher | Stays in the postvec-server process |
+| Dashboard | | Port `22222` on the server |
+| Typical use | Single-node, private, edge, air-gapped | Isolation, GPU, a fleet, managed PostgreSQL |
 
 The same package supports both modes. `setup --embedded` (the default)
 selects embedded; `setup --grpc` / `--http` selects remote.
@@ -124,11 +125,12 @@ endpoints it was given, so a converter present on some nodes and not
 others fails intermittently. `postvec-server status --fleet` is the
 check.
 
-`postvec-server` is a CPU or GPU inference node on the deployment
-network. Every node in a fleet runs the same command and binds the same
-ports; models are files on disk that each node loads. The node also
-serves a [dashboard](/docs/server/dashboard) on the discovery port.
-Running one node, and running several, is [remote inference](/docs/server/).
+postvec-server is a CPU or GPU inference process on the deployment
+network. Every member of a fleet runs the same command and binds the
+same ports; models are files on disk that each process loads. The
+server also serves a [dashboard](/docs/server/dashboard) on the
+discovery port. [Install postvec-server](/docs/server/node) is one
+process; [fleet](/docs/server/fleet) is several.
 
 The gRPC port is plaintext and unauthenticated by design, so the nodes
 belong on a trusted private network. [External provider](/docs/models/providers)

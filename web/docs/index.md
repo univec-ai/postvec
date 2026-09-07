@@ -16,8 +16,10 @@ you want a different stored model, vectors convert in place.
 Inference runs on the database host by default. Models live on disk. The
 bundled MiniLM model needs no API key.
 
-A column can also use a hosted embedding API. The key stays in the
-inference layer. [External providers](/docs/models/providers).
+A column can also use a hosted embedding API: OpenAI, Cohere, Amazon
+Bedrock, Gemini, Mistral, OpenRouter or UniVec (embed and convert).
+The key stays in the inference layer.
+[External providers](/docs/models/providers).
 
 ## Starting points
 
@@ -40,12 +42,14 @@ PostgreSQL 16, 17 or 18. pgvector >= 0.8.
 | RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon | [Managed PostgreSQL](/docs/server/managed): a plain SQL schema and a worker in `postvec-server` |
 
 [Quick start](/docs/quickstart) is the same sequence in one container.
+[postvec-server](/docs/server/) is the companion process for remote
+inference, GPU hosts and managed databases.
 
 Self-hosted first-time setup:
 
 1. [Packages](/docs/install/packages) or [Docker](/docs/install/docker).
 2. [Configure the cluster](/docs/install/setup) with `postvec setup`.
-   Expected: `postvec.models` lists MiniLM (or whatever the node
+   Expected: `postvec.models` lists MiniLM (or whatever postvec-server
    advertises in remote mode).
 3. [Enable](/docs/guides/enable) a text column, or [adopt](/docs/guides/adopt)
    one that already has vectors.
@@ -61,18 +65,21 @@ Leave `search_path` as it is.
 
 ## Inference modes
 
-| | Embedded (default) | Remote (`grpc`) |
+| | Embedded (default) | Remote (`grpc`) with [postvec-server](/docs/server/) |
 |---|---|---|
-| Where inference runs | Inside the PostgreSQL launcher | `postvec-server` nodes you run |
-| Text leaves the DB host | Stays on the host, except columns bound to an [external provider](/docs/models/providers) | Goes to those nodes |
-| Models | `postvec model ...` on this host | On each node, CLI or [dashboard](/docs/server/dashboard) |
+| Where inference runs | Inside the PostgreSQL launcher (one thread) | `postvec-server`, multi-threaded, CPU or GPU |
+| Text leaves the DB host | Stays on the host, except columns bound to an [external provider](/docs/models/providers) | Goes to those servers |
+| Models | `postvec model ...` on this host | On each server, CLI or [dashboard](/docs/server/dashboard) |
 
 SQL is the same in both modes. A package install plus `setup --embedded`
-uses `/opt/postvec` as the engine root. Remote mode isolates inference
-from the database process (CPU, GPU, crash domain).
+uses `/opt/postvec` as the engine root.
+
+Use [postvec-server](/docs/server/) when you want inference in a
+separate process, a GPU host, a fleet, model management from the
+dashboard, or postvec on a managed cloud database.
 
 [Embedded vs remote](/docs/concepts/modes).
-[Remote inference](/docs/server/).
+[Install postvec-server](/docs/server/node).
 [Managed PostgreSQL](/docs/server/managed) when the database cannot load
 `postvec.so`.
 

@@ -56,13 +56,13 @@ connector directory. Omit it to keep `/etc/postvec/providers.d`. `setup
 --embedded` creates that directory empty (`0700`, cluster owner) if it is
 absent.
 
-## Remote gRPC
+## Remote gRPC (postvec-server)
 
-Remote mode uses `postvec-server` nodes on the local network. Typical
-reasons: GPU inference, engine faults off the database host, one engine
-shared by several databases. SQL is unchanged. See
-[embedded vs remote](/docs/concepts/modes) and
-[remote inference](/docs/server/).
+Remote mode uses [postvec-server](/docs/server/) on the local network.
+Typical reasons: GPU inference, a separate process from PostgreSQL, one
+engine shared by several databases, model management from the dashboard.
+SQL is unchanged. See [embedded vs remote](/docs/concepts/modes) and
+[postvec-server](/docs/server/).
 
 Every node must carry the same enabled models: postvec round-robins the
 configured endpoints, so a converter present on two nodes out of three

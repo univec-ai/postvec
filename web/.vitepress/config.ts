@@ -66,11 +66,13 @@ export default defineConfig({
         items: [
           { text: "Docker", link: "/docs/install/docker" },
           { text: "Packages", link: "/docs/install/packages" },
+          { text: "postvec-server", link: "/docs/server/node" },
           { text: "Managed PostgreSQL", link: "/docs/server/managed" },
           { text: "From source", link: "/docs/install/source" },
           { text: "Configure", link: "/docs/install/setup" },
         ],
       },
+      { text: "postvec-server", link: "/docs/server/" },
       { text: "Downloads", link: "/download" },
     ],
     sidebar: {
@@ -90,6 +92,7 @@ export default defineConfig({
           items: [
             { text: "Docker", link: "/docs/install/docker" },
             { text: "Packages", link: "/docs/install/packages" },
+            { text: "postvec-server", link: "/docs/server/node" },
             { text: "Managed PostgreSQL", link: "/docs/server/managed" },
             { text: "From source", link: "/docs/install/source" },
             { text: "Configure", link: "/docs/install/setup" },
@@ -157,10 +160,16 @@ export default defineConfig({
               ],
             },
             {
-              text: "Providers",
+              text: "External providers",
               link: "/docs/models/providers",
-              collapsed: true,
+              collapsed: false,
               items: [
+                { text: "OpenAI", link: "/docs/models/openai" },
+                { text: "Cohere", link: "/docs/models/cohere" },
+                { text: "Amazon Bedrock", link: "/docs/models/aws" },
+                { text: "Gemini", link: "/docs/models/gemini" },
+                { text: "Mistral", link: "/docs/models/mistral" },
+                { text: "OpenRouter", link: "/docs/models/openrouter" },
                 { text: "UniVec", link: "/docs/models/univec" },
                 { text: "Connector files", link: "/docs/models/providers-file" },
               ],
@@ -168,24 +177,24 @@ export default defineConfig({
           ],
         },
         {
-          text: "Remote",
+          text: "postvec-server",
           collapsed: false,
           items: [
             { text: "Overview", link: "/docs/server/" },
             {
-              text: "Run a node",
+              text: "Install postvec-server",
               link: "/docs/server/node",
               collapsed: true,
               items: [
                 { text: "Dashboard", link: "/docs/server/dashboard" },
-                { text: "Connect", link: "/docs/server/connect" },
-                { text: "Node models", link: "/docs/server/models" },
+                { text: "Connect PostgreSQL", link: "/docs/server/connect" },
+                { text: "Models", link: "/docs/server/models" },
               ],
             },
             { text: "Fleet", link: "/docs/server/fleet" },
             { text: "Managed PostgreSQL", link: "/docs/server/managed" },
             { text: "HTTP API", link: "/docs/server/http-api" },
-            { text: "Node reference", link: "/docs/server/reference" },
+            { text: "Reference", link: "/docs/server/reference" },
           ],
         },
         {

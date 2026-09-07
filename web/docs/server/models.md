@@ -1,9 +1,9 @@
 ---
-title: Models on a node
-description: Pull, activate, load, unload and remove models on a postvec-server node, plus external providers.
+title: Models on postvec-server
+description: Pull, activate, load, unload and remove models on postvec-server, plus external providers.
 ---
 
-# Models on a node
+# Models on postvec-server
 
 Pull, activate and load are separate steps:
 
@@ -142,6 +142,6 @@ files](/docs/models/providers-file).
 UniVec conversion setup: [UniVec hosted models](/docs/models/univec).
 
 - [Dashboard](/docs/server/dashboard)
-- [Run a fleet](/docs/server/fleet)
+- [Fleet](/docs/server/fleet)
 - [Pull, activate, upgrade, remove](/docs/models/pull)
 - [How models work](/docs/models/)

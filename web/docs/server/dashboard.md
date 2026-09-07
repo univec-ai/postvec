@@ -5,11 +5,11 @@ description: Query loaded models and manage the registry from the postvec-server
 
 # Dashboard
 
-A running node serves a dashboard on the discovery port (`22222`) when
-the UI files are present. The `postvec-server` package and image install
-them at `/opt/postvec/server/ui`. A checkout-built binary needs
-`--web-ui` pointing at a built `web-ui/dist`, or the same directory
-under the engine root.
+postvec-server serves a dashboard on the discovery port (`22222`) when
+the UI files are present. The package and image install them at
+`/opt/postvec/server/ui`. A checkout-built binary needs `--web-ui`
+pointing at a built `web-ui/dist`, or the same directory under the
+engine root.
 
 Open `https://<node>:22222` (or `http://` if the node was started with
 `--insecure`). The browser talks to this node and, if you choose them,
@@ -106,7 +106,7 @@ postvec-server --web-ui "$PWD/dist" --insecure
 
 Without a built UI, `/` on the discovery port answers a JSON stub.
 
-- [Run a node](/docs/server/node)
-- [Models on a node](/docs/server/models)
+- [Install postvec-server](/docs/server/node)
+- [Models on postvec-server](/docs/server/models)
 - [HTTP API](/docs/server/http-api)
 - [Login and private catalogue](/docs/models/login)

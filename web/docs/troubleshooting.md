@@ -22,7 +22,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `CREATE EXTENSION` cannot find pgvector | Install pgvector ≥ 0.8 for the **same** major |
 | `CREATE EXTENSION` is denied | Superuser; postvec is untrusted |
 | No advancing `worker_last_beat` | Preload, `postvec.database`, restart finished, worker slots, server log |
-| Jobs pile up with endpoint errors | Restore the inference nodes; an empty endpoint list leaves jobs pending |
+| Jobs pile up with endpoint errors | Restore [postvec-server](/docs/server/); an empty endpoint list leaves jobs pending |
 | Embedded engine will not start | Engine path, unversioned `libonnxruntime.so`, readable descriptors, loopback ports |
 | Search returns FTS only | Query embedding failed while degradation was enabled; restore inference or disable degradation |
 | Search is slow | No usable ANN index for the entry's distance. Keyword traffic also wants a GIN (`create_fts_index => true`). [BM25](/docs/guides/bm25) |
@@ -38,7 +38,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `DROP DATABASE` is blocked | Worker holds a connection. `uninstall` then `dropdb --force` |
 | `sudo model pull` is anonymous | Credentials are per user. `sudo postvec login` |
 | `model pull` says package/manual owned | Pull through the package manager or as the original owner. |
-| Remote `model pull` returns an error | Models are administered on each [`postvec-server` node](/docs/server/models), CLI or [dashboard](/docs/server/dashboard) |
+| Remote `model pull` returns an error | Models are administered on [postvec-server](/docs/server/models), CLI or [dashboard](/docs/server/dashboard) |
 | Remote `MODEL_NOT_LOADED`, intermittently | Fleet inventory drift. `postvec-server status --fleet` names the model and the nodes missing it |
 | `provider ls` says `NOT served` | The host has not reloaded the connector file. Rerun a `provider` command or restart. `doctor` names which |
 | `provider ls` says the host **REFUSES** a file | The file will not load however often you reload. Fix what the line names. `ls` and `doctor` apply the loader's own rules |
@@ -47,6 +47,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | Provider jobs retry with a 401 | Bad or revoked key. Fix it, then `retry_dead()` for rows that already gave up |
 | UniVec provider jobs retry with a 402 | No available credit, or the key's spending limit is exhausted. Fix the account limit, then `retry_dead()` for dead rows |
 | Search on a retired space has no semantic ranks | Load the embed model, local converter and `embed-bridge` executor on one engine. Hosted converters serve `migrate()` / `convert()` only. [Search a retired space](/docs/guides/bridge) |
+| Inference on a separate host, GPU, or a fleet | [Install postvec-server](/docs/server/node), then [connect PostgreSQL](/docs/server/connect) |
 | Managed install on RDS / Aurora / Cloud SQL | [Managed PostgreSQL](/docs/server/managed). Use a direct endpoint and a worker role that can own the schema. |
 | Uninstall exits 3 | SQL changed; config left alone. Follow the printed file/line |
 | Exit 4 | Restart the selected cluster, then `doctor --deep` |

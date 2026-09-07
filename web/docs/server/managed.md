@@ -283,7 +283,7 @@ index waits in `awaiting_index`; with `index_mode => 'auto'` the server
 builds it concurrently and completes the migration, otherwise build it and
 call `migration_finalize()` again.
 
-- [Run a node](/docs/server/node)
+- [Install postvec-server](/docs/server/node)
 - [SQL functions](/docs/guides/)
 - [Search a retired space](/docs/guides/bridge)
 - [BM25](/docs/guides/bm25)

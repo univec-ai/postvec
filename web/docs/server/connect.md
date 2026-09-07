@@ -5,9 +5,10 @@ description: Point a cluster at postvec-server nodes, prove the pairing with doc
 
 # Connect PostgreSQL
 
-A cluster in remote mode needs two endpoint lists: gRPC for inference, HTTP
-for discovery. The database host installs the extension and the CLI. Engine
-assets go on the node.
+A cluster in remote mode talks to [postvec-server](/docs/server/). It
+needs two endpoint lists: gRPC for inference, HTTP for discovery. The
+database host installs the extension and the CLI. Engine assets go on
+postvec-server.
 
 ## 1. Install on the database host
 
@@ -112,8 +113,8 @@ embedding route. List what the cluster needs before switching:
 SELECT DISTINCT model FROM postvec.status();
 ```
 
-- [Run a node](/docs/server/node)
+- [Install postvec-server](/docs/server/node)
 - [Dashboard](/docs/server/dashboard)
-- [Run a fleet](/docs/server/fleet)
+- [Fleet](/docs/server/fleet)
 - [Embedded vs remote](/docs/concepts/modes)
 - [Configure the cluster](/docs/install/setup)
