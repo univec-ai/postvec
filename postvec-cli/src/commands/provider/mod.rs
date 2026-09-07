@@ -68,9 +68,11 @@ pub fn owner_of_nearest_existing(dir: &Path) -> Option<FileOwner> {
 
 /// What a provider command works against.
 pub enum ProviderTarget {
-    /// `--path DIR`: a providers.d directory, no cluster involved.
+    /// `--path DIR` or `POSTVEC_PROVIDERS_PATH`: a providers.d directory,
+    /// no cluster involved. `source` names which, for messages.
     Path {
         dir: PathBuf,
+        source: &'static str,
         /// Inherited from the root the operator named, so files written
         /// under `sudo` still belong to the account that serves them.
         owner: Option<FileOwner>,
@@ -92,6 +94,15 @@ impl ProviderTarget {
         match self {
             ProviderTarget::Path { dir, .. } => dir,
             ProviderTarget::Embedded { dir, .. } => dir,
+        }
+    }
+
+    /// `--path` or `POSTVEC_PROVIDERS_PATH` for a files-only target, which
+    /// checks no columns.
+    pub fn files_only(&self) -> Option<&'static str> {
+        match self {
+            ProviderTarget::Path { source, .. } => Some(source),
+            ProviderTarget::Embedded { .. } => None,
         }
     }
 
@@ -231,7 +242,7 @@ pub async fn resolve_target(
 }
 
 /// A direct filesystem target from `--path` or the environment override.
-fn path_target(path: PathBuf, source: &str) -> Result<ProviderTarget> {
+fn path_target(path: PathBuf, source: &'static str) -> Result<ProviderTarget> {
     // The root must already be there. It is the only thing that says who
     // the files belong to, and a typo would otherwise build a whole
     // credential tree in a directory nothing reads.
@@ -247,7 +258,7 @@ fn path_target(path: PathBuf, source: &str) -> Result<ProviderTarget> {
     }
     let dir = providers_dir_from_path(&path);
     let owner = owner_of_nearest_existing(&dir);
-    Ok(ProviderTarget::Path { dir, owner })
+    Ok(ProviderTarget::Path { dir, source, owner })
 }
 
 async fn target_from_live(mut context: Context) -> Result<ProviderTarget> {
@@ -1720,8 +1731,6 @@ pub struct ReloadOutcome {
     pub models: usize,
     #[serde(default)]
     pub errors: Vec<String>,
-    #[serde(default)]
-    pub restart_needed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1808,14 +1817,6 @@ pub async fn reload_host(
                     journal.incomplete(format!(
                         "provider file problem reported by the host: {error}"
                     ));
-                }
-                if outcome.restart_needed {
-                    journal.incomplete(
-                        "the provider concurrency budget grew past what the host's ingress \
-                         limit was sized with at start; models serve now, but full provider \
-                         throughput needs a host restart"
-                            .to_string(),
-                    );
                 }
                 return;
             }

@@ -804,10 +804,8 @@ pub async fn serve(
 
     let response_slots = Arc::new(Semaphore::new(max_inflight.max(1)));
     // Tower ingress is the decode backstop, widened by provider
-    // `max_concurrent` loaded at boot. A later reload that raises the
-    // budget still uses this width until restart (`restart_needed` on
-    // the reload route).
-    let ingress_limit = max_inflight.max(1) + gateway.inflight_budget();
+    // `max_concurrent`; the gateway widens it again on reload.
+    let ingress = gateway.ingress(max_inflight.max(1));
     // Provider response-lifetime bound, in MiB of response tree. One
     // shared ceiling, not one per connector file.
     let provider_response_bytes = Arc::new(Semaphore::new(PROVIDER_RESPONSE_BUDGET_MIB as usize));
@@ -826,8 +824,8 @@ pub async fn serve(
     // counts against grpc-timeout.
     tonic::transport::Server::builder()
         .layer(ResponsePermitLayer { predict_timeout })
-        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-            ingress_limit,
+        .layer(tower::limit::GlobalConcurrencyLimitLayer::with_semaphore(
+            ingress,
         ))
         .concurrency_limit_per_connection(4)
         .add_service(service)

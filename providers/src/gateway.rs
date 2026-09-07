@@ -386,6 +386,10 @@ impl Inner {
 /// the atomic snapshot swap in [`Gateway::reload`].
 pub struct Gateway {
     inner: RwLock<Arc<Inner>>,
+    /// Tower ingress permits shared with the host: its own inflight cap
+    /// plus this gateway's budget, widened (never narrowed) by reloads.
+    ingress: Arc<Semaphore>,
+    granted: std::sync::atomic::AtomicUsize,
 }
 
 impl Gateway {
@@ -393,6 +397,8 @@ impl Gateway {
     pub fn empty() -> Self {
         Gateway {
             inner: RwLock::new(Arc::new(Inner::default())),
+            ingress: Arc::new(Semaphore::new(0)),
+            granted: Default::default(),
         }
     }
 
@@ -445,7 +451,21 @@ impl Gateway {
             errors,
         };
         *self.inner.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(inner);
+        let budget = self.inflight_budget();
+        let granted = self
+            .granted
+            .fetch_max(budget, std::sync::atomic::Ordering::AcqRel);
+        if budget > granted {
+            self.ingress.add_permits(budget - granted);
+        }
         Ok(report)
+    }
+
+    /// The host's ingress semaphore: `base` permits of its own plus the
+    /// provider budget, kept in step with reloads. Call once per host.
+    pub fn ingress(&self, base: usize) -> Arc<Semaphore> {
+        self.ingress.add_permits(base);
+        self.ingress.clone()
     }
 
     fn snapshot(&self) -> Arc<Inner> {
@@ -483,7 +503,7 @@ impl Gateway {
     }
 
     /// Sum of the per-provider `max_concurrent` caps: the
-    /// `provider_inflight_budget` the hosts add to their ingress limit.
+    /// The sum of per-provider `max_concurrent`, mirrored into [`Gateway::ingress`].
     /// Reads the configured caps, never live semaphore state, so the number
     /// is stable regardless of in-flight embeds.
     pub fn inflight_budget(&self) -> usize {

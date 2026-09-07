@@ -474,10 +474,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         // answers that question; here nothing can, and `--path` is the
         // documented way to administer remote nodes, so it must not be the
         // one mode with no gate.
-        let unknown = if !scanned {
-            vec!["every database served by this node (not inspectable from --path)".to_string()]
-        } else {
-            unknown_databases.clone()
+        let unknown = match target.files_only() {
+            Some(source) => vec![format!(
+                "databases served by this host ({source} edits files only)"
+            )],
+            None => unknown_databases.clone(),
         };
         if mine.is_empty() && unknown.is_empty() {
             continue;
@@ -490,11 +491,12 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         });
     }
     if endpoint_changes && !scanned && !public_names.is_empty() {
-        output.note(
-            "--path: this changes where source text is SENT for every model in this file, and \
-             no cluster is in scope to list the bound columns. Check `postvec.registry` on the \
-             database hosts that use this node",
-        );
+        output.note(&format!(
+            "{}: this changes where source text is sent for every model in this file; \
+             columns bound to them were not checked. See postvec.registry on the database \
+             hosts that use this node",
+            target.files_only().unwrap_or("--path")
+        ));
     }
     // Editing `base_url` or `region` on an existing file is a legitimate
     // reason to run this command with no new model and no new key (an Azure
@@ -528,12 +530,13 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             after_sha256: "provider file".to_string(),
         });
     }
-    if matches!(target, ProviderTarget::Path { .. }) && scanned_note_needed(&public_names) {
-        output.note(
-            "--path: no cluster is in scope, so columns bound to these names were not \
-             checked — on the database side, `postvec provider add` without --path performs \
-             that check",
-        );
+    if let Some(source) = target
+        .files_only()
+        .filter(|_| scanned_note_needed(&public_names))
+    {
+        output.note(&format!(
+            "{source} edits files only; columns already bound to these names were not checked"
+        ));
     }
     // Prospective document, checked before anything is spent. Compose it
     // here so the whole file, not just the model ids the probe touches, is
@@ -689,8 +692,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         output.note(if scanned {
             "--acknowledge-in-use was not needed: no existing column is bound to these names"
         } else {
-            "--acknowledge-in-use had no effect: with --path there is no cluster to check, \
-             and no column was inspected"
+            "--acknowledge-in-use had no effect: a files-only target checks no columns"
         });
     }
     plan::confirm_in_use_with(
@@ -700,9 +702,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         args.dry_run,
         Prompt::from_environment(),
         plan::interactive_provider_privacy_acknowledgement,
-        "existing columns bound to {models} will start sending their source text to the \
-         provider on the next worker cycle; pass --acknowledge-in-use together with --yes to \
-         proceed knowingly. --yes deliberately does not stand in for it",
+        "columns bound to {models} start sending their source text to the provider at the \
+         next worker cycle; pass --acknowledge-in-use with --yes to accept that",
     )?;
     plan::confirm(&plan, args.yes, None, Prompt::from_environment())?;
 

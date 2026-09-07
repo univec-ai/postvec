@@ -62,9 +62,6 @@ pub struct ServerState {
     /// External-provider gateway. Empty in the zero-config case; shared by
     /// `/config`, the gRPC dispatch and the admin reload route.
     pub gateway: Arc<Gateway>,
-    /// Provider inflight budget the gRPC ingress limit was sized with at
-    /// boot. The reload route warns when a reload outgrows it.
-    pub startup_provider_budget: usize,
     pub started_at: SystemTime,
     /// Serializes model load/unload. Held across the whole
     /// admission-check-and-mutate sequence so the resident-count check is an
@@ -88,7 +85,6 @@ impl ServerState {
         cluster: Option<Arc<ClusterManager>>,
         gateway: Arc<Gateway>,
     ) -> Arc<Self> {
-        let startup_provider_budget = gateway.inflight_budget();
         let managed = crate::managed::ManagedRuntime::new(&settings.managed);
         Arc::new(Self {
             managed,
@@ -98,7 +94,6 @@ impl ServerState {
             metrics,
             cluster,
             gateway,
-            startup_provider_budget,
             started_at: SystemTime::now(),
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             pulls: std::sync::Mutex::new(Vec::new()),

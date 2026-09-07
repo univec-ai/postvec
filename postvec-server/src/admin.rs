@@ -365,10 +365,7 @@ pub(crate) async fn unload_models(
 /// Rescan providers.d and swap the gateway snapshot in atomically.
 /// `postvec provider add/rm --path <root>` calls this after writing
 /// files; a restart also picks changes up. A failed (structural) reload
-/// keeps the previous snapshot. The body carries `restart_needed` when
-/// the new provider concurrency budget exceeds what the gRPC ingress
-/// limit was sized with at boot. Serving is correct either way; full
-/// provider throughput needs the restart.
+/// keeps the previous snapshot.
 async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) {
     let gateway = state.gateway.clone();
     let path = state.settings.providers_path.clone();
@@ -387,8 +384,7 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
         // Fail closed: a scan failure keeps the previous snapshot rather
         // than reloading against a narrowed reservation.
         let local = models::reserved_local_names(&root, &engine)?;
-        let report = gateway.reload(&path, &local)?;
-        Ok::<_, String>((report, gateway.inflight_budget()))
+        gateway.reload(&path, &local)
     })
     .await;
     match outcome {
@@ -400,30 +396,18 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("reload task failed: {e}"),
         ),
-        Ok(Ok((report, budget))) => {
-            let restart_needed = budget > state.startup_provider_budget;
-            if restart_needed {
-                log::warn!(
-                    "provider reload raised the outbound concurrency budget ({} -> {budget}); \
-                     provider models serve now, but full provider throughput needs a restart \
-                     to widen the gRPC ingress limit",
-                    state.startup_provider_budget
-                );
-            }
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "success": true,
-                    "data": {
-                        "path": served_path,
-                        "providers": report.providers,
-                        "models": report.models,
-                        "errors": report.errors,
-                        "restart_needed": restart_needed,
-                    }
-                })),
-            )
-        }
+        Ok(Ok(report)) => (
+            StatusCode::OK,
+            Json(json!({
+                "success": true,
+                "data": {
+                    "path": served_path,
+                    "providers": report.providers,
+                    "models": report.models,
+                    "errors": report.errors,
+                }
+            })),
+        ),
     }
 }
 
@@ -608,11 +592,10 @@ mod tests {
         assert_eq!(ordered, names(&["solo"]));
     }
 
-    /// The reload route swaps the gateway snapshot in and reports
-    /// restart_needed when the provider budget outgrows what the gRPC
-    /// ingress limit was sized with at boot.
+    /// The reload route swaps the gateway snapshot in and widens the
+    /// ingress permits by the new provider budget.
     #[tokio::test]
-    async fn providers_reload_swaps_the_gateway_and_reports_restart_needed() {
+    async fn providers_reload_swaps_the_gateway_and_widens_ingress() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("models").join("onnx-runtime")).unwrap();
@@ -648,7 +631,8 @@ mod tests {
             None,
             gateway,
         );
-        assert_eq!(state.startup_provider_budget, 0);
+        let ingress = state.gateway.ingress(1);
+        assert_eq!(ingress.available_permits(), 1);
 
         // The operator adds the first provider file, then reloads.
         std::fs::create_dir_all(&providers_path).unwrap();
@@ -673,7 +657,10 @@ mod tests {
         let (status, Json(body)) = providers_reload(state.clone()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["data"]["models"], json!(1));
-        assert_eq!(body["data"]["restart_needed"], json!(true));
+        assert_eq!(
+            ingress.available_permits(),
+            1 + state.gateway.inflight_budget()
+        );
         // The directory this node reads, so `postvec provider … --path DIR`
         // can tell "I reloaded your files" from "some other host answered".
         assert_eq!(

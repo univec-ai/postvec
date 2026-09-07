@@ -547,15 +547,10 @@ async fn admin_unload(
 /// admin handlers read descriptors from (the `enabled` admission check and
 /// the unload ordering both live on disk, not in the engine).
 /// Everything the listener needs about external providers: the shared
-/// gateway, where its files live (`/admin/providers/reload` rescans them),
-/// and the inflight budget the gRPC ingress limit was sized with at
-/// spawn — a reload can grow the gateway past it; serving stays correct,
-/// but full provider throughput needs a restart, and the reload handler
-/// warns when that happens.
+/// gateway and where its files live (`/admin/providers/reload` rescans them).
 pub(super) struct ProviderState {
     pub(super) gateway: Arc<Gateway>,
     pub(super) providers_path: PathBuf,
-    pub(super) startup_budget: usize,
 }
 
 pub(super) fn spawn(
@@ -599,7 +594,6 @@ pub(super) fn spawn(
     let config_gateway = providers.gateway.clone();
     let reload_gateway = providers.gateway;
     let providers_path = providers.providers_path;
-    let startup_provider_budget = providers.startup_budget;
     let load_engine = engine.clone();
     let load_root = root.to_path_buf();
     let load_allowed = Arc::new(allowed_models);
@@ -648,8 +642,7 @@ pub(super) fn spawn(
                         // snapshot rather than reloading against a narrowed
                         // reservation.
                         let local = crate::client::embedded::reserved_local_names(&root, &engine)?;
-                        let report = gateway.reload(&path, &local)?;
-                        Ok::<_, String>((report, gateway.inflight_budget()))
+                        gateway.reload(&path, &local)
                     })
                     .await;
                     match outcome {
@@ -662,36 +655,18 @@ pub(super) fn spawn(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             &format!("reload task failed: {e}"),
                         ),
-                        Ok(Ok((report, budget))) => {
-                            // The gRPC ingress width is fixed at spawn.
-                            // Providers added by reload still serve, but
-                            // they share the startup width until a restart.
-                            // Say so once, here, and put the same fact in
-                            // the body so `postvec provider add` can print
-                            // it without scraping logs.
-                            let restart_needed = budget > startup_provider_budget;
-                            if restart_needed {
-                                log::warn!(
-                                    "provider reload raised the outbound concurrency budget \
-                                     ({startup_provider_budget} -> {budget}); provider models \
-                                     serve now, but full provider throughput needs a \
-                                     PostgreSQL restart to widen the ingress limit"
-                                );
-                            }
-                            (
-                                StatusCode::OK,
-                                Json(json!({
-                                    "success": true,
-                                    "data": {
-                                        "path": served_path,
-                                        "providers": report.providers,
-                                        "models": report.models,
-                                        "errors": report.errors,
-                                        "restart_needed": restart_needed,
-                                    }
-                                })),
-                            )
-                        }
+                        Ok(Ok(report)) => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "success": true,
+                                "data": {
+                                    "path": served_path,
+                                    "providers": report.providers,
+                                    "models": report.models,
+                                    "errors": report.errors,
+                                }
+                            })),
+                        ),
                     }
                 }
             }),
@@ -777,7 +752,6 @@ mod tests {
             ProviderState {
                 gateway: Arc::new(Gateway::empty()),
                 providers_path: root.join("providers.d"),
-                startup_budget: 0,
             },
         )
         .unwrap()
@@ -948,7 +922,6 @@ dim = 999
             ProviderState {
                 gateway,
                 providers_path: providers_dir.clone(),
-                startup_budget: 0,
             },
         )
         .unwrap();
@@ -966,10 +939,6 @@ dim = 999
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["success"], json!(true));
         assert_eq!(body["data"]["models"], json!(2));
-        // The spawn-time budget was 0 and the reload raised it: the body
-        // says a restart is needed for full provider throughput (the CLI
-        // prints this after `provider add`).
-        assert_eq!(body["data"]["restart_needed"], json!(true));
         // Which directory this host reads. `postvec provider … --path DIR`
         // tries loopback listeners blind, so without this it could credit
         // an unrelated host with applying a change it never saw.
@@ -1066,7 +1035,6 @@ dim = 999
             ProviderState {
                 gateway: Arc::new(Gateway::empty()),
                 providers_path: root.join("providers.d"),
-                startup_budget: 0,
             },
         )
         .unwrap();

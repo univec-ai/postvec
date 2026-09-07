@@ -287,8 +287,10 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     }
     let mut unknown_databases = if truly_going_away.is_empty() {
         Vec::new()
-    } else if !scanned {
-        vec!["every database served by this node (not inspectable from --path)".to_string()]
+    } else if let Some(source) = target.files_only() {
+        vec![format!(
+            "databases served by this host ({source} edits files only)"
+        )]
     } else {
         unknown_databases
     };
@@ -317,10 +319,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
             .collect();
         // `--path` cannot inspect a cluster: UNKNOWN, never empty, for the
         // same reason `provider add` treats it that way.
-        let unknown = if !scanned {
-            vec!["every database served by this node (not inspectable from --path)".to_string()]
-        } else {
-            activated_unknown.clone()
+        let unknown = match target.files_only() {
+            Some(source) => vec![format!(
+                "databases served by this host ({source} edits files only)"
+            )],
+            None => activated_unknown.clone(),
         };
         if mine.is_empty() && unknown.is_empty() {
             continue;
@@ -370,10 +373,10 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
             after_sha256: "provider file".to_string(),
         });
     }
-    if matches!(target, ProviderTarget::Path { .. }) {
-        output.note(
-            "--path: no cluster is in scope, so columns bound to these names were not checked",
-        );
+    if let Some(source) = target.files_only() {
+        output.note(&format!(
+            "{source} edits files only; columns bound to these names were not checked"
+        ));
     }
     output.show_plan(&plan);
 
@@ -395,8 +398,7 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
             "--acknowledge-in-use was not needed: no managed column loses its embedding route \
              to this change"
         } else {
-            "--acknowledge-in-use acknowledged nothing: with --path there is no cluster to \
-             check, so no column was inspected"
+            "--acknowledge-in-use had no effect: a files-only target checks no columns"
         });
     }
     // One confirmation, worded for what this removal actually does. The

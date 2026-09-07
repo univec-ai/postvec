@@ -147,9 +147,9 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
     }
     if matches!(target, ModelTarget::Path(_)) && !selected.is_empty() {
         output.note(
-            "--path: no cluster is in scope, so columns still declaring these models were not \
-             checked, and nothing was unloaded — stop the serving process, or run this against \
-             the cluster, if either matters",
+            "--path edits files only: columns still declaring these models were not checked \
+             and nothing was unloaded. Stop the serving process, or run this against the \
+             cluster, if either matters",
         );
     }
     output.show_plan(&plan);
@@ -187,8 +187,7 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
             "--acknowledge-in-use was not needed: no managed column loses its embedding route \
              to this change"
         } else {
-            "--acknowledge-in-use had no effect: with --path there is no cluster to check, \
-             and no column was inspected"
+            "--acknowledge-in-use had no effect: --path checks no columns"
         });
     }
     // The in-use gate runs before the ordinary confirmation, and before any
@@ -425,7 +424,7 @@ mod tests {
         );
         // The unreadable database is named for both models, never assumed clean.
         assert!(
-            described.contains("analytics: could not be inspected"),
+            described.contains("analytics: not inspected"),
             "{described}"
         );
         assert_eq!(plan.in_use_models(), ["m", "other"]);

@@ -699,12 +699,12 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
 
     // `--path` cannot scan columns, so `--yes` alone must not remove a
     // route. The lost-route acknowledgement is demanded with databases
-    // marked UNKNOWN, same as `add`.
+    // marked not inspected, same as `add`.
     let refused = run(&["provider", "rm", "openai", "--path", root_arg, "--yes"]);
     assert_ne!(code(&refused), 0, "{}", stdout(&refused));
     let text = format!("{}{}", stdout(&refused), stderr(&refused));
     assert!(text.contains("--acknowledge-in-use"), "{text}");
-    assert!(text.contains("UNKNOWN"), "{text}");
+    assert!(text.contains("not inspected"), "{text}");
     assert!(file.exists(), "nothing removed without the acknowledgement");
 
     let removed = run(&[
@@ -1550,7 +1550,7 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
     );
     let text = format!("{}{}", stdout(&refused), stderr(&refused));
     assert!(
-        text.contains("where source text is SENT"),
+        text.contains("where source text is sent"),
         "an endpoint move must announce the recipient change:\n{text}"
     );
     assert!(text.contains("--acknowledge-in-use"), "{text}");

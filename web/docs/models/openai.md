@@ -17,6 +17,8 @@ postvec provider ls
 sudo postvec doctor --database app
 ```
 
+In a container: `docker exec -it postvec postvec provider add openai --model text-embedding-3-small`.
+
 The command prompts for the key without echo, writes
 `/etc/postvec/providers.d/openai.toml` (`0600`), probes the key with one
 embed call, reloads the host and refreshes `postvec.models`.

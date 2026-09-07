@@ -944,15 +944,13 @@ fn spawn_inner(
     let response_slots = Arc::new(Semaphore::new(max_inflight.max(1)));
     // Tower ingress stays the decode-amplification backstop, widened by
     // the sum of per-provider `max_concurrent` so network-bound provider
-    // calls never queue behind CPU-bound ONNX. The budget is the gateway
-    // loaded at startup; a later `/admin/providers/reload` that raises it
-    // still shares this width until the next restart (serving is correct,
-    // admission is tighter; the reload endpoint warns). Zero-config:
-    // budget 0, size unchanged. Residual: a burst of engine EmbedTexts
-    // can occupy the extra tower slots, decode, then wait on
-    // `response_slots`. Extra decoded RSS exists only when providers are
-    // configured; callers still carry `grpc-timeout`.
-    let ingress_limit = max_inflight.max(1) + gateway.inflight_budget();
+    // calls never queue behind CPU-bound ONNX; the gateway widens it
+    // again when a reload raises the budget. Zero-config: budget 0, size
+    // unchanged. Residual: a burst of engine EmbedTexts can occupy the
+    // extra tower slots, decode, then wait on `response_slots`. Extra
+    // decoded RSS exists only when providers are configured; callers
+    // still carry `grpc-timeout`.
+    let ingress = gateway.ingress(max_inflight.max(1));
     // The response-lifetime bound for the provider path, in MiB of response
     // tree. Fixed rather than derived from the provider count: it is an
     // aggregate memory ceiling, and memory does not grow because a second
@@ -990,8 +988,8 @@ fn spawn_inner(
             // is refused by the handler's exhausted-budget pre-check instead
             // of starting a fresh full budget of native work.
             .layer(ResponsePermitLayer { predict_timeout })
-            .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-                ingress_limit,
+            .layer(tower::limit::GlobalConcurrencyLimitLayer::with_semaphore(
+                ingress,
             ))
             .concurrency_limit_per_connection(4)
             .add_service(service)
@@ -1720,9 +1718,7 @@ mod gateway_tests {
     }
 
     /// A reload that adds the FIRST provider (zero-config start, then
-    /// `provider add`) serves through the wire without a restart. The tower
-    /// ingress width stays at its spawn-time size until restart — that
-    /// residual is a logged warning, not a serving failure.
+    /// `provider add`) serves through the wire without a restart.
     #[test]
     fn reload_that_adds_the_first_provider_serves_through_the_wire() {
         use std::os::unix::fs::PermissionsExt;

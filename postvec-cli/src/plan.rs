@@ -297,10 +297,7 @@ impl PlanStep {
                     text.push_str(&format!("\n      {}", column.describe()));
                 }
                 for database in unknown_databases {
-                    text.push_str(&format!(
-                        "\n      {database}: could not be inspected, so columns depending on \
-                         {model} are UNKNOWN"
-                    ));
+                    text.push_str(&format!("\n      {database}: not inspected"));
                 }
                 text.push_str(&format!(
                     "\n    search(), embed() and the worker will fail for those entries until \
@@ -316,23 +313,16 @@ impl PlanStep {
                 unknown_databases,
             } => {
                 let mut text = format!(
-                    "WARNING: these columns are bound to {model}, which external provider \
-                     {provider:?} is about to serve:"
+                    "WARNING: columns bound to {model} start sending their source text to \
+                     provider {provider:?} at the next worker cycle:"
                 );
                 for column in columns {
                     text.push_str(&format!("\n      {}", column.describe()));
                 }
                 for database in unknown_databases {
-                    text.push_str(&format!(
-                        "\n      {database}: could not be inspected, so columns bound to \
-                         {model} are UNKNOWN"
-                    ));
+                    text.push_str(&format!("\n      {database}: not inspected"));
                 }
-                text.push_str(&format!(
-                    "\n    from the next worker cycle their SOURCE TEXT is sent to \
-                     {provider:?} for embedding — no SQL change and no further notice. \
-                     Stored vectors are not touched."
-                ));
+                text.push_str("\n    No SQL changes. Stored vectors stay as they are.");
                 text
             }
             PlanStep::RefreshModelCache { database } => {
@@ -515,16 +505,17 @@ impl Plan {
     }
 
     pub fn headline(&self) -> String {
+        let target = match self.cluster.strip_prefix("path:") {
+            Some(dir) => dir.to_string(),
+            None => format!("cluster {}", self.cluster),
+        };
         if self.is_noop() {
             format!(
-                "postvec {}: cluster {} is already in the requested state",
-                self.command, self.cluster
+                "postvec {}: {target} is already in the requested state",
+                self.command
             )
         } else {
-            format!(
-                "postvec {} will change cluster {}:",
-                self.command, self.cluster
-            )
+            format!("postvec {} will change {target}:", self.command)
         }
     }
 
@@ -745,7 +736,7 @@ pub fn interactive_route_change_acknowledgement(models: &[String]) -> Result<Str
 /// which columns start sending text; the operator types the names back.
 pub fn interactive_provider_privacy_acknowledgement(models: &[String]) -> Result<String> {
     eprint!(
-        "Type {} to confirm those columns' source text may be sent to the provider: ",
+        "Type {} to confirm that source text of the bound columns may be sent to the provider: ",
         models.join(" ")
     );
     read_line()

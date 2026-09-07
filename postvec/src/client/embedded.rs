@@ -542,10 +542,6 @@ fn try_init() -> Result<(), String> {
             providers::gateway::Gateway::empty()
         }
     });
-    // Ingress width the gRPC server is about to be sized with. The reload
-    // endpoint warns when a later reload outgrows it.
-    let startup_provider_budget = gateway.inflight_budget();
-
     let server = server::spawn(
         engine.clone(),
         &runtime,
@@ -567,7 +563,6 @@ fn try_init() -> Result<(), String> {
         http::ProviderState {
             gateway,
             providers_path: cfg.providers_path.clone(),
-            startup_budget: startup_provider_budget,
         },
     ) {
         Ok((handle, _)) => handle,

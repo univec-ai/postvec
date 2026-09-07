@@ -58,8 +58,15 @@ postvec provider ls
 sudo postvec doctor --database app
 ```
 
-On postvec-server, pass the engine root. `--acknowledge-in-use` is
-required because `--path` cannot scan a cluster:
+In a container the CLI runs as root, and the `-local` and postvec-server
+images set `POSTVEC_PROVIDERS_PATH`, so no `sudo` and no `--path`:
+
+```bash
+docker exec -it postvec postvec provider add openai --model text-embedding-3-small
+```
+
+On a postvec-server host, pass the engine root. A file target checks no
+columns, so `--acknowledge-in-use` stands in for that check:
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
