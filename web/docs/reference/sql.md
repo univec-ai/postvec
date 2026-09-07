@@ -59,7 +59,7 @@ Guides: [enable](/docs/guides/enable) · [adopt](/docs/guides/adopt) ·
 | `migrate.strategy` | `convert` (default), `reembed`, `auto` |
 | `migrate.reindex` | `manual` (default), `blocking` |
 | `chunking` | `none` (default), `recursive` |
-| `create_fts_index` | `false` (default), `true` - GIN for the [BM25](/docs/guides/bm25) leg |
+| `create_fts_index` | `false` (default), `true` - GIN for the [BM25](/docs/guides/bm25) path |
 | `fts_config` | a `regconfig`, default `pg_catalog.english` |
 
 ## Grants
