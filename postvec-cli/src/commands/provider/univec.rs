@@ -811,11 +811,8 @@ mod tests {
             PathBuf::from("/etc/postvec/keys/univec.key")
         );
         assert_eq!(
-            key_path(
-                Path::new("/var/lib/postvec-server/providers.d"),
-                "univec-staging"
-            ),
-            PathBuf::from("/var/lib/postvec-server/keys/univec-staging.key")
+            key_path(Path::new("/opt/postvec/providers.d"), "univec-staging"),
+            PathBuf::from("/opt/postvec/keys/univec-staging.key")
         );
     }
 

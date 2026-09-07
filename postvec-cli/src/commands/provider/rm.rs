@@ -289,7 +289,7 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         Vec::new()
     } else if let Some(source) = target.files_only() {
         vec![format!(
-            "databases served by this host ({source} edits files only)"
+            "databases served by this host ({source}: files only)"
         )]
     } else {
         unknown_databases
@@ -321,7 +321,7 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         // same reason `provider add` treats it that way.
         let unknown = match target.files_only() {
             Some(source) => vec![format!(
-                "databases served by this host ({source} edits files only)"
+                "databases served by this host ({source}: files only)"
             )],
             None => activated_unknown.clone(),
         };
@@ -375,7 +375,7 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     }
     if let Some(source) = target.files_only() {
         output.note(&format!(
-            "{source} edits files only; columns bound to these names were not checked"
+            "{source}: files only, columns bound to these names were not checked"
         ));
     }
     output.show_plan(&plan);

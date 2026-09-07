@@ -204,19 +204,20 @@ pub fn default_max_inflight() -> usize {
         .clamp(MIN_AUTO_INFLIGHT, MAX_AUTO_INFLIGHT)
 }
 
-/// `--root` > `POSTVEC_SERVER_ROOT` > current directory.
+/// The engine root the packages install to and the postvec CLI manages by
+/// default. One path on every host: a database with embedded mode, a node,
+/// or both.
+pub const DEFAULT_ROOT: &str = "/opt/postvec";
+
+/// `--root` > `POSTVEC_SERVER_ROOT` > [`DEFAULT_ROOT`].
 ///
 /// The on-disk layout is shared with embedded mode on purpose: a root is
 /// portable between an in-database engine and this server.
 pub fn resolve_root(flag: Option<&Path>, env: &dyn EnvSource) -> Result<PathBuf, String> {
-    let raw = flag
+    Ok(flag
         .map(|p| p.to_path_buf())
         .or_else(|| env.get("POSTVEC_SERVER_ROOT").map(PathBuf::from))
-        .map(Ok)
-        .unwrap_or_else(|| {
-            std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))
-        })?;
-    Ok(raw)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT)))
 }
 
 /// Where to look for the optional configuration file.
@@ -324,7 +325,7 @@ pub fn split_list(raw: &str) -> Vec<String> {
 ///
 /// Relative certificate paths resolve against the **root**, not against the
 /// configuration file's directory, so a unit that sets
-/// `POSTVEC_SERVER_ROOT=/var/lib/postvec-server` and drops certificates under
+/// `POSTVEC_SERVER_ROOT=/srv/postvec` and drops certificates under
 /// it does not also have to care where the JSON lives.
 fn against_root(root: &Path, value: impl AsRef<Path>) -> PathBuf {
     let value = value.as_ref();
@@ -1237,6 +1238,10 @@ mod tests {
         assert_eq!(
             resolve_root(None, &env(&[("POSTVEC_SERVER_ROOT", "/from/env")])).unwrap(),
             PathBuf::from("/from/env")
+        );
+        assert_eq!(
+            resolve_root(None, &env(&[])).unwrap(),
+            PathBuf::from(DEFAULT_ROOT)
         );
     }
 

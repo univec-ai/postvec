@@ -43,8 +43,8 @@ At least one server must host the complete embed model, converter and
 bridge chain. Pieces discovered on different nodes stay separate.
 
 ```bash
-postvec model pull "$converter_name" --path /var/lib/postvec-server
-postvec model activate "$converter_name" --path /var/lib/postvec-server
+postvec model pull "$converter_name"
+postvec model activate "$converter_name"
 postvec-server load "$converter_name"
 postvec-server status --fleet
 ```

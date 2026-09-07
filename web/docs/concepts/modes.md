@@ -114,7 +114,7 @@ sudo postvec setup --database app \
 On each inference host, the same command on every node:
 
 ```bash
-postvec-server --root /var/lib/postvec-server \
+postvec-server \
   --peers node-1,node-2,node-3 \
   --ssl-cert /etc/postvec-server/tls.crt \
   --ssl-cert-key /etc/postvec-server/tls.key

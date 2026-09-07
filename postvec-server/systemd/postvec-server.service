@@ -9,9 +9,9 @@ Type=exec
 User=postvec-server
 Group=postvec-server
 
-# The engine root: libs/ (ONNX Runtime) and models/. Same layout embedded mode
-# uses, so a tree `postvec model pull` wrote into works unchanged.
-Environment=POSTVEC_SERVER_ROOT=/var/lib/postvec-server
+# The engine root: libs/ (ONNX Runtime) and models/. The same tree the
+# packages install and `postvec model pull` writes into.
+Environment=POSTVEC_SERVER_ROOT=/opt/postvec
 Environment=RUST_LOG=info
 
 # Everything else lives in the file. Peers, ports and certificates belong to
@@ -52,7 +52,7 @@ SystemCallErrorNumber=EPERM
 # The model root is read-only at runtime: this process never writes there, and
 # `postvec model pull` runs as a different user. Drop ReadOnlyPaths (or move
 # the root to ReadWritePaths) only if you have a reason.
-ReadOnlyPaths=/var/lib/postvec-server /etc/postvec-server
+ReadOnlyPaths=/opt/postvec /etc/postvec-server
 
 # Serving lease under /run/lock/postvec. Fail-closed without it.
 # 1775: group-writable so this service can create a lease; sticky so it

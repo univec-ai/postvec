@@ -14,7 +14,6 @@ same models. Gossip answers who else is alive.
 ```bash
 # On every node. Only --advertise differs, and only on multi-homed hosts.
 postvec-server \
-  --root /var/lib/postvec-server \
   --peers node-1,node-2,node-3 \
   --advertise 10.0.0.10 \
   --ssl-cert /etc/postvec-server/tls.crt \

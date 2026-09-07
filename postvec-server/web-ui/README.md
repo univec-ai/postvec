@@ -22,7 +22,7 @@ The Vite dev server proxies `/config` and `/api` to a local node:
 
 ```console
 # terminal 1
-postvec-server --root /var/lib/postvec-server --insecure
+postvec-server --insecure
 
 # terminal 2
 cd postvec-server/web-ui

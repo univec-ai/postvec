@@ -42,8 +42,8 @@ contents:
     dst: /usr/bin/postvec-server
     file_info: { mode: 0755, owner: root, group: root }
 
-  # The crate's unit, verbatim. The engine root these packages install to
-  # is a drop-in beside it so the two cannot drift.
+  # The crate's unit, verbatim; the drop-in beside it opens the models
+  # subtree for the node's own model management.
   - src: ${REPO_ROOT}/postvec-server/systemd/postvec-server.service
     dst: ${SERVER_UNIT_DIR}/postvec-server.service
     file_info: { mode: 0644, owner: root, group: root }
@@ -68,14 +68,6 @@ contents:
   # what carries the service group: root:postvec-server 0640, which the
   # postinstall spells out.
   - dst: /etc/postvec-server
-    type: dir
-    file_info: { mode: 0755, owner: root, group: root }
-
-  # The unit's default engine root before the drop-in redirects it, and the
-  # service account's home. Kept so that an operator who removes the drop-in
-  # (to keep a node's inventory separate from a local cluster's) has the
-  # directory the unit already names.
-  - dst: /var/lib/postvec-server
     type: dir
     file_info: { mode: 0755, owner: root, group: root }
 

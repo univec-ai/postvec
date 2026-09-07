@@ -23,8 +23,8 @@ sudo postvec doctor --database app --deep
 On [postvec-server](/docs/server/models):
 
 ```bash
-postvec model pull "$converter_name" --path /var/lib/postvec-server
-postvec model activate "$converter_name" --path /var/lib/postvec-server
+postvec model pull "$converter_name"
+postvec model activate "$converter_name"
 postvec-server load "$converter_name"
 postvec-server status --fleet
 ```

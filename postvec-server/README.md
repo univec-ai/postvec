@@ -12,7 +12,7 @@ with the database, or once several databases should share one GPU.
 `postvec-server` is that somewhere else.
 
 ```console
-postvec-server --root /var/lib/postvec-server --insecure
+postvec-server --insecure
 ```
 
 ```sql
@@ -77,7 +77,6 @@ with more than one interface.
 
 ```console
 postvec-server \
-  --root /var/lib/postvec-server \
   --peers node-1,node-2,node-3 \
   --advertise 10.0.0.10 \
   --ssl-cert /etc/postvec-server/tls.crt \
@@ -204,7 +203,7 @@ throughout. A second signal skips the wait.
 
 ```ini
 [Service]
-Environment=POSTVEC_SERVER_ROOT=/var/lib/postvec-server
+Environment=POSTVEC_SERVER_ROOT=/opt/postvec
 Environment=RUST_LOG=info
 ExecStart=/usr/bin/postvec-server --config /etc/postvec-server/config.json
 Restart=on-failure

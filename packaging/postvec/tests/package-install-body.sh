@@ -676,18 +676,15 @@ else
     [[ -f /usr/lib/systemd/system/postvec-server.service ]] \
         && ok "the unit is installed" \
         || bad "no /usr/lib/systemd/system/postvec-server.service"
-    dropin=/usr/lib/systemd/system/postvec-server.service.d/packaged.conf
-    if [[ -f "${dropin}" ]] && grep -q '^Environment=POSTVEC_SERVER_ROOT=/opt/postvec$' "${dropin}"; then
-        ok "the packaged drop-in points the unit at /opt/postvec"
+    if grep -q '^Environment=POSTVEC_SERVER_ROOT=/opt/postvec$' /usr/lib/systemd/system/postvec-server.service \
+        && grep -q '^ReadWritePaths=/opt/postvec/models$' /usr/lib/systemd/system/postvec-server.service.d/packaged.conf; then
+        ok "the unit reads /opt/postvec and the drop-in opens its models subtree"
     else
-        bad "no drop-in setting POSTVEC_SERVER_ROOT=/opt/postvec"
+        bad "the unit does not read /opt/postvec with a writable models subtree"
     fi
     [[ -f /etc/postvec-server/config.json ]] \
         && ok "/etc/postvec-server/config.json is installed" \
         || bad "no /etc/postvec-server/config.json"
-    [[ -d /var/lib/postvec-server ]] \
-        && ok "/var/lib/postvec-server exists" \
-        || bad "no /var/lib/postvec-server"
     owner="$(PKG_OWNER /usr/bin/postvec-server)"
     [[ "${owner}" == postvec-server ]] \
         && ok "/usr/bin/postvec-server is owned by postvec-server" \

@@ -71,7 +71,6 @@ SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
 
 ```bash
 sudo postvec provider add cohere --model embed-v4.0 \
-     --path /var/lib/postvec-server \
      --acknowledge-in-use --yes
 ```
 

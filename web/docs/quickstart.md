@@ -5,23 +5,15 @@ description: Hybrid search in one postvec container. Pick PostgreSQL 16, 17 or 1
 
 # Quick start local
 
-A container with PostgreSQL, postvec and the bundled MiniLM model.
-Inference runs inside that container.
+This will install a container with PostgreSQL, postvec and one initial local model installed ([MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)). Inference runs inside the database on that container.
 
-Start the image, enable a column, wait for vectors, index, search, then
-remove the container.
-
-:::: info Release status
-Commands use the planned `0.1.0-1` image. Publication status is listed
-with the [release artifacts](/download). An unpublished tag requires a
-local image build or an existing development package.
-::::
+Perform these steps in sequcence: start image, enable a column, wait for vectors, index, search
 
 ## 1. Run the local image
 
 <PgSnippet id="docker-quickstart" />
 
-Wait until health is `healthy` (PostgreSQL is up and MiniLM is loaded):
+Wait until container status is `healthy` (PostgreSQL is up and MiniLM is loaded):
 
 <div v-pre>
 
@@ -77,9 +69,13 @@ SELECT relation, pending_jobs, dead_jobs
 SQL
 ```
 
-Vectors fill **asynchronously**. After the INSERT commits, wait until
+Vectors fill **asynchronously**. After INSERT commits wait until
 `pending_jobs = 0` and every `body_semantic` is non-NULL:
 
+```bash
+docker exec -it postvec psql -U app -d app
+```
+then (in psql):
 ```sql
 SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
        count(*) AS total
@@ -93,9 +89,12 @@ that is usually a second or two.
 
 ## 3. Index and search
 
+Index (one-time):
 ```sql
 SELECT postvec.create_vector_index('public.docs', 'body');
-
+```
+Search:
+```sql
 SELECT d.id, d.body,
        round(s.rrf_score::numeric, 5) AS score,
        s.semantic_rank, s.fts_rank
@@ -131,3 +130,9 @@ first; [`migrate()`](/docs/guides/migrate) is optional afterwards.
 - [SQL functions](/docs/guides/)
 - [BM25](/docs/guides/bm25)
 - [Eventual consistency](/docs/concepts/consistency)
+
+:::: info Release status
+Commands use the planned `0.1.0-1` image. Publication status is listed
+with the [release artifacts](/download). An unpublished tag requires a
+local image build or an existing development package.
+::::

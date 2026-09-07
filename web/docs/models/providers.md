@@ -39,7 +39,7 @@ TOML, key sources and `doctor` checks:
 | Mode | Directory |
 |---|---|
 | Embedded | `/etc/postvec/providers.d` on the database host |
-| Remote (`postvec-server`) | `$root/providers.d` on each node, default `/var/lib/postvec-server/providers.d` |
+| Remote (`postvec-server`) | `/opt/postvec/providers.d` on each node (the engine root) |
 
 Files are `0600` in a `0700` directory, owned by the inference process
 account. A wider mode is refused. `provider add` prompts without echo, or
@@ -65,12 +65,12 @@ images set `POSTVEC_PROVIDERS_PATH`, so no `sudo` and no `--path`:
 docker exec -it postvec postvec provider add openai --model text-embedding-3-small
 ```
 
-On a postvec-server host, pass the engine root. A file target checks no
-columns, so `--acknowledge-in-use` stands in for that check:
+On a postvec-server host there is no cluster, so the command edits the
+files under `/opt/postvec` and checks no columns; `--acknowledge-in-use`
+stands in for that check:
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
-     --path /var/lib/postvec-server \
      --acknowledge-in-use --yes
 ```
 

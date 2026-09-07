@@ -85,7 +85,7 @@ pub struct ServeArgs {
 
     /// Engine root holding libs/ and models/.
     ///
-    /// [env: POSTVEC_SERVER_ROOT] [default: current directory]
+    /// [env: POSTVEC_SERVER_ROOT] [default: /opt/postvec]
     #[arg(long, value_name = "PATH")]
     pub root: Option<PathBuf>,
 

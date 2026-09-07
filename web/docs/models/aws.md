@@ -92,7 +92,6 @@ SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
 sudo postvec provider add aws \
   --model amazon.titan-embed-text-v2:0 \
   --region us-east-1 \
-  --path /var/lib/postvec-server \
   --acknowledge-in-use --yes
 ```
 

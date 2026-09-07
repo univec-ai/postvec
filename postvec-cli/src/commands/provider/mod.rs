@@ -230,7 +230,23 @@ pub async fn resolve_target(
         ));
         return path_target(dir, crate::config::PROVIDERS_PATH_ENV);
     }
-    let cluster = Context::discover_local(cli, output).await?;
+    let cluster = match Context::discover_local(cli, output).await {
+        Ok(cluster) => cluster,
+        // No cluster: a node host. Its files live under the packaged root,
+        // the same target `model` commands fall back to.
+        Err(error) => {
+            let root = Path::new(crate::config::DEFAULT_ENGINE_ROOT);
+            if !root.is_dir() {
+                return Err(error);
+            }
+            output.note(&format!(
+                "no PostgreSQL cluster found; using {} (pass --path or set {} to override)",
+                root.display(),
+                crate::config::PROVIDERS_PATH_ENV
+            ));
+            return path_target(root.to_path_buf(), "the default root");
+        }
+    };
     let cluster_id = cluster.identity.id.clone();
     match Context::connect_to(cli, cluster.clone(), output).await {
         Ok(context) => target_from_live(context).await,
@@ -316,13 +332,12 @@ fn target_from_settings(
         // Not a dead end: name the escape hatch and where the files live.
         Some(Mode::Grpc) => Err(CliError::precondition(
             "the selected cluster uses remote inference; provider files live on the \
-             postvec-server nodes (default <server-root>/providers.d, e.g. \
-             /var/lib/postvec-server/providers.d), not on this database host",
+             postvec-server nodes (<root>/providers.d, default /opt/postvec/providers.d)",
         )
         .with_fix(
-            "run `postvec provider … --path <server-root>` on each node — every node of a \
-             fleet must carry the same provider files — and the node's loopback admin port \
-             picks the change up (POST /admin/providers/reload); a restart works too",
+            "run `postvec provider …` on each node — every node of a fleet must carry the \
+             same provider files — and the node's loopback admin port picks the change up \
+             (POST /admin/providers/reload); a restart works too",
         )),
         None => Err(CliError::precondition(format!(
             "the cluster's postvec.mode is unparseable ({:?})",
@@ -2430,8 +2445,8 @@ mod tests {
     #[test]
     fn a_path_that_already_is_a_providers_d_is_used_as_is() {
         assert_eq!(
-            providers_dir_from_path(Path::new("/var/lib/postvec-server")),
-            PathBuf::from("/var/lib/postvec-server/providers.d")
+            providers_dir_from_path(Path::new("/opt/postvec")),
+            PathBuf::from("/opt/postvec/providers.d")
         );
         assert_eq!(
             providers_dir_from_path(Path::new("/etc/postvec/providers.d")),

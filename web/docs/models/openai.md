@@ -85,7 +85,6 @@ lists affected columns and asks first.
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
-     --path /var/lib/postvec-server \
      --acknowledge-in-use --yes
 ```
 

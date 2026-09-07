@@ -70,7 +70,6 @@ SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
 
 ```bash
 sudo postvec provider add google --model gemini-embedding-001 \
-     --path /var/lib/postvec-server \
      --acknowledge-in-use --yes
 ```
 

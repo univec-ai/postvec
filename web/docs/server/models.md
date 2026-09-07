@@ -21,8 +21,8 @@ descriptor.
 ## Add a model
 
 ```bash
-postvec model pull baai-bge-m3 --path /var/lib/postvec-server
-postvec model activate baai-bge-m3 --path /var/lib/postvec-server
+postvec model pull baai-bge-m3
+postvec model activate baai-bge-m3
 postvec-server load baai-bge-m3
 postvec-server status
 ```
@@ -51,8 +51,8 @@ remove](/docs/models/pull).
 
 ```bash
 postvec-server unload baai-bge-m3            # out of memory, still on disk
-postvec model deactivate baai-bge-m3 --path /var/lib/postvec-server
-postvec model rm baai-bge-m3 --path /var/lib/postvec-server
+postvec model deactivate baai-bge-m3
+postvec model rm baai-bge-m3
 ```
 
 Unloading frees memory now. Deactivating is what keeps it from coming back at
@@ -81,9 +81,9 @@ postvec model pull --path /tmp/stage baai-bge-m3
 tar -C /tmp/stage -czf models.tgz models/
 
 # On the node
-sudo tar -C /var/lib/postvec-server -xzf models.tgz
-postvec model show --path /var/lib/postvec-server baai-bge-m3 --verify
-postvec model activate --path /var/lib/postvec-server baai-bge-m3
+sudo tar -C /opt/postvec -xzf models.tgz
+postvec model show baai-bge-m3 --verify
+postvec model activate baai-bge-m3
 postvec-server load baai-bge-m3
 ```
 
@@ -112,9 +112,8 @@ truth, and its entries appear in `/config` next to the loaded models.
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
-     --path /var/lib/postvec-server \
      --acknowledge-in-use --yes
-postvec provider ls --path /var/lib/postvec-server
+postvec provider ls
 ```
 
 The key stays in that file, `0600`, in a `0700` directory owned by the

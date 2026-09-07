@@ -13,18 +13,17 @@ cargo build --release -p postvec-server
 sudo install -m 0755 target/release/postvec-server /usr/local/bin/
 ```
 
-It still needs ONNX Runtime and at least one model under `--root`. A
-checkout default is `/var/lib/postvec-server`. Point `--root` at
-`/opt/postvec` if those packages are already installed, or copy the
-tree there.
+It still needs ONNX Runtime and at least one model under the engine root,
+`/opt/postvec` by default: install the `postvec-onnxruntime` and
+`postvec-model-*` packages, or copy such a tree there. `--root` names
+another tree.
 
 ```bash
 # Local development, no certificates.
-postvec-server --root /var/lib/postvec-server --insecure
+postvec-server --insecure
 
 # A real process.
 postvec-server \
-  --root /var/lib/postvec-server \
   --ssl-cert /etc/postvec-server/tls.crt \
   --ssl-cert-key /etc/postvec-server/tls.key
 ```
@@ -39,8 +38,7 @@ The [dashboard](/docs/server/dashboard) needs a built
 ```bash
 cd postvec-server/web-ui
 npm ci && npm run build
-postvec-server --root /var/lib/postvec-server \
-  --web-ui "$PWD/dist" --insecure
+postvec-server --web-ui "$PWD/dist" --insecure
 ```
 
 See [models](/docs/server/models) for pulling more than MiniLM.

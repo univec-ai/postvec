@@ -476,7 +476,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         // one mode with no gate.
         let unknown = match target.files_only() {
             Some(source) => vec![format!(
-                "databases served by this host ({source} edits files only)"
+                "databases served by this host ({source}: files only)"
             )],
             None => unknown_databases.clone(),
         };
@@ -535,7 +535,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         .filter(|_| scanned_note_needed(&public_names))
     {
         output.note(&format!(
-            "{source} edits files only; columns already bound to these names were not checked"
+            "{source}: files only, columns already bound to these names were not checked"
         ));
     }
     // Prospective document, checked before anything is spent. Compose it

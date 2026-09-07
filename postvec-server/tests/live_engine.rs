@@ -5,7 +5,7 @@
 //! and a model.
 //!
 //! ```console
-//! POSTVEC_SERVER_TEST_ROOT=/var/lib/postvec-server \
+//! POSTVEC_SERVER_TEST_ROOT=/opt/postvec \
 //! POSTVEC_SERVER_TEST_MODEL=sentence-transformers-all-minilm-l6-v2 \
 //!   cargo test -p postvec-server --test live_engine -- --ignored --nocapture
 //! ```

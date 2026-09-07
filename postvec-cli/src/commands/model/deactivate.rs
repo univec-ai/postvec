@@ -147,7 +147,7 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
     }
     if matches!(target, ModelTarget::Path(_)) && !selected.is_empty() {
         output.note(
-            "--path edits files only: columns still declaring these models were not checked \
+            "--path: files only, columns still declaring these models were not checked \
              and nothing was unloaded. Stop the serving process, or run this against the \
              cluster, if either matters",
         );

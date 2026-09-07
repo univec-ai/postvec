@@ -555,7 +555,7 @@ fn setup_without_yes_is_refused_before_touching_anything_when_not_interactive() 
 ///
 /// `tempfile` honours the umask, so on a umask-002 host the root is
 /// group-writable — and the loader refuses a providers.d whose *ancestor* can
-/// be replaced by another account. A real root (`/var/lib/postvec-server`,
+/// be replaced by another account. A real root (`/opt/postvec`,
 /// `/etc/postvec`) is not group-writable, so this restores the deployed
 /// shape rather than relaxing the rule.
 fn provider_root() -> tempfile::TempDir {
