@@ -102,6 +102,9 @@ function setFamily(id: PkgFamily) {
 <style scoped>
 .pg-snippet {
   margin: 1rem 0 1.25rem;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
 .pg-snippet__bar {
@@ -110,9 +113,8 @@ function setFamily(id: PkgFamily) {
   align-items: flex-end;
   justify-content: space-between;
   gap: 0.4rem 1rem;
-  border: 1px solid var(--vp-c-divider);
-  border-bottom: 0;
   background: var(--vp-c-bg-soft);
+  border-bottom: 1px solid var(--vp-c-border);
 }
 
 .pg-snippet__tabs {
@@ -127,17 +129,18 @@ function setFamily(id: PkgFamily) {
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--vp-c-text-3);
-  padding: 0.5rem 0.75rem;
+  padding: 0.55rem 0.85rem;
   font-family: var(--vp-font-family-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
   cursor: pointer;
 }
 
 .pg-snippet__tab.is-active {
-  color: var(--vp-c-brand-1);
-  border-bottom-color: var(--vp-c-brand-1);
-  font-weight: 500;
+  color: var(--vp-c-text-1);
+  border-bottom-color: var(--vp-button-brand-bg);
+  font-weight: 600;
 }
 
 .pg-snippet__tab:hover,
@@ -150,8 +153,7 @@ function setFamily(id: PkgFamily) {
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 0.75rem;
-  padding: 0.85rem 0.95rem;
-  border: 1px solid var(--vp-c-divider);
+  padding: 1rem;
   background: var(--vp-code-block-bg);
   color: var(--pv-code-fg);
 }
@@ -164,8 +166,8 @@ function setFamily(id: PkgFamily) {
   background: transparent;
   border: 0;
   font-family: var(--vp-font-family-mono);
-  font-size: 0.8rem;
-  line-height: 1.5;
+  font-size: 0.8125rem;
+  line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--pv-code-fg);
@@ -176,14 +178,16 @@ function setFamily(id: PkgFamily) {
   border: 1px solid var(--pv-code-btn-border);
   background: var(--pv-code-btn-bg);
   color: var(--pv-code-btn-fg);
-  border-radius: 0;
-  padding: 0.28rem 0.6rem;
+  border-radius: 6px;
+  padding: 0.2rem 0.7rem;
   font-size: 0.75rem;
+  font-weight: 500;
   cursor: pointer;
 }
 
 .pg-snippet__copy:hover {
   background: var(--vp-code-copy-code-hover-bg, var(--vp-c-bg-alt));
+  border-color: var(--vp-c-text-3);
 }
 
 .pg-snippet__caption {

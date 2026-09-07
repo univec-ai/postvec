@@ -40,9 +40,9 @@ async function copy() {
 
 .copy-cmd__label {
   font-family: var(--vp-font-family-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0;
   color: var(--vp-c-text-3);
   margin-bottom: 0.4rem;
 }
@@ -51,9 +51,9 @@ async function copy() {
   display: flex;
   align-items: flex-start;
   gap: 0.75rem;
-  padding: 0.85rem 0.95rem;
-  border-radius: 0;
-  border: 1px solid var(--vp-c-divider);
+  padding: 1rem;
+  border-radius: 6px;
+  border: 1px solid var(--vp-c-border);
   background: var(--vp-code-block-bg);
   color: var(--pv-code-fg);
 }
@@ -66,8 +66,8 @@ async function copy() {
   background: transparent;
   border: 0;
   font-family: var(--vp-font-family-mono);
-  font-size: 0.8rem;
-  line-height: 1.5;
+  font-size: 0.8125rem;
+  line-height: 1.45;
   white-space: pre;
   word-break: normal;
   color: var(--pv-code-fg);
@@ -80,13 +80,15 @@ async function copy() {
   border: 1px solid var(--pv-code-btn-border);
   background: var(--pv-code-btn-bg);
   color: var(--pv-code-btn-fg);
-  border-radius: 0;
-  padding: 0.28rem 0.6rem;
+  border-radius: 6px;
+  padding: 0.2rem 0.7rem;
   font-size: 0.75rem;
+  font-weight: 500;
   cursor: pointer;
 }
 
 .copy-cmd__btn:hover {
   background: var(--vp-code-copy-code-hover-bg, var(--vp-c-bg-alt));
+  border-color: var(--vp-c-text-3);
 }
 </style>

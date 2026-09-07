@@ -671,10 +671,10 @@ onBeforeUnmount(() => {
 
 .home-page {
   --home-radius: 6px;
-  --home-ink-line: var(--vp-c-text-1);
+  --home-ink-line: var(--vp-c-border);
   color: var(--vp-c-text-1);
   font-size: 1rem;
-  line-height: 1.65;
+  line-height: 1.5;
 }
 
 .wrap {
@@ -690,25 +690,21 @@ a {
 a:hover,
 a:focus-visible {
   text-decoration: underline;
-  text-underline-offset: 0.18em;
+  text-underline-offset: 0.12em;
 }
 
 code {
   font-family: var(--vp-font-family-mono);
-  font-size: 0.86em;
+  font-size: 0.85em;
 }
 
 p code,
 dd code {
-  padding: 0.08rem 0.3rem;
+  padding: 0.2em 0.4em;
   background: var(--vp-code-bg);
-  color: var(--vp-code-color);
-  border: 1px solid rgb(34 129 101 / 18%);
-}
-
-.dark p code,
-.dark dd code {
-  border-color: rgb(73 212 161 / 28%);
+  color: var(--vp-c-text-1);
+  border: 0;
+  border-radius: var(--home-radius);
 }
 
 .visually-hidden {
@@ -763,24 +759,27 @@ h1 {
 
 .btn {
   display: inline-block;
-  padding: 0.7rem 1.3rem;
-  border: 1.5px solid var(--home-ink-line);
+  padding: 0.45rem 1rem;
+  border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
+  background: var(--vp-c-bg-alt);
   color: var(--vp-c-text-1);
-  font-size: 0.94rem;
-  font-weight: 600;
-  line-height: 1.2;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  box-shadow: var(--vp-shadow-1);
 }
 
 .btn:hover,
 .btn:focus-visible {
   text-decoration: none;
-  background: var(--vp-c-bg-elv);
+  background: var(--vp-c-bg-soft);
+  border-color: var(--vp-c-text-3);
 }
 
 .btn--go {
   background: var(--vp-button-brand-bg);
-  border-color: var(--vp-button-brand-bg);
+  border-color: var(--vp-button-brand-border, var(--vp-button-brand-bg));
   color: var(--vp-button-brand-text);
 }
 
@@ -804,9 +803,9 @@ h1 {
 .topo {
   margin: 0;
   padding: 1.5rem 1.25rem 1rem;
-  border: 1px solid var(--vp-c-divider);
+  border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
-  background: var(--vp-c-bg-elv);
+  background: var(--vp-c-bg);
 }
 
 .topo svg {
@@ -841,9 +840,9 @@ h1 {
 .topo .t-node-sub { font-size: 9.5px; fill: var(--vp-c-text-3); }
 .topo .t-wire { font-family: var(--vp-font-family-mono); font-size: 10px; fill: var(--vp-c-text-3); }
 
-.dark .topo .chip__body { fill: #2c4a42; }
+.dark .topo .chip__body { fill: #238636; }
 .dark .topo .t-chip,
-.dark .topo .t-chip-sub { fill: #e6eadf; }
+.dark .topo .t-chip-sub { fill: #ffffff; }
 
 /* phase transitions. visibility is transitioned alongside opacity so a
    hidden group is skipped by the painter, not just drawn transparent. */
@@ -924,9 +923,9 @@ h1 {
 
 .topo__cap h3 {
   margin: 0;
-  font-family: var(--pv-font-display);
-  font-size: 1.12rem;
-  font-weight: 500;
+  font-family: var(--vp-font-family-base);
+  font-size: 1rem;
+  font-weight: 600;
   color: var(--vp-c-text-1);
 }
 
@@ -1004,9 +1003,9 @@ h1 {
 
 .home-page h3 {
   margin: 0 0 0.5rem;
-  font-family: var(--pv-font-display);
-  font-size: 1.12rem;
-  font-weight: 500;
+  font-family: var(--vp-font-family-base);
+  font-size: 1rem;
+  font-weight: 600;
   color: var(--vp-c-text-1);
 }
 
@@ -1062,10 +1061,6 @@ h1 {
 
 .try {
   margin-top: 2rem;
-  padding: 0.9rem 1rem 0;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: var(--home-radius);
-  background: var(--vp-c-bg-elv);
 }
 
 .try__head {
@@ -1077,11 +1072,9 @@ h1 {
 
 .try__label {
   margin: 0;
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--vp-c-text-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--vp-c-text-1);
 }
 
 .try__hint {
@@ -1091,25 +1084,29 @@ h1 {
 }
 
 .try :deep(.pg-snippet) { margin: 0.6rem 0 0.9rem; }
-.try :deep(.pg-snippet__bar) { border-color: var(--vp-c-divider); }
-.try :deep(.pg-snippet__body) { border-color: var(--vp-c-divider); }
 
 /* ------------------------------------------------------------------ */
 /* SQL tabs                                                            */
 /* ------------------------------------------------------------------ */
 
-.tabs { margin-top: 2rem; }
+.tabs {
+  margin-top: 2rem;
+  border: 1px solid var(--vp-c-border);
+  border-radius: var(--home-radius);
+  overflow: hidden;
+}
 
 .tabs__bar {
   display: flex;
   flex-wrap: wrap;
   gap: 0;
-  border-bottom: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg-soft);
+  border-bottom: 1px solid var(--vp-c-border);
 }
 
 .tabs__tab {
   appearance: none;
-  padding: 0.7rem 1.15rem;
+  padding: 0.65rem 1.1rem;
   border: 0;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
@@ -1117,7 +1114,7 @@ h1 {
   background: transparent;
   color: var(--vp-c-text-2);
   font-family: var(--vp-font-family-mono);
-  font-size: 0.84rem;
+  font-size: 0.8125rem;
   font-weight: 500;
   cursor: pointer;
 }
@@ -1127,7 +1124,7 @@ h1 {
 
 .tabs__tab.is-active {
   color: var(--vp-c-text-1);
-  border-bottom-color: var(--vp-c-text-1);
+  border-bottom-color: var(--vp-button-brand-bg);
 }
 
 .tabs__panel {
@@ -1174,9 +1171,11 @@ h1 {
 
 .expect {
   margin-top: 1rem !important;
-  padding: 0.65rem 0.85rem;
-  border-left: 2px solid var(--vp-c-tip-1);
-  background: var(--vp-c-tip-soft);
+  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--vp-c-border);
+  border-left: 0.25em solid var(--vp-c-tip-1);
+  border-radius: var(--home-radius);
+  background: var(--vp-c-bg);
   font-size: 0.86rem;
   color: var(--vp-c-text-1);
 }
@@ -1205,17 +1204,16 @@ h1 {
 
 .defs > div {
   padding: 1rem 1.15rem;
-  border: 1px solid var(--vp-c-divider);
-  border-left: 2px solid var(--pv-mark);
-  border-radius: 0 var(--home-radius) var(--home-radius) 0;
-  background: var(--vp-c-bg-elv);
+  border: 1px solid var(--vp-c-border);
+  border-radius: var(--home-radius);
+  background: var(--vp-c-bg);
 }
 
 .defs dt {
   margin-bottom: 0.3rem;
-  font-family: var(--pv-font-display);
-  font-size: 1.05rem;
-  font-weight: 500;
+  font-family: var(--vp-font-family-base);
+  font-size: 1rem;
+  font-weight: 600;
 }
 
 .defs dd {
@@ -1233,8 +1231,10 @@ h1 {
 }
 
 .pledge {
-  padding-top: 1.1rem;
-  border-top: 2px solid var(--home-ink-line);
+  padding: 1.1rem 1.15rem 1.15rem;
+  border: 1px solid var(--vp-c-border);
+  border-radius: var(--home-radius);
+  background: var(--vp-c-bg);
 }
 
 .pledge p {
@@ -1259,9 +1259,9 @@ h1 {
 
 .dir__card {
   padding: 1.25rem 1.4rem 1rem;
-  border: 1px solid var(--vp-c-divider);
+  border: 1px solid var(--vp-c-border);
   border-radius: var(--home-radius);
-  background: var(--vp-c-bg-elv);
+  background: var(--vp-c-bg);
 }
 
 .dir__card h3 {

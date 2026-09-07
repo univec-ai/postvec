@@ -15,7 +15,7 @@ export default defineConfig({
   },
   head: [
     ["link", { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
-    ["meta", { name: "theme-color", content: "#f0f2ee" }],
+    ["meta", { name: "theme-color", content: "#ffffff" }],
     ["meta", { name: "color-scheme", content: "light dark" }],
     ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
     [
@@ -38,6 +38,12 @@ export default defineConfig({
     ["meta", { name: "twitter:title", content: SITE.title }],
     ["meta", { name: "twitter:description", content: SITE.description }],
   ],
+  markdown: {
+    theme: {
+      light: "github-light",
+      dark: "github-dark",
+    },
+  },
   themeConfig: {
     logo: { light: "/logo.svg", dark: "/logo-dark.svg", alt: "postvec" },
     siteTitle: "postvec",
