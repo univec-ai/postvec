@@ -155,7 +155,10 @@ DECLARE
     r postvec.registry; rel regclass; col text; mods bigint; docs bigint; tokens bigint;
     t0 timestamptz := clock_timestamp();
 BEGIN
-    SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled';
+    -- Registry row before source table: disable() locks in that order, and
+    -- the stats rows' FK check would otherwise wait on the row while holding
+    -- the table.
+    SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled' FOR KEY SHARE;
     IF NOT FOUND THEN RETURN NULL; END IF;
     EXECUTE format('LOCK TABLE %I.%I IN ACCESS SHARE MODE', r.table_schema, r.table_name);
     SELECT * INTO r FROM postvec.registry WHERE id = rid AND state <> 'disabled';

@@ -115,6 +115,8 @@ jobs:
       # single-transaction #[pg_test] cannot reach.
       - name: cargo pgrx test (cross-session concurrency)
         working-directory: postvec
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo pgrx test "pg${PGVER}" --features pg_test_concurrency tests_concurrency
 
       # Embedded mode (Arch B): lint + full suite with the in-process engine
