@@ -128,9 +128,17 @@ impl ProviderTarget {
     }
 
     /// The embedded engine's loopback /config listener, when there is one.
+    /// A files-only target at the extension's default providers.d is that
+    /// host's own directory (containers, packaged hosts), so its default
+    /// listener is asked.
     pub fn embedded_listen(&self) -> Option<String> {
         match self {
             ProviderTarget::Embedded { settings, .. } => Some(settings.embedded_http_listen()),
+            ProviderTarget::Path { dir, .. }
+                if dir == Path::new(crate::config::DEFAULT_PROVIDERS_PATH) =>
+            {
+                Some(crate::config::DEFAULT_EMBEDDED_HTTP_LISTEN.to_string())
+            }
             ProviderTarget::Path { .. } => None,
         }
     }

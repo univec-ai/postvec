@@ -201,7 +201,7 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                     (false, false, _) => "disabled in the file",
                     (false, true, Some(true)) => "served",
                     (false, true, Some(false)) => "NOT served (reload or restart the host)",
-                    (false, true, None) => "(no running host to ask)",
+                    (false, true, None) => "(no host answered)",
                 }
             ));
         }
