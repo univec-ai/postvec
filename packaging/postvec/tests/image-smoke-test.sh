@@ -194,11 +194,14 @@ if [[ "${VARIANT}" == local ]]; then
     # External providers are opt-in, and the image ships none. Both halves of
     # that are asserted here, because "zero-config still works" is exactly the
     # claim a provider feature is able to break silently: an image that shipped
-    # a providers.d, or a host that advertised a provider-backed model without
-    # one, would still pass every check below it.
-    docker exec "${RUN_ID}" test -e /etc/postvec/providers.d \
-        && bad "the image ships /etc/postvec/providers.d — providers must be opt-in" \
-        || ok "no provider configuration in the image"
+    # a connector file, or a host that advertised a provider-backed model
+    # without one, would still pass every check below it. The -local image
+    # creates an empty providers.d for `docker exec … postvec provider add`.
+    if docker exec "${RUN_ID}" sh -c 'ls /etc/postvec/providers.d/*.toml' >/dev/null 2>&1; then
+        bad "the image ships provider files in /etc/postvec/providers.d — providers must be opt-in"
+    else
+        ok "no provider configuration in the image"
+    fi
 
     external="$(sql -c "SELECT count(*) FROM postvec.models
                          WHERE raw->'extra'->>'provider' IS NOT NULL")"
