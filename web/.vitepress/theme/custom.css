@@ -36,6 +36,9 @@
   --pv-btn-hover: #eef1eb;
   --pv-mark: #1a7f37;
   --pv-field: #1f883d;
+  --pv-sidebar-nest-1: rgb(31 35 40 / 4%);
+  --pv-sidebar-nest-2: rgb(31 35 40 / 7.5%);
+  --pv-sidebar-nest-3: rgb(31 35 40 / 11%);
 
   --vp-c-brand-1: #1f883d;
   --vp-c-brand-2: #1a7f37;
@@ -130,6 +133,9 @@
   --pv-btn-hover: #30363d;
   --pv-mark: #3fb950;
   --pv-field: #238636;
+  --pv-sidebar-nest-1: rgb(240 246 252 / 4.5%);
+  --pv-sidebar-nest-2: rgb(240 246 252 / 8%);
+  --pv-sidebar-nest-3: rgb(240 246 252 / 12%);
 
   --vp-c-brand-1: #3fb950;
   --vp-c-brand-2: #56d364;
@@ -284,6 +290,12 @@ html.dark {
 
 .VPSidebarItem .item {
   align-items: center;
+  border-radius: var(--pv-radius);
+  padding-right: 0.45rem;
+}
+
+.VPSidebar .VPSidebarItem .caret {
+  margin-right: 0 !important;
 }
 
 .VPSidebarItem .link,
@@ -292,7 +304,6 @@ html.dark {
 .VPSidebarItem.level-2.collapsible:not(.is-link) > .item > .text,
 .VPSidebarItem.level-3.collapsible:not(.is-link) > .item > .text {
   padding: 0.2rem 0.7rem;
-  border-radius: var(--pv-radius);
 }
 
 .VPSidebarItem.level-0 > .item > .caret {
@@ -303,16 +314,65 @@ html.dark {
   font-size: 20px;
 }
 
-.VPSidebarItem.is-active > .item .link {
+.VPSidebarItem.level-0 > .items {
+  margin: 0.2rem 0 0.15rem;
+  padding: 0.15rem 0;
+  border-radius: var(--pv-radius);
+  background: var(--pv-sidebar-nest-1);
+}
+
+.VPSidebarItem.level-1 > .items {
+  margin-top: 0.1rem;
+  border-radius: var(--pv-radius-sm);
+  background: var(--pv-sidebar-nest-2);
+}
+
+.VPSidebarItem.level-2 > .items,
+.VPSidebarItem.level-3 > .items,
+.VPSidebarItem.level-4 > .items {
+  margin-top: 0.1rem;
+  border-radius: var(--pv-radius-sm);
+  background: var(--pv-sidebar-nest-3);
+}
+
+.VPSidebar .VPSidebarItem.level-1 > .items,
+.VPSidebar .VPSidebarItem.level-2 > .items,
+.VPSidebar .VPSidebarItem.level-3 > .items,
+.VPSidebar .VPSidebarItem.level-4 > .items,
+.VPSidebar .VPSidebarItem.level-5 > .items {
+  padding-left: 0 !important;
+  border-left: none !important;
+}
+
+.VPSidebarItem.level-2 > .item {
+  padding-left: 16px;
+}
+
+.VPSidebarItem.level-3 > .item {
+  padding-left: 28px;
+}
+
+.VPSidebarItem.level-4 > .item,
+.VPSidebarItem.level-5 > .item {
+  padding-left: 40px;
+}
+
+.VPSidebarItem.is-active > .item {
   background: var(--vp-c-bg-elv);
 }
 
-html:not(.dark) .VPSidebarItem .link:hover {
+html:not(.dark) .VPSidebarItem.is-link > .item:hover,
+html:not(.dark) .VPSidebarItem.collapsible > .item:hover {
   background: rgb(26 35 48 / 6%);
 }
 
-html.dark .VPSidebarItem .link:hover {
+html.dark .VPSidebarItem.is-link > .item:hover,
+html.dark .VPSidebarItem.collapsible > .item:hover {
   background: rgb(240 246 252 / 6%);
+}
+
+.VPSidebarItem.is-active > .item:hover {
+  background: var(--vp-c-bg-elv);
 }
 
 .VPSidebarItem.is-active > .item .text {
