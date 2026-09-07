@@ -10,7 +10,7 @@ two with Reciprocal Rank Fusion. Matching primary keys come back as
 text, so the join works on any table shape.
 
 Wait until `pending_jobs = 0` before judging ranks. A row whose vector
-is still NULL matches on the lexical leg only.
+is still NULL matches on the lexical (BM25) leg only.
 
 :::: code-group
 
@@ -47,9 +47,9 @@ Rows that mean the same thing rank above rows that merely share a word.
 `semantic_rank` / `fts_rank` are 1-based positions in each leg; either
 can be NULL if that leg missed the row. `semantic_distance` is the raw
 pgvector distance in the entry's metric (`<=>`, `<->` or `<#>`) and
-`fts_score` is BM25 (or `ts_rank_cd` until the first lexical-stats
-refresh), for thresholds and debugging. Ties on `rrf_score` order by
-`pk_value`, so paging is stable.
+`fts_score` is [BM25](/docs/guides/bm25) (or `ts_rank_cd` until the
+first lexical-stats refresh), for thresholds and debugging. Ties on
+`rrf_score` order by `pk_value`, so paging is stable.
 ::::
 
 Cast `pk_value` back to the PK type (`::bigint`, `::uuid`, ...).
@@ -59,7 +59,7 @@ Cast `pk_value` back to the PK type (`::bigint`, `::uuid`, ...).
 | Argument | Default | Meaning |
 |---|---|---|
 | `limit_n` | 10 | Rows returned |
-| `semantic_weight` | 0.5 | 1.0 = vector only, 0.0 = FTS only |
+| `semantic_weight` | 0.5 | 1.0 = vector only, 0.0 = BM25 only. See [BM25](/docs/guides/bm25) |
 | `rrf_k` | 60 | RRF constant |
 | `candidates` | derived | Pool size per leg before fusion |
 | `filter` | none | [Typed metadata](/docs/guides/filters) |
@@ -71,9 +71,9 @@ Column-mode entries leave those NULL.
 ## Search with a supplied vector
 
 The `search_with_vector` tab is the same join, with a vector you already
-have. `query_text` still feeds the FTS leg. Omit it (default `''`) for
-a vector-only search. Grant `embed()` explicitly, or pass a vector
-computed elsewhere.
+have. `query_text` still feeds the [BM25](/docs/guides/bm25) leg. Omit
+it (default `''`) for a vector-only search. Grant `embed()` explicitly,
+or pass a vector computed elsewhere.
 
 ## Search is slow
 
@@ -86,46 +86,16 @@ SELECT postvec.create_vector_index('public.docs', 'body');
 ```
 
 See [indexes](/docs/guides/indexes). A missing FTS index only hurts the
-lexical (BM25) leg. `create_fts_index => true` at enable time builds a
-GIN; keyword traffic needs it the same way ANN traffic needs HNSW.
+lexical leg. `create_fts_index => true` at enable time builds a GIN.
+Keyword traffic needs it the same way ANN traffic needs HNSW.
 
-After a bulk load, refresh corpus statistics before judging ranks:
+After a bulk load, refresh BM25 corpus statistics before judging ranks:
 
 ```sql
 SELECT postvec.refresh_lexical_stats('public.docs', 'body');
 ```
 
-The worker otherwise rebuilds the stats on its own once the table's
-tuple counters have moved and the previous refresh is old enough: at
-least 30 s, or ten times as long as that refresh took, so a large corpus
-is re-tokenized rarely. A refresh is one `to_tsvector` pass over the
-text; it runs inside the worker and delays embedding for that long.
-Until the first successful refresh the leg scores with `ts_rank_cd`.
-A failed background refresh preserves the previous good BM25 statistics;
-check `status().lexical_error`. Automatic retries back off for ten minutes.
-Manual refresh raises on failure; its error record rolls back with the
-failed statement.
-With row-level security enabled on the source, search uses `ts_rank_cd`
-and does not expose global term frequencies — except for roles that
-already see every row (table owner unless FORCE RLS, `BYPASSRLS`,
-superuser). Ordinary readers can see corpus statistics in `status()`
-only when they would get BM25.
-
-BM25 scores positive query lexemes; `OR`, exclusions and quoted phrases
-keep PostgreSQL's `websearch_to_tsquery` matching semantics. A purely
-negative query has no positive BM25 terms and ties at zero. Statistics
-cover non-NULL documents (chunks for recursive entries), including empty
-and stopword-only text. Metadata filters do not redefine the corpus.
-Term frequencies use stored tsvector positions: at most 256 per lexeme,
-with positions capped at 16383. This is BM25 over PostgreSQL text search,
-not an exact reproduction of another engine's tokenizer or length norms.
-
-Automatic change detection requires `track_counts = on`. Vector updates
-also count, so backfills can cause redundant, throttled refreshes. TRUNCATE
-on the registered source invalidates its statistics immediately and wakes
-the worker to rebuild them. Refresh manually after truncating an individual
-partition, changing partition membership or changing text-search dictionaries
-when immediate accuracy matters. Those changes may not move tuple counters.
+How scoring, stats, RLS and the GIN interact: [BM25](/docs/guides/bm25).
 
 ## Lexical-only results
 

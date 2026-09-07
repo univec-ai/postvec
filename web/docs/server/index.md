@@ -68,6 +68,8 @@ of UniVec API credit and commercial rights to the private catalogue).
 Hosting it for third parties needs an enterprise agreement. Each version
 converts to the PostgreSQL License four years after release.
 
+[License](/docs/license).
+
 - [Embedded vs remote](/docs/concepts/modes)
 - [External providers](/docs/models/providers)
 - [GUCs](/docs/reference/gucs)

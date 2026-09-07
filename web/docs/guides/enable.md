@@ -72,15 +72,16 @@ SELECT postvec.create_vector_index('public.docs', 'body');
 ```
 
 Then [`search()`](/docs/guides/search). A missing ANN index is the usual
-reason search is slow. See [indexes](/docs/guides/indexes).
+reason search is slow. See [indexes](/docs/guides/indexes). The keyword
+leg, GIN and corpus stats: [BM25](/docs/guides/bm25).
 
 ## Options
 
 | Option | Default | Change when |
 |---|---|---|
 | `vector_column` | `{col}_semantic` | A specific column name is required |
-| `create_fts_index` | `false` | Hybrid / BM25 should have a GIN |
-| `fts_config` | `pg_catalog.english` | Non-English lexical |
+| `create_fts_index` | `false` | Build a GIN for the [BM25](/docs/guides/bm25) leg |
+| `fts_config` | `pg_catalog.english` | Text-search configuration (stemming, stopwords) |
 | `distance` | `cosine` | Search and index use another metric |
 | `trigger_mode` | `statement` | Use `row` on partitioned tables |
 | `index_mode` | `manual` | `auto` only on small, quiet tables |

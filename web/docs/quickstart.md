@@ -121,5 +121,10 @@ An existing cluster uses [packages](/docs/install/packages) then
 [configure](/docs/install/setup). RDS, Aurora, Cloud SQL, Azure,
 Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
 
+A populated vector column uses [`adopt()`](/docs/guides/adopt). For a
+retired or provider-only space, [search that space](/docs/guides/bridge)
+first; [`migrate()`](/docs/guides/migrate) is optional afterwards.
+
 - [SQL functions](/docs/guides/)
+- [BM25](/docs/guides/bm25)
 - [Eventual consistency](/docs/concepts/consistency)

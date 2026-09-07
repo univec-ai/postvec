@@ -55,11 +55,12 @@ schema install, the sync worker and the optional `search(text)` proxy
 for RDS, Aurora, Cloud SQL, Azure, Supabase and Neon.
 
 **Licence.** `postvec-server` is **Business Source License 1.1** (`BUSL-1.1`,
-source-available; production use by organizations needs a subscription). That identifier is in
-the release manifest's `licenses` block, the package copyright file and
-the image's `org.opencontainers.image.licenses` label. The extension,
-the CLI, the runtime and model packages and the PostgreSQL images stay
-under the PostgreSQL License in either inference mode.
+source-available; production use by organizations needs a subscription).
+Terms: [License](/docs/license). That identifier is in the release
+manifest's `licenses` block, the package copyright file and the image's
+`org.opencontainers.image.licenses` label. The extension, the CLI, the
+runtime and model packages and the PostgreSQL images stay under the
+PostgreSQL License in either inference mode.
 
 Every debug package has a `postvec-server-dbgsym` / `-debuginfo` sibling.
 [Run a node](/docs/server/node) covers installation; the selector above lists

@@ -20,7 +20,8 @@ SELECT relation, model, dim, state,
        pending_jobs, dead_jobs,
        has_vector_index, index_error,
        worker_last_beat, last_error,
-       chunking, pending_refresh_jobs, pending_embed_jobs
+       chunking, pending_refresh_jobs, pending_embed_jobs,
+       lexical_docs, lexical_stats_age_seconds, lexical_error
   FROM postvec.status();
 ```
 
@@ -37,6 +38,7 @@ sudo postvec doctor --database app --deep
 | Worker alive | `worker_last_beat` **advances** |
 | Search will be fast | `has_vector_index` |
 | Automatic index build paused after failure | `index_error` |
+| BM25 corpus stats | `lexical_docs`, `lexical_stats_age_seconds`, `lexical_error` |
 | Quarantined entry | `state` (source/vector/template column vanished) |
 
 A heartbeat row survives a worker crash. Health requires the timestamp to advance between samples.

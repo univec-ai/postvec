@@ -102,6 +102,7 @@ export default defineConfig({
               link: "/docs/guides/search",
               collapsed: true,
               items: [
+                { text: "BM25", link: "/docs/guides/bm25" },
                 { text: "Filters", link: "/docs/guides/filters" },
                 { text: "Indexes", link: "/docs/guides/indexes" },
               ],
@@ -200,6 +201,7 @@ export default defineConfig({
             { text: "GUCs", link: "/docs/reference/gucs" },
             { text: "Limits", link: "/docs/limits" },
             { text: "Security", link: "/docs/security" },
+            { text: "License", link: "/docs/license" },
             { text: "Troubleshooting", link: "/docs/troubleshooting" },
             { text: "FAQ", link: "/docs/faq" },
           ],
@@ -210,7 +212,7 @@ export default defineConfig({
     outline: { level: [2, 3], label: "On this page" },
     footer: {
       message:
-        'PostgreSQL License · a <a href="https://univec.ai">UniVec</a> project',
+        '<a href="/docs/license">License</a> · a <a href="https://univec.ai">UniVec</a> project',
       copyright: "© 2026 UniVec",
     },
     docFooter: {

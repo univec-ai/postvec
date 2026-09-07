@@ -10,8 +10,8 @@ adds a shadow `pgvector` column, keeps that column in sync as rows change
 and searches with full-text and vectors in one call.
 
 A column that already holds vectors can keep them. `search()` embeds each
-query into that stored space (embed-bridge). If you later want a different
-model, stored vectors convert in place.
+query into that stored space (embed-bridge). Stored rows stay. If later
+you want a different stored model, vectors convert in place.
 
 Inference runs on the database host by default. Models live on disk. The
 bundled MiniLM model needs no API key.
@@ -53,7 +53,8 @@ Self-hosted first-time setup:
 4. Wait until `pending_jobs = 0`. Vectors fill after commit.
 5. [Build an ANN index](/docs/guides/indexes). Default `index_mode` is
    `manual`.
-6. [Search](/docs/guides/search).
+6. [Search](/docs/guides/search). Hybrid by default; [BM25](/docs/guides/bm25)
+   for the keyword mix, GIN and corpus stats.
 
 Functions live in the `postvec` schema (`postvec.enable(...)`).
 Leave `search_path` as it is.
@@ -87,9 +88,6 @@ The extension, CLI and their packages are under the **PostgreSQL License**.
 `postvec-server` is **Business Source License 1.1** (source-available).
 Personal production use, all non-production environments and one 30-day
 production evaluation per organization are free. Production use by an
-organization needs a [postvec Pro](https://univec.ai) subscription. Each
-version converts to the PostgreSQL License four years after release.
+organization needs a [postvec Pro](https://univec.ai) subscription.
 
-The public model catalogue is free. Commercial use of the private
-catalogue (converters) needs postvec Pro. Hosted embed and convert APIs
-are billed separately. The bundled MiniLM model works offline.
+Full table: [License](/docs/license).

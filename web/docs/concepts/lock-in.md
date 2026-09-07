@@ -34,13 +34,13 @@ The first move is to keep the stored space and search it:
 - [Search a retired space](/docs/guides/bridge) converts each query
   vector into the stored space (embed-bridge). The corpus stays.
 - [`search()`](/docs/guides/search) plus [filters](/docs/guides/filters)
-  combines lexical and semantic retrieval.
+  and [BM25](/docs/guides/bm25) combine lexical and semantic retrieval.
 - [Embedded mode](/docs/concepts/modes) runs local open-weight models on
   the database host.
 
 If later you want the stored contract itself to change,
-[`migrate()`](/docs/guides/migrate) converts stored vectors without
-replaying source text. The column's model contract then changes.
+[`migrate()`](/docs/guides/migrate) converts stored vectors. The
+column's model contract then changes.
 
 - [Embedded vs remote](/docs/concepts/modes)
 - [Search a retired space](/docs/guides/bridge)

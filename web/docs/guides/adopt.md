@@ -47,7 +47,9 @@ invalid vectors without an explicit error.
 | `backfill` | `missing` | `missing` / `all` / `none` |
 | `backfill_mode` | `queue` | `cursor` refused with `all` |
 | `if_not_exists` | `false` | Return the existing id for a matching model and vector column |
-| others | same as `enable()` | distance, FTS, format, index_mode |
+| `create_fts_index` | `false` | Build a GIN for the [BM25](/docs/guides/bm25) leg |
+| `fts_config` | `pg_catalog.english` | Text-search configuration |
+| others | same as `enable()` | distance, format, index_mode |
 
 `sync` and `backfill` are independent options.
 

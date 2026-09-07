@@ -41,7 +41,8 @@ as it is.
 | `version()` / `build_info()` | `text` / `jsonb` |
 
 Guides: [enable](/docs/guides/enable) · [adopt](/docs/guides/adopt) ·
-[search](/docs/guides/search) · [filters](/docs/guides/filters) ·
+[search](/docs/guides/search) · [BM25](/docs/guides/bm25) ·
+[filters](/docs/guides/filters) ·
 [templates](/docs/guides/templates) · [chunking](/docs/guides/chunking) ·
 [migrate](/docs/guides/migrate) · [indexes](/docs/guides/indexes) ·
 [retry](/docs/guides/retry).
@@ -58,6 +59,8 @@ Guides: [enable](/docs/guides/enable) · [adopt](/docs/guides/adopt) ·
 | `migrate.strategy` | `convert` (default), `reembed`, `auto` |
 | `migrate.reindex` | `manual` (default), `blocking` |
 | `chunking` | `none` (default), `recursive` |
+| `create_fts_index` | `false` (default), `true` - GIN for the [BM25](/docs/guides/bm25) leg |
+| `fts_config` | a `regconfig`, default `pg_catalog.english` |
 
 ## Grants
 
@@ -65,7 +68,7 @@ Untrusted cdylib. `CREATE EXTENSION` needs superuser.
 
 | Who | What |
 |---|---|
-| Table owner (or superuser) | `enable`, `adopt`, `disable`, `set_format`, `migrate`, `create_vector_index`, `retry_dead` |
+| Table owner (or superuser) | `enable`, `adopt`, `disable`, `set_format`, `migrate`, `create_vector_index`, `retry_dead`, `refresh_lexical_stats` |
 | Superuser | `uninstall()` |
 | PUBLIC | `search`, `search_with_vector`, `status`, `stats`, `version`, `build_info` |
 | Revoked from PUBLIC | `embed`, `convert`, `refresh_models` |

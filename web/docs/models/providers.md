@@ -6,7 +6,7 @@ description: Bind a column to OpenAI, Gemini, Cohere, Mistral, AWS Bedrock, Open
 # External providers
 
 `postvec provider add` points the inference host at a hosted embedding API.
-The key goes in a `0600` file under `providers.d`. PostgreSQL never stores it.
+The key goes in a `0600` file under `providers.d` on that host.
 
 Provider embed models appear in `postvec.models`. `enable()`, `search()` and
 re-embedding migrations then use the same SQL as local models. UniVec can

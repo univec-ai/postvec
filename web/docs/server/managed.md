@@ -26,7 +26,8 @@ uses packages and `postvec setup` instead.
 
 Organization production use needs [postvec Pro](https://univec.ai).
 Personal use, non-production environments and one 30-day production
-evaluation per organization are free. Compliance is contractual.
+evaluation per organization are free. Compliance is contractual. See
+[License](/docs/license).
 
 ## 1. Prepare the database
 
@@ -112,7 +113,8 @@ Once the worker has populated `postvec.models`:
 SELECT postvec.enable(
   'public.docs', 'body', 'your-model',
   backfill_mode => 'cursor',
-  index_mode => 'auto'
+  index_mode => 'auto',
+  create_fts_index => true
 );
 
 SELECT * FROM postvec.status();
@@ -125,16 +127,10 @@ column and leaves stored bytes as they are.
 For a retired or provider-only space, adopt then
 [search the existing space](/docs/guides/bridge). Stored rows stay.
 [`migrate()`](/docs/guides/migrate) is a later step, once that search is
-working:
+working.
 
-```sql
-SELECT postvec.migrate(
-  'public.docs', 'body', 'new-model',
-  strategy => 'convert'
-);
-SELECT * FROM postvec.migration_status();
-SELECT postvec.migration_finalize(1);
-```
+Wait until `pending_jobs = 0` before judging ranks. Then search through
+the proxy (next section).
 
 `set_format()` refreshes the entry using a document template.
 `trigger_mode => 'statement'` (the default) enqueues from transition
@@ -148,12 +144,6 @@ Cursor adoption honors both `backfill => 'missing'` and `'all'`. On
 partitioned tables, use row triggers if applications write directly to
 partitions; statement triggers cover writes through the parent only.
 
-Claims and source reads commit before inference. Write-back checks the
-source row version and migration target again. Worker statements and
-lock waits time out after ten minutes; index builds get an hour.
-Transient and configuration failures retry with exponential backoff.
-Queue jobs dead-letter after five attempts.
-
 Source-table RLS must allow the worker: it uses `row_security=off` so
 it fails rather than silently skip rows. Ordinary table owners bypass
 non-forced RLS. A forced-RLS source needs an appropriately privileged
@@ -166,12 +156,15 @@ builds an HNSW index concurrently by default, on its own connection.
 concurrent index creation on partitioned parents; use a blocking build
 or manage partition indexes explicitly.
 
-Migration cutover is explicit. After the swap, an entry that had an ANN
-index waits in `awaiting_index`; with `index_mode => 'auto'` the server
-builds it concurrently and completes the migration, otherwise build it and
-call `migration_finalize()` again. `disable()` retains user vectors and
-chunk data by default. `convert()` is not available in SQL on managed
-databases; the stub names the server's `/api/convert` endpoint.
+Claims and source reads commit before inference. Write-back checks the
+source row version and migration target again. Worker statements and
+lock waits time out after ten minutes; index builds get an hour.
+Transient and configuration failures retry with exponential backoff.
+Queue jobs dead-letter after five attempts.
+
+`disable()` retains user vectors and chunk data by default.
+`convert()` is a stub on managed databases; it names the server's
+`/api/convert` endpoint.
 
 ## 5. Search
 
@@ -209,7 +202,10 @@ execution embeds the text again, so prepared statements cost one
 embedding per execution.
 
 Everything else (`status()`, `migrate()`, `adopt()`, DDL) connects to
-the database directly.
+the database directly. `search_with_vector()` also runs direct: pass a
+vector the application already has.
+
+Keyword vs vector mix, GIN and corpus stats: [BM25](/docs/guides/bm25).
 
 ### Proxy TLS and authentication
 
@@ -282,7 +278,13 @@ triggers and schema objects, retains user vectors and chunks, and
 refuses external dependencies. Stop configured workers before
 uninstalling.
 
+Migration cutover is explicit. After the swap, an entry that had an ANN
+index waits in `awaiting_index`; with `index_mode => 'auto'` the server
+builds it concurrently and completes the migration, otherwise build it and
+call `migration_finalize()` again.
+
 - [Run a node](/docs/server/node)
 - [SQL functions](/docs/guides/)
 - [Search a retired space](/docs/guides/bridge)
-- [License terms](https://github.com/univec-ai/postvec/blob/main/LICENSING.md)
+- [BM25](/docs/guides/bm25)
+- [License](/docs/license)

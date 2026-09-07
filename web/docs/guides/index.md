@@ -1,6 +1,6 @@
 ---
 title: SQL functions
-description: enable, adopt, search a retired space, migrate and chunking.
+description: enable, adopt, search a retired space, BM25, migrate and chunking.
 ---
 
 # SQL functions
@@ -10,18 +10,20 @@ description: enable, adopt, search a retired space, migrate and chunking.
 | Text, no vectors | [`enable()`](/docs/guides/enable) | postvec creates and maintains a shadow `vector(N)` column |
 | A populated `vector(N)` column, same model | [`adopt()`](/docs/guides/adopt) | Existing bytes stay. Missing rows can backfill. |
 | Vectors in a retired or provider-only space | [Search a retired space](/docs/guides/bridge) | Adopt, then search. Each query is converted into that space (embed-bridge). The corpus stays. |
+| Hybrid, keyword or vector search | [`search()`](/docs/guides/search), [BM25](/docs/guides/bm25) | One call. `semantic_weight` mixes vector and BM25. |
 | Ready to change the stored model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. Do this after search on the current space is working. |
 | Long source documents | [Recursive chunking](/docs/guides/chunking) | A managed 1:N destination stores passage vectors. Search still returns documents. |
 | Hosted embedding API (OpenAI, Gemini, ...) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
+| RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) | Plain SQL schema. Worker runs in `postvec-server`. |
 
 Functions live in the `postvec` schema (`postvec.enable(...)`).
 Leave `search_path` as it is.
 
 Table ownership or superuser is required for `enable`, `adopt`,
-`disable`, `migrate`, `set_format`, `retry_dead` and
-`create_vector_index`. `uninstall()` is superuser only. `search()` is
-executable by PUBLIC. `embed` / `convert` / `refresh_models` are revoked
-from PUBLIC.
+`disable`, `migrate`, `set_format`, `retry_dead`,
+`create_vector_index` and `refresh_lexical_stats`. `uninstall()` is
+superuser only. `search()` is executable by PUBLIC. `embed` / `convert` /
+`refresh_models` are revoked from PUBLIC.
 
 ## Text, no vectors
 
@@ -132,7 +134,9 @@ refresh job; the worker splits it and fans out one embed job per chunk.
 ::::
 
 - [External providers](/docs/models/providers)
+- [BM25](/docs/guides/bm25)
 - [Filters](/docs/guides/filters)
 - [Templates](/docs/guides/templates)
 - [Status](/docs/guides/status) / `postvec doctor`
 - [`retry_dead()`](/docs/guides/retry)
+- [Managed PostgreSQL](/docs/server/managed)

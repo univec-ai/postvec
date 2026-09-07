@@ -25,7 +25,8 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | Jobs pile up with endpoint errors | Restore the inference nodes; an empty endpoint list leaves jobs pending |
 | Embedded engine will not start | Engine path, unversioned `libonnxruntime.so`, readable descriptors, loopback ports |
 | Search returns FTS only | Query embedding failed while degradation was enabled; restore inference or disable degradation |
-| Search is slow | No usable ANN index for the entry's distance |
+| Search is slow | No usable ANN index for the entry's distance. Keyword traffic also wants a GIN (`create_fts_index => true`). [BM25](/docs/guides/bm25) |
+| BM25 ranks look off after a bulk load | `SELECT postvec.refresh_lexical_stats(...)`. Check `status().lexical_error` |
 | `status().index_error` set | Resolve the recorded automatic-index failure, then run `create_vector_index()` |
 | Entry becomes disabled | Table / source / vector / template column vanished; worker quarantined it |
 | Migration is `awaiting_index` | Run `suggested_index_sql`, finalize again |

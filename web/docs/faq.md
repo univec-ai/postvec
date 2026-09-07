@@ -17,8 +17,8 @@ Self-hosted clusters that can load the extension still use
 
 [Adopt the column](/docs/guides/adopt) and
 [search the existing space](/docs/guides/bridge). Each query is converted
-into the stored space (embed-bridge). Stored rows stay. Migrate later
-if you want a different stored model.
+into the stored space (embed-bridge). Stored rows stay. That is the
+usual first path. Migrate later if you want a different stored model.
 
 ## What are embedding debt and vector lock-in?
 
@@ -99,7 +99,21 @@ models and for registry operations.
 
 ## Why is search slow?
 
-Build an ANN index. [Indexes](/docs/guides/indexes).
+Build an ANN index. [Indexes](/docs/guides/indexes). Keyword traffic
+also wants a GIN: `create_fts_index => true` at enable time. See
+[BM25](/docs/guides/bm25).
+
+## How do I search by keywords only?
+
+```sql
+SELECT * FROM postvec.search(
+  'public.docs', 'body', 'reset password',
+  semantic_weight => 0.0
+);
+```
+
+`semantic_weight => 1.0` is vector only. Default `0.5` is hybrid.
+[BM25](/docs/guides/bm25) covers the GIN, corpus stats and flags.
 
 ## Why can a new row produce only a lexical match?
 
@@ -127,7 +141,8 @@ inference mode. `postvec-server` is source-available under the Business
 Source License 1.1: free for development, testing, personal use and a 30-day
 production evaluation; production use by an organization needs a
 [postvec Pro](https://univec.ai) subscription. Each version becomes
-PostgreSQL-licensed four years after release.
+PostgreSQL-licensed four years after release. Table and Pro contents:
+[License](/docs/license).
 
 ## Which PostgreSQL versions are supported?
 

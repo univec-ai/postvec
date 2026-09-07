@@ -18,9 +18,8 @@ that moment, it picks the job up on its next poll
 
 Search during this window can miss a new row or, after an update, still
 rank the previous vector. For chunked columns the contract is stricter:
-an edited document is **absent** until it is rebuilt. Search can return
-a false negative; it will not rank stale chunk text. See
-[chunking](/docs/guides/chunking).
+an edited document is **absent** until it is rebuilt, so ranks use only
+current chunk text. See [chunking](/docs/guides/chunking).
 
 ## Readiness checks
 

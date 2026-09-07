@@ -50,7 +50,6 @@ and runs the worker in `postvec-server`.
 | `halfvec` / undimensioned `vector` on adopt | Refused, with a rewrite recipe |
 | `NOT NULL` vector the worker would write | Refused |
 | `DROP EXTENSION ... CASCADE` | Unsupported. `uninstall` is the supported path. |
-| Signed apt/yum repository | Not shipped yet |
 
 ## Resource notes
 
@@ -72,4 +71,5 @@ and runs the worker in `postvec-server`.
 | Bundled MiniLM | Upstream license, shipped in the model package |
 
 A verified UniVec account sees the private catalogue superset. The
-public channel is a subset and needs no key.
+public channel is a subset and needs no key. Terms and Pro:
+[License](/docs/license).

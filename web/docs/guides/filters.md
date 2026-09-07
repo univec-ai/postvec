@@ -42,7 +42,7 @@ subset.
 
 Closed operator set: `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `like`,
 `ilike`, `is_not` (null only). Equality is the scalar shorthand:
-`"category": "finance"`. There is no `eq`.
+`"category": "finance"`.
 
 Caps: 64 KiB serialized, 32 columns, 256 `in` values.
 

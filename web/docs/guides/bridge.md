@@ -6,7 +6,8 @@ description: Adopt vectors in a retired or provider-only model space and search 
 # Search a retired space
 
 When a column already holds vectors from a retired or provider-only
-model, keep those vectors and search them as they are.
+model, keep those vectors and search them as they are. This is the usual
+first path: adopt, then search. Stored bytes stay.
 
 `adopt()` registers the column. `search()` then embeds each query with
 an available local model and converts that one vector into the stored

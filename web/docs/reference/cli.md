@@ -195,7 +195,7 @@ listed models; the probe proves the key and one added route per kind. A
 selection over the 256-entry per-file ceiling is refused whole.
 `--api-key-from-login` copies the `postvec login` key into
 `<root>/keys/<NAME>.key` (one per connector file; never over a different
-existing key — `--replace-copied-key` rotates one this command copied for
+existing key. `--replace-copied-key` rotates one this command copied for
 that connector). The plan carries a `verify against univec with N billable
 embed probe attempt(s) and M billable convert probe attempt(s)` step (JSON
 `kind: "verify-providers"`, fields `embed_probes` and `convert_probes`)

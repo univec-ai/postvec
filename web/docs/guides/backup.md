@@ -13,7 +13,7 @@ and triggers dump normally.
 
 Caches rebuilt after restore:
 
-- BM25 corpus statistics (`lexical_stats`, `lexical_df`): the worker rebuilds
+- [BM25](/docs/guides/bm25) corpus statistics (`lexical_stats`, `lexical_df`): the worker rebuilds
   them at its first wake; searches use `ts_rank_cd` until then
 - `postvec.models` (discovery cache)
 - the worker heartbeat

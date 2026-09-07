@@ -31,8 +31,8 @@ Personal production use, non-production environments and a 30-day
 production evaluation per organization are free. Production use by an
 organization needs [postvec Pro](https://univec.ai). The extension, CLI,
 runtime, model packages and PostgreSQL images stay under the PostgreSQL
-License. The package copyright file, the image label and the release
-manifest record the same identifier; see the
+License. [License](/docs/license). The package copyright file, the image
+label and the release manifest record the same identifier; see the
 [release page](/download#postvec-server).
 :::
 
