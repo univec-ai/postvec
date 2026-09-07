@@ -102,10 +102,18 @@ RUN set -eux; \
     test -d "/opt/postvec/models/${BUNDLED_MODEL_BACKEND}/${BUNDLED_MODEL_NAME}"; \
     ls /opt/postvec/libs/onnxruntime/lib/libonnxruntime.so
 
+# The embedded host reads connector files from /etc/postvec/providers.d
+# (postvec.providers_path's default). Nothing packages that directory, so
+# create it for the postgres uid: files `docker exec <ctr> postvec provider …`
+# writes inherit its owner, and POSTVEC_PROVIDERS_PATH lets that run
+# flag-free — this image has no pg_lsclusters cluster for the CLI to find.
+RUN install -d -o postgres -g postgres -m 0700 /etc/postvec/providers.d
+
 # LD_LIBRARY_PATH is for ONNX Runtime's own adjacent libraries; the extension
 # itself finds libonnxruntime by searching the engine root and dlopen()ing it.
 ENV POSTVEC_MODE=embedded \
     POSTVEC_PATH=/opt/postvec \
+    POSTVEC_PROVIDERS_PATH=/etc/postvec/providers.d \
     POSTVEC_EMBEDDED_MODELS=${BUNDLED_MODEL_NAME} \
     LD_LIBRARY_PATH=/opt/postvec/libs/onnxruntime/lib
 

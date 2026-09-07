@@ -105,7 +105,10 @@ postmaster already has:
 
 with `providers.d/openai.toml` carrying `api_key_env = "OPENAI_API_KEY"`.
 `postvec provider add openai --model text-embedding-3-small --path "$PWD"`
-writes that file for you.
+writes that file for you. Without a mount, `docker exec postvec postvec
+provider add …` writes into the container's own `/etc/postvec/providers.d`
+(the `-local` image sets `POSTVEC_PROVIDERS_PATH`); that lives in the
+container's writable layer, not in a volume, and is gone with the container.
 
 | Mount | Contents | Permissions |
 |---|---|---|
