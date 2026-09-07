@@ -63,7 +63,7 @@ runtime and model packages and the PostgreSQL images stay under the
 PostgreSQL License in either inference mode.
 
 Every debug package has a `postvec-server-dbgsym` / `-debuginfo` sibling.
-[Install postvec-server](/docs/server/node) covers installation; the selector
+[Packages](/docs/server/packages) covers installation; the selector
 above lists the file for the chosen distribution and architecture.
 
 [Configure the cluster](/docs/install/setup).

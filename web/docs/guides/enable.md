@@ -1,6 +1,6 @@
 ---
-title: Enable a column
-description: Behavior and options for postvec.enable().
+title: Enable a column (SQL)
+description: postvec.enable() options, disable and refusals.
 ---
 
 # Enable a column
@@ -50,10 +50,7 @@ SELECT relation, model, dim, pending_jobs, dead_jobs
   FROM postvec.status();
 ```
 
-:::: info Optional
-`sudo postvec doctor --database app --deep` is the host-side check.
-[Verify artifacts](/docs/install/verify).
-::::
+Host-side check: [enable (CLI)](/docs/guides/enable-cli).
 
 :::: tip Expected
 `pending_jobs` rises, then returns to 0. `docs.body_semantic` fills with
@@ -122,3 +119,7 @@ The worker uses a separate session and cannot see temporary tables.
 The worker connects as a superuser and bypasses RLS. A role that can
 read the table can also read the derived vector.
 ::::
+
+- [Enable (CLI)](/docs/guides/enable-cli)
+- [Search](/docs/guides/search)
+- [Status](/docs/guides/status)

@@ -1,21 +1,20 @@
 ---
-title: Status and health
-description: Health signals from status(), stats() and postvec doctor.
+title: Status (SQL)
+description: Health signals from status() and stats().
 ---
 
 # Status and health
 
 `status()` is per enabled column. `stats()` is the worker process.
-`postvec doctor` adds read-only checks of the host installation.
+Host-side checks: [status (CLI)](/docs/guides/status-cli) (`postvec
+doctor`).
 
 Start here when vectors stay NULL, search is lexical-only or a
 migration looks stuck.
 
 ## `status()` - per entry
 
-:::: code-group
-
-```sql [SQL]
+```sql
 SELECT relation, model, dim, state,
        pending_jobs, dead_jobs,
        has_vector_index, index_error,
@@ -24,12 +23,6 @@ SELECT relation, model, dim, state,
        lexical_docs, lexical_stats_age_seconds, lexical_error
   FROM postvec.status();
 ```
-
-```bash [CLI]
-sudo postvec doctor --database app --deep
-```
-
-::::
 
 | Check | Field |
 |---|---|
@@ -56,24 +49,6 @@ SELECT worker_pid, worker_started_at, worker_last_beat,
 
 Counters are process-lifetime. They reset when the worker respawns.
 
-## `doctor`
-
-```bash
-sudo postvec doctor --database app --deep
-sudo postvec doctor --database app --deep --format json \
-  | jq '{summary, failures: [.checks[] | select(.status == "FAIL")]}'
-```
-
-| Flag | Effect |
-|---|---|
-| `--deep` | Heartbeat must advance; hash CLI-installed model receipts |
-| `--strict` | Warnings fail the command |
-| `--format json` | Versioned object on stdout; progress on stderr |
-
-`doctor` is read-only: host files, cluster settings and the heartbeat.
-
-Inside a container, use `postvec-healthcheck` or an explicit socket URL. See [Docker](/docs/install/docker).
-
 ## Version
 
 ```sql
@@ -81,4 +56,10 @@ SELECT postvec.version();
 SELECT postvec.build_info();  -- {version, diagnostics_api, features.embedded}
 ```
 
-If `doctor` (or the worker log) asks for `ALTER EXTENSION`, the library and installed SQL disagree. See [Upgrade](/docs/install/upgrade).
+If the worker log asks for `ALTER EXTENSION`, the library and installed
+SQL disagree. See [upgrade](/docs/install/upgrade).
+[doctor](/docs/guides/status-cli) reports the same.
+
+- [Status (CLI)](/docs/guides/status-cli)
+- [Retry](/docs/guides/retry)
+- [Troubleshooting](/docs/troubleshooting)

@@ -26,7 +26,7 @@ On RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon,
 [managed PostgreSQL](/docs/server/managed) installs a plain SQL schema
 and runs the worker in [postvec-server](/docs/server/). The same binary
 is the remote inference process for self-hosted clusters
-([install postvec-server](/docs/server/node)).
+([install](/docs/server/node)).
 
 ## Related work
 

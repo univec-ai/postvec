@@ -100,11 +100,12 @@ path. [External providers](/docs/models/providers).
 
 ## How do I run inference off the database host?
 
-Install [postvec-server](/docs/server/node) and point the cluster at it
-with `postvec setup --grpc ... --http ...`. [postvec-server](/docs/server/)
-covers one process, a [fleet](/docs/server/fleet), the
-[dashboard](/docs/server/dashboard) on port `22222`, and
-[managed PostgreSQL](/docs/server/managed).
+Install [postvec-server](/docs/server/)
+([Docker](/docs/server/docker), [packages](/docs/server/packages))
+and point the cluster at it with `postvec setup --grpc ... --http ...`.
+[Quick start remote](/docs/quickstart-remote) runs both containers on
+one network. The [dashboard](/docs/server/dashboard) is port `22222`.
+Managed clouds: [managed PostgreSQL](/docs/server/managed).
 
 ## Why is the vector NULL right after INSERT?
 

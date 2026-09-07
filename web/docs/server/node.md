@@ -1,32 +1,23 @@
 ---
 title: Install postvec-server
-description: Install the files, choose TLS or --insecure, start postvec-server and read its boot log.
+description: Docker, packages or a source build for the companion inference server.
 ---
 
 # Install postvec-server
 
-postvec-server is the companion inference process. After this page you
-have a process serving gRPC on `33333` and discovery on `22222`, with at
-least one model loaded. Point PostgreSQL at it with
+After install you have a process serving gRPC on `33333` and discovery
+on `22222`, with at least one model loaded. Point PostgreSQL at it with
 [Connect PostgreSQL](/docs/server/connect), or attach a managed database
 with [managed PostgreSQL](/docs/server/managed).
 
-## 1. Install the package
+Both containers together:
+[quick start remote](/docs/quickstart-remote).
 
-`postvec-server` is published with every release as a `.deb` / `.rpm`, one
-per distribution and architecture (there is no PostgreSQL major in it), next
-to the runtime and model packages it serves. Download and verify them as on
-the [packages page](/docs/install/packages), then:
-
-<PgSnippet id="packages-server" />
-
-The package installs the binary, the systemd unit, a conffile at
-`/etc/postvec-server/config.json`, the dashboard under
-`/opt/postvec/server/ui` and the `postvec-server` service account. You
-add the certificate pair and start the unit. `postvec-cli` is a
-Recommends of the node package (for `postvec model pull`); it is listed
-explicitly because an install from local files cannot fetch a
-recommended package by itself.
+| Method | When |
+|---|---|
+| [Docker](/docs/server/docker) | Image with MiniLM already loaded |
+| [Packages](/docs/server/packages) | `.deb` / `.rpm` and a systemd unit |
+| [From source](/docs/server/source) | A checkout, no PostgreSQL headers |
 
 ::: warning Licence
 `postvec-server` is **Business Source License 1.1** (source-available).
@@ -34,163 +25,10 @@ Personal production use, non-production environments and a 30-day
 production evaluation per organization are free. Production use by an
 organization needs [postvec Pro](https://univec.ai). The extension, CLI,
 runtime, model packages and PostgreSQL images stay under the PostgreSQL
-License. [License](/docs/license). The package copyright file, the image
-label and the release manifest record the same identifier; see the
-[release page](/download#postvec-server).
+License. [License](/docs/license).
 :::
 
-A checkout still builds it, and needs neither pgrx nor PostgreSQL headers:
-
-```bash
-cargo build --release -p postvec-server
-sudo install -m 0755 target/release/postvec-server /usr/local/bin/
-```
-
-## 2. Files
-
-A node needs ONNX Runtime and at least one model under the same root. The
-packaged unit reads **`/opt/postvec`**, which is exactly where these packages
-install and where `postvec model pull` writes, so the install line above
-already put everything in place:
-
-| Artifact | Installs |
-|---|---|
-| `postvec-onnxruntime` | `libonnxruntime.so` under `/opt/postvec/libs` |
-| `postvec-model-minilm-l6-v2` | The bundled 384-d model under `/opt/postvec/models` |
-| `postvec-extras` | Pins the two above |
-| `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands (a Recommends of the node) |
-| dashboard | `/opt/postvec/server/ui`, served on port `22222` |
-
-A node built from a checkout, or a unit without the packaged drop-in, defaults
-to `/var/lib/postvec-server` instead: point `--root` at `/opt/postvec`, or copy
-the tree there to keep the node's inventory separate from any local cluster.
-See [models on postvec-server](/docs/server/models) for pulling more.
-
-## 3. TLS
-
-The discovery listener requires TLS. Without `--insecure` and without a
-readable certificate pair, the node **refuses to start**.
-
-Operators write `POSTVEC_HTTP_ENDPOINTS=https://...` into a cluster. A
-silent fallback to plain HTTP would leave a listener that answers and a
-client that fails.
-
-Self-signed certificates are accepted. The trust boundary is the network.
-
-```bash
-# Local development, no certificates.
-postvec-server --root /var/lib/postvec-server --insecure
-
-# A real node.
-postvec-server \
-  --root /var/lib/postvec-server \
-  --ssl-cert /etc/postvec-server/tls.crt \
-  --ssl-cert-key /etc/postvec-server/tls.key
-```
-
-A pair dropped at `$root/certs/server.crt` and `$root/certs/server.key` is
-found without flags, for a node run from a checkout. **On a package
-install** the engine root is `/opt/postvec`, root-owned and read-only for the
-service account, so the packaged configuration names the pair beside itself
-instead: `/etc/postvec-server/server.crt` and `server.key`, installed
-`root:postvec-server`, the key `0640`. The package's post-install message
-prints the two `install` lines.
-
-## 4. Start it
-
-### As a container
-
-The published image is the packages above composed on Debian 12: the node,
-the CLI, ONNX Runtime and the bundled model, the same model bytes the
-local postvec image runs in-process. It serves MiniLM out of the box:
-
-<PgSnippet id="docker-server" />
-
-The container generates its own self-signed certificate at start, per
-container, never baked into the image. Mount a pair over
-`/etc/postvec-server/server.crt` and `server.key` (where the packaged
-configuration looks) or pass `--ssl-cert` / `--ssl-cert-key` to override it.
-A bind mount keeps the host's numeric owner, and the container runs as
-uid/gid **999**, which a host's own `postvec-server` group need not be: a key
-that is `root:postvec-server 0640` on the host is unreadable inside the
-container unless that group is gid 999. Make a mounted key readable by
-uid or gid 999, or use Compose secrets with an explicit `uid: "999"` and
-`mode: 0400`. The healthcheck is
-`/ready`, so `docker inspect` reports healthy only once a model can answer.
-The admin port is not exposed.
-
-:::: info Optional
-Image attestations: [verify artifacts](/docs/install/verify).
-::::
-
-A checkout builds the same image from locally built packages with
-`packaging/postvec/scripts/build-server-image.sh`.
-
-### As a service
-
-The package installs the unit from `postvec-server/systemd/` plus a drop-in
-that sets `POSTVEC_SERVER_ROOT=/opt/postvec`. It runs the process
-unprivileged, with a strict sandbox and a read-only model root:
-
-```bash
-sudo systemctl enable --now postvec-server
-journalctl -u postvec-server -f
-```
-
-## 5. Read the boot log
-
-```text
-postvec-server 0.1.0 (onnx)
-engine root: /var/lib/postvec-server
-configuration file: none found; using flags, environment and defaults
-advertising 10.0.0.10
-gRPC address: 10.0.0.10:33333
-HTTP address: https://10.0.0.10:22222
-1 model root(s) resolve to 1 resident model(s) (ceiling 16)
-loaded model "sentence-transformers-all-minilm-l6-v2"
-warming up 1 model(s)
-gRPC listening on 0.0.0.0:33333 (plaintext, unauthenticated - private networks only)
-discovery listening on https://0.0.0.0:22222
-admin listening on http://127.0.0.1:22223 (loopback only)
-serving: 1 model(s) ready, ...
-```
-
-Check these two lines:
-
-- **`advertising ...`** If a warning says the address was autodetected and the
-  host has more than one interface, pin it with `--advertise`. Otherwise a
-  node can serve locally and never join its peers.
-- **`configuration file: ...`** The file that was actually read. A change
-  that had no effect usually hit a different file.
-
-Sockets are reserved before models load, so a port conflict fails immediately.
-Between reservation and serving the ports are open but silent; a healthcheck
-sees a refused connection while the node is still starting.
-
-## 6. Open the dashboard
-
-The package and image install the UI at `/opt/postvec/server/ui`. Browse to
-`https://<node>:22222` (or `http://` with `--insecure`). Query the bundled
-MiniLM model from the **Query** tab.
-
-Registry mutations (pull, activate, deactivate, remove) on that port need
-`--manage`. Without it the **Registries** tab is read-only; those actions
-still work on the loopback admin port. [Dashboard](/docs/server/dashboard)
-covers both tabs.
-
-:::: info Optional
-```bash
-postvec-server status
-curl -sk https://127.0.0.1:22222/ready
-```
-
-`status` prints version, engine root, addresses and loaded models.
-`/ready` is `200` once a model can serve, `503` before that.
-::::
-
-Next: [connect PostgreSQL](/docs/server/connect).
-
+- [Connect PostgreSQL](/docs/server/connect)
 - [Dashboard](/docs/server/dashboard)
-- [Models on postvec-server](/docs/server/models)
+- [Models](/docs/server/models)
 - [Reference](/docs/server/reference)
-- [Packages](/docs/install/packages)

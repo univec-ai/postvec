@@ -129,8 +129,8 @@ postvec-server is a CPU or GPU inference process on the deployment
 network. Every member of a fleet runs the same command and binds the
 same ports; models are files on disk that each process loads. The
 server also serves a [dashboard](/docs/server/dashboard) on the
-discovery port. [Install postvec-server](/docs/server/node) is one
-process; [fleet](/docs/server/fleet) is several.
+discovery port. [Install](/docs/server/node) is one process;
+[fleet](/docs/server/fleet) is several.
 
 The gRPC port is plaintext and unauthenticated by design, so the nodes
 belong on a trusted private network. [External provider](/docs/models/providers)

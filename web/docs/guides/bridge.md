@@ -1,5 +1,5 @@
 ---
-title: Search a retired space
+title: Search a retired space (SQL)
 description: Adopt vectors in a retired or provider-only model space and search them through local embed-bridge routing.
 ---
 
@@ -158,32 +158,10 @@ An executable route needs all three parts in one local engine:
 - one converter from that source to the stored target space
 - one `embed-bridge` executor
 
-On an **embedded** host, inspect the catalogue and pull the converter's
-inventory name. Dependencies bring the companion embed model and
-executor:
-
-```bash
-postvec model ls --available
-converter_name='replace-with-catalogue-name'
-sudo postvec model pull "$converter_name" --dry-run
-sudo postvec model pull "$converter_name" --yes          # installed, deactivated
-sudo postvec model activate "$converter_name" --yes      # enables the whole chain
-sudo postvec doctor --database app --deep
-```
-
-`pull` installs the closure deactivated. `activate` on the converter
-enables its deactivated dependencies with it (the embed model and the
-`embed-bridge` executor). The engine loads a chain only when every
-member is enabled.
-
-Not every source/target pair is present in the public subset. The
-private catalogue holds the broader conversion inventory.
-
-On **remote**, models are administered on the `postvec-server` nodes;
-local `postvec model pull` is refused. At least one node must host the
-complete embed model, converter and bridge chain. Pieces discovered on
-different nodes stay separate. If one node is missing the chain, postvec
-tries the next configured endpoint.
+On an embedded host, pull the converter (dependencies bring the
+companion embed model and executor). On remote, administer the same
+chain on [postvec-server](/docs/server/models). Commands:
+[search a retired space (CLI)](/docs/guides/bridge-cli).
 
 After any inventory change:
 
@@ -232,3 +210,7 @@ Bridge search produces new vectors (queries and synchronized future
 writes) in the old target space. Existing rows remain exactly as they
 were.
 ::::
+
+- [Search a retired space (CLI)](/docs/guides/bridge-cli)
+- [Adopt](/docs/guides/adopt)
+- [Change the stored model](/docs/guides/migrate)

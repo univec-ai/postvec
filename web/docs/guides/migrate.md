@@ -159,11 +159,11 @@ builds the index concurrently and marks the migration done.
 
 ## Local and hosted converter routes
 
-On an embedded host, pull a local converter with
-[`postvec model pull`](/docs/models/pull). On a remote host, install it on
-each `postvec-server` node.
+Install the converter first: [change the stored model (CLI)](/docs/guides/migrate-cli)
+(`model pull` on an embedded host or postvec-server, or
+`provider add univec --convert-to`).
 
-A [`kind = "convert"` UniVec entry](/docs/models/univec) supplies a hosted
+A [`kind = "convert"` UniVec entry](/docs/models/univec) is a hosted
 direct route. The migration sends every stored vector to UniVec.
 `migration_status().resolved_via` names the converter:
 
@@ -171,12 +171,9 @@ direct route. The migration sends every stored vector to UniVec.
 {"kind":"direct","model":"univec-convert-snowflake-to-bge-m3"}
 ```
 
-`sudo postvec provider add univec --convert-to <target>` adds every hosted
-route into the target from UniVec's catalogue.
-
-A hosted converter is eligible only as a direct route. If more than one direct
-converter has the same source and target, postvec prefers a local converter,
-then the first hosted one by name.
+A hosted converter is a direct route only. If more than one direct
+converter has the same source and target, postvec prefers a local
+converter, then the first hosted one by name.
 
 ## Abort
 
@@ -213,3 +210,7 @@ The data is on the new model. Build the index, then finalize again.
 `migration_status()` reports the active migration. It can be aborted before
 the column swap when a different target or strategy is required.
 ::::
+
+- [Change the stored model (CLI)](/docs/guides/migrate-cli)
+- [Search a retired space](/docs/guides/bridge)
+- [Adopt](/docs/guides/adopt)

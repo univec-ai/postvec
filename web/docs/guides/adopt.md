@@ -10,7 +10,8 @@ stored bytes as they are.
 
 After adopt, search the column as it is. For a retired or provider-only
 space such as ada-002, [search a retired space](/docs/guides/bridge)
-converts each query into that space (embed-bridge). Stored rows stay.
+([CLI](/docs/guides/bridge-cli)) converts each query into that space
+(embed-bridge). Stored rows stay.
 [`migrate()`](/docs/guides/migrate) is a later step, once that search is
 working and you want a different stored model.
 

@@ -82,7 +82,9 @@ The model name must be one the node serves. `postvec.models` is the list.
 
 ## Containers
 
-The image reads the same two endpoint lists from the environment:
+The image reads the same two endpoint lists from the environment.
+[Quick start remote](/docs/quickstart-remote) starts both containers on
+one network, already pointed at each other.
 
 <PgSnippet id="docker-remote" />
 
@@ -113,7 +115,7 @@ embedding route. List what the cluster needs before switching:
 SELECT DISTINCT model FROM postvec.status();
 ```
 
-- [Install postvec-server](/docs/server/node)
+- [Install](/docs/server/node)
 - [Dashboard](/docs/server/dashboard)
 - [Fleet](/docs/server/fleet)
 - [Embedded vs remote](/docs/concepts/modes)

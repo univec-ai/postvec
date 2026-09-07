@@ -21,10 +21,9 @@ Caches rebuilt after restore:
 ## Post-restore procedure
 
 1. Install the **matching** postvec and pgvector files for that major.
-2. Restore cluster configuration (`99-postvec.conf` or its equivalent) and restart so the launcher and workers start.
-3. `SELECT postvec.refresh_models();` or run `postvec setup`.
-4. `postvec doctor --database ... --deep`.
-5. Confirm queues and any open migration before reopening writes.
+2. Restore cluster configuration (`99-postvec.conf` or its equivalent) and restart so the launcher and workers start. CLI: [backup (CLI)](/docs/guides/backup-cli).
+3. `SELECT postvec.refresh_models();`
+4. Confirm queues and any open migration before reopening writes.
 
 Restored queued and dead **chunk** work resumes against the restored chunk identities. Destination sequences are therefore part of the dump.
 
@@ -41,3 +40,7 @@ Missing databases cause workers to repeatedly fail during connection.
 The list must be edited, or postvec uninstalled, followed by a restart before
 the cluster is opened for application traffic.
 ::::
+
+- [Backup (CLI)](/docs/guides/backup-cli)
+- [Status](/docs/guides/status)
+- [Configure the cluster](/docs/install/setup)

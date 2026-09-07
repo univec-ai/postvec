@@ -70,7 +70,7 @@ sudo cp -a build/payload-common/opt/postvec/models \
 
 Manually copied models are operator-owned. Remove them by hand.
 
-## Build the inference node
+## Build postvec-server
 
 `postvec-server` is an ordinary workspace member, so it needs neither pgrx nor
 PostgreSQL headers:
@@ -81,9 +81,8 @@ sudo install -m 0755 target/release/postvec-server /usr/local/bin/
 ```
 
 It still needs ONNX Runtime and at least one model under its `--root`, which
-is the same engine root described above. [Install postvec-server](/docs/server/node)
-covers TLS, the first start and the boot log. The [dashboard](/docs/server/dashboard)
-needs a built `postvec-server/web-ui` and `--web-ui`.
+is the same engine root described above. [Build postvec-server from source](/docs/server/source)
+covers TLS, the first start and the dashboard.
 
 ## Development rebuild sequence
 

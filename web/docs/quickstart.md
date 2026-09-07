@@ -1,11 +1,12 @@
 ---
-title: Quick start
-description: Hybrid search in a postvec container. Pick PostgreSQL 16, 17 or 18.
+title: Quick start local
+description: Hybrid search in one postvec container. Pick PostgreSQL 16, 17 or 18.
 ---
 
-# Quick start
+# Quick start local
 
 A container with PostgreSQL, postvec and the bundled MiniLM model.
+Inference runs inside that container.
 
 Start the image, enable a column, wait for vectors, index, search, then
 remove the container.
@@ -117,11 +118,11 @@ The engineering row ranks highly despite almost no keyword overlap.
 docker rm -f postvec
 ```
 
-An existing cluster uses [packages](/docs/install/packages) then
-[configure](/docs/install/setup). To run inference in a separate
-process, or on a GPU host, install [postvec-server](/docs/server/node)
-and [connect PostgreSQL](/docs/server/connect). RDS, Aurora, Cloud SQL,
-Azure, Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
+The same SQL against postvec-server:
+[quick start remote](/docs/quickstart-remote). An existing cluster uses
+[packages](/docs/install/packages) then [configure](/docs/install/setup).
+RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
+[managed PostgreSQL](/docs/server/managed).
 
 A populated vector column uses [`adopt()`](/docs/guides/adopt). For a
 retired or provider-only space, [search that space](/docs/guides/bridge)

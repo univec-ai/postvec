@@ -106,7 +106,7 @@ postvec-server --web-ui "$PWD/dist" --insecure
 
 Without a built UI, `/` on the discovery port answers a JSON stub.
 
-- [Install postvec-server](/docs/server/node)
+- [Install](/docs/server/node)
 - [Models on postvec-server](/docs/server/models)
 - [HTTP API](/docs/server/http-api)
 - [Login and private catalogue](/docs/models/login)

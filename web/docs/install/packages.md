@@ -64,7 +64,7 @@ performs inference on this host or on another machine:
 
 Install postvec-server from the same release: the `postvec-server`
 package plus the runtime and model packages, on hosts that need no
-PostgreSQL. See [install postvec-server](/docs/server/node). That
+PostgreSQL. See [postvec-server packages](/docs/server/packages). That
 package is **Business Source License 1.1**; the identifier is on the
 [release page](/download#postvec-server).
 

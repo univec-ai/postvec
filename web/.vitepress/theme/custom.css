@@ -282,10 +282,25 @@ html.dark {
   font-weight: 500;
 }
 
+.VPSidebarItem .item {
+  align-items: center;
+}
+
 .VPSidebarItem .link,
-.VPSidebarItem.level-0:not(.is-link) > .item {
+.VPSidebarItem.level-0:not(.is-link) > .item > .text,
+.VPSidebarItem.level-1.collapsible:not(.is-link) > .item > .text,
+.VPSidebarItem.level-2.collapsible:not(.is-link) > .item > .text,
+.VPSidebarItem.level-3.collapsible:not(.is-link) > .item > .text {
   padding: 0.2rem 0.7rem;
   border-radius: var(--pv-radius);
+}
+
+.VPSidebarItem.level-0 > .item > .caret {
+  color: var(--vp-c-text-1);
+}
+
+.VPSidebarItem.level-0 .caret-icon {
+  font-size: 20px;
 }
 
 .VPSidebarItem.is-active > .item .link {

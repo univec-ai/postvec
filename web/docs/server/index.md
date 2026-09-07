@@ -32,9 +32,12 @@ PostgreSQL (or, on managed hosts, in the plain SQL schema).
 
 | Situation | Path |
 |---|---|
-| First node on a VM or in Docker | [Install postvec-server](/docs/server/node) |
+| Try both containers | [Quick start remote](/docs/quickstart-remote) |
+| Docker image (default install) | [Docker](/docs/server/docker) |
+| `.deb` / `.rpm` | [Packages](/docs/server/packages) |
+| Checkout | [From source](/docs/server/source) |
 | Point an existing cluster at it | [Connect PostgreSQL](/docs/server/connect) |
-| Several nodes | [Fleet](/docs/server/fleet) |
+| Several processes | [Fleet](/docs/server/fleet) |
 | RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) |
 | Hosted OpenAI / Cohere / Gemini / ... | Same [provider](/docs/models/providers) files, on each server |
 
@@ -63,7 +66,9 @@ The model layout is the same one embedded mode uses. A tree that
 `postvec model pull` already wrote into works unchanged: name it with
 `--root` or `POSTVEC_SERVER_ROOT`.
 
-- [Install postvec-server](/docs/server/node)
+- [Install](/docs/server/docker)
+  ([packages](/docs/server/packages), [from source](/docs/server/source),
+  [all methods](/docs/server/node))
 - [Dashboard](/docs/server/dashboard)
 - [Connect PostgreSQL](/docs/server/connect)
 - [Models](/docs/server/models)

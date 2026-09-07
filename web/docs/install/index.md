@@ -16,9 +16,9 @@ databases.
 
 | Host | Path |
 |---|---|
-| Try it locally | [Docker](/docs/install/docker) or [quick start](/docs/quickstart) |
+| Try it locally | [Quick start local](/docs/quickstart) or [quick start remote](/docs/quickstart-remote) |
 | Self-hosted PostgreSQL 16, 17 or 18 | [Packages](/docs/install/packages), then [configure](/docs/install/setup) |
-| Inference off the database (GPU, isolation, fleet) | [Install postvec-server](/docs/server/node), then [connect PostgreSQL](/docs/server/connect) |
+| Inference off the database (GPU, isolation, fleet) | [postvec-server](/docs/server/) ([Docker](/docs/server/docker) or [packages](/docs/server/packages)), then [connect PostgreSQL](/docs/server/connect) |
 | RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon | [Managed PostgreSQL](/docs/server/managed) |
 | Development tree | [From source](/docs/install/source) |
 

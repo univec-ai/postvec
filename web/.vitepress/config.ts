@@ -66,7 +66,6 @@ export default defineConfig({
         items: [
           { text: "Docker", link: "/docs/install/docker" },
           { text: "Packages", link: "/docs/install/packages" },
-          { text: "postvec-server", link: "/docs/server/node" },
           { text: "Managed PostgreSQL", link: "/docs/server/managed" },
           { text: "From source", link: "/docs/install/source" },
           { text: "Configure", link: "/docs/install/setup" },
@@ -82,17 +81,17 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: "Overview", link: "/docs/" },
-            { text: "Quick start", link: "/docs/quickstart" },
+            { text: "Quick start local", link: "/docs/quickstart" },
+            { text: "Quick start remote", link: "/docs/quickstart-remote" },
             { text: "SQL functions", link: "/docs/guides/" },
           ],
         },
         {
           text: "Install",
-          collapsed: false,
+          collapsed: true,
           items: [
             { text: "Docker", link: "/docs/install/docker" },
             { text: "Packages", link: "/docs/install/packages" },
-            { text: "postvec-server", link: "/docs/server/node" },
             { text: "Managed PostgreSQL", link: "/docs/server/managed" },
             { text: "From source", link: "/docs/install/source" },
             { text: "Configure", link: "/docs/install/setup" },
@@ -102,10 +101,46 @@ export default defineConfig({
           ],
         },
         {
-          text: "Usage",
-          collapsed: false,
+          text: "postvec-server",
+          collapsed: true,
           items: [
-            { text: "Enable", link: "/docs/guides/enable" },
+            { text: "Overview", link: "/docs/server/" },
+            {
+              text: "Install",
+              link: "/docs/server/docker",
+              collapsed: true,
+              items: [
+                { text: "Packages", link: "/docs/server/packages" },
+                { text: "From source", link: "/docs/server/source" },
+              ],
+            },
+            {
+              text: "Usage",
+              link: "/docs/server/connect",
+              collapsed: true,
+              items: [
+                { text: "Dashboard", link: "/docs/server/dashboard" },
+                { text: "Models", link: "/docs/server/models" },
+              ],
+            },
+            { text: "Fleet", link: "/docs/server/fleet" },
+            { text: "Managed PostgreSQL", link: "/docs/server/managed" },
+            { text: "HTTP API", link: "/docs/server/http-api" },
+            { text: "Reference", link: "/docs/server/reference" },
+          ],
+        },
+        {
+          text: "Usage",
+          collapsed: true,
+          items: [
+            {
+              text: "Enable",
+              link: "/docs/guides/enable",
+              collapsed: true,
+              items: [
+                { text: "CLI", link: "/docs/guides/enable-cli" },
+              ],
+            },
             {
               text: "Search",
               link: "/docs/guides/search",
@@ -118,36 +153,53 @@ export default defineConfig({
             },
             { text: "Templates", link: "/docs/guides/templates" },
             { text: "Chunking", link: "/docs/guides/chunking" },
+            { text: "Adopt existing vectors", link: "/docs/guides/adopt" },
             {
-              text: "Adopt existing vectors",
-              link: "/docs/guides/adopt",
-              collapsed: false,
+              text: "Search a retired space",
+              link: "/docs/guides/bridge",
+              collapsed: true,
               items: [
-                {
-                  text: "Search a retired space",
-                  link: "/docs/guides/bridge",
-                },
+                { text: "CLI", link: "/docs/guides/bridge-cli" },
               ],
             },
             {
               text: "Change the stored model",
               link: "/docs/guides/migrate",
+              collapsed: true,
+              items: [
+                { text: "CLI", link: "/docs/guides/migrate-cli" },
+              ],
             },
             {
               text: "Status",
               link: "/docs/guides/status",
               collapsed: true,
               items: [
+                { text: "CLI", link: "/docs/guides/status-cli" },
                 { text: "Retry", link: "/docs/guides/retry" },
-                { text: "Backup", link: "/docs/guides/backup" },
-                { text: "Helpers", link: "/docs/guides/helpers" },
+                {
+                  text: "Backup",
+                  link: "/docs/guides/backup",
+                  collapsed: true,
+                  items: [
+                    { text: "CLI", link: "/docs/guides/backup-cli" },
+                  ],
+                },
+                {
+                  text: "Helpers",
+                  link: "/docs/guides/helpers",
+                  collapsed: true,
+                  items: [
+                    { text: "CLI", link: "/docs/guides/helpers-cli" },
+                  ],
+                },
               ],
             },
           ],
         },
         {
           text: "Models",
-          collapsed: false,
+          collapsed: true,
           items: [
             { text: "How models work", link: "/docs/models/" },
             {
@@ -162,7 +214,7 @@ export default defineConfig({
             {
               text: "External providers",
               link: "/docs/models/providers",
-              collapsed: false,
+              collapsed: true,
               items: [
                 { text: "OpenAI", link: "/docs/models/openai" },
                 { text: "Cohere", link: "/docs/models/cohere" },
@@ -177,29 +229,8 @@ export default defineConfig({
           ],
         },
         {
-          text: "postvec-server",
-          collapsed: false,
-          items: [
-            { text: "Overview", link: "/docs/server/" },
-            {
-              text: "Install postvec-server",
-              link: "/docs/server/node",
-              collapsed: true,
-              items: [
-                { text: "Dashboard", link: "/docs/server/dashboard" },
-                { text: "Connect PostgreSQL", link: "/docs/server/connect" },
-                { text: "Models", link: "/docs/server/models" },
-              ],
-            },
-            { text: "Fleet", link: "/docs/server/fleet" },
-            { text: "Managed PostgreSQL", link: "/docs/server/managed" },
-            { text: "HTTP API", link: "/docs/server/http-api" },
-            { text: "Reference", link: "/docs/server/reference" },
-          ],
-        },
-        {
           text: "Reference",
-          collapsed: false,
+          collapsed: true,
           items: [
             {
               text: "How it works",

@@ -34,7 +34,7 @@ docker inspect --format '{{.State.Health.Status}}' postvec
 </div>
 
 The extension exists in `POSTGRES_DB` **only on first initialization** of
-an empty volume. First SQL steps: [quick start](/docs/quickstart).
+an empty volume. First SQL steps: [quick start local](/docs/quickstart).
 
 :::: info Optional
 `docker exec postvec postvec-healthcheck` exits 0 when the worker and
@@ -51,8 +51,9 @@ Use the `-remote` tag and point at your `postvec-server` nodes:
 The companion server is published too, as
 `ghcr.io/univec-ai/postvec-server`, composed of the same packages and
 serving the bundled model out of the box.
-[Install postvec-server](/docs/server/node) covers it; the release's
-remote images are smoke-tested against exactly that image.
+[Docker](/docs/server/docker) covers it; the release's remote images
+are smoke-tested against exactly that image. Both containers together:
+[quick start remote](/docs/quickstart-remote).
 
 ## Volume path
 

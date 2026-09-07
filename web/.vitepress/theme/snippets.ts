@@ -97,6 +97,28 @@ export const SNIPPETS: Record<string, SnippetDef> = {
       ].join("\n"),
   },
 
+  "docker-quickstart-remote": {
+    lang: "bash",
+    render: (t) =>
+      [
+        "docker network create postvec",
+        "",
+        "docker run -d --name postvec-server --network postvec \\",
+        "  -p 127.0.0.1:22222:22222 \\",
+        "  -p 127.0.0.1:33333:33333 \\",
+        `  ${t.imageServer}`,
+        "",
+        "docker run -d --name postvec --network postvec \\",
+        "  -e POSTGRES_PASSWORD=demo \\",
+        "  -e POSTGRES_USER=app \\",
+        "  -e POSTGRES_DB=app \\",
+        "  -e POSTVEC_GRPC_ENDPOINTS=postvec-server:33333 \\",
+        "  -e POSTVEC_HTTP_ENDPOINTS=https://postvec-server:22222 \\",
+        "  -p 127.0.0.1:5433:5432 \\",
+        `  ${t.image}`,
+      ].join("\n"),
+  },
+
   "docker-embedded": {
     lang: "bash",
     render: (t) =>

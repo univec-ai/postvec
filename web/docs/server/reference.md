@@ -155,7 +155,7 @@ embed entry sends text.
 | Refuses to start over a configuration key | Unknown keys are fatal by design. The error names the key; prefix it with `//` if you meant a comment |
 | Requests queue and time out under load | `postvec_server_requests_in_flight` sitting at `--max-inflight` with rising `TIMEOUT`. Raise it if the box has headroom, or add nodes. Lowering `--predict-timeout-ms` makes the failures faster, not fewer |
 
-- [Install postvec-server](/docs/server/node)
+- [Install](/docs/server/node)
 - [Dashboard](/docs/server/dashboard)
 - [Fleet](/docs/server/fleet)
 - [Troubleshooting](/docs/troubleshooting)

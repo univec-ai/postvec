@@ -41,9 +41,9 @@ PostgreSQL 16, 17 or 18. pgvector >= 0.8.
 | Self-hosted cluster that can load a native extension | [Packages](/docs/install/packages) or [Docker](/docs/install/docker), then [configure](/docs/install/setup) |
 | RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon | [Managed PostgreSQL](/docs/server/managed): a plain SQL schema and a worker in `postvec-server` |
 
-[Quick start](/docs/quickstart) is the same sequence in one container.
-[postvec-server](/docs/server/) is the companion process for remote
-inference, GPU hosts and managed databases.
+[Quick start local](/docs/quickstart) is that sequence in one container.
+[Quick start remote](/docs/quickstart-remote) is postvec-server plus the
+remote-mode image on one Docker network.
 
 Self-hosted first-time setup:
 
@@ -79,7 +79,9 @@ separate process, a GPU host, a fleet, model management from the
 dashboard, or postvec on a managed cloud database.
 
 [Embedded vs remote](/docs/concepts/modes).
-[Install postvec-server](/docs/server/node).
+[Install postvec-server](/docs/server/node)
+([Docker](/docs/server/docker), [packages](/docs/server/packages),
+[from source](/docs/server/source)).
 [Managed PostgreSQL](/docs/server/managed) when the database cannot load
 `postvec.so`.
 

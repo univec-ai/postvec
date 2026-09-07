@@ -14,9 +14,7 @@ the SQL model cache. To keep searching an existing space, see
 [search a retired space](/docs/guides/bridge). To change a stored column
 after that, use [`migrate()`](/docs/guides/migrate).
 
-:::: code-group
-
-```sql [SQL]
+```sql
 SELECT vector_dims(postvec.embed(
   'the isolated image performs inference',
   'sentence-transformers-all-minilm-l6-v2'
@@ -31,18 +29,12 @@ SELECT postvec.convert(
 SELECT postvec.refresh_models();
 ```
 
-```bash [CLI]
-postvec model ls
-sudo postvec doctor --database app --deep
-```
-
-::::
-
 :::: tip Expected
 MiniLM returns a 384-d vector. `refresh_models()` returns the number of
-rows written into the `postvec.models` cache. `model ls` lists inventory;
-`doctor` checks the host.
+rows written into the `postvec.models` cache.
 ::::
+
+Inventory and host checks: [helpers (CLI)](/docs/guides/helpers-cli).
 
 ## Functions
 
@@ -69,3 +61,7 @@ Column-level work stays on [`enable`](/docs/guides/enable),
 [search a retired space](/docs/guides/bridge) and
 [`migrate`](/docs/guides/migrate).
 A one-shot `convert()` returns a vector.
+
+- [Helpers (CLI)](/docs/guides/helpers-cli)
+- [Search](/docs/guides/search)
+- [Status](/docs/guides/status)
