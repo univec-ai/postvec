@@ -19,7 +19,7 @@ Both containers together:
 | [Packages](/docs/server/packages) | `.deb` / `.rpm` and a systemd unit |
 | [From source](/docs/server/source) | A checkout, no PostgreSQL headers |
 
-::: warning Licence
+::: warning License
 `postvec-server` is **Business Source License 1.1** (source-available).
 Personal production use, non-production environments and a 30-day
 production evaluation per organization are free. Production use by an

@@ -67,8 +67,8 @@ sudo postvec doctor --database app
 
 Before anything is billed, the command tries an unbilled identity check
 against the registry route: a 401 or 403 stops it with nothing spent. That
-check is best-effort: a front without the route, or an outage, is only a
-warning, and a failed inference request is not billed either. It then makes
+check is best-effort: a front missing the route, or an outage, is only a
+warning. Billing applies to successful inference requests. It then makes
 **one** paid embed request against the cheapest model it is adding, checks
 the measured width against the catalogue, writes the connector file, reloads
 the inference host and refreshes `postvec.models`. A model not in the
@@ -80,8 +80,8 @@ nothing is written or billed.
 The route name becomes `univec-baai-bge-m3`. `provider_model_id` keeps
 the id accepted by the UniVec API. The route joins space `baai-bge-m3`,
 so a column bound to the local model keeps working through whichever
-route currently serves that space. Adding the hosted route does not
-steal the column; `model prefer` does.
+route currently serves that space. The new route joins at the back;
+`model prefer` is what moves it first.
 
 ::::: tip Expected
 `provider ls` reports `univec-baai-bge-m3` as `served`, and the model appears

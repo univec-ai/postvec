@@ -5,13 +5,17 @@ description: postvec-server and a remote-mode PostgreSQL container on one Docker
 
 # Quick start remote
 
-This bundle will install two containers on one Docker network: 
-- one container with PostgreSQL and postvec extension configured in [remote mode](concepts/modes)  
-- [postvec-server](/docs/server/) container for inference, bundled together with an initial local model ([MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2))
-- SQL is identical to [quick start local](/docs/quickstart)
+Two containers on one Docker network:
 
-The server container generates a self-signed certificate at start (extension accepts it). The hostname `postvec-server` is both the
-container name and a SAN on that certificate.
+- PostgreSQL with the postvec extension in [remote mode](/docs/concepts/modes)
+- [postvec-server](/docs/server/) for inference, with
+  [MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
+  already loaded
+
+SQL is the same as [quick start local](/docs/quickstart). The server
+container generates a self-signed certificate at start; the extension
+accepts it. The hostname `postvec-server` is both the container name and
+a SAN on that certificate.
 
 ## 1. Start both containers
 
@@ -37,11 +41,12 @@ advances. The remote image creates the extension in `POSTGRES_DB` on
 first initialization only. If `postvec.models` is empty, the first
 discovery ran before the server was ready:
 
-bash:
 ```bash
 docker exec -it postvec psql -U app -d app
 ```
-then in psql console:
+
+then in psql:
+
 ```sql
 SELECT postvec.refresh_models();
 ```
@@ -88,13 +93,15 @@ SQL
 ```
 
 Vectors fill **asynchronously** on postvec-server. After INSERT
-commits wait until `pending_jobs = 0` and every `body_semantic` is
+commits, wait until `pending_jobs = 0` and every `body_semantic` is
 non-NULL:
 
 ```bash
 docker exec -it postvec psql -U app -d app
 ```
+
 then:
+
 ```sql
 SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
        count(*) AS total
@@ -108,11 +115,14 @@ server is usually a second or two.
 
 ## 3. Index and search
 
-Index (one time operation):
+Index (one-time):
+
 ```sql
 SELECT postvec.create_vector_index('public.docs', 'body');
 ```
+
 Search:
+
 ```sql
 SELECT d.id, d.body,
        round(s.rrf_score::numeric, 5) AS score,
@@ -146,6 +156,7 @@ Azure, Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
 - [Quick start local](/docs/quickstart)
 - [SQL functions](/docs/guides/)
 - [Dashboard](/docs/server/dashboard)
+- [When to use postvec-server](/docs/server/usage)
 - [Eventual consistency](/docs/concepts/consistency)
 
 :::: info Release status

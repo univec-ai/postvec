@@ -5,6 +5,13 @@ description: Short answers to common postvec questions.
 
 # FAQ
 
+## I used pgai or pg_vectorize. What maps across?
+
+[Coming from pgai](/docs/from-pgai) maps `create_vectorizer` /
+`vectorize.table` onto `enable()` / `adopt()`, and their search helpers
+onto `search()`. Existing `vector(N)` columns stay; adopt them, then
+search that space.
+
 ## Are managed PostgreSQL services supported?
 
 Yes. RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon
@@ -98,7 +105,12 @@ side: the database host in embedded mode, each `postvec-server` in
 remote mode. The one setting involved, `postvec.providers_path`, holds a
 path. [External providers](/docs/models/providers).
 
-## How do I run inference off the database host?
+## When should I use postvec-server?
+
+For process isolation from PostgreSQL, multi-threaded inference on the
+same VM, a CPU or GPU fleet and model management from the dashboard or
+HTTP API. Managed cloud databases use it too. SQL is unchanged.
+[When to use postvec-server](/docs/server/usage).
 
 Install [postvec-server](/docs/server/)
 ([Docker](/docs/server/docker), [packages](/docs/server/packages))
@@ -141,8 +153,8 @@ Yes. [`adopt()`](/docs/guides/adopt). The column stays application-owned.
 
 ## Can chunk size be changed later?
 
-Not live. `disable` (optionally `drop_destination`), then `enable`
-again.
+`disable` (optionally `drop_destination`), then `enable` again with the
+new splitter settings. Live splitter reconfiguration is refused.
 
 ## Does `model upgrade` rewrite stored vector columns?
 

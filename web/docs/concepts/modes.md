@@ -8,8 +8,9 @@ description: Operational differences between embedded inference and remote gRPC 
 Embedded is the default: inference on the database host. Remote mode
 runs inference on [postvec-server](/docs/server/). Use postvec-server
 when you want a separate process from PostgreSQL, multi-threaded
-inference on the same VM, a CPU or GPU fleet, model management from the
-dashboard, or postvec on a managed cloud database.
+inference on the same VM, a CPU or GPU fleet and model management from
+the dashboard. Managed cloud databases use it too. [When to use
+postvec-server](/docs/server/usage).
 
 <figure class="pvd">
 <svg viewBox="0 0 632 368" role="img" aria-labelledby="pvd-modes-title pvd-modes-desc">

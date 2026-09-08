@@ -33,9 +33,9 @@ SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
 ```
 
 Ready means `pending_jobs = 0`, `dead_jobs = 0` and `filled = total`, or
-the selected completeness threshold. Presence of a heartbeat **row** is
-not enough. The row survives a dead worker. The timestamp must
-**advance**.
+the selected completeness threshold. Health requires the heartbeat
+timestamp to **advance** between samples. The row itself survives a
+dead worker.
 
 CLI counterpart:
 

@@ -44,7 +44,7 @@ curl -sk https://127.0.0.1:22222/ready
 A checkout builds the same image from locally built packages with
 `packaging/postvec/scripts/build-server-image.sh`.
 
-::: warning Licence
+::: warning License
 `postvec-server` is **Business Source License 1.1** (source-available).
 Personal production use, non-production environments and a 30-day
 production evaluation per organization are free. Production use by an

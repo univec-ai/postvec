@@ -5,12 +5,18 @@ description: postvec container images for PostgreSQL 16, 17 and 18. Volume layou
 
 # Install with Docker
 
-This image includes PostgreSQL, pgvector, postvec and cli, [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) and [MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2). Data directory mount follows the official `postgres` image for the selected major.
+This image includes PostgreSQL, pgvector, postvec and the CLI.
+The `-local` tag also includes [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases)
+and [MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
+The data-directory mount follows the official `postgres` image for the
+selected major.
 
 - For an existing self-hosted cluster use [packages](/docs/install/packages).
-- RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
+- RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
+  [managed PostgreSQL](/docs/server/managed).
 
-Commands use the `0.1.0-1` tag (check the [release artifacts page](/download) for published updates)
+Commands use the `0.1.0-1` tag (check the [release artifacts page](/download)
+for published updates).
 
 ## Local (all-in-one)
 
@@ -40,9 +46,11 @@ engine are ready. Image attestations:
 
 ## Remote image
 
-Pre-requisites: an instance (or a fleet) of [postvec-server](/docs/server/docker) running (or [quick start remote](/docs/quickstart-remote)).
+Prerequisites: [postvec-server](/docs/server/docker) running (or
+[quick start remote](/docs/quickstart-remote)).
 
 Use the `-remote` tag and point at your `postvec-server` nodes:
+
 <PgSnippet id="docker-remote" />
 
 ## Volume path
@@ -52,11 +60,12 @@ Use the `-remote` tag and point at your `postvec-server` nodes:
 | 18 | `/var/lib/postgresql` |
 | 16 or 17 | `/var/lib/postgresql/data` |
 
-:::: danger PostgreSQL majors require distinct volumew
-Each major needs its own data directory and major upgrades require
+:::: danger PostgreSQL majors require distinct volumes
+Each major needs its own data directory. A major upgrade uses
 `pg_upgrade` or dump/restore. An incorrect mount path can create a new
-empty data directory and conceal existing data. Never change major
-by retagging an existing volume.
+empty data directory and conceal existing data. Keep the major and the
+volume together; retagging an existing volume to another major is
+unsupported.
 ::::
 
 ## Environment
@@ -74,13 +83,16 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 | `POSTVEC_SHARED_PRELOAD_LIBRARIES` | unset | Existing preloads; postvec is appended |
 | `POSTVEC_CREATE_EXTENSION` | `1` | `0` skips first-run `CREATE EXTENSION` |
 
-Each image sets its own mode of operation(`POSTVEC_MODE`):
-- `-remote` image sets `mode=grpc` and contains no engine assets
-- `-local` tag sets `mode=embedded` and includes ONNX Runtime and MiniLM.
+Each image sets `POSTVEC_MODE`:
+
+- `-remote` sets `mode=grpc` and contains no engine assets
+- `-local` sets `mode=embedded` and includes ONNX Runtime and MiniLM
 
 ## External providers
 
-To use an embedding model hosted by an external provider (OpenAI, Cohere, Bedrock, Gemini, Mistral, OpenRouter or UniVec) mount a providers configuration directory containing the API key (`providers.d` directory - [set up an external provider](docs/models/providers))
+To use a hosted embedding API (OpenAI, Cohere, Bedrock, Gemini, Mistral,
+OpenRouter or UniVec), mount a `providers.d` directory that holds the
+API key. Setup: [external providers](/docs/models/providers).
 
 <PgSnippet id="docker-provider" />
 
@@ -90,14 +102,17 @@ To use an embedding model hosted by an external provider (OpenAI, Cohere, Bedroc
 | Any path you reference | The `api_key_file` a connector points at | `0600`, same owner |
 
 :::: danger Connector files permissions and groups
-The host refuses a connector file (or a key file it references) that is readable by other users, so a bind mount has to carry the right mode and owner. With Compose secrets, mount the secret with an explicit `mode: 0400` and `uid: "999"` and reference it as `api_key_file`. The image's `_FILE` convention applies to PostgreSQL's own variables (`POSTGRES_PASSWORD_FILE` and the rest).
+The host refuses a connector file (or a key file it references) that is
+readable by other users, so a bind mount has to carry the right mode and
+owner. With Compose secrets, mount the secret with an explicit
+`mode: 0400` and `uid: "999"` and reference it as `api_key_file`. The
+image's `_FILE` convention applies to PostgreSQL's own variables
+(`POSTGRES_PASSWORD_FILE` and the rest).
 
-Kubernetes projected secret volumes are symlinks into a `..data` directory
-and are mounted world-readable, so they cannot be referenced as
-`api_key_file`. Use `api_key_env` there.
+Kubernetes projected secret volumes are symlinks into a `..data`
+directory and are mounted world-readable, so they cannot be referenced
+as `api_key_file`. Use `api_key_env` there.
 ::::
-
-
 
 Walkthrough: [external providers](/docs/models/providers). Per-provider
 setup: [OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
@@ -105,6 +120,9 @@ setup: [OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
 [Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter),
 [UniVec](/docs/models/univec). Conversion entries use the same mount and
 permissions.
+
+On postvec-server the same files live under the engine root:
+[models on postvec-server](/docs/server/models).
 
 ## Adding another database
 
@@ -122,9 +140,8 @@ list is POSTMASTER.
 
 ## Diagnose inside the image {#diagnose}
 
-:::: info Optional
-The official PostgreSQL image has no `pg_lsclusters`, so a plain
-`postvec doctor` finds no cluster. Pass a socket URL as below.
+The official PostgreSQL image omits `pg_lsclusters`, so a plain
+`postvec doctor` finds no cluster. Pass a socket URL:
 
 :::: code-group
 
@@ -142,8 +159,8 @@ docker exec -u postgres postvec \
 
 ## Persistent model storage
 
-Pulled models are stored under the image's engine root. A **named volume** on
-`/opt/postvec/models` copies the bundled MiniLM in. A **bind mount or
+Pulled models are stored under the image's engine root. A **named volume**
+on `/opt/postvec/models` copies the bundled MiniLM in. A **bind mount or
 PVC** masks the bundled directory, so MiniLM must be copied into the
 mounted directory.
 

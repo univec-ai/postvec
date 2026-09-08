@@ -13,18 +13,14 @@ native extension.
 
 The default install runs inference inside PostgreSQL (embedded mode).
 Point the cluster at postvec-server (`postvec.mode = grpc`) when you
-want to:
-
-- Keep a model fault in a separate process from PostgreSQL
-- Run multi-threaded inference beside PostgreSQL on the same VM (the
-  embedded engine is one thread inside the database process)
-- Serve models from CPU or GPU hosts on the network, including a mixed
-  fleet
-- Manage models from the [dashboard](/docs/server/dashboard) or HTTP API
-- Run postvec on RDS, Aurora, Cloud SQL, Azure, Supabase or Neon
+want process isolation from PostgreSQL, multi-threaded inference on the
+same VM, a CPU or GPU fleet or model management from the
+[dashboard](/docs/server/dashboard) or HTTP API. RDS, Aurora, Cloud SQL,
+Azure, Supabase and Neon use it for [managed PostgreSQL](/docs/server/managed).
 
 SQL, the job queue and the wire contract stay the same. Switching is
 `postvec setup --grpc` / `--http` plus a restart.
+[When to use postvec-server](/docs/server/usage).
 
 One process: loads models from a directory, serves three ports,
 optionally joins a gossip group. Queue, scheduler and SQL stay in
@@ -66,9 +62,10 @@ The model layout is the same one embedded mode uses. A tree that
 `postvec model pull` already wrote into works unchanged: name it with
 `--root` or `POSTVEC_SERVER_ROOT`.
 
-- [Install](/docs/server/docker)
-  ([packages](/docs/server/packages), [from source](/docs/server/source),
-  [all methods](/docs/server/node))
+- [When to use it](/docs/server/usage)
+- [Install](/docs/server/node)
+  ([Docker](/docs/server/docker), [packages](/docs/server/packages),
+  [from source](/docs/server/source))
 - [Dashboard](/docs/server/dashboard)
 - [Connect PostgreSQL](/docs/server/connect)
 - [Models](/docs/server/models)

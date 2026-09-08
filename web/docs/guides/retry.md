@@ -105,7 +105,8 @@ Concurrent calls serialize: one consumes the rows, and the other reports that th
 
 ## Direct queue writes
 
-:::: danger Direct inserts into `postvec.jobs` are unsupported
-Copying rows from `postvec.jobs_dead` skips validation, deduplication and the
-ownership check. `retry_dead()` provides the supported path.
+:::: danger Re-drive through `retry_dead()`
+Copying rows from `postvec.jobs_dead` into `postvec.jobs` skips
+validation, deduplication and the ownership check. `retry_dead()` is
+the supported path.
 ::::

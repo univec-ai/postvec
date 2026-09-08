@@ -5,27 +5,42 @@ description: Package installation for Debian, Ubuntu and EL9, with copy-paste sn
 
 # Install packages
 
-Use packages on an existing PostgreSQL host. Dedicated releases exist per distribution, architecture and PostgreSQL major. Requires PostgreSQL 16, 17 or 18, pgvector >= 0.8,
-superuser and a restart. The [release artifacts](/download) page lists
-names and publication status.
+Use packages on an existing PostgreSQL 16, 17 or 18 host with
+pgvector >= 0.8. Superuser and a restart are required. The
+[release artifacts](/download) page lists filenames and publication
+status.
 
-#### Operation modes:
-- **embedded** mode (default) runs inference entirely inside PostgreSQL
-- **remote** mode (grpc) with inference handled by [postvec-server](/docs/server/), an optional companion inference server working in tandem with postvec-enabled databases
-- [managed PostgreSQL](/docs/server/managed)
-
-#### Installation stages:
+Installation stages:
 
 - Local install - the packages below
 - Cluster configuration - [postvec setup](/docs/install/setup)
 
-RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
+RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
+[managed PostgreSQL](/docs/server/managed).
 
 Debian examples use the `+deb12` filename tag. Ubuntu files use
-`+ubuntu22.04` or `+ubuntu24.04` (the rest of the command is identical)
+`+ubuntu22.04` or `+ubuntu24.04` (the rest of the command is identical).
+
+Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies resolve.
+The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
+identifies the **target OS**. Pick the tag that matches the host.
 
 Checksums, Sigstore attestations and file checks:
 [verify artifacts](/docs/install/verify).
+
+## Modes
+
+| Mode | Where inference runs | Packages on the database host |
+|---|---|---|
+| **Embedded** (default) | Inside PostgreSQL | Extension, CLI, ONNX Runtime, MiniLM |
+| **Remote** (`grpc`) | [postvec-server](/docs/server/) on this host or another | Extension and CLI only |
+| **Managed PostgreSQL** | postvec-server, including the worker | None; see [managed](/docs/server/managed) |
+
+Use [postvec-server](/docs/server/) for process isolation from
+PostgreSQL, multi-threaded inference on the same VM, a CPU or GPU fleet
+and model management from the dashboard or HTTP API. Managed cloud
+databases use it too. [When to use it](/docs/server/usage). SQL is
+unchanged.
 
 ## 1. Prerequisites (PGDG)
 
@@ -38,9 +53,8 @@ archive so the chosen PostgreSQL major and pgvector are available.
 the commands. `--yes` skips the prompt.
 
 The script is idempotent. It installs PostgreSQL and pgvector for the
-chosen major. postvec packages will be installed in the next step. On CentOS Stream
-9 or subscribed RHEL 9 it prints the commands and requires
-`--force-untested`.
+chosen major. postvec packages are the next step. On CentOS Stream 9 or
+subscribed RHEL 9 it prints the commands and requires `--force-untested`.
 
 ## 2. Local (embedded mode)
 
@@ -53,38 +67,24 @@ Embedded mode starts with `postvec setup --embedded`.
 
 ## 3. Extension + CLI only (remote mode)
 
-This payload is for remote mode, where [postvec-server](/docs/server/)
-performs inference on this host or on another machine:
-
-:::: info Use remote mode and/or postvec-server when you need to
-- better insulate the postgres service from any in-process failure: postvec has a great number of guardrails to preserve PostgreSQL stability however compliance may dictate this in mission-critical scenarios
-- achieve higher throughput and optimize resource contention: postvec-server can run multi-threaded alongside PostgreSQL on the same VM or offload models execution to a mixed fleet of CPU or GPU nodes within the network for distributed inference
-- run against managed PostgreSQL instances (Amazon RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase, Neon and similar hosts)
-- perform model management remotely (UI or API calls)
-::::
+This payload is for remote mode. [postvec-server](/docs/server/)
+performs inference on this host or on another machine.
 
 <PgSnippet id="packages-remote" />
 
-## 4. postvec-server (optional)
+Then install postvec-server from the same release (next section) and
+[connect PostgreSQL](/docs/server/connect).
+
+## 4. postvec-server
 
 Install postvec-server from the same release: the `postvec-server`
 package plus the runtime and model packages, on hosts that need no
-PostgreSQL. 
+PostgreSQL. [Packages](/docs/server/packages) has the copy-paste
+commands, TLS and the systemd unit.
 
-:::: info postvec-server licensing
-
-postvec-server is released under **Business Source License 1.1**
-Details on the [release page](/download#postvec-server)
-
-::::
-
-[Download packages](/docs/server/packages)
-
-
-Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies
-resolve.
-
-The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
-identifies the **target OS**. Pick the tag that matches the host.
+postvec-server is **Business Source License 1.1**. Personal production
+use, non-production environments and a 30-day production evaluation per
+organization are free. Production use by an organization needs
+[postvec Pro](https://univec.ai). [License](/docs/license).
 
 Last step is [configuring the cluster](/docs/install/setup).

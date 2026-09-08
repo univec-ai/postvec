@@ -113,3 +113,9 @@ commit. See [eventual consistency](/docs/concepts/consistency).
 For a column whose stored model is retired or provider-only,
 [search a retired space](/docs/guides/bridge) converts each query into
 that space (embed-bridge). Stored rows stay.
+
+On [managed PostgreSQL](/docs/server/managed), `search(text)` and
+`embed()` go through the postvec-server proxy. `search_with_vector()`
+runs on the database directly. In remote mode on a self-hosted cluster,
+query embedding is served by [postvec-server](/docs/server/) the same
+way document embedding is.

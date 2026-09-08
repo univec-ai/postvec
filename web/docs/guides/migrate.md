@@ -10,8 +10,9 @@ the column is adopted and [search on the current space](/docs/guides/bridge)
 is working.
 
 The default strategy is `convert`: a local converter model or a direct
-UniVec hosted converter translates the stored vectors. To keep stored
-vectors as they are and convert only each query, stay on
+UniVec hosted converter translates the stored vectors. On remote mode
+the converter lives on [postvec-server](/docs/server/models). To keep
+stored vectors as they are and convert only each query, stay on
 [search a retired space](/docs/guides/bridge).
 
 A migration waits at two operator steps: `awaiting_finalize` (column
@@ -193,7 +194,7 @@ Counts refer to **chunks**. Conversion sends vectors. New writes during the migr
 
 ## Finalization constraints
 
-`migrate()` already refuses lossy column metadata (defaults, `NOT NULL`, constraints, comments, ACLs, stats/storage) before creating the `_new` scratch column. `finalize` takes `ACCESS EXCLUSIVE` and re-inspects. If dependent views or indexes appeared, it returns a retryable error without using `CASCADE`. The inspection walks `pg_partition_tree`.
+`migrate()` checks column metadata (defaults, `NOT NULL`, constraints, comments, ACLs, stats/storage) before creating the `_new` scratch column. `finalize` takes `ACCESS EXCLUSIVE` and re-inspects. If dependent views or indexes appeared, it returns a retryable error. The inspection walks `pg_partition_tree`.
 
 ## Validation constraints
 

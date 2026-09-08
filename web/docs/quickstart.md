@@ -5,15 +5,21 @@ description: Hybrid search in one postvec container. Pick PostgreSQL 16, 17 or 1
 
 # Quick start local
 
-This will install a container with PostgreSQL, postvec and one initial local model installed ([MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)). Inference runs inside the database on that container.
+A container with PostgreSQL, postvec and one local model
+([MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)).
+Inference runs inside that container.
 
-Perform these steps in sequcence: start image, enable a column, wait for vectors, index, search
+Steps: start the image, enable a column, wait for vectors, index, search.
+
+The same SQL against [postvec-server](/docs/server/) is
+[quick start remote](/docs/quickstart-remote).
 
 ## 1. Run the local image
 
 <PgSnippet id="docker-quickstart" />
 
-Wait until container status is `healthy` (PostgreSQL is up and MiniLM is loaded):
+Wait until container status is `healthy` (PostgreSQL is up and MiniLM is
+loaded):
 
 <div v-pre>
 
@@ -69,13 +75,15 @@ SELECT relation, pending_jobs, dead_jobs
 SQL
 ```
 
-Vectors fill **asynchronously**. After INSERT commits wait until
+Vectors fill **asynchronously**. After INSERT commits, wait until
 `pending_jobs = 0` and every `body_semantic` is non-NULL:
 
 ```bash
 docker exec -it postvec psql -U app -d app
 ```
+
 then (in psql):
+
 ```sql
 SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,
        count(*) AS total
@@ -90,10 +98,13 @@ that is usually a second or two.
 ## 3. Index and search
 
 Index (one-time):
+
 ```sql
 SELECT postvec.create_vector_index('public.docs', 'body');
 ```
+
 Search:
+
 ```sql
 SELECT d.id, d.body,
        round(s.rrf_score::numeric, 5) AS score,
@@ -117,11 +128,9 @@ The engineering row ranks highly despite almost no keyword overlap.
 docker rm -f postvec
 ```
 
-The same SQL against postvec-server:
-[quick start remote](/docs/quickstart-remote). An existing cluster uses
-[packages](/docs/install/packages) then [configure](/docs/install/setup).
-RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
-[managed PostgreSQL](/docs/server/managed).
+An existing cluster uses [packages](/docs/install/packages) then
+[configure](/docs/install/setup). RDS, Aurora, Cloud SQL, Azure,
+Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
 
 A populated vector column uses [`adopt()`](/docs/guides/adopt). For a
 retired or provider-only space, [search that space](/docs/guides/bridge)
@@ -130,6 +139,7 @@ first; [`migrate()`](/docs/guides/migrate) is optional afterwards.
 - [SQL functions](/docs/guides/)
 - [BM25](/docs/guides/bm25)
 - [Eventual consistency](/docs/concepts/consistency)
+- [postvec-server](/docs/server/)
 
 :::: info Release status
 Commands use the planned `0.1.0-1` image. Publication status is listed

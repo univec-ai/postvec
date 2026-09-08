@@ -28,34 +28,34 @@ and runs the worker in [postvec-server](/docs/server/). The same binary
 is the remote inference process for self-hosted clusters
 ([install](/docs/server/node)).
 
-## Related work
+## Scope
 
-- Generation (`rag()`, chat completion) stays in the application.
-- Provider API keys live in the inference layer; see
-  [external providers](/docs/models/providers)
-  ([OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
-  [Amazon Bedrock](/docs/models/aws), [Gemini](/docs/models/gemini),
-  [Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter),
-  [UniVec](/docs/models/univec)).
-- Document parsing (PDF, HTML, Office) stays in the ingest pipeline.
-- Storage and ANN indexes are pgvector's.
-- The Bedrock signer takes static credentials.
-- `max_concurrent` bounds provider calls in flight.
-- Connectors use rustls with the bundled Mozilla root set.
-- Hosted converters serve `migrate()` and `convert()`. Embed-bridge uses
-  local models.
+postvec covers in-database embedding, hybrid search, chunking, adopt
+and in-place migration. Generation (`rag()`, chat completion) and
+document parsing (PDF, HTML, Office) stay in the application.
+Storage and ANN indexes are pgvector's. Provider API keys live in the
+inference layer; see [external providers](/docs/models/providers)
+([OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
+[Amazon Bedrock](/docs/models/aws), [Gemini](/docs/models/gemini),
+[Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter),
+[UniVec](/docs/models/univec)).
 
-## SQL refusals
+The Bedrock signer takes static credentials. `max_concurrent` bounds
+provider calls in flight. Connectors use rustls with the bundled
+Mozilla root set. Hosted converters serve `migrate()` and `convert()`.
+Embed-bridge uses local models.
+
+## SQL constraints
 
 | Situation | What happens |
 |---|---|
-| Chunked `adopt()` | Refused |
-| Chunked `index_mode => 'immediate'` | Refused |
-| Composite PK + chunking | Refused |
-| Live splitter reconfiguration | Disable / drop / re-enable |
-| `halfvec` / undimensioned `vector` on adopt | Refused, with a rewrite recipe |
-| `NOT NULL` vector the worker would write | Refused |
-| `DROP EXTENSION ... CASCADE` | Unsupported. `uninstall` is the supported path. |
+| Chunked `adopt()` | Use `enable(..., chunking => 'recursive')` for new chunked entries |
+| Chunked `index_mode => 'immediate'` | Index the destination after backfill |
+| Composite PK + chunking | Column mode accepts composite PKs; chunking needs a single-column PK |
+| Live splitter reconfiguration | `disable`, drop, `enable` again |
+| `halfvec` / undimensioned `vector` on adopt | Rewrite to `vector(N)` first; the error includes the `ALTER TABLE` |
+| `NOT NULL` vector the worker would write | Observed adopt (`sync => false`, `backfill => 'none'`) or drop the constraint |
+| `DROP EXTENSION ... CASCADE` | Use [`uninstall`](/docs/install/uninstall) for bounded teardown |
 
 ## Resource notes
 

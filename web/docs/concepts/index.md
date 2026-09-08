@@ -6,8 +6,8 @@ description: Runtime shape, write path and common operational constraints.
 # How it works
 
 Vectors fill after commit. Automatic sync needs
-`shared_preload_libraries = 'postvec'` and a restart. Search without an
-ANN index is a sequential scan.
+`shared_preload_libraries = 'postvec'` and a restart. Until an ANN
+index exists, search scans the vector column sequentially.
 
 ## Runtime
 

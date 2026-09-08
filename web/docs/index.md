@@ -5,32 +5,35 @@ description: postvec requirements, install paths and inference modes.
 
 # Overview
 
-postvec is a PostgreSQL extension. You mark a text column as semantic. It
-adds a shadow `pgvector` column, keeps that column in sync as rows change
-and searches with full-text and vectors in one call.
+postvec is a PostgreSQL extension. You mark a text column as semantic.
+It adds a shadow `pgvector` column, keeps that column in sync as rows
+change and searches with full-text and vectors in one call.
 
-A column that already holds vectors can keep them. `search()` embeds each
-query into that stored space (embed-bridge). Stored rows stay. If later
-you want a different stored model, vectors convert in place.
+A column that already holds vectors can keep them. `search()` embeds
+each query into that stored space (embed-bridge). If later you want a
+different stored model, vectors convert in place.
 
-Inference runs on the database host by default. Models live on disk. The
-bundled MiniLM model needs no API key.
+Inference runs on the database host by default. Models live on disk.
+The bundled MiniLM model needs no API key.
 
 A column can also use a hosted embedding API: OpenAI, Cohere, Amazon
 Bedrock, Gemini, Mistral, OpenRouter or UniVec (embed and convert).
 The key stays in the inference layer.
 [External providers](/docs/models/providers).
 
+Qualify every call as `postvec.function(...)`.
+
 ## Starting points
 
 | Situation | Path |
 |---|---|
 | Text column, no vectors | [`enable()`](/docs/guides/enable) creates and maintains a shadow `vector(N)` column |
-| Existing vectors, keep that model | [`adopt()`](/docs/guides/adopt) then [`search()`](/docs/guides/search). For a retired or provider-only space such as ada-002, [search the existing space](/docs/guides/bridge): each query is converted into the stored space. Rows stay as they are. |
+| Existing vectors, keep that model | [`adopt()`](/docs/guides/adopt) then [`search()`](/docs/guides/search). For a retired or provider-only space such as ada-002, [search the existing space](/docs/guides/bridge): each query is converted into the stored space. |
 | Existing vectors, change the model | After search on the current space is working, [`migrate()`](/docs/guides/migrate) converts stored vectors in place |
+| pgai or pg_vectorize pipeline | [Coming from pgai](/docs/from-pgai): map the vectorizer to `enable()` / `adopt()`, then `search()` |
 
-Keep-then-search is the usual first step for a populated column. Migration
-is optional and comes after that path is working.
+Keep-then-search is the usual first step for a populated column.
+Migration is optional and comes after that path is working.
 
 ## Install
 
@@ -38,12 +41,9 @@ PostgreSQL 16, 17 or 18. pgvector >= 0.8.
 
 | Host | Path |
 |---|---|
+| Try it in a container | [Quick start local](/docs/quickstart) or [quick start remote](/docs/quickstart-remote) |
 | Self-hosted cluster that can load a native extension | [Packages](/docs/install/packages) or [Docker](/docs/install/docker), then [configure](/docs/install/setup) |
 | RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon | [Managed PostgreSQL](/docs/server/managed): a plain SQL schema and a worker in `postvec-server` |
-
-[Quick start local](/docs/quickstart) is that sequence in one container.
-[Quick start remote](/docs/quickstart-remote) is postvec-server plus the
-remote-mode image on one Docker network.
 
 Self-hosted first-time setup:
 
@@ -60,9 +60,6 @@ Self-hosted first-time setup:
 6. [Search](/docs/guides/search). Hybrid by default; [BM25](/docs/guides/bm25)
    for the keyword mix, GIN and corpus stats.
 
-Functions live in the `postvec` schema (`postvec.enable(...)`).
-Leave `search_path` as it is.
-
 ## Inference modes
 
 | | Embedded (default) | Remote (`grpc`) with [postvec-server](/docs/server/) |
@@ -74,10 +71,12 @@ Leave `search_path` as it is.
 SQL is the same in both modes. A package install plus `setup --embedded`
 uses `/opt/postvec` as the engine root.
 
-Use [postvec-server](/docs/server/) when you want inference in a
-separate process, a GPU host, a fleet, model management from the
-dashboard, or postvec on a managed cloud database.
+[postvec-server](/docs/server/) is the companion inference process.
+Use it for a separate process from PostgreSQL, multi-threaded inference
+on the same VM, a CPU or GPU fleet and model management from the
+dashboard or HTTP API. Managed cloud databases use it too.
 
+[When to use postvec-server](/docs/server/usage).
 [Embedded vs remote](/docs/concepts/modes).
 [Install postvec-server](/docs/server/node)
 ([Docker](/docs/server/docker), [packages](/docs/server/packages),
@@ -87,9 +86,9 @@ dashboard, or postvec on a managed cloud database.
 
 ## Related work
 
-Ingest (PDF, HTML, Office) and generation (`rag()`, chat completion) stay
-in the application. Storage and ANN indexes are pgvector's. Provider API
-keys live in the inference layer.
+Ingest (PDF, HTML, Office) and generation (`rag()`, chat completion)
+stay in the application. Storage and ANN indexes are pgvector's.
+Provider API keys live in the inference layer.
 
 ## License
 

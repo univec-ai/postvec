@@ -53,7 +53,7 @@ the ninference tooling expect:
 {"success": false, "error": {"message": "model \"x\" is not loaded on this node; ..."}}
 ```
 
-A path that is not a route is `404`. Load the model first with
+An unknown path is `404`. Load the model first with
 [`postvec-server load`](/docs/server/models) or from the
 [dashboard](/docs/server/dashboard).
 

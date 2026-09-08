@@ -16,9 +16,10 @@ description: enable, adopt, search a retired space, BM25, migrate and chunking.
 | Hosted embedding API (OpenAI, Cohere, Bedrock, Gemini, Mistral, OpenRouter, UniVec) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
 | GPU, process isolation, a fleet | [postvec-server](/docs/server/), [quick start remote](/docs/quickstart-remote) | Companion inference process. SQL is unchanged. |
 | RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) | Plain SQL schema. Worker runs in `postvec-server`. |
+| pgai or pg_vectorize pipeline | [Coming from pgai](/docs/from-pgai) | Map the vectorizer to `enable()` / `adopt()`, then `search()` |
 
 Functions live in the `postvec` schema (`postvec.enable(...)`).
-Leave `search_path` as it is.
+Qualify every call.
 
 Table ownership or superuser is required for `enable`, `adopt`,
 `disable`, `migrate`, `set_format`, `retry_dead`,
@@ -134,6 +135,7 @@ Search still returns one row per document, plus the winning chunk. See
 refresh job; the worker splits it and fans out one embed job per chunk.
 ::::
 
+- [Coming from pgai](/docs/from-pgai)
 - [External providers](/docs/models/providers)
 - [postvec-server](/docs/server/)
 - [BM25](/docs/guides/bm25)

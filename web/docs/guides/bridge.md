@@ -77,7 +77,7 @@ Matching `vector(1536)` only rules out models with another dimension.
 An incorrect model assertion yields plausible but invalid ranks.
 ::::
 
-## 2. Adopt without rewriting
+## 2. Adopt, keep stored bytes
 
 For a live table whose future writes should stay synchronized:
 
@@ -95,8 +95,8 @@ SELECT postvec.adopt(
 writes future `INSERT` and `UPDATE` vectors in the same target space
 through the same bridge route.
 
-For a frozen or `NOT NULL` legacy vector column, observe it without a
-write path:
+For a frozen or `NOT NULL` legacy vector column, observe it (no write
+path):
 
 ```sql
 SELECT postvec.adopt(

@@ -17,7 +17,7 @@ on disk after a complete install.
 Public entries retain their public download URLs after authentication.
 
 The private catalogue is the same inventory a fleet of nodes can
-serve. Organisation accounts and support around that fleet are
+serve. Organization accounts and support around that fleet are
 documented at [univec.ai](https://univec.ai). The authenticated route
 is **identity-only**: the account must be active and verified, and the
 key must be unexpired.

@@ -6,7 +6,9 @@ description: Database cleanup and optional package removal for PostgreSQL 16, 17
 # Uninstall
 
 How far removal goes depends on the required end state. Preview first
-with `--dry-run`. `DROP EXTENSION postvec CASCADE` is unsupported.
+with `--dry-run`. Use the CLI or SQL `uninstall()` for bounded
+teardown; `DROP EXTENSION postvec` (no `CASCADE`) is the last SQL step
+after that.
 
 | Goal | Command |
 |---|---|
@@ -126,7 +128,7 @@ docker volume rm postvec-data     # only when permanent data removal is required
 
 ## Destructive operations
 
-:::: danger `DROP EXTENSION ... CASCADE` is unsupported
+:::: danger Use `uninstall()` then `DROP EXTENSION` without `CASCADE`
 `CASCADE` can remove unknown dependent objects. The CLI and the SQL
 `uninstall()` provide bounded teardown.
 ::::

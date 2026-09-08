@@ -12,8 +12,7 @@ Signatures and grants. Walkthroughs start at [SQL functions](/docs/guides/).
 `to_regclass` / `::regconfig`, so `'schema.table'` works. `retry_dead()`
 is the exception: it takes `regclass`.
 
-Every call needs the `postvec` schema qualifier. `search_path` is left
-as it is.
+Every call needs the `postvec` schema qualifier.
 
 ## Functions
 
@@ -82,10 +81,10 @@ grants must stay.
 
 The worker connects as the bootstrap superuser and **bypasses RLS**.
 
-## `enable()` refusals
+## `enable()` requirements
 
-Refused: no primary key, a relation that is not ordinary or partitioned,
-`TEMPORARY`, an unknown model or a model with no embed route. Unlogged
-tables are accepted with a warning. Composite primary keys work in
-column mode (compared as text; `DateStyle` / `TimeZone` must stay consistent)
-and are refused for chunking.
+The table must be ordinary or partitioned, have a primary key and name
+a model that has an embed route. Unlogged tables are accepted with a
+warning. Composite primary keys work in column mode (compared as text;
+`DateStyle` / `TimeZone` must stay consistent). Chunking needs a
+single-column PK.

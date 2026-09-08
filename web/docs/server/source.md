@@ -43,7 +43,7 @@ postvec-server --web-ui "$PWD/dist" --insecure
 
 See [models](/docs/server/models) for pulling more than MiniLM.
 
-::: warning Licence
+::: warning License
 `postvec-server` is **Business Source License 1.1** (source-available).
 Personal production use, non-production environments and a 30-day
 production evaluation per organization are free. Production use by an

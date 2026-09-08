@@ -5,10 +5,10 @@ description: Run postvec on RDS, Aurora, Cloud SQL, Azure, Supabase or Neon with
 
 # Managed PostgreSQL
 
-Use this when the database cannot load a native extension: Amazon RDS,
-Aurora, Cloud SQL, Azure Flexible Server, Supabase, Neon and similar
-hosts. `postvec-server` installs a plain SQL schema, runs the sync
-worker and optionally proxies single-call `search(text)`.
+Use this on Amazon RDS, Aurora, Cloud SQL, Azure Flexible Server,
+Supabase, Neon and similar hosts that load no third-party `.so`.
+`postvec-server` installs a plain SQL schema, runs the sync worker and
+optionally proxies single-call `search(text)`.
 
 SQL is the same surface as the extension: `enable()`, `adopt()`,
 `search()`, chunking, `migrate()`. Models, provider keys and the

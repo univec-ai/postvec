@@ -54,7 +54,7 @@ The same binary includes [managed PostgreSQL](/docs/server/managed):
 schema install, the sync worker and the optional `search(text)` proxy
 for RDS, Aurora, Cloud SQL, Azure, Supabase and Neon.
 
-**Licence.** `postvec-server` is **Business Source License 1.1** (`BUSL-1.1`,
+**License.** `postvec-server` is **Business Source License 1.1** (`BUSL-1.1`,
 source-available; production use by organizations needs a subscription).
 Terms: [License](/docs/license). That identifier is in the release
 manifest's `licenses` block, the package copyright file and the image's

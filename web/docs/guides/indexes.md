@@ -66,8 +66,7 @@ suitable user-created index passes.
 ## Constraints
 
 :::: danger `auto` performs a blocking index build
-The worker will `CREATE INDEX` (not concurrently) and stop embedding for
-the duration.
+The worker runs `CREATE INDEX` and stops embedding for the duration.
 ::::
 
 :::: danger Index ownership follows who created the index

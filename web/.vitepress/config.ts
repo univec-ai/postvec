@@ -84,6 +84,7 @@ export default defineConfig({
             { text: "Quick start local", link: "/docs/quickstart" },
             { text: "Quick start remote", link: "/docs/quickstart-remote" },
             { text: "SQL functions", link: "/docs/guides/" },
+            { text: "Coming from pgai", link: "/docs/from-pgai" },
           ],
         },
         {
@@ -105,17 +106,19 @@ export default defineConfig({
           collapsed: true,
           items: [
             { text: "Overview", link: "/docs/server/" },
+            { text: "When to use it", link: "/docs/server/usage" },
             {
               text: "Install",
-              link: "/docs/server/docker",
+              link: "/docs/server/node",
               collapsed: true,
               items: [
+                { text: "Docker", link: "/docs/server/docker" },
                 { text: "Packages", link: "/docs/server/packages" },
                 { text: "From source", link: "/docs/server/source" },
               ],
             },
             {
-              text: "Usage",
+              text: "Connect PostgreSQL",
               link: "/docs/server/connect",
               collapsed: true,
               items: [

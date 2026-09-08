@@ -33,9 +33,9 @@ Columns bind to spaces. Binding to a route name still works: if that
 route is served, it is used; otherwise resolution treats the string as
 a space (or as the vanished route's remembered space) and picks the
 served route with the lowest priority. Local models are priority 100.
-Provider routes without an explicit `priority` follow the order they
-were added. Entries without an `added` timestamp come first, so adding a
-stamped route does not displace an existing unstamped route.
+Provider routes with no explicit `priority` follow the order they were
+added. Entries with no `added` timestamp come first, so they stay
+preferred until you stamp them or pass `--prefer`.
 
 `postvec.routes` lists every embed route; `postvec._route(model, space)`
 is the resolution itself. `model prefer` changes the order without a
@@ -82,8 +82,8 @@ The credential lives in that file, never in PostgreSQL.
 each provider page is a copy-paste setup. In remote mode the files live
 on [postvec-server](/docs/server/).
 
-Two connector files that claim the same public name serve neither. A name
-a loaded local model already owns stays local.
+Each public name may appear in at most one connector file. A name a
+loaded local model already owns stays local.
 
 ## Catalogue channels
 

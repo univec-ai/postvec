@@ -50,7 +50,7 @@ sudo postvec model upgrade --all --yes
 
 Identity must stay compatible (type, backend, dimensions,
 source/target). Downgrades are refused. Package-owned and manually
-installed models are not replaced.
+installed models stay as they are.
 
 An upgrade **preserves activation state**: a serving model is unloaded, swapped
 and reloaded; a deactivated model is swapped on disk and stays deactivated,
@@ -155,7 +155,7 @@ in the database.
 | `notice` | Confirm interactively, or `--accept-license ID@VERSION` |
 | `organization` | Cannot be accepted locally |
 
-`--yes` confirms the mutation. Licence terms still need `--accept-license`
+`--yes` confirms the mutation. License terms still need `--accept-license`
 (or an interactive confirm) when the policy requires it.
 
 ## Remote mode

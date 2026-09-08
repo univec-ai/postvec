@@ -12,11 +12,11 @@ triggers and optionally backfills existing rows.
 If the table already has a populated `vector(N)` column, use
 [`adopt()`](/docs/guides/adopt). For a retired or provider-only space,
 [search the existing space](/docs/guides/bridge) after adopt. `enable()`
-always adds a new column.
+creates a new shadow column.
 
 ## 1. Check the table and the model
 
-- The table is ordinary or partitioned, not `TEMPORARY`.
+- The table is ordinary or partitioned (durable).
 - It has a primary key.
 - The invoking role owns the table or is a superuser.
 - The model exists in `postvec.models` and has an embed route.
@@ -25,6 +25,7 @@ always adds a new column.
 SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
 ```
 
+In remote mode those names come from [postvec-server](/docs/server/models).
 Unlogged tables are accepted and emit a durability warning.
 
 ## 2. Call `enable()`
@@ -105,14 +106,15 @@ SELECT postvec.disable('public.docs', 'body', drop_column => true);
 columns stay. Chunk destinations are a separate flag; see
 [chunking](/docs/guides/chunking).
 
-## Refusals
+## Requirements
 
-:::: danger A primary key is required
-Jobs are keyed by primary key. Tables without one are refused.
+:::: danger Primary key
+Jobs are keyed by primary key. The table must have one.
 ::::
 
-:::: danger Temporary tables are unsupported
-The worker uses a separate session and cannot see temporary tables.
+:::: danger Durable tables
+The worker runs in its own session. The source must be an ordinary or
+partitioned table, visible to that session.
 ::::
 
 :::: danger Source text is visible to the worker

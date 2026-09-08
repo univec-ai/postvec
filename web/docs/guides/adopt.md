@@ -32,9 +32,9 @@ are synchronized.
 ## Model provenance
 
 The column's declared dimension is fact. The model name is an
-operator-supplied assertion. The catalogue can contradict an incorrect
-model (dimension mismatch). Provenance of the stored bytes is not
-verified.
+operator-supplied assertion. The catalogue checks that dimension against
+the named model. Confirm the model that produced the bytes before
+search or convert.
 
 To change what a column *claims* to be (re-attribution, not a provider
 switch), disable without dropping the vector column and adopt again
@@ -53,8 +53,8 @@ Switching the *route* that produces vectors in the same space is
 configuration (`model prefer`), not this recipe.
 
 An incorrect assertion makes `search()` embed the query into an
-incompatible space. `migrate(strategy => 'convert')` then produces
-invalid vectors without an explicit error.
+incompatible space. `migrate(strategy => 'convert')` then converts
+those bytes as if they belonged to the named model.
 
 ## Options
 
@@ -95,18 +95,20 @@ An observed entry can later be promoted by calling `adopt()` again with
 `sync => true`. Stored immutable options, including `format`, must be
 repeated **byte-exactly**.
 
-## Refusals
+## Requirements
 
-Missing column · not exact `vector` (`halfvec`, arrays, domains) ·
-bare `vector` with no dimension · generated / PK-member / alias of the
-source · `NOT NULL` unless both `sync => false` and `backfill => 'none'`
-(the worker must be allowed to NULL a vector when the source goes NULL)
-· dimension != the model's known dimension · unknown model · column
-already claimed · no embed route when `sync` or any finite backfill ·
-`'all'` + `'cursor'`.
-
-A `halfvec` refusal includes an
+The vector column must exist as exact `vector(N)` (typed dimension).
+`halfvec`, arrays, domains, generated columns, PK members and aliases
+of the source are out of scope. A `halfvec` error includes an
 `ALTER TABLE ... TYPE vector(N) USING ...` recipe.
+
+Synchronized adoption (`sync => true`) needs a nullable vector column:
+the worker writes NULL when the source goes NULL. Observed mode
+(`sync => false` and `backfill => 'none'`) accepts `NOT NULL`.
+
+The named model must match the declared dimension. The column must be
+unclaimed. `sync` or any finite backfill needs an embed route.
+`backfill => 'all'` with `backfill_mode => 'cursor'` is refused.
 
 ## Teardown
 

@@ -42,10 +42,9 @@ TOML, key sources and `doctor` checks:
 | Remote (`postvec-server`) | `/opt/postvec/providers.d` on each node (the engine root) |
 
 Files are `0600` in a `0700` directory, owned by the inference process
-account. A wider mode is refused. `provider add` prompts without echo, or
-takes `--api-key-file`, `--api-key-env` or `--key-stdin`. A key is
-refused as a bare argument. `provider ls` prints the source, not the
-value.
+account. `provider add` prompts with echo off, or takes
+`--api-key-file`, `--api-key-env` or `--key-stdin`. Pass the key through
+one of those; `provider ls` prints the source, not the value.
 
 `provider add TYPE --model ID` writes the file, probes the key (one
 billed embed per model), reloads the running host and refreshes
@@ -142,8 +141,8 @@ logs one line per column the first time it embeds through the new
 route. Nothing is re-embedded.
 
 A database the command could not inspect is listed as `UNKNOWN`. Columns
-whose route does not change (a local model or an earlier provider route
-stays preferred) are omitted.
+that keep their current route (a local model or an earlier provider
+route stays preferred) are omitted.
 
 ## Adopt existing provider vectors
 
