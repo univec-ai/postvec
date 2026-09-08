@@ -288,6 +288,15 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
                 )));
             }
         }
+        let catalogue_space = catalog::public_space(&canonical, id);
+        let space = args.space.clone().unwrap_or(catalogue_space.clone());
+        if args.space.is_some() && catalog::lookup(&canonical, id).is_none() {
+            output.note(&format!(
+                "warning: {space:?} is not in the catalogue; the space is your claim"
+            ));
+        }
+        catalog::validate_public_name(&space)
+            .map_err(|e| CliError::usage(format!("--space: {e}")))?;
         new_models.push(NewModel {
             id: id.clone(),
             placeholder_dim: providers::config::placeholder_dim(&canonical, id),
@@ -299,6 +308,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             max_batch: known.map(|k| k.max_batch),
             catalogued: listed.is_some(),
             convert: None,
+            space: Some(space),
+            prefer: args.prefer,
         });
     }
     // Converters: the manual entry, or the catalogue selection. A rerun
@@ -946,6 +957,10 @@ pub(super) struct NewModel {
     pub catalogued: bool,
     /// `Some` makes this a `kind = "convert"` entry.
     pub convert: Option<ConvertSpec>,
+    /// Embed only: space this route joins. Written when it differs from name.
+    pub space: Option<String>,
+    /// Embed only: write explicit priority 1.
+    pub prefer: bool,
 }
 
 /// The converter half of a converter entry.
@@ -1306,6 +1321,8 @@ fn converter_new_model(args: &ProviderAddArgs, canonical: &str) -> Result<Option
             target_model,
             source_dim,
         }),
+        space: None,
+        prefer: false,
     }))
 }
 
@@ -1341,6 +1358,9 @@ fn probe_descriptor(model: &NewModel) -> Option<providers::config::ModelDescript
         source_model: Some(convert.source_model.clone()),
         target_model: Some(convert.target_model.clone()),
         source_dim: Some(convert.source_dim),
+        space: None,
+        priority: None,
+        added: None,
     })
 }
 
@@ -1386,6 +1406,21 @@ fn model_entry(model: &NewModel) -> toml::Value {
         entry.insert(
             "source_dim".into(),
             toml::Value::Integer(convert.source_dim as i64),
+        );
+    } else {
+        if let Some(space) = &model.space {
+            if space != &model.public_name {
+                entry.insert("space".into(), toml::Value::String(space.clone()));
+            }
+        }
+        if model.prefer {
+            entry.insert("priority".into(), toml::Value::Integer(1));
+        }
+        entry.insert(
+            "added".into(),
+            toml::Value::String(
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            ),
         );
     }
     toml::Value::Table(entry)

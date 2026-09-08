@@ -41,6 +41,8 @@ pub fn config_models(configs: &[ModelConfiguration]) -> Vec<Value> {
             json!({
                 "name": cfg.name,
                 "status": "local",
+                "priority": 100,
+                "priority_explicit": false,
                 "configuration": serde_json::to_value(cfg).unwrap_or(Value::Null),
             })
         })
@@ -177,6 +179,7 @@ pub async fn config_envelope(state: &ServerState) -> Value {
             &state.gateway,
         )),
     );
+    data.insert("spaces".to_string(), Value::Bool(true));
     data.insert("server".to_string(), server_object(state));
     data.insert("cluster".to_string(), cluster_object(state).await);
     data.insert("system".to_string(), system_object());
@@ -575,8 +578,19 @@ mod tests {
         let object = rendered[0].as_object().unwrap();
         let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["configuration", "name", "status"]);
+        assert_eq!(
+            keys,
+            [
+                "configuration",
+                "name",
+                "priority",
+                "priority_explicit",
+                "status"
+            ]
+        );
         assert_eq!(object["status"], json!("local"));
+        assert_eq!(object["priority"], json!(100));
+        assert_eq!(object["priority_explicit"], json!(false));
     }
 
     /// Provider entries merge after the engine's own models in the nested

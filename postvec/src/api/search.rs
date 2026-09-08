@@ -2370,6 +2370,7 @@ mod unit_tests {
             pk_columns: vec!["id".into()],
             pk_types: vec!["bigint".into()],
             model: "m".into(),
+            space: None,
             dim,
             fts_config: "pg_catalog.english".into(),
             distance: "cosine".into(),

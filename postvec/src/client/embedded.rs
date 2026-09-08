@@ -531,7 +531,10 @@ fn try_init() -> Result<(), String> {
     // provider serves: a partial reservation is how a provider would
     // steal a local name.
     let gateway = Arc::new(match reserved_local_names(&cfg.root, &engine) {
-        Ok(local_models) => providers::gateway::Gateway::load(&cfg.providers_path, &local_models),
+        Ok(local_models) => providers::gateway::Gateway::load(
+            &cfg.providers_path,
+            &providers::gateway::Gateway::reserve(local_models),
+        ),
         Err(e) => {
             pgrx::warning!(
                 "postvec: cannot enumerate local models under {} ({e}); serving no external \

@@ -848,7 +848,8 @@ fn worker_wake(state: &mut WorkerState<'_>) -> WakeOutcome {
             // reclaimed by the claim path's probe even with nothing due.
             let refreshed = summary.refresh_due && chunk::step(&mut state.counters);
             let claimed =
-                (summary.embed_due || summary.claimed_any) && run_one_cycle(&mut state.counters);
+                (summary.embed_due || summary.claimed_any)
+                    && run_one_cycle(&mut state.counters, &mut state.last_route);
             let migrated = summary.migration_due && migrate::drain_step(&mut state.counters);
             let enqueued = if summary.cursor_any {
                 backfill::step()
@@ -916,6 +917,8 @@ struct WorkerState<'a> {
     /// A `start_worker()` worker in embedded mode: no launcher, so the
     /// engine lives here.
     host_engine: bool,
+    /// Last embed route per registry entry, for the one-shot change NOTICE.
+    last_route: std::collections::HashMap<i64, String>,
 }
 
 enum WakeOutcome {
@@ -996,6 +999,7 @@ fn run_worker(db: &str, mode: gucs::Mode, standalone: bool) {
         http_gate: GateCache::default(),
         next_auto_index_scan: Instant::now(),
         host_engine: standalone && embedded,
+        last_route: Default::default(),
     };
     let mut panic_gate = Recurring::default();
     while BackgroundWorker::wait_latch(Some(poll_interval())) {
@@ -1172,7 +1176,10 @@ fn tcp_reachable(addr: &str) -> bool {
 
 /// One claim→embed→write-back pass over a single batch. Returns whether any
 /// jobs were claimed (i.e. whether the queue may still hold work).
-fn run_one_cycle(counters: &mut Counters) -> bool {
+fn run_one_cycle(
+    counters: &mut Counters,
+    last_route: &mut std::collections::HashMap<i64, String>,
+) -> bool {
     let batch = gucs::BATCH_SIZE.get().max(1);
     let vis_secs = gucs::JOB_VISIBILITY_TIMEOUT_MS.get().max(1000) as f64 / 1000.0;
     let embed_timeout = gucs::EMBED_TIMEOUT_MS.get().max(100) as u64;
@@ -1218,7 +1225,50 @@ fn run_one_cycle(counters: &mut Counters) -> bool {
         // migration the routing carries the NEW model. A model with no embed
         // model of its own rides an embed-bridge route (convert-only targets).
         let model = routing.model.clone();
-        let resolved = try_transaction(move || crate::api::embed::resolve_embed_route(&model));
+        let space = entry.space.clone();
+        let resolved = try_transaction(move || {
+            crate::api::embed::resolve_embed_route_for(&model, space.as_deref())
+        });
+        if let Ok(Ok(ref resolution)) = resolved {
+            let new_route = match resolution {
+                crate::api::embed::EmbedResolution::Direct(name) => name.clone(),
+                crate::api::embed::EmbedResolution::Bridge { executor, .. } => executor.clone(),
+            };
+            if let Some(old) = last_route.get(&entry.id) {
+                if old != &new_route {
+                    pgrx::notice!(
+                        "postvec: entry {} ({}.{}) now embeds through {new_route} (was {old})",
+                        entry.id,
+                        entry.table_schema,
+                        entry.source_column
+                    );
+                    if matches!(resolution, crate::api::embed::EmbedResolution::Direct(_)) {
+                        crate::api::registry::notice_external_provider(
+                            &new_route,
+                            &entry.source_column,
+                        );
+                    }
+                }
+            }
+            last_route.insert(entry.id, new_route.clone());
+            if let crate::api::embed::EmbedResolution::Direct(name) = resolution {
+                let name = name.clone();
+                let id = entry.id;
+                let _ = try_transaction(move || {
+                    Spi::run_with_args(
+                        "UPDATE postvec.registry
+                            SET space = COALESCE(
+                                (SELECT COALESCE(target_model, name) FROM postvec.models
+                                  WHERE name = $1), space)
+                          WHERE id = $2
+                            AND space IS DISTINCT FROM
+                                (SELECT COALESCE(target_model, name) FROM postvec.models
+                                  WHERE name = $1)",
+                        &[name.as_str().into(), id.into()],
+                    )
+                });
+            }
+        }
 
         // Network phase (no transaction).
         let outcomes = match resolved {

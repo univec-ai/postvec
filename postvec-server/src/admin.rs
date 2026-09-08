@@ -384,7 +384,7 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
         // Fail closed: a scan failure keeps the previous snapshot rather
         // than reloading against a narrowed reservation.
         let local = models::reserved_local_names(&root, &engine)?;
-        gateway.reload(&path, &local)
+        gateway.reload(&path, &providers::gateway::Gateway::reserve(local))
     })
     .await;
     match outcome {

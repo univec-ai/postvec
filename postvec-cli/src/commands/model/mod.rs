@@ -10,8 +10,10 @@ pub mod activate;
 pub mod admin;
 pub mod deactivate;
 pub mod ls;
+pub mod prefer;
 pub mod pull;
 pub mod rm;
+pub mod set_space;
 pub mod show;
 pub mod terms;
 

@@ -190,9 +190,23 @@ pub struct ModelDescriptor {
     pub target_model: Option<String>,
     /// Convert only: dimension of the source space (`dim` is the target's).
     pub source_dim: Option<u32>,
+    /// Embed only: the vector-space identity this route serves. Absent means
+    /// the entry's own name, as before.
+    pub space: Option<String>,
+    /// Embed only: explicit routing priority (lower wins). Absent uses the
+    /// derived order (`200 + rank`).
+    pub priority: Option<u32>,
+    /// RFC 3339 stamp written by `provider add`. Used only to order
+    /// unprioritised routes of one space (oldest first).
+    pub added: Option<String>,
 }
 
 impl ModelDescriptor {
+    /// The space this embed route serves. Convert entries have no space.
+    pub fn space_name(&self) -> &str {
+        self.space.as_deref().unwrap_or(&self.name)
+    }
+
     /// The route-identity id behind [`ServedBy::model_id`] and the `/config`
     /// descriptor's `provider_model_id` field.
     ///
@@ -1222,10 +1236,36 @@ fn validate_structure(file: &ProviderFile) -> Result<(), String> {
                         model.name
                     ));
                 }
+                if let Some(space) = model.space.as_deref() {
+                    validate_model_name(space)
+                        .map_err(|e| format!("[[models]] {:?}: space: {e}", model.name))?;
+                }
+                if let Some(priority) = model.priority {
+                    if !(1..=65535).contains(&priority) {
+                        return Err(format!(
+                            "[[models]] {:?}: priority must be between 1 and 65535",
+                            model.name
+                        ));
+                    }
+                }
             }
             ModelKind::Convert => {
+                if model.space.is_some() || model.priority.is_some() {
+                    return Err(format!(
+                        "[[models]] {:?}: space and priority apply only to embed entries",
+                        model.name
+                    ));
+                }
                 validate_converter_for_provider(&file.provider, model)
                     .map_err(|e| format!("[[models]] {:?}: {e}", model.name))?;
+            }
+        }
+        if let Some(added) = model.added.as_deref() {
+            if chrono::DateTime::parse_from_rfc3339(added).is_err() {
+                return Err(format!(
+                    "[[models]] {:?}: added {added:?} is not RFC 3339",
+                    model.name
+                ));
             }
         }
     }
@@ -1242,6 +1282,24 @@ fn validate_structure(file: &ProviderFile) -> Result<(), String> {
                  entry, because which one wins decides what a bound column is embedded by",
                 model.name
             ));
+        }
+    }
+    let mut space_dim: std::collections::BTreeMap<&str, (&str, u32)> = Default::default();
+    for model in &file.models {
+        if model.kind != ModelKind::Embed {
+            continue;
+        }
+        let space = model.space_name();
+        if let Some((other, dim)) = space_dim.get(space) {
+            if *dim != model.dim {
+                return Err(format!(
+                    "[[models]] {:?} and {:?} both serve space {space:?} but disagree on \
+                     dimension ({} vs {}); a space has one width",
+                    other, model.name, dim, model.dim
+                ));
+            }
+        } else {
+            space_dim.insert(space, (&model.name, model.dim));
         }
     }
 
@@ -2852,5 +2910,88 @@ max_tokens = 8191
             "a source-space change must read as a different route"
         );
         assert_eq!(before.dim, 4, "dim stays the OUTPUT dimension");
+    }
+
+    #[test]
+    fn an_embed_entry_may_declare_space_priority_and_added() {
+        let dir = private_tempdir();
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            "provider = \"openai\"\napi_key = \"k\"\n\n\
+             [[models]]\nname = \"openrouter-google-gemini-embedding-001\"\n\
+             provider_model_id = \"google/gemini-embedding-001\"\ndim = 3072\n\
+             space = \"gemini-embedding-001\"\npriority = 1\nadded = \"2026-09-08T00:00:00Z\"\n",
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert!(outcome.errors.is_empty(), "{:?}", outcome.errors);
+        let model = &outcome.providers[0].models[0];
+        assert_eq!(model.space.as_deref(), Some("gemini-embedding-001"));
+        assert_eq!(model.space_name(), "gemini-embedding-001");
+        assert_eq!(model.priority, Some(1));
+        assert_eq!(model.added.as_deref(), Some("2026-09-08T00:00:00Z"));
+    }
+
+    #[test]
+    fn space_on_a_convert_entry_is_refused() {
+        let dir = private_tempdir();
+        write_mode(
+            dir.path(),
+            "univec.toml",
+            "provider = \"univec\"\napi_key = \"k\"\n\n[[models]]\nname = \"c\"\n\
+             kind = \"convert\"\nprovider_model_id = \"t\"\nprovider_source_id = \"s\"\n\
+             source_model = \"model-a\"\ntarget_model = \"model-b\"\nsource_dim = 4\ndim = 4\n\
+             space = \"model-b\"\n",
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(
+            outcome.errors[0].message.contains("space and priority"),
+            "{}",
+            outcome.errors[0]
+        );
+    }
+
+    #[test]
+    fn two_embed_entries_of_one_space_must_agree_on_dim() {
+        let dir = private_tempdir();
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            "provider = \"openai\"\napi_key = \"k\"\n\n\
+             [[models]]\nname = \"a\"\nprovider_model_id = \"x\"\ndim = 1024\nspace = \"s\"\n\
+             [[models]]\nname = \"b\"\nprovider_model_id = \"y\"\ndim = 768\nspace = \"s\"\n",
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(
+            outcome.errors[0].message.contains("disagree on dimension"),
+            "{}",
+            outcome.errors[0]
+        );
+        assert!(outcome.errors[0].message.contains("\"a\""));
+        assert!(outcome.errors[0].message.contains("\"b\""));
+    }
+
+    #[test]
+    fn a_bad_added_stamp_is_refused() {
+        let dir = private_tempdir();
+        write_mode(
+            dir.path(),
+            "openai.toml",
+            "provider = \"openai\"\napi_key = \"k\"\n\n[[models]]\nname = \"m1\"\n\
+             provider_model_id = \"m\"\ndim = 4\nadded = \"yesterday\"\n",
+            0o600,
+        );
+        let outcome = load_dir(dir.path()).unwrap();
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(
+            outcome.errors[0].message.contains("RFC 3339"),
+            "{}",
+            outcome.errors[0]
+        );
     }
 }

@@ -731,6 +731,92 @@ impl ProviderFileDoc {
         })?;
         write_secret_file(&self.path, body.as_bytes(), owner)
     }
+
+    fn model_table_mut(
+        &mut self,
+        entry_name: &str,
+    ) -> Result<&mut toml::map::Map<String, toml::Value>> {
+        let path = self.path.clone();
+        self.table()
+            .get_mut("models")
+            .and_then(toml::Value::as_array_mut)
+            .and_then(|models| {
+                models
+                    .iter_mut()
+                    .find(|m| m.get("name").and_then(toml::Value::as_str) == Some(entry_name))
+            })
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| {
+                CliError::precondition(format!(
+                    "{} has no [[models]] entry named {entry_name:?}",
+                    path.display()
+                ))
+            })
+    }
+}
+
+/// One field change on a named `[[models]]` entry.
+pub enum EntryEdit {
+    Set {
+        key: &'static str,
+        value: toml::Value,
+    },
+    Remove {
+        key: &'static str,
+    },
+}
+
+/// Load, edit, validate the whole directory, then write every file. All or
+/// nothing: a validation failure writes nothing.
+pub fn rewrite_entries(
+    dir: &Path,
+    edits: Vec<(PathBuf, String, Vec<EntryEdit>)>,
+    owner: Option<FileOwner>,
+) -> Result<()> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    let mut docs: std::collections::BTreeMap<PathBuf, ProviderFileDoc> =
+        std::collections::BTreeMap::new();
+    for (path, entry, changes) in edits {
+        if !docs.contains_key(&path) {
+            let doc = ProviderFileDoc::load(&path)?
+                .ok_or_else(|| CliError::precondition(format!("{} is gone", path.display())))?;
+            docs.insert(path.clone(), doc);
+        }
+        let doc = docs.get_mut(&path).expect("just inserted");
+        let table = doc.model_table_mut(&entry)?;
+        for change in changes {
+            match change {
+                EntryEdit::Set { key, value } => {
+                    table.insert(key.into(), value);
+                }
+                EntryEdit::Remove { key } => {
+                    table.remove(key);
+                }
+            }
+        }
+    }
+    for (path, doc) in &docs {
+        let body = doc.body()?;
+        providers::config::validate_str(&body, &path.display().to_string()).map_err(|p| {
+            CliError::precondition(format!(
+                "the resulting {} is one the inference host would refuse: {p}",
+                path.display()
+            ))
+        })?;
+        providers::config::validate_prospective_dir(dir, path, &body).map_err(|p| {
+            CliError::precondition(format!(
+                "writing {} would leave {} in a state the inference host refuses: {p}",
+                path.display(),
+                dir.display()
+            ))
+        })?;
+    }
+    for doc in docs.values() {
+        doc.write(owner)?;
+    }
+    Ok(())
 }
 
 /// Create `dir` 0700, owned by `owner` when we are root acting on their

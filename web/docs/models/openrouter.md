@@ -11,9 +11,13 @@ front, another vendor on OpenRouter). The key stays in `providers.d` on
 the inference host (the database machine in embedded mode, each
 [postvec-server](/docs/server/) in remote mode).
 
-OpenRouter ids are namespaced, so the SQL name is derived from the full
-id: `--model openai/text-embedding-3-small` becomes
-`openrouter-openai-text-embedding-3-small`.
+OpenRouter ids are namespaced, so the route name is derived from the
+full id: `--model openai/text-embedding-3-small` becomes
+`openrouter-openai-text-embedding-3-small` in space
+`openai-text-embedding-3-small`. A column bound to the OpenAI-hosted
+name is served by this route once the OpenAI key is gone, without a
+migration. `--model google/gemini-embedding-001` joins space
+`gemini-embedding-001`.
 
 ## 1. Add the provider
 
@@ -47,7 +51,7 @@ two files: pass `--name STEM` so the second writes `STEM.toml`.
 
 ```sql
 SELECT postvec.enable('docs', 'body',
-                      model => 'openrouter-openai-text-embedding-3-small');
+                      model => 'openai-text-embedding-3-small');
 -- NOTICE:  postvec: model "openrouter-openai-text-embedding-3-small" is served by
 --          external provider "openrouter"; source text from column "body" will
 --          be sent to that provider for embedding

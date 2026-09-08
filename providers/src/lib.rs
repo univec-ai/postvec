@@ -19,6 +19,8 @@ pub mod config;
 #[cfg(feature = "wire")]
 pub mod gateway;
 pub mod listing;
+#[cfg(feature = "config")]
+pub mod routing;
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing;

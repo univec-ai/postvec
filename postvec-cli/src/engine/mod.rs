@@ -38,6 +38,8 @@ struct Envelope {
 struct EnvelopeData {
     #[serde(default)]
     models: Vec<HubModel>,
+    #[serde(default)]
+    spaces: bool,
 }
 
 /// The subset of a hub model the CLI needs, tolerant of everything else.
@@ -139,7 +141,10 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
         })
         .collect();
     models.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(ConfigInventory { models })
+    Ok(ConfigInventory {
+        models,
+        spaces: data.spaces,
+    })
 }
 
 /// HTTP clients for discovery probes.

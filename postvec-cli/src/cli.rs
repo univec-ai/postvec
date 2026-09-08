@@ -128,6 +128,10 @@ pub enum ModelCommand {
     /// Turn models off: unload them from a running embedded engine and mark
     /// them disabled on disk, so a restart does not bring them back.
     Deactivate(ModelDeactivateArgs),
+    /// Set explicit priorities for routes of one space. Lower wins.
+    Prefer(ModelPreferArgs),
+    /// Change the space a provider route serves.
+    SetSpace(ModelSetSpaceArgs),
 }
 
 impl ModelCommand {
@@ -141,6 +145,8 @@ impl ModelCommand {
             ModelCommand::Rm(_) => "model rm",
             ModelCommand::Activate(_) => "model activate",
             ModelCommand::Deactivate(_) => "model deactivate",
+            ModelCommand::Prefer(_) => "model prefer",
+            ModelCommand::SetSpace(_) => "model set-space",
         }
     }
 }
@@ -313,6 +319,15 @@ pub struct ProviderAddArgs {
     /// Skip the confirmation prompt. Required for mutation without a TTY.
     #[arg(long)]
     pub yes: bool,
+
+    /// Vector-space identity this route serves. Default: the catalogue
+    /// space, else the public name.
+    #[arg(long, value_name = "SPACE")]
+    pub space: Option<String>,
+
+    /// Give this new route priority 1 in its space.
+    #[arg(long)]
+    pub prefer: bool,
 
     /// Show the plan and exit without changing anything.
     #[arg(long)]
@@ -536,6 +551,18 @@ pub struct ModelLsArgs {
     #[arg(long)]
     pub available: bool,
 
+    /// Filter to this space or route name.
+    #[arg(value_name = "SPACE|ROUTE")]
+    pub filter: Option<String>,
+
+    /// Local engine routes only.
+    #[arg(long)]
+    pub local: bool,
+
+    /// Provider routes only. Optional connector type.
+    #[arg(long, value_name = "TYPE", num_args = 0..=1, default_missing_value = "")]
+    pub provider: Option<String>,
+
     /// Inspect this engine root instead of the selected cluster's.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
     /// then /opt/postvec when no cluster exists.
@@ -545,6 +572,39 @@ pub struct ModelLsArgs {
     /// Read the API key from this file instead of the credential store.
     #[arg(long, requires = "available", value_name = "FILE")]
     pub api_key_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelPreferArgs {
+    /// Space whose routes to order.
+    #[arg(value_name = "SPACE")]
+    pub space: String,
+    /// Routes in preferred order (priority 1, 2, ...). Omit with --default.
+    #[arg(value_name = "ROUTE")]
+    pub routes: Vec<String>,
+    /// Remove every explicit priority in the space.
+    #[arg(long)]
+    pub default: bool,
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub yes: bool,
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args, Clone)]
+pub struct ModelSetSpaceArgs {
+    #[arg(value_name = "ROUTE")]
+    pub route: String,
+    #[arg(value_name = "SPACE")]
+    pub space: String,
+    #[arg(long, value_name = "DIR")]
+    pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub yes: bool,
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Args, Clone)]

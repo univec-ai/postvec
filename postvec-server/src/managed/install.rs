@@ -164,6 +164,9 @@ pub async fn run(command: Command) -> Result<()> {
             if !installed {
                 tx.execute("UPDATE postvec.schema_version SET mode = 'managed'")
                     .await?;
+            } else {
+                tx.execute("ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text")
+                    .await?;
             }
             tx.execute(include_str!("../../../postvec/sql/managed/lifecycle.sql"))
                 .await?;

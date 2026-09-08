@@ -10,12 +10,13 @@
 //! (the wire vocabulary the extension already classifies).
 
 use crate::config::{self, LoadOutcome, ModelDescriptor, ModelKind};
+use crate::routing::{self, Effective, RouteInput};
 use crate::{
     new_conversion_backend, new_embedding_backend, ConversionBackend, EmbeddingBackend,
     EmbeddingError,
 };
 use shared::ErrorCode;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -143,12 +144,13 @@ fn descriptor_json(
     provider_name: &str,
     endpoint: &str,
     model: &ModelDescriptor,
+    priority: Option<&Effective>,
 ) -> serde_json::Value {
     let params = match model.kind {
         ModelKind::Embed => {
             let mut params = serde_json::json!({
                 "model_type": "embed",
-                "target_model": model.name,
+                "target_model": model.space_name(),
                 "target_dim": model.dim,
             });
             if let Some(max_tokens) = model.max_tokens {
@@ -170,7 +172,7 @@ fn descriptor_json(
             "target_dim": model.dim,
         }),
     };
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "name": model.name,
         "status": "provider",
         "provider": provider_type,
@@ -193,7 +195,12 @@ fn descriptor_json(
             "enabled": true,
             "params": params,
         }
-    })
+    });
+    if let Some(priority) = priority {
+        value["priority"] = serde_json::json!(priority.priority);
+        value["priority_explicit"] = serde_json::json!(priority.explicit);
+    }
+    value
 }
 
 impl Inner {
@@ -201,12 +208,92 @@ impl Inner {
     /// failures are isolated to that provider, mirroring the per-file rule.
     fn build(
         outcome: LoadOutcome,
-        local_models: &std::collections::BTreeSet<String>,
+        local_models: &BTreeMap<String, Option<u32>>,
     ) -> (Inner, Vec<String>) {
         let mut errors: Vec<String> = outcome.errors.iter().map(|e| e.to_string()).collect();
         let mut inner = Inner::default();
 
-        'providers: for provider in outcome.providers {
+        let mut accepted = Vec::new();
+        for provider in outcome.providers {
+            if let Some(clash) = provider
+                .models
+                .iter()
+                .find(|m| local_models.contains_key(&m.name))
+            {
+                errors.push(format!(
+                    "provider {:?}: model {:?} is already served by a local engine model; a \
+                     public name must have exactly one owner. Rename the [[models]] entry — \
+                     leaving it would let the provider take the name over the moment the \
+                     local model is unloaded",
+                    provider.name, clash.name
+                ));
+                continue;
+            }
+            accepted.push(provider);
+        }
+
+        let mut space_dim: BTreeMap<String, (u32, String)> = BTreeMap::new();
+        for (name, dim) in local_models {
+            if let Some(dim) = dim {
+                space_dim.insert(name.clone(), (*dim, name.clone()));
+            }
+        }
+        let mut skipped: BTreeSet<(String, String)> = BTreeSet::new();
+        for provider in &accepted {
+            for model in &provider.models {
+                if model.kind != ModelKind::Embed {
+                    continue;
+                }
+                let space = model.space_name();
+                if let Some((dim, other)) = space_dim.get(space) {
+                    if *dim != model.dim {
+                        errors.push(format!(
+                            "provider {:?}: model {:?} (dim {}) disagrees with {:?} (dim {dim}) \
+                             on space {space:?}; not serving {:?}",
+                            provider.name, model.name, model.dim, other, model.name
+                        ));
+                        skipped.insert((provider.name.clone(), model.name.clone()));
+                    }
+                } else {
+                    space_dim.insert(space.to_string(), (model.dim, model.name.clone()));
+                }
+            }
+        }
+
+        let mut route_inputs = Vec::new();
+        for name in local_models.keys() {
+            route_inputs.push(RouteInput {
+                name,
+                space: name,
+                kind: ModelKind::Embed,
+                local: true,
+                priority: None,
+                added: None,
+                file_stem: "",
+            });
+        }
+        for provider in &accepted {
+            for model in &provider.models {
+                if skipped.contains(&(provider.name.clone(), model.name.clone())) {
+                    continue;
+                }
+                route_inputs.push(RouteInput {
+                    name: &model.name,
+                    space: model.space_name(),
+                    kind: model.kind,
+                    local: false,
+                    priority: model.priority,
+                    added: model.added.as_deref(),
+                    file_stem: &provider.name,
+                });
+            }
+        }
+        let priorities: BTreeMap<String, Effective> = routing::effective_priorities(&route_inputs)
+            .into_iter()
+            .map(|e| (e.name.clone(), e))
+            .collect();
+
+        'providers: for provider in accepted {
             let provider_type = crate::catalog::canonical_provider(&provider.config.provider);
             // Plaintext to something other than loopback puts the provider
             // credential on the wire in the clear. Not refused — a
@@ -256,32 +343,11 @@ impl Inner {
                 provider.config.base_url.as_deref(),
             );
 
-            // A provider file claiming a name the engine already has is
-            // refused, not quietly shadowed. Shadowing was deterministic —
-            // local wins — but it left a *dormant* provider entry behind the
-            // local one, and unloading or deactivating the local model made
-            // that entry start serving: a column's source text began leaving
-            // the host with no `enable()` NOTICE and no `provider add`
-            // acknowledgement, because neither ran. Refusing keeps the same
-            // "local by default" outcome and removes the dormant state
-            // instead of scheduling it.
-            if let Some(clash) = provider
-                .models
-                .iter()
-                .find(|m| local_models.contains(&m.name))
-            {
-                errors.push(format!(
-                    "provider {:?}: model {:?} is already served by a local engine model; a \
-                     public name must have exactly one owner. Rename the [[models]] entry — \
-                     leaving it would let the provider take the name over the moment the \
-                     local model is unloaded",
-                    provider.name, clash.name
-                ));
-                continue 'providers;
-            }
-
             let mut entries = Vec::with_capacity(provider.models.len());
             for model in &provider.models {
+                if skipped.contains(&(provider.name.clone(), model.name.clone())) {
+                    continue;
+                }
                 let backends = match model.kind {
                     ModelKind::Embed => {
                         let build = |input_type: &str| {
@@ -370,6 +436,7 @@ impl Inner {
                             &provider.name,
                             &endpoint,
                             model,
+                            priorities.get(&model.name),
                         ),
                     },
                 ));
@@ -402,11 +469,18 @@ impl Gateway {
         }
     }
 
+    /// Local engine names as the load/reload reservation map (unknown dims).
+    pub fn reserve(
+        names: impl IntoIterator<Item = impl Into<String>>,
+    ) -> BTreeMap<String, Option<u32>> {
+        names.into_iter().map(|n| (n.into(), None)).collect()
+    }
+
     /// Load a providers.d directory. Failures — structural or per-file —
     /// are logged and isolated; the returned gateway always exists and
     /// serves whatever loaded (possibly nothing). A missing directory is
     /// the ordinary zero-config case and logs nothing.
-    pub fn load(dir: &Path, local_models: &std::collections::BTreeSet<String>) -> Self {
+    pub fn load(dir: &Path, local_models: &BTreeMap<String, Option<u32>>) -> Self {
         let gateway = Gateway::empty();
         match gateway.reload(dir, local_models) {
             Ok(report) => {
@@ -436,7 +510,7 @@ impl Gateway {
     pub fn reload(
         &self,
         dir: &Path,
-        local_models: &std::collections::BTreeSet<String>,
+        local_models: &BTreeMap<String, Option<u32>>,
     ) -> Result<ReloadReport, String> {
         let outcome = config::load_dir(dir)?;
         let (inner, errors) = Inner::build(outcome, local_models);
@@ -889,12 +963,13 @@ fn map_embedding_error(provider: &str, e: &EmbeddingError) -> GatewayError {
 mod tests {
     use super::*;
     use crate::testing as mock;
+    use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     /// A providers.d is 0700; `tempfile::tempdir()` honours the umask.
     /// No local engine model in scope: the ordinary case for these tests.
-    fn no_local() -> std::collections::BTreeSet<String> {
+    fn no_local() -> BTreeMap<String, Option<u32>> {
         Default::default()
     }
 
@@ -949,6 +1024,8 @@ mod tests {
         assert_eq!(params["target_model"], "openai-text-embedding-3-small");
         assert_eq!(params["target_dim"], 1536);
         assert_eq!(params["sequence_len"], 8191);
+        assert_eq!(m["priority"], 200);
+        assert_eq!(m["priority_explicit"], false);
         // Nothing embedding-relevant at the top level: the parser reads
         // configuration.* only.
         assert!(m.get("enabled").is_none());
@@ -1416,7 +1493,7 @@ mod tests {
 
         // With one, the whole file is refused — the provider is a unit, and
         // half-serving it would leave the same dormant entry behind.
-        let local: std::collections::BTreeSet<String> = ["baai-bge-m3".to_string()].into();
+        let local: BTreeMap<String, Option<u32>> = [("baai-bge-m3".to_string(), None)].into();
         let gateway = Gateway::empty();
         let report = gateway.reload(dir.path(), &local).unwrap();
         assert_eq!(report.models, 0);
@@ -1701,5 +1778,80 @@ mod tests {
             .await
             .expect_err("dim mismatch");
         assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn embed_descriptor_advertises_space_as_target_model() {
+        let dir = private_tempdir();
+        write_provider(
+            dir.path(),
+            "openrouter.toml",
+            "provider = \"openrouter\"\napi_key = \"k\"\n\n\
+             [[models]]\nname = \"openrouter-google-gemini-embedding-001\"\n\
+             provider_model_id = \"google/gemini-embedding-001\"\ndim = 3072\n\
+             space = \"gemini-embedding-001\"\npriority = 1\n\
+             added = \"2026-09-08T00:00:00Z\"\n",
+        );
+        let gateway = Gateway::load(dir.path(), &no_local());
+        let m = &gateway.models()[0];
+        assert_eq!(
+            m["configuration"]["params"]["target_model"],
+            "gemini-embedding-001"
+        );
+        assert_eq!(m["name"], "openrouter-google-gemini-embedding-001");
+        assert_eq!(m["priority"], 1);
+        assert_eq!(m["priority_explicit"], true);
+    }
+
+    #[tokio::test]
+    async fn a_provider_row_that_disagrees_with_a_local_space_dim_is_not_served() {
+        let dir = private_tempdir();
+        write_provider(
+            dir.path(),
+            "univec.toml",
+            "provider = \"univec\"\napi_key = \"k\"\n\n\
+             [[models]]\nname = \"univec-baai-bge-m3\"\n\
+             provider_model_id = \"baai-bge-m3\"\ndim = 768\nspace = \"baai-bge-m3\"\n\
+             [[models]]\nname = \"univec-other\"\n\
+             provider_model_id = \"other\"\ndim = 8\n",
+        );
+        let local: BTreeMap<String, Option<u32>> = [("baai-bge-m3".to_string(), Some(1024))].into();
+        let gateway = Gateway::empty();
+        let report = gateway.reload(dir.path(), &local).unwrap();
+        assert!(
+            report.errors.iter().any(|e| e.contains("disagrees")
+                && e.contains("univec-baai-bge-m3")
+                && e.contains("baai-bge-m3")),
+            "{:?}",
+            report.errors
+        );
+        assert!(!gateway.owns("univec-baai-bge-m3"));
+        assert!(gateway.owns("univec-other"));
+    }
+
+    #[tokio::test]
+    async fn unstamped_provider_routes_sort_after_stamped_ones() {
+        let dir = private_tempdir();
+        write_provider(
+            dir.path(),
+            "a.toml",
+            "provider = \"openai\"\napi_key = \"k\"\n\n\
+             [[models]]\nname = \"stamped\"\nprovider_model_id = \"s\"\ndim = 8\n\
+             space = \"s\"\nadded = \"2026-01-01T00:00:00Z\"\n",
+        );
+        write_provider(
+            dir.path(),
+            "b.toml",
+            "provider = \"openai\"\napi_key = \"k\"\n\n\
+             [[models]]\nname = \"unstamped\"\nprovider_model_id = \"u\"\ndim = 8\n\
+             space = \"s\"\n",
+        );
+        let gateway = Gateway::load(dir.path(), &no_local());
+        let models = gateway.models();
+        let stamped = models.iter().find(|m| m["name"] == "stamped").unwrap();
+        let unstamped = models.iter().find(|m| m["name"] == "unstamped").unwrap();
+        assert_eq!(stamped["priority"], 200);
+        assert_eq!(unstamped["priority"], 201);
+        assert_eq!(stamped["priority_explicit"], false);
     }
 }

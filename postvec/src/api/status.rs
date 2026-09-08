@@ -38,6 +38,9 @@ fn status() -> TableIterator<
         name!(lexical_docs, i64),
         name!(lexical_stats_age_seconds, Option<f64>),
         name!(lexical_error, Option<String>),
+        name!(space, Option<String>),
+        name!(route, Option<String>),
+        name!(route_execution, Option<String>),
     ),
 > {
     // has_vector_index inlines registry::vector_index_probe_sql, the same
@@ -76,7 +79,10 @@ fn status() -> TableIterator<
                         COALESCE(j.pending_embed, 0)::bigint,
                         COALESCE(ls.n, 0)::bigint,
                         EXTRACT(EPOCH FROM (now() - ls.refreshed_at))::float8,
-                        ls.error
+                        ls.error,
+                        COALESCE(mm.space, r.space),
+                        mm.route,
+                        mm.route_execution
                    FROM postvec.registry r
                    LEFT JOIN postvec.lexical_stats ls ON ls.registry_id = r.id
                    LEFT JOIN (
@@ -100,15 +106,25 @@ fn status() -> TableIterator<
                           FROM postvec.jobs_dead GROUP BY registry_id
                    ) jd ON jd.registry_id = r.id
                    LEFT JOIN LATERAL (
-                        -- Embed models win (public target_model match first);
-                        -- a convert-only model (embed-bridge routed entry) is
-                        -- represented by the converter that targets it.
-                        SELECT last_seen FROM postvec.models
+                        SELECT last_seen,
+                               COALESCE(target_model, name) AS space,
+                               name AS route,
+                               CASE WHEN model_type <> 'embed' THEN 'bridge'
+                                    WHEN raw->'extra'->>'provider' IS NULL THEN 'local'
+                                    ELSE 'provider ' || (raw->'extra'->>'provider')
+                               END AS route_execution
+                          FROM postvec.models
                          WHERE (model_type = 'embed'
-                                AND (target_model = r.model OR name = r.model))
-                            OR (model_type = 'convert' AND target_model = r.model)
+                                AND (name = r.model OR target_model = r.model
+                                     OR (r.space IS NOT NULL
+                                         AND (name = r.space OR target_model = r.space))))
+                            OR (model_type = 'convert'
+                                AND (target_model = r.model OR target_model = r.space))
                          ORDER BY (model_type = 'embed') DESC,
-                                  (target_model = r.model) IS TRUE DESC
+                                  (name = r.model) DESC,
+                                  COALESCE((raw->'extra'->>'priority')::int,
+                                           CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                                  name
                          LIMIT 1
                    ) mm ON true
                    LEFT JOIN (SELECT pid, last_beat FROM postvec.worker_heartbeat LIMIT 1) hb ON true
@@ -149,6 +165,9 @@ fn status() -> TableIterator<
                     r.get::<i64>(26).unwrap().unwrap_or(0),
                     r.get::<f64>(27).unwrap(),
                     r.get::<String>(28).unwrap(),
+                    r.get::<String>(29).unwrap(),
+                    r.get::<String>(30).unwrap(),
+                    r.get::<String>(31).unwrap(),
                 )
             })
             .collect::<Vec<_>>()

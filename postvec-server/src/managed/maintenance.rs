@@ -297,6 +297,7 @@ async fn migrate(
         &payloads,
         if reembed { None } else { Some(&parsed) },
         target,
+        None,
         dim,
     )
     .await;

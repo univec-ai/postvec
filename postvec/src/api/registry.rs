@@ -155,8 +155,11 @@ pub(crate) fn resolve_dim(model: &str) -> i32 {
         let t = c
             .select(
                 "SELECT name, target_dim FROM postvec.models
-                  WHERE model_type = 'embed' AND (target_model = $1 OR name = $1)
-                  ORDER BY (target_model = $1) IS TRUE DESC, name
+                  WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
+                  ORDER BY (name = $1) DESC,
+                           COALESCE((raw->'extra'->>'priority')::int,
+                                    CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                           name
                   LIMIT 1",
                 Some(1),
                 &[model.into()],
@@ -1192,13 +1195,13 @@ pub(crate) fn insert_registry_row(
         Spi::get_one_with_args::<i64>(
             "INSERT INTO postvec.registry
                  (table_schema, table_name, source_column, vector_column,
-                  pk_columns, pk_types, model, dim, fts_config, create_fts_index,
+                  pk_columns, pk_types, model, space, dim, fts_config, create_fts_index,
                   distance, trigger_mode, backfill_mode, owns_vector_column, format,
                   index_mode, chunking, chunk_size, chunk_overlap,
                   destination_schema, destination_table, destination_view,
                   destination_token)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::regconfig,$10,$11,$12,$13,$14,$15,$16,
-                     $17,$18,$19,$20,$21,$22,$23)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::regconfig,$11,$12,$13,$14,$15,$16,
+                     $17,$18,$19,$20,$21,$22,$23,$24)
              RETURNING id",
             &[
                 plan.rel.schema.as_str().into(),
@@ -1208,6 +1211,7 @@ pub(crate) fn insert_registry_row(
                 plan.pk_cols.clone().into(),
                 plan.pk_types.clone().into(),
                 model.into(),
+                crate::api::embed::cache_space(model).into(),
                 plan.dim.into(),
                 fts_config.into(),
                 create_fts_index.into(),
@@ -2116,8 +2120,11 @@ fn check_not_null_policy(rel: &RelInfo, vec_col: &str, not_null: bool, sync: boo
 pub(crate) fn external_provider_of(model: &str) -> Option<String> {
     Spi::get_one_with_args::<String>(
         "SELECT raw->'extra'->>'provider' FROM postvec.models
-          WHERE model_type = 'embed' AND (target_model = $1 OR name = $1)
-          ORDER BY (target_model = $1) IS TRUE DESC, name
+          WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
+          ORDER BY (name = $1) DESC,
+                   COALESCE((raw->'extra'->>'priority')::int,
+                            CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                   name
           LIMIT 1",
         &[model.into()],
     )

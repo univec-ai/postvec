@@ -13,6 +13,9 @@ CREATE TABLE postvec.registry (
     pk_columns    text[] NOT NULL,
     pk_types      text[] NOT NULL,           -- cast targets for watermarks etc.
     model         text NOT NULL,             -- public model name (embed key)
+    -- Vector-space identity of `model`. Written at enable/adopt from the
+    -- resolved cache row's target_model; refreshed when the worker resolves.
+    space         text,
     dim           int  NOT NULL,
     fts_config    regconfig NOT NULL DEFAULT 'pg_catalog.english',
     create_fts_index bool NOT NULL DEFAULT false,

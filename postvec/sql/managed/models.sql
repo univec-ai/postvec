@@ -18,6 +18,27 @@ CREATE TABLE postvec.models (
 
 GRANT SELECT ON postvec.models TO PUBLIC;
 
+CREATE VIEW postvec.routes AS
+SELECT COALESCE(target_model, name) AS space,
+       name AS route,
+       model_type,
+       CASE WHEN raw->'extra'->>'provider' IS NULL THEN 'local'
+            ELSE 'provider ' || (raw->'extra'->>'provider') END AS execution,
+       target_dim AS dim,
+       COALESCE((raw->'extra'->>'priority')::int,
+                CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END) AS priority,
+       COALESCE((raw->'extra'->>'priority_explicit')::boolean, false) AS explicit,
+       row_number() OVER (
+           PARTITION BY COALESCE(target_model, name)
+           ORDER BY COALESCE((raw->'extra'->>'priority')::int,
+                             CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                    name
+       ) = 1 AS preferred,
+       last_seen
+  FROM postvec.models
+ WHERE model_type = 'embed';
+GRANT SELECT ON postvec.routes TO PUBLIC;
+
 CREATE TABLE postvec.worker_heartbeat (
     -- singleton key: the worker writes this row as one INSERT ... ON CONFLICT
     -- upsert. `id` never changes, so updates stay HOT-eligible.

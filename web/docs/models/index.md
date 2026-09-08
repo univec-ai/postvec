@@ -20,13 +20,35 @@ SELECT name, model_type, target_model, target_dim
  ORDER BY name;
 ```
 
+## Spaces and routes
+
+You pull, add, remove, test and prefer **routes**. You bind, search,
+migrate and convert in **spaces**. A space is a vector-space identity
+(`baai-bge-m3`, `gemini-embedding-001`). A route is a way to produce
+vectors in that space: a local engine model, or a hosted provider
+entry. Routes keep unique, host-prefixed names. Several routes may
+serve one space.
+
+Columns bind to spaces. Binding to a route name still works: if that
+route is served, it is used; otherwise resolution treats the string as
+a space (or as the vanished route's remembered space) and picks the
+served route with the lowest priority. Local models are priority 100.
+Provider routes without an explicit `priority` follow the order they
+were added.
+
+`postvec.routes` lists every embed route. `model prefer` changes the
+order without a migration. `model set-space` edits a mis-declared
+space. Adding a route never changes where an existing column's text
+goes.
+
 ## Direct and bridged embedding
 
 When `model => 'some-name'` is supplied to `enable()`, `adopt()` or
 `search()`, resolution uses:
 
-1. A direct embed model with that public name, or
-2. A converter *targeting* that name whose source is embeddable, routed
+1. A served embed route with that exact name, else the preferred route
+   of that space, or
+2. A converter *targeting* that space whose source is embeddable, routed
    through an `embed-bridge` executor.
 
 A convert-only space such as `ada-002` can then accept new writes and

@@ -32,7 +32,8 @@ as it is.
 | `migrate(relation, column_name, new_model, strategy DEFAULT 'convert', reindex DEFAULT 'manual', observed_writes_quiesced DEFAULT false)` | `bigint` migration id |
 | `migration_status(migration_id DEFAULT NULL)` | route in `resolved_via`, progress, state and `suggested_index_sql` |
 | `migration_finalize(id)` / `migration_abort(id)` | `void` |
-| `status()` | per-entry health (includes chunk + index columns, `lexical_docs`, `lexical_stats_age_seconds`, `lexical_error`) |
+| `status()` | per-entry health (includes chunk + index columns, `lexical_docs`, `lexical_stats_age_seconds`, `lexical_error`, `space`, `route`, `route_execution`) |
+| `postvec.routes` | view over embed rows: space, route, execution, dim, priority, preferred |
 | `stats()` | worker / queue counters |
 | `embed(input text, model text)` / `embed(inputs text[], model text)` | `real[]` / `setof real[]` |
 | `convert(embedding real[], source_model text, target_model text)` | `real[]` |

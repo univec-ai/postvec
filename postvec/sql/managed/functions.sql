@@ -260,8 +260,24 @@ BEGIN
               HINT = 'POST {"source_model","target_model","embeddings"} to the postvec-server /api/convert endpoint.';
 END $$;
 
+CREATE OR REPLACE VIEW postvec.routes AS
+SELECT COALESCE(target_model, name) AS space, name AS route, model_type,
+       CASE WHEN raw->'extra'->>'provider' IS NULL THEN 'local'
+            ELSE 'provider ' || (raw->'extra'->>'provider') END AS execution,
+       target_dim AS dim,
+       COALESCE((raw->'extra'->>'priority')::int,
+                CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END) AS priority,
+       COALESCE((raw->'extra'->>'priority_explicit')::boolean, false) AS explicit,
+       row_number() OVER (PARTITION BY COALESCE(target_model, name)
+                          ORDER BY COALESCE((raw->'extra'->>'priority')::int,
+                                            CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                                   name) = 1 AS preferred,
+       last_seen
+  FROM postvec.models WHERE model_type = 'embed';
+GRANT SELECT ON postvec.routes TO PUBLIC;
+
 DROP FUNCTION IF EXISTS postvec.status();
-CREATE OR REPLACE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint, lexical_docs bigint, lexical_stats_age_seconds double precision, lexical_error text)
+CREATE OR REPLACE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint, lexical_docs bigint, lexical_stats_age_seconds double precision, lexical_error text, space text, route text, route_execution text)
 LANGUAGE sql SET search_path = pg_catalog, pg_temp AS $$
 SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                         r.table_schema || '.' || r.table_name AS relation,
@@ -286,7 +302,10 @@ SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                         COALESCE(j.pending_embed, 0)::bigint,
                         COALESCE(ls.n, 0)::bigint,
                         EXTRACT(EPOCH FROM (now() - ls.refreshed_at))::float8,
-                        ls.error
+                        ls.error,
+                        COALESCE(mm.space, r.space),
+                        mm.route,
+                        mm.route_execution
                    FROM postvec.registry r
                    LEFT JOIN postvec.lexical_stats ls ON ls.registry_id = r.id
                    LEFT JOIN (
@@ -310,15 +329,24 @@ SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
                           FROM postvec.jobs_dead GROUP BY registry_id
                    ) jd ON jd.registry_id = r.id
                    LEFT JOIN LATERAL (
-                        -- Embed models win (public target_model match first);
-                        -- a convert-only model (embed-bridge routed entry) is
-                        -- represented by the converter that targets it.
-                        SELECT last_seen FROM postvec.models
+                        SELECT last_seen,
+                               COALESCE(target_model, name) AS space,
+                               name AS route,
+                               CASE WHEN model_type <> 'embed' THEN 'bridge'
+                                    WHEN raw->'extra'->>'provider' IS NULL THEN 'local'
+                                    ELSE 'provider ' || (raw->'extra'->>'provider')
+                               END AS route_execution
+                          FROM postvec.models
                          WHERE (model_type = 'embed'
-                                AND (target_model = r.model OR name = r.model))
-                            OR (model_type = 'convert' AND target_model = r.model)
+                                AND (name = r.model OR target_model = r.model
+                                     OR (r.space IS NOT NULL AND (name = r.space OR target_model = r.space))))
+                            OR (model_type = 'convert'
+                                AND (target_model = r.model OR target_model = r.space))
                          ORDER BY (model_type = 'embed') DESC,
-                                  (target_model = r.model) IS TRUE DESC
+                                  (name = r.model) DESC,
+                                  COALESCE((raw->'extra'->>'priority')::int,
+                                           CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                                  name
                          LIMIT 1
                    ) mm ON true
                    LEFT JOIN (SELECT pid, last_beat FROM postvec.worker_heartbeat LIMIT 1) hb ON true

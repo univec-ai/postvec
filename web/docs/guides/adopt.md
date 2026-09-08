@@ -36,6 +36,22 @@ operator-supplied assertion. The catalogue can contradict an incorrect
 model (dimension mismatch). Provenance of the stored bytes is not
 verified.
 
+To change what a column *claims* to be (re-attribution, not a provider
+switch), disable without dropping the vector column and adopt again
+with the new space name. Re-declare `format` if you had one.
+
+```sql
+SELECT postvec.disable('public.legacy', 'body', drop_column => false);
+SELECT postvec.adopt(
+  'public.legacy', 'body',
+  vector_column => 'embedding',
+  model => 'openai-text-embedding-3-small'
+);
+```
+
+Switching the *route* that produces vectors in the same space is
+configuration (`model prefer`), not this recipe.
+
 An incorrect assertion makes `search()` embed the query into an
 incompatible space. `migrate(strategy => 'convert')` then produces
 invalid vectors without an explicit error.

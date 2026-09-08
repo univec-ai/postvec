@@ -27,11 +27,14 @@ max_concurrent = 4       # outbound requests in flight
 timeout_ms     = 20000   # per HTTP attempt
 
 [[models]]
-name              = "openai-text-embedding-3-small"  # SQL name
+name              = "openai-text-embedding-3-small"  # route name
 provider_model_id = "text-embedding-3-small"         # API id
 dim               = 1536   # responses are checked against this
 max_batch         = 512    # host sub-batches to this
 max_tokens        = 8191   # advertised as sequence_len
+# space    = "openai-text-embedding-3-small"  # vector space; default is name
+# priority = 1                                # lower wins; omit for derived order
+# added    = "2026-09-08T00:00:00Z"           # RFC 3339; orders unprioritised routes
 ```
 
 `base_url` replaces the **origin only**. Each connector appends its own path.
@@ -230,23 +233,27 @@ removal does the same.
 The CLI uses a curated public name for a model in its built-in catalogue.
 These entries are available:
 
-| Provider | Model id | Name in SQL | Dim |
-|---|---|---|---:|
-| openai | `text-embedding-3-small` | `openai-text-embedding-3-small` | 1536 |
-| openai | `text-embedding-3-large` | `openai-text-embedding-3-large` | 3072 |
-| openai | `text-embedding-ada-002` | `openai-text-embedding-ada-002` | 1536 |
-| google | `gemini-embedding-001` | `gemini-embedding-001` | 3072 |
-| cohere | `embed-v4.0` | `cohere-embed-v4-0` | 1536 |
-| cohere | `embed-english-v3.0` | `cohere-embed-english-v3-0` | 1024 |
-| cohere | `embed-multilingual-v3.0` | `cohere-embed-multilingual-v3-0` | 1024 |
-| aws | `amazon.titan-embed-text-v2:0` | `aws-titan-embed-text-v2-0` | 1024 |
-| aws | `amazon.titan-embed-text-v1` | `aws-titan-embed-text-v1` | 1536 |
-| mistral | `mistral-embed` | `mistral-mistral-embed` | 1024 |
+| Provider | Model id | Route name | Space | Dim |
+|---|---|---|---|---:|
+| openai | `text-embedding-3-small` | `openai-text-embedding-3-small` | same | 1536 |
+| openai | `text-embedding-3-large` | `openai-text-embedding-3-large` | same | 3072 |
+| openai | `text-embedding-ada-002` | `openai-text-embedding-ada-002` | same | 1536 |
+| google | `gemini-embedding-001` | `gemini-embedding-001` | same | 3072 |
+| cohere | `embed-v4.0` | `cohere-embed-v4-0` | same | 1536 |
+| cohere | `embed-english-v3.0` | `cohere-embed-english-v3-0` | same | 1024 |
+| cohere | `embed-multilingual-v3.0` | `cohere-embed-multilingual-v3-0` | same | 1024 |
+| aws | `amazon.titan-embed-text-v2:0` | `aws-titan-embed-text-v2-0` | same | 1024 |
+| aws | `amazon.titan-embed-text-v1` | `aws-titan-embed-text-v1` | same | 1536 |
+| mistral | `mistral-embed` | `mistral-mistral-embed` | same | 1024 |
+| openrouter | `google/gemini-embedding-001` | `openrouter-google-gemini-embedding-001` | `gemini-embedding-001` | 3072 |
+| openrouter | `openai/text-embedding-3-small` | `openrouter-openai-text-embedding-3-small` | `openai-text-embedding-3-small` | 1536 |
 
 Any other id works too. The probe measures the dimension, or `--dim`
 states it. OpenRouter ids are namespaced, so
-`--model openai/text-embedding-3-large` becomes
-`openrouter-openai-text-embedding-3-large`.
+`--model openai/text-embedding-3-large` becomes route
+`openrouter-openai-text-embedding-3-large` in space
+`openai-text-embedding-3-large`. Two embed entries in one file that
+claim the same space at different dimensions refuse the file.
 
 UniVec ids are not in the CLI's built-in catalogue. `provider add univec`
 measures an embed model's dimension. For example, `--model baai-bge-m3`

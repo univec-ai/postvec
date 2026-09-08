@@ -52,6 +52,12 @@ pub async fn dispatch(cli: Cli) -> Exit {
                 crate::cli::ModelCommand::Deactivate(args) => {
                     model::deactivate::run(&cli, args.clone(), &output).await
                 }
+                crate::cli::ModelCommand::Prefer(args) => {
+                    model::prefer::run(&cli, args.clone(), &output).await
+                }
+                crate::cli::ModelCommand::SetSpace(args) => {
+                    model::set_space::run(&cli, args.clone(), &output).await
+                }
             };
             (name, result)
         }

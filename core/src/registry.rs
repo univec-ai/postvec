@@ -12,6 +12,10 @@ pub struct RegistryEntry {
     /// `format_type` of each PK column; cast targets for watermark literals.
     pub pk_types: Vec<String>,
     pub model: String,
+    /// Vector-space identity, filled at enable/adopt and refreshed by the
+    /// worker. None until the first successful resolution.
+    #[serde(default)]
+    pub space: Option<String>,
     pub dim: i32,
     /// FTS text-search configuration name (regconfig rendered as text).
     pub fts_config: String,
@@ -735,6 +739,7 @@ mod tests {
             pk_columns: pk_columns.iter().map(|s| s.to_string()).collect(),
             pk_types: pk_types.iter().map(|s| s.to_string()).collect(),
             model: "m".into(),
+            space: None,
             dim: 3,
             fts_config: "pg_catalog.english".into(),
             distance: "cosine".into(),

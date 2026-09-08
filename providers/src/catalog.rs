@@ -9,111 +9,205 @@
 /// One well-known provider model.
 #[derive(Debug, Clone, Copy)]
 pub struct CatalogModel {
-    /// Canonical connector type: `openai | google | cohere | aws | mistral`.
+    /// Canonical connector type: `openai | google | cohere | aws | mistral | openrouter`.
     pub provider: &'static str,
     /// The identifier the provider's API expects.
     pub id: &'static str,
     /// The curated public name (the docs' spelling).
     pub name: &'static str,
+    /// The vector-space identity this route serves. Equals `name` for a
+    /// direct provider; for OpenRouter, the direct provider's curated name.
+    pub space: &'static str,
     pub dim: u32,
     pub max_tokens: u32,
     pub max_batch: usize,
 }
 
+const fn m(
+    provider: &'static str,
+    id: &'static str,
+    name: &'static str,
+    space: &'static str,
+    dim: u32,
+    max_tokens: u32,
+    max_batch: usize,
+) -> CatalogModel {
+    CatalogModel {
+        provider,
+        id,
+        name,
+        space,
+        dim,
+        max_tokens,
+        max_batch,
+    }
+}
+
 pub const CATALOG: &[CatalogModel] = &[
-    // OpenAI
-    CatalogModel {
-        provider: "openai",
-        id: "text-embedding-3-small",
-        name: "openai-text-embedding-3-small",
-        dim: 1536,
-        max_tokens: 8191,
-        max_batch: 512,
-    },
-    CatalogModel {
-        provider: "openai",
-        id: "text-embedding-3-large",
-        name: "openai-text-embedding-3-large",
-        dim: 3072,
-        max_tokens: 8191,
-        max_batch: 512,
-    },
-    CatalogModel {
-        provider: "openai",
-        id: "text-embedding-ada-002",
-        name: "openai-text-embedding-ada-002",
-        dim: 1536,
-        max_tokens: 8191,
-        max_batch: 512,
-    },
-    // Gemini
-    CatalogModel {
-        provider: "google",
-        id: "gemini-embedding-001",
-        name: "gemini-embedding-001",
-        dim: 3072,
-        max_tokens: 2048,
-        max_batch: 96,
-    },
-    // Cohere
-    // embed-v4.0 takes 128k tokens per input, not the 8192 of v3 — the
-    // figure a reader will quote back from the docs table, and the one the
-    // descriptor advertises as `sequence_len`.
-    CatalogModel {
-        provider: "cohere",
-        id: "embed-v4.0",
-        name: "cohere-embed-v4-0",
-        dim: 1536,
-        max_tokens: 128_000,
-        max_batch: 96,
-    },
-    CatalogModel {
-        provider: "cohere",
-        id: "embed-english-v3.0",
-        name: "cohere-embed-english-v3-0",
-        dim: 1024,
-        max_tokens: 512,
-        max_batch: 96,
-    },
-    CatalogModel {
-        provider: "cohere",
-        id: "embed-multilingual-v3.0",
-        name: "cohere-embed-multilingual-v3-0",
-        dim: 1024,
-        max_tokens: 512,
-        max_batch: 96,
-    },
-    // AWS Bedrock. The `aws` connector speaks the Amazon Titan embedding
-    // schema only (`titan.rs`): `inputText` in, `embedding` out. Models on
-    // Bedrock with a different body shape — Cohere's, for one — need their
-    // own codec, so they are deliberately absent here rather than offered
-    // as a descriptor that can never serve. Titan invokes one text per
-    // request, so `max_batch` 1 is the API shape, not a policy.
-    CatalogModel {
-        provider: "aws",
-        id: "amazon.titan-embed-text-v2:0",
-        name: "aws-titan-embed-text-v2-0",
-        dim: 1024,
-        max_tokens: 8192,
-        max_batch: 1,
-    },
-    CatalogModel {
-        provider: "aws",
-        id: "amazon.titan-embed-text-v1",
-        name: "aws-titan-embed-text-v1",
-        dim: 1536,
-        max_tokens: 8192,
-        max_batch: 1,
-    },
-    // Mistral
-    CatalogModel {
-        provider: "mistral",
-        id: "mistral-embed",
-        name: "mistral-mistral-embed",
-        dim: 1024,
-        max_tokens: 8192,
-        max_batch: 96,
-    },
+    m(
+        "openai",
+        "text-embedding-3-small",
+        "openai-text-embedding-3-small",
+        "openai-text-embedding-3-small",
+        1536,
+        8191,
+        512,
+    ),
+    m(
+        "openai",
+        "text-embedding-3-large",
+        "openai-text-embedding-3-large",
+        "openai-text-embedding-3-large",
+        3072,
+        8191,
+        512,
+    ),
+    m(
+        "openai",
+        "text-embedding-ada-002",
+        "openai-text-embedding-ada-002",
+        "openai-text-embedding-ada-002",
+        1536,
+        8191,
+        512,
+    ),
+    m(
+        "google",
+        "gemini-embedding-001",
+        "gemini-embedding-001",
+        "gemini-embedding-001",
+        3072,
+        2048,
+        96,
+    ),
+    // embed-v4.0 takes 128k tokens per input, not the 8192 of v3.
+    m(
+        "cohere",
+        "embed-v4.0",
+        "cohere-embed-v4-0",
+        "cohere-embed-v4-0",
+        1536,
+        128_000,
+        96,
+    ),
+    m(
+        "cohere",
+        "embed-english-v3.0",
+        "cohere-embed-english-v3-0",
+        "cohere-embed-english-v3-0",
+        1024,
+        512,
+        96,
+    ),
+    m(
+        "cohere",
+        "embed-multilingual-v3.0",
+        "cohere-embed-multilingual-v3-0",
+        "cohere-embed-multilingual-v3-0",
+        1024,
+        512,
+        96,
+    ),
+    // Titan only — other Bedrock models need their own codec.
+    m(
+        "aws",
+        "amazon.titan-embed-text-v2:0",
+        "aws-titan-embed-text-v2-0",
+        "aws-titan-embed-text-v2-0",
+        1024,
+        8192,
+        1,
+    ),
+    m(
+        "aws",
+        "amazon.titan-embed-text-v1",
+        "aws-titan-embed-text-v1",
+        "aws-titan-embed-text-v1",
+        1536,
+        8192,
+        1,
+    ),
+    m(
+        "mistral",
+        "mistral-embed",
+        "mistral-mistral-embed",
+        "mistral-mistral-embed",
+        1024,
+        8192,
+        96,
+    ),
+    m(
+        "openrouter",
+        "openai/text-embedding-3-small",
+        "openrouter-openai-text-embedding-3-small",
+        "openai-text-embedding-3-small",
+        1536,
+        8191,
+        512,
+    ),
+    m(
+        "openrouter",
+        "openai/text-embedding-3-large",
+        "openrouter-openai-text-embedding-3-large",
+        "openai-text-embedding-3-large",
+        3072,
+        8191,
+        512,
+    ),
+    m(
+        "openrouter",
+        "openai/text-embedding-ada-002",
+        "openrouter-openai-text-embedding-ada-002",
+        "openai-text-embedding-ada-002",
+        1536,
+        8191,
+        512,
+    ),
+    m(
+        "openrouter",
+        "google/gemini-embedding-001",
+        "openrouter-google-gemini-embedding-001",
+        "gemini-embedding-001",
+        3072,
+        2048,
+        96,
+    ),
+    m(
+        "openrouter",
+        "cohere/embed-v4.0",
+        "openrouter-cohere-embed-v4-0",
+        "cohere-embed-v4-0",
+        1536,
+        128_000,
+        96,
+    ),
+    m(
+        "openrouter",
+        "cohere/embed-english-v3.0",
+        "openrouter-cohere-embed-english-v3-0",
+        "cohere-embed-english-v3-0",
+        1024,
+        512,
+        96,
+    ),
+    m(
+        "openrouter",
+        "cohere/embed-multilingual-v3.0",
+        "openrouter-cohere-embed-multilingual-v3-0",
+        "cohere-embed-multilingual-v3-0",
+        1024,
+        512,
+        96,
+    ),
+    m(
+        "openrouter",
+        "mistralai/mistral-embed",
+        "openrouter-mistralai-mistral-embed",
+        "mistral-mistral-embed",
+        1024,
+        8192,
+        96,
+    ),
 ];
 
 /// Canonical connector type for a CLI-typed provider (folds the aliases).
@@ -162,6 +256,19 @@ pub fn public_name(typed: &str, id: &str) -> String {
         return model.name.to_string();
     }
     sanitize_public_name(&format!("{}-{}", name_prefix(typed), id))
+}
+
+/// The space a route for this provider id would join. Catalogue hit returns
+/// `space`; UniVec ids *are* registry names so the space is the id;
+/// otherwise the derived public name (the route is its own space).
+pub fn public_space(typed: &str, id: &str) -> String {
+    if let Some(model) = lookup(typed, id) {
+        return model.space.to_string();
+    }
+    if canonical_provider(typed) == "univec" {
+        return id.to_string();
+    }
+    public_name(typed, id)
 }
 
 /// Lowercase, map every character outside `[a-z0-9._-]` to `-`, collapse
@@ -218,10 +325,25 @@ mod tests {
 
     #[test]
     fn catalog_names_match_the_documented_convention() {
+        let mut keys = std::collections::BTreeSet::new();
+        let names: std::collections::BTreeSet<&str> = CATALOG.iter().map(|m| m.name).collect();
         for model in CATALOG {
             assert!(model.dim > 0, "{}", model.name);
             assert!(model.max_batch > 0, "{}", model.name);
-            // Public names use the flat hyphenated charset the hosts accept.
+            assert!(
+                keys.insert((model.provider, model.id)),
+                "duplicate catalog key {}/{}",
+                model.provider,
+                model.id
+            );
+            assert!(validate_public_name(model.name).is_ok(), "{}", model.name);
+            assert!(validate_public_name(model.space).is_ok(), "{}", model.space);
+            assert!(
+                model.space == model.name || names.contains(model.space),
+                "{} space {} is neither its own name nor a catalogued name",
+                model.name,
+                model.space
+            );
             assert!(
                 model
                     .name
@@ -231,6 +353,15 @@ mod tests {
                 model.name
             );
         }
+        assert_eq!(
+            public_space("openrouter", "google/gemini-embedding-001"),
+            "gemini-embedding-001"
+        );
+        assert_eq!(public_space("univec", "baai-bge-m3"), "baai-bge-m3");
+        assert_eq!(
+            public_space("openai", "text-embedding-3-small"),
+            "openai-text-embedding-3-small"
+        );
         // The doc-blessed spellings.
         assert_eq!(
             public_name("openai", "text-embedding-3-small"),

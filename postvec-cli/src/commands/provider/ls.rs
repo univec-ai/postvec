@@ -53,6 +53,7 @@ struct LsDocument {
 }
 
 pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exit> {
+    output.note("`provider ls` is an alias of `model ls --provider`; prefer that");
     if args.available {
         return run_available(cli, &args, output).await;
     }

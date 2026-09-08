@@ -116,16 +116,7 @@ impl Client {
         name: &str,
         purpose: EmbedPurpose,
     ) -> Result<(String, EmbedRoute), PvError> {
-        let mut direct: Vec<_> = self
-            .models
-            .iter()
-            .filter(|m| {
-                m.model_type == "embed"
-                    && (m.name == name || m.target_model.as_deref() == Some(name))
-            })
-            .collect();
-        direct.sort_by_key(|m| (m.target_model.as_deref() != Some(name), &m.name));
-        if let Some(m) = direct.first() {
+        if let Some(m) = self.pick_embed(name) {
             return Ok((m.name.clone(), EmbedRoute::default().with_purpose(purpose)));
         }
         for (_, models) in &self.nodes {
@@ -156,6 +147,39 @@ impl Client {
             }
         }
         Err(PvError::UnknownModel(name.into()))
+    }
+
+    pub fn route_for(
+        &self,
+        name: &str,
+        space: Option<&str>,
+        purpose: EmbedPurpose,
+    ) -> Result<(String, EmbedRoute), PvError> {
+        match self.route(name, purpose) {
+            Ok(r) => Ok(r),
+            Err(PvError::UnknownModel(_)) if space.is_some_and(|s| s != name) => {
+                self.route(space.unwrap(), purpose)
+            }
+            other => other,
+        }
+    }
+
+    fn pick_embed(&self, name: &str) -> Option<&ModelInfo> {
+        let mut direct: Vec<_> = self
+            .models
+            .iter()
+            .filter(|m| {
+                m.model_type == "embed"
+                    && (m.name == name || m.target_model.as_deref() == Some(name))
+            })
+            .collect();
+        direct.sort_by(|a, b| {
+            (a.name != name)
+                .cmp(&(b.name != name))
+                .then(embed_priority(a).cmp(&embed_priority(b)))
+                .then(a.name.cmp(&b.name))
+        });
+        direct.into_iter().next()
     }
     pub async fn predict(
         &self,
@@ -270,6 +294,18 @@ impl Client {
         Err(error)
     }
 }
+
+fn embed_priority(m: &ModelInfo) -> i32 {
+    m.raw["extra"]["priority"]
+        .as_i64()
+        .map(|p| p as i32)
+        .unwrap_or(if m.raw["extra"]["provider"].is_null() {
+            100
+        } else {
+            200
+        })
+}
+
 fn decode(rows: Option<prost_types::ListValue>) -> Result<Vec<Vec<f32>>, PvError> {
     use prost_types::value::Kind;
     rows.ok_or_else(|| PvError::Decode("missing embeddings".into()))?

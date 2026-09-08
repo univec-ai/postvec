@@ -127,7 +127,7 @@ No `--drop-destinations`. See [uninstall](/docs/install/uninstall).
 See [pull / upgrade / rm](/docs/models/pull) and [login](/docs/models/login).
 
 ```
-model ls [--available] [--path DIR]
+model ls [SPACE|ROUTE] [--local] [--provider [TYPE]] [--available] [--path DIR]
 model show NAME [--verify] [--path DIR]
 model pull NAME... [--path DIR] [--api-key-file FILE]
             [--accept-license ID@VERSION] [--dry-run] [--yes]
@@ -137,6 +137,8 @@ model rm NAME... [--path DIR] [--force] [--acknowledge-in-use]
 model activate [NAME...|--all] [--path DIR] [--dry-run] [--yes]
 model deactivate NAME... [--path DIR] [--force] [--acknowledge-in-use]
             [--dry-run] [--yes]
+model prefer SPACE ROUTE... [--default] [--path DIR] [--dry-run] [--yes]
+model set-space ROUTE SPACE [--path DIR] [--dry-run] [--yes]
 ```
 
 `POSTVEC_PATH` has the same meaning as `--path`. Container images set it,
@@ -155,12 +157,13 @@ See [External providers](/docs/models/providers).
 ```
 provider add TYPE --model ID... [--name STEM] [--path DIR]
             [--api-key-file FILE | --api-key-env VAR | --key-stdin]
-            [--base-url URL] [--region REGION] [--dim N] [--no-verify]
+            [--base-url URL] [--region REGION] [--dim N] [--space SPACE]
+            [--prefer] [--no-verify]
             [--acknowledge-in-use] [--dry-run] [--yes]
 provider add univec [--model ID...] [--convert SRC:DST...] [--convert-to MODEL...]
             [--convert-from MODEL...] [--all-converters] [--converter-name NAME]
             [--api-key-from-login] [--no-catalog] [common add options]
-provider ls [--path DIR]
+provider ls [--path DIR]   # alias of `model ls --provider`; deprecated
 provider ls --available [PROVIDER] [--kind embed|convert] [--to MODEL]
             [--from MODEL] [--path DIR]
 provider test NAME [--model ID] [--path DIR]

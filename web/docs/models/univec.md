@@ -77,9 +77,11 @@ instead. A catalogue that breaks its contract (an entry of a known kind with
 a missing or contradictory dimension) is refused whole, with the row named;
 nothing is written or billed.
 
-The model id becomes `univec-baai-bge-m3` in SQL. `provider_model_id` keeps
-the id accepted by the UniVec API. The prefix is deliberate: a column bound
-to a local `baai-bge-m3` is not captured by adding the hosted one.
+The route name becomes `univec-baai-bge-m3`. `provider_model_id` keeps
+the id accepted by the UniVec API. The route joins space `baai-bge-m3`,
+so a column bound to the local model keeps working through whichever
+route currently serves that space. Adding the hosted route does not
+steal the column; `model prefer` does.
 
 ::::: tip Expected
 `provider ls` reports `univec-baai-bge-m3` as `served`, and the model appears

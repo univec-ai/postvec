@@ -429,6 +429,9 @@ pub struct InventoryModel {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigInventory {
     pub models: Vec<InventoryModel>,
+    /// Host advertises space/priority on `/config` (this feature).
+    #[serde(default)]
+    pub spaces: bool,
 }
 
 impl ConfigInventory {
@@ -845,6 +848,7 @@ mod tests {
     #[test]
     fn inventory_reports_enabled_models_only() {
         let inv = ConfigInventory {
+            spaces: false,
             models: vec![
                 InventoryModel {
                     name: "a".into(),
@@ -928,6 +932,7 @@ mod tests {
                     health: HealthOutcome::Ok { status: 200 },
                     config_status: Some(200),
                     config: Some(ConfigInventory {
+                        spaces: false,
                         models: vec![InventoryModel {
                             name: "m".into(),
                             enabled: true,
@@ -948,6 +953,7 @@ mod tests {
                     health: HealthOutcome::Ok { status: 200 },
                     config_status: Some(200),
                     config: Some(ConfigInventory {
+                        spaces: false,
                         models: vec![InventoryModel {
                             name: "m".into(),
                             enabled: true,

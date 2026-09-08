@@ -221,6 +221,8 @@ pub(super) fn converter_model(
             target_model: target,
             source_dim,
         }),
+        space: None,
+        prefer: false,
     })
 }
 
@@ -722,6 +724,7 @@ mod tests {
             provider_model_id: t.into(),
             kind: ListedKind::Convert,
             dim: td,
+            space: Some(t.into()),
             source: Some((s.into(), sd)),
             sequence_len: None,
             quality: None,
@@ -731,6 +734,7 @@ mod tests {
                 provider_model_id: "t".into(),
                 kind: ListedKind::Embed,
                 dim: 4,
+                space: Some("t".into()),
                 source: None,
                 sequence_len: Some(256),
                 quality: None,

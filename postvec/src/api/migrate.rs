@@ -511,7 +511,7 @@ fn migrate(
     // flight.
     let resolved_via: serde_json::Value = match strategy.as_str() {
         "reembed" => serde_json::json!({ "kind": "reembed" }),
-        _ => match resolve_convert(&entry.model, new_model) {
+        _ => match resolve_convert(entry.space.as_deref().unwrap_or(&entry.model), new_model) {
             Ok(name) => {
                 serde_json::json!({ "kind": "direct", "model": name })
             }

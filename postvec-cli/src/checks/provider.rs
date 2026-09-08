@@ -406,6 +406,64 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
             )),
         }
     }
+    out.extend(space_dim_checks(input.facts.dir.as_path()));
+    out
+}
+
+fn space_dim_checks(dir: &Path) -> Vec<CheckResult> {
+    let mut by_space: std::collections::BTreeMap<String, Vec<(String, u32, Option<u32>)>> =
+        Default::default();
+    for path in crate::commands::provider::ls::provider_files(dir).unwrap_or_default() {
+        let Ok(Some(doc)) = crate::commands::provider::ProviderFileDoc::load(&path) else {
+            continue;
+        };
+        for d in doc.descriptors() {
+            if d.kind != providers::config::ModelKind::Embed {
+                continue;
+            }
+            by_space
+                .entry(d.space_name().to_string())
+                .or_default()
+                .push((d.name, d.dim, d.priority));
+        }
+    }
+    let mut out = Vec::new();
+    for (space, routes) in by_space {
+        let dims: std::collections::BTreeSet<u32> = routes.iter().map(|(_, d, _)| *d).collect();
+        if dims.len() > 1 {
+            let detail = routes
+                .iter()
+                .map(|(n, d, _)| format!("{n}={d}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(
+                CheckResult::fail(
+                    "provider.space-dim",
+                    space.clone(),
+                    format!("routes of space {space:?} disagree on dim ({detail})"),
+                )
+                .with_fix("edit space= or remove the contradicting [[models]] entry"),
+            );
+        }
+        let mut seen_priority = std::collections::BTreeMap::<u32, Vec<String>>::new();
+        for (name, _, priority) in &routes {
+            if let Some(p) = priority {
+                seen_priority.entry(*p).or_default().push(name.clone());
+            }
+        }
+        for (p, names) in seen_priority {
+            if names.len() > 1 {
+                out.push(CheckResult::warn(
+                    "provider.space-priority",
+                    space.clone(),
+                    format!(
+                        "duplicate explicit priority {p} on {}: tie-break is route name",
+                        names.join(", ")
+                    ),
+                ));
+            }
+        }
+    }
     out
 }
 

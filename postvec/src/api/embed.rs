@@ -148,19 +148,54 @@ fn spi_opt_string(
     }
 }
 
-/// First-tier embed resolution: public `target_model` wins, internal name
-/// accepted as fallback.
-pub(crate) fn resolve_embed(model: &str) -> Result<String, PvError> {
-    // `IS TRUE` folds NULL (models with no target_model) to false — plain
-    // `DESC` is NULLS FIRST and would rank them above an exact match.
-    let found = spi_opt_string(
-        "SELECT name FROM postvec.models
-          WHERE model_type = 'embed' AND (target_model = $1 OR name = $1)
-          ORDER BY (target_model = $1) IS TRUE DESC, name
+const LOOKUP_EMBED: &str = "SELECT name FROM postvec.models
+          WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
+          ORDER BY (name = $1) DESC,
+                   COALESCE((raw->'extra'->>'priority')::int,
+                            CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                   name
+          LIMIT 1";
+
+fn lookup_embed(model: &str) -> Result<Option<String>, PvError> {
+    spi_opt_string(LOOKUP_EMBED, &[model.into()])
+}
+
+/// Space a bound string currently resolves in, if the cache knows one.
+pub(crate) fn cache_space(model: &str) -> Option<String> {
+    spi_opt_string(
+        "SELECT COALESCE(target_model, name) FROM postvec.models
+          WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
+          ORDER BY (name = $1) DESC,
+                   COALESCE((raw->'extra'->>'priority')::int,
+                            CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
+                   name
           LIMIT 1",
         &[model.into()],
-    )?;
-    found.ok_or_else(|| PvError::UnknownModel(model.to_string()))
+    )
+    .ok()
+    .flatten()
+}
+
+/// First-tier embed resolution: exact served route, else space by priority.
+pub(crate) fn resolve_embed(model: &str) -> Result<String, PvError> {
+    resolve_embed_for_entry(model, None)
+}
+
+pub(crate) fn resolve_embed_for_entry(
+    model: &str,
+    space_hint: Option<&str>,
+) -> Result<String, PvError> {
+    if let Some(name) = lookup_embed(model)? {
+        return Ok(name);
+    }
+    if let Some(space) = space_hint {
+        if space != model {
+            if let Some(name) = lookup_embed(space)? {
+                return Ok(name);
+            }
+        }
+    }
+    Err(PvError::UnknownModel(model.to_string()))
 }
 
 /// How an embed request will be routed.
@@ -212,11 +247,19 @@ impl EmbedResolution {
 /// becomes directly embeddable (e.g. a provider API key added on the inference side)
 /// upgrades to `Direct` automatically.
 pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvError> {
-    match resolve_embed(model) {
+    resolve_embed_route_for(model, None)
+}
+
+pub(crate) fn resolve_embed_route_for(
+    model: &str,
+    space_hint: Option<&str>,
+) -> Result<EmbedResolution, PvError> {
+    match resolve_embed_for_entry(model, space_hint) {
         Ok(internal) => return Ok(EmbedResolution::Direct(internal)),
         Err(PvError::UnknownModel(_)) => {}
         Err(e) => return Err(e),
     }
+    let space = space_hint.unwrap_or(model);
 
     // Bridge tier: a converter targeting `model` whose source is itself a
     // resolvable embed output. Match the engine resolver exactly: target_model
@@ -244,7 +287,7 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
                            AND COALESCE(e.target_model, e.name) = c.source_model
                            AND e.raw->'extra'->>'provider' IS NULL)
           ORDER BY c.name LIMIT 1",
-        &[model.into()],
+        &[space.into()],
     )?;
     let Some(via) = via else {
         // Failure path only: distinguish "no converter at all" from "a
@@ -256,7 +299,7 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
               WHERE c.model_type = 'convert' AND c.target_model = $1
                 AND c.raw->'extra'->>'provider' IS NULL
               ORDER BY c.name LIMIT 1",
-            &[model.into()],
+            &[space.into()],
         )?;
         let detail = match dead_converter {
             Some(desc) => format!(
@@ -274,7 +317,7 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
                       WHERE c.model_type = 'convert' AND c.target_model = $1
                         AND c.raw->'extra'->>'provider' IS NOT NULL
                       ORDER BY c.name LIMIT 1",
-                    &[model.into()],
+                    &[space.into()],
                 )?;
                 match provider_converter {
                     Some(name) => format!(
@@ -307,7 +350,7 @@ pub(crate) fn resolve_embed_route(model: &str) -> Result<EmbedResolution, PvErro
     Ok(EmbedResolution::Bridge {
         executor,
         via,
-        target: model.to_string(),
+        target: space.to_string(),
     })
 }
 
@@ -364,6 +407,10 @@ pub(crate) fn list_models_report_blocking() -> Result<DiscoveryReport, PvError> 
 /// `worker_heartbeat.models_refreshed_at`. Rows for vanished models are
 /// kept. Must be called inside a transaction.
 pub(crate) fn upsert_models(models: &[ModelInfo]) -> Result<(), pgrx::spi::Error> {
+    if models.is_empty() {
+        return Ok(());
+    }
+    let models = skip_space_dim_conflicts(models);
     if models.is_empty() {
         return Ok(());
     }
@@ -427,6 +474,65 @@ pub(crate) fn upsert_models(models: &[ModelInfo]) -> Result<(), pgrx::spi::Error
         )?;
         Ok(())
     })
+}
+
+/// Drop embed rows whose `target_dim` contradicts another row of the same
+/// space (incoming or already cached). The gateway refuses these; this is
+/// the mixed-fleet backstop.
+fn skip_space_dim_conflicts(models: &[ModelInfo]) -> Vec<ModelInfo> {
+    let mut space_dim: std::collections::BTreeMap<String, (i32, String)> =
+        Spi::connect(|c| {
+            let t = c
+                .select(
+                    "SELECT COALESCE(target_model, name), target_dim, name
+                       FROM postvec.models
+                      WHERE model_type = 'embed' AND target_dim IS NOT NULL AND target_dim > 0",
+                    None,
+                    &[],
+                )
+                .ok()?;
+            Some(
+                t.into_iter()
+                    .filter_map(|r| {
+                        Some((
+                            r.get::<String>(1).ok()??,
+                            (r.get::<i32>(2).ok()??, r.get::<String>(3).ok()??),
+                        ))
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or_default();
+    let mut kept = Vec::with_capacity(models.len());
+    for model in models {
+        if model.model_type != "embed" {
+            kept.push(model.clone());
+            continue;
+        }
+        let Some(dim) = model.target_dim.filter(|d| *d > 0).map(|d| d as i32) else {
+            kept.push(model.clone());
+            continue;
+        };
+        let space = model
+            .target_model
+            .clone()
+            .unwrap_or_else(|| model.name.clone());
+        if let Some((known, other)) = space_dim.get(&space) {
+            if *known != dim && other != &model.name {
+                warning!(
+                    "postvec: skipping embed route {:?} (dim {dim}) because {:?} already \
+                     serves space {space:?} at dim {known}",
+                    model.name,
+                    other
+                );
+                continue;
+            }
+        } else {
+            space_dim.insert(space, (dim, model.name.clone()));
+        }
+        kept.push(model.clone());
+    }
+    kept
 }
 
 /// Remove cache rows for models absent from a complete discovery refresh.
@@ -656,28 +762,62 @@ mod tests {
         assert!(resolve_embed("model-b").is_err());
     }
 
-    /// The public `target_model` key must win over an internal-name match —
-    /// including when a competing model has target_model NULL (a plain
-    /// `ORDER BY bool DESC` is NULLS FIRST and used to rank it above the
-    /// exact match).
+    /// Exact served route wins over another route of the same space.
     #[pg_test]
-    fn embed_resolution_prefers_public_target_model_over_name() {
+    fn embed_resolution_exact_route_beats_space() {
         Spi::run(
             "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
-             VALUES ('alias', 'embed', NULL,    768, '{}'::jsonb),
-                    ('internal-b', 'embed', 'alias', 1024, '{}'::jsonb)",
+             VALUES ('space-a', 'embed', 'space-a', 1024,
+                     '{\"extra\":{\"priority\":1}}'::jsonb),
+                    ('hosted-a', 'embed', 'space-a', 1024,
+                     '{\"extra\":{\"provider\":\"openai\",\"priority\":200}}'::jsonb)",
         )
         .unwrap();
         assert_eq!(
-            resolve_embed("alias").unwrap(),
-            "internal-b",
-            "target_model match outranks a name match with NULL target_model"
+            resolve_embed("hosted-a").unwrap(),
+            "hosted-a",
+            "a column bound to a route name keeps that route"
         );
         assert_eq!(
-            crate::api::registry::resolve_dim("alias"),
-            1024,
-            "the dimension comes from the target_model-matched row"
+            resolve_embed("space-a").unwrap(),
+            "space-a",
+            "a column bound to the space takes the lowest priority"
         );
+    }
+
+    #[pg_test]
+    fn embed_resolution_falls_back_through_space_hint() {
+        Spi::run(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('openrouter-gemini', 'embed', 'gemini-embedding-001', 3072,
+                     '{\"extra\":{\"provider\":\"openrouter\",\"priority\":1}}'::jsonb)",
+        )
+        .unwrap();
+        assert!(resolve_embed("google-gemini").is_err());
+        assert_eq!(
+            resolve_embed_for_entry("google-gemini", Some("gemini-embedding-001")).unwrap(),
+            "openrouter-gemini"
+        );
+    }
+
+    #[pg_test]
+    fn routes_view_marks_one_preferred_per_space() {
+        Spi::run(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('a', 'embed', 's', 8, '{\"extra\":{\"priority\":2}}'::jsonb),
+                    ('b', 'embed', 's', 8, '{\"extra\":{\"priority\":1}}'::jsonb)",
+        )
+        .unwrap();
+        let preferred = Spi::get_one::<String>(
+            "SELECT route FROM postvec.routes WHERE space = 's' AND preferred",
+        )
+        .unwrap();
+        assert_eq!(preferred.as_deref(), Some("b"));
+        let n = Spi::get_one::<i64>(
+            "SELECT count(*) FROM postvec.routes WHERE space = 's' AND preferred",
+        )
+        .unwrap();
+        assert_eq!(n, Some(1));
     }
 
     /// Two-tier embed routing: a hosted embed model resolves Direct; a

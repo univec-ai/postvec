@@ -263,7 +263,12 @@ pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedD
     }
     tx.commit().await?;
     let texts: Vec<_> = jobs.iter().filter_map(|j| j.text.clone()).collect();
-    let outcomes = infer(client, &texts, None, &expected.model, expected.dim).await;
+    let space = if expected.migration.is_some() {
+        None
+    } else {
+        e.space.as_deref()
+    };
+    let outcomes = infer(client, &texts, None, &expected.model, space, expected.dim).await;
     let mut tx = conn.begin().await?;
     guard(&mut tx).await?;
     let fresh = match entry(&mut tx, id, true).await {
@@ -393,13 +398,14 @@ pub(super) async fn infer(
     texts: &[String],
     vectors: Option<&[Vec<f32>]>,
     model: &str,
+    space: Option<&str>,
     dim: i32,
 ) -> Vec<Outcome> {
     let n = vectors.map_or(texts.len(), |v| v.len());
     let route = if vectors.is_some() {
         Ok((model.into(), EmbedRoute::default()))
     } else {
-        client.route(model, postvec_core::client::EmbedPurpose::Document)
+        client.route_for(model, space, postvec_core::client::EmbedPurpose::Document)
     };
     let (model, route) = match route {
         Ok(r) => r,

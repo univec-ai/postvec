@@ -372,6 +372,7 @@ mod tests {
             health: HealthOutcome::Ok { status: 200 },
             config_status: Some(if ok { 200 } else { 500 }),
             config: ok.then(|| ConfigInventory {
+                spaces: false,
                 models: models
                     .iter()
                     .map(|(name, enabled)| InventoryModel {

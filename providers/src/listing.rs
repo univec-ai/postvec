@@ -43,6 +43,10 @@ pub struct ListedModel {
     pub kind: ListedKind,
     /// Stated by the provider; an embed's width, a converter's target width.
     pub dim: u32,
+    /// Vector-space identity this route would join. For UniVec embeds the
+    /// id *is* the space; converters join their target.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
     /// Converters: `(provider_source_id, source_dim)`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<(String, u32)>,
@@ -246,6 +250,7 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
                     id
                 },
                 kind: ListedKind::Embed,
+                space: m.target_model.clone(),
                 source: None,
                 sequence_len: match m.sequence_len {
                     Some(n) if !(1..=MAX_SEQUENCE_LEN).contains(&n) => {
@@ -271,8 +276,9 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
                 )?;
                 ListedModel {
                     dim: width("targetDim", m.target_dim)?,
-                    provider_model_id: target,
+                    provider_model_id: target.clone(),
                     kind: ListedKind::Convert,
+                    space: Some(target),
                     source: Some((source, width("sourceDim", m.source_dim)?)),
                     sequence_len: None,
                     quality: m
@@ -364,6 +370,25 @@ fn decode_univec(models: Vec<PublicModel>) -> Result<Vec<ListedModel>, String> {
             if *source == e.provider_model_id {
                 return Err(format!("{what} maps a space onto itself"));
             }
+        }
+    }
+    let mut space_dim: std::collections::BTreeMap<&str, (&str, u32)> = Default::default();
+    for e in out.iter().filter(|e| e.kind == ListedKind::Embed) {
+        let Some(space) = e.space.as_deref() else {
+            continue;
+        };
+        if let Some((other, dim)) = space_dim.get(space) {
+            if *dim != e.dim {
+                return Err(format!(
+                    "embed {} and embed {} both join space {space} at different dimensions \
+                     ({dim} vs {})",
+                    safe_name(other),
+                    safe_name(&e.provider_model_id),
+                    e.dim
+                ));
+            }
+        } else {
+            space_dim.insert(space, (&e.provider_model_id, e.dim));
         }
     }
     for c in out.iter().filter(|m| m.kind == ListedKind::Convert) {
@@ -477,6 +502,7 @@ mod tests {
                 provider_model_id: "alibaba-nlp-gte-base-en-v1.5".into(),
                 kind: ListedKind::Embed,
                 dim: 768,
+                space: Some("alibaba-nlp-gte-base-en-v1.5".into()),
                 source: None,
                 sequence_len: Some(8192),
                 quality: None,
@@ -711,6 +737,7 @@ mod tests {
             provider_model_id: t.into(),
             kind: ListedKind::Convert,
             dim: td,
+            space: Some(t.into()),
             source: Some((s.into(), sd)),
             sequence_len: None,
             quality: None,
