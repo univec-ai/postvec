@@ -784,11 +784,11 @@ pub fn space_routes(dir: &Path, space: &str) -> Result<Vec<(PathBuf, String, Opt
     Ok(out)
 }
 
-/// The route holding explicit priority 1 in `space`, outside `except`.
-pub fn explicit_first(dir: &Path, space: &str, except: &Path) -> Result<Option<(PathBuf, String)>> {
+/// The route holding explicit priority 1 in `space`.
+pub fn explicit_first(dir: &Path, space: &str) -> Result<Option<(PathBuf, String)>> {
     Ok(space_routes(dir, space)?
         .into_iter()
-        .find(|(path, _, p)| *p == Some(1) && path != except)
+        .find(|(_, _, p)| *p == Some(1))
         .map(|(path, name, _)| (path, name)))
 }
 
@@ -2263,6 +2263,25 @@ mod tests {
         for (path, raw) in paths.iter().zip(before) {
             assert_eq!(std::fs::read(path).unwrap(), raw);
         }
+    }
+
+    #[test]
+    fn explicit_first_sees_priority_1_already_in_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.path().join("openai.toml");
+        std::fs::write(
+            &path,
+            "provider='openai'\napi_key='test'\n\
+             [[models]]\nname='a'\nprovider_model_id='x'\ndim=1536\nspace='s'\npriority=1\n\
+             [[models]]\nname='b'\nprovider_model_id='y'\ndim=1536\nspace='s'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let found = explicit_first(dir.path(), "s").unwrap();
+        assert_eq!(found.as_ref().map(|(_, n)| n.as_str()), Some("a"));
+        assert!(explicit_first(dir.path(), "other").unwrap().is_none());
     }
 
     /// The guarded install takes the destination only in the state preflight

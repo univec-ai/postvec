@@ -4214,4 +4214,41 @@ fn model_prefer_and_set_space_rewrite_provider_files() {
         !file("openrouter").contains("space ="),
         "own name drops the field"
     );
+
+    let out = run(&[
+        "model",
+        "prefer",
+        "openai-text-embedding-3-small",
+        "openai-text-embedding-3-small",
+        "--path",
+        root_arg,
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = run(&[
+        "provider",
+        "add",
+        "openai",
+        "--model",
+        "text-embedding-ada-002",
+        "--dim",
+        "1536",
+        "--space",
+        "openai-text-embedding-3-small",
+        "--prefer",
+        "--api-key-file",
+        key_arg,
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_ne!(code(&out), 0);
+    assert!(
+        stderr(&out).contains("already has priority 1"),
+        "{}",
+        stderr(&out)
+    );
 }

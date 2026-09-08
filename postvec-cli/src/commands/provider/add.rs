@@ -328,9 +328,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         // Priority 1 must stay unique in the space: a tie would fall back
         // to route-name order, which is not what "prefer" says.
         for model in new_models.iter().filter(|m| m.convert.is_none()) {
-            if let Some((file, other)) =
-                super::explicit_first(target.dir(), &model.space, &file_path)?
-            {
+            if let Some((file, other)) = super::explicit_first(target.dir(), &model.space)? {
                 return Err(CliError::precondition(format!(
                     "{other} in {} already has priority 1 in space {:?}",
                     file.display(),
