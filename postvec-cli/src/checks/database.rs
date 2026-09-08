@@ -933,6 +933,7 @@ mod tests {
             source_column: "body".into(),
             vector_column: "body_semantic".into(),
             model: "baai-bge-m3".into(),
+            space: None,
             dim: 1024,
             state: if active { "active" } else { "disabled" }.into(),
             pending_jobs: 0,

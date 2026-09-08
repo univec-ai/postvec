@@ -215,13 +215,13 @@ pub(super) fn converter_model(
         max_tokens: None,
         max_batch: None,
         catalogued: true,
+        space: target.clone(),
         convert: Some(ConvertSpec {
             provider_source_id: source.clone(),
             source_model: source,
             target_model: target,
             source_dim,
         }),
-        space: None,
         prefer: false,
     })
 }

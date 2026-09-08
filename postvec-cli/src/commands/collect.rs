@@ -545,7 +545,6 @@ mod tests {
 
     fn inventory(names: &[&str]) -> ConfigInventory {
         ConfigInventory {
-            spaces: false,
             models: names
                 .iter()
                 .map(|name| InventoryModel {
@@ -557,6 +556,8 @@ mod tests {
                     provider_endpoint: None,
                     provider_model_id: None,
                     target_dim: None,
+                    space: None,
+                    priority: None,
                 })
                 .collect(),
         }

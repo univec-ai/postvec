@@ -9,6 +9,7 @@ use std::{io::Read, str::FromStr, time::Duration};
 pub(super) const VERSION: i32 = 1;
 const MARKER: &str = "postvec managed schema";
 const MODELS: &str = include_str!("../../../postvec/sql/managed/models.sql");
+const ROUTES: &str = include_str!("../../../postvec/sql/managed/routes.sql");
 const CONTROL: &str = include_str!("../../../postvec/sql/managed/control.sql");
 const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql");
 const LEXICAL: &str = include_str!("../../../postvec/sql/managed/lexical.sql");
@@ -157,15 +158,15 @@ pub async fn run(command: Command) -> Result<()> {
                 for sql in [MODELS, CONTROL] {
                     tx.execute(sql).await?;
                 }
+            } else {
+                tx.execute("ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text")
+                    .await?;
             }
-            for sql in [TRIGGERS, LEXICAL, FUNCTIONS] {
+            for sql in [ROUTES, TRIGGERS, LEXICAL, FUNCTIONS] {
                 tx.execute(sql).await?;
             }
             if !installed {
                 tx.execute("UPDATE postvec.schema_version SET mode = 'managed'")
-                    .await?;
-            } else {
-                tx.execute("ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text")
                     .await?;
             }
             tx.execute(include_str!("../../../postvec/sql/managed/lifecycle.sql"))
@@ -254,7 +255,8 @@ pub async fn run(command: Command) -> Result<()> {
                 .await?;
             }
             tx.execute(
-                "DROP TABLE postvec.lexical_df, postvec.lexical_stats, postvec.migrations, postvec.jobs_dead, postvec.jobs,
+                "DROP FUNCTION postvec._route(text, text); DROP VIEW postvec.routes;
+                DROP TABLE postvec.lexical_df, postvec.lexical_stats, postvec.migrations, postvec.jobs_dead, postvec.jobs,
                 postvec.registry, postvec.worker_heartbeat, postvec.models, postvec.settings,
                 postvec.schema_version RESTRICT",
             )

@@ -63,19 +63,16 @@ pub(crate) fn collect_batch_within_caps(what: &str, inputs: pgrx::Array<'_, &str
 /// fallback is pgvector's 16,000-dimension CEILING (the true supported
 /// maximum): assuming smaller only makes batches larger than the envelope,
 /// so unknown must mean maximally conservative.
-fn cached_target_dim(model_public: &str) -> i32 {
+fn cached_target_dim(model: &str, space: Option<&str>) -> i32 {
     Spi::get_one_with_args::<i32>(
         "SELECT COALESCE(
+            (SELECT dim FROM postvec._route($1, $2)),
             (SELECT target_dim FROM postvec.models
-              WHERE model_type = 'embed' AND (target_model = $1 OR name = $1)
-                AND target_dim IS NOT NULL
-              ORDER BY (target_model = $1) IS TRUE DESC, name LIMIT 1),
-            (SELECT target_dim FROM postvec.models
-              WHERE model_type = 'convert' AND target_model = $1
+              WHERE model_type = 'convert' AND target_model IN ($1, $2)
                 AND target_dim IS NOT NULL
               ORDER BY name LIMIT 1),
             16000)",
-        &[model_public.into()],
+        &[model.into(), space.into()],
     )
     .ok()
     .flatten()
@@ -98,14 +95,15 @@ fn cached_target_dim(model_public: &str) -> i32 {
 pub(crate) fn embed_texts(
     texts: &[String],
     model_public: &str,
+    space: Option<&str>,
     purpose: EmbedPurpose,
 ) -> Result<Vec<Vec<f32>>, PvError> {
-    let (model, route) = resolve_embed_route(model_public)?.into_call();
+    let (model, route) = resolve_embed_route_for(model_public, space)?.into_call();
     let route = route.with_purpose(purpose);
     let timeout = query_timeout_ms();
     let client = GrpcClient::from_gucs(timeout);
     let overall = client.overall_timeout_ms();
-    let dim = cached_target_dim(model_public);
+    let dim = cached_target_dim(model_public, space);
     // Cap the TOTAL accumulated output (the caller receives every sub-batch's
     // vectors at once): items x dim x ~16 bytes per f32-with-Vec-overhead
     // must fit the output budget, or the call is refused up front.
@@ -148,32 +146,42 @@ fn spi_opt_string(
     }
 }
 
-const LOOKUP_EMBED: &str = "SELECT name FROM postvec.models
-          WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
-          ORDER BY (name = $1) DESC,
-                   COALESCE((raw->'extra'->>'priority')::int,
-                            CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
-                   name
-          LIMIT 1";
+/// One served embed route, as `postvec._route()` picks it.
+pub(crate) struct Route {
+    pub name: String,
+    pub space: String,
+    pub dim: Option<i32>,
+    pub provider: Option<String>,
+}
 
-fn lookup_embed(model: &str) -> Result<Option<String>, PvError> {
-    spi_opt_string(LOOKUP_EMBED, &[model.into()])
+/// The route a bound string resolves to: the exact route named, else the
+/// routes of that space by priority, else those of `space` (the entry's
+/// remembered space, for a route that has since vanished).
+pub(crate) fn lookup_route(model: &str, space: Option<&str>) -> Result<Option<Route>, PvError> {
+    Spi::connect(|c| {
+        let rows = c.select(
+            "SELECT route, space, dim, provider FROM postvec._route($1, $2)",
+            Some(1),
+            &[model.into(), space.into()],
+        )?;
+        rows.into_iter()
+            .next()
+            .map(|r| {
+                Ok(Route {
+                    name: r.get::<String>(1)?.unwrap_or_default(),
+                    space: r.get::<String>(2)?.unwrap_or_default(),
+                    dim: r.get::<i32>(3)?,
+                    provider: r.get::<String>(4)?,
+                })
+            })
+            .transpose()
+    })
+    .map_err(|e: pgrx::spi::Error| PvError::Internal(format!("SPI: {e}")))
 }
 
 /// Space a bound string currently resolves in, if the cache knows one.
 pub(crate) fn cache_space(model: &str) -> Option<String> {
-    spi_opt_string(
-        "SELECT COALESCE(target_model, name) FROM postvec.models
-          WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
-          ORDER BY (name = $1) DESC,
-                   COALESCE((raw->'extra'->>'priority')::int,
-                            CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
-                   name
-          LIMIT 1",
-        &[model.into()],
-    )
-    .ok()
-    .flatten()
+    lookup_route(model, None).ok().flatten().map(|r| r.space)
 }
 
 /// First-tier embed resolution: exact served route, else space by priority.
@@ -185,17 +193,9 @@ pub(crate) fn resolve_embed_for_entry(
     model: &str,
     space_hint: Option<&str>,
 ) -> Result<String, PvError> {
-    if let Some(name) = lookup_embed(model)? {
-        return Ok(name);
-    }
-    if let Some(space) = space_hint {
-        if space != model {
-            if let Some(name) = lookup_embed(space)? {
-                return Ok(name);
-            }
-        }
-    }
-    Err(PvError::UnknownModel(model.to_string()))
+    lookup_route(model, space_hint)?
+        .map(|r| r.name)
+        .ok_or_else(|| PvError::UnknownModel(model.to_string()))
 }
 
 /// How an embed request will be routed.
@@ -480,29 +480,28 @@ pub(crate) fn upsert_models(models: &[ModelInfo]) -> Result<(), pgrx::spi::Error
 /// space (incoming or already cached). The gateway refuses these; this is
 /// the mixed-fleet backstop.
 fn skip_space_dim_conflicts(models: &[ModelInfo]) -> Vec<ModelInfo> {
-    let mut space_dim: std::collections::BTreeMap<String, (i32, String)> =
-        Spi::connect(|c| {
-            let t = c
-                .select(
-                    "SELECT COALESCE(target_model, name), target_dim, name
+    let mut space_dim: std::collections::BTreeMap<String, (i32, String)> = Spi::connect(|c| {
+        let t = c
+            .select(
+                "SELECT COALESCE(target_model, name), target_dim, name
                        FROM postvec.models
                       WHERE model_type = 'embed' AND target_dim IS NOT NULL AND target_dim > 0",
-                    None,
-                    &[],
-                )
-                .ok()?;
-            Some(
-                t.into_iter()
-                    .filter_map(|r| {
-                        Some((
-                            r.get::<String>(1).ok()??,
-                            (r.get::<i32>(2).ok()??, r.get::<String>(3).ok()??),
-                        ))
-                    })
-                    .collect(),
+                None,
+                &[],
             )
-        })
-        .unwrap_or_default();
+            .ok()?;
+        Some(
+            t.into_iter()
+                .filter_map(|r| {
+                    Some((
+                        r.get::<String>(1).ok()??,
+                        (r.get::<i32>(2).ok()??, r.get::<String>(3).ok()??),
+                    ))
+                })
+                .collect(),
+        )
+    })
+    .unwrap_or_default();
     let mut kept = Vec::with_capacity(models.len());
     for model in models {
         if model.model_type != "embed" {
@@ -580,7 +579,7 @@ fn refresh_models() -> i32 {
 fn embed(input: &str, model: &str) -> Vec<f32> {
     assert_input_within_cap("embed() input", input.len());
     let texts = vec![input.to_string()];
-    let mut vecs = embed_texts(&texts, model, EmbedPurpose::Document)
+    let mut vecs = embed_texts(&texts, model, None, EmbedPurpose::Document)
         .unwrap_or_else(|e| error!("postvec: embed: {e}"));
     if vecs.len() != 1 {
         error!("postvec: embed: expected 1 embedding, got {}", vecs.len());
@@ -602,7 +601,7 @@ fn embed_set<'a>(
         );
     }
     let inputs = collect_batch_within_caps("embed() input", inputs);
-    let vecs = embed_texts(&inputs, model, EmbedPurpose::Document)
+    let vecs = embed_texts(&inputs, model, None, EmbedPurpose::Document)
         .unwrap_or_else(|e| error!("postvec: embed: {e}"));
     // Same contract as the scalar overload: the response must be row-parallel
     // to the input, or the caller silently loses/mismatches rows.
@@ -798,6 +797,26 @@ mod tests {
             resolve_embed_for_entry("google-gemini", Some("gemini-embedding-001")).unwrap(),
             "openrouter-gemini"
         );
+    }
+
+    /// A mixed fleet may still present two routes of one space at
+    /// different widths; the refresh keeps the first and warns.
+    #[pg_test]
+    fn refresh_skips_a_route_contradicting_its_space_dim() {
+        let body = r#"{ "success": true, "data": { "models": [
+            { "name": "wide", "status": "local",
+              "configuration": { "enabled": true, "params": {
+                "model_type": "embed", "target_model": "s", "target_dim": 1024 } } },
+            { "name": "narrow", "status": "provider", "provider": "openai",
+              "configuration": { "enabled": true, "params": {
+                "model_type": "embed", "target_model": "s", "target_dim": 768 } } }
+          ] } }"#;
+        upsert_models(&discovery::parse_config(body).unwrap()).unwrap();
+        let names = Spi::get_one::<Vec<String>>(
+            "SELECT array_agg(route ORDER BY route) FROM postvec.routes WHERE space = 's'",
+        )
+        .unwrap();
+        assert_eq!(names, Some(vec!["wide".to_string()]));
     }
 
     #[pg_test]

@@ -92,10 +92,19 @@ pub type DescriptorIndex = BTreeMap<String, Vec<PathBuf>>;
 pub fn reserved_local_names(
     root: &Path,
     engine: &engine::InferenceEngine,
-) -> Result<std::collections::BTreeSet<String>, String> {
-    let mut names: std::collections::BTreeSet<String> =
-        engine.get_active_models().into_iter().collect();
-    names.extend(descriptor_index(root)?.into_keys());
+) -> Result<BTreeMap<String, Option<u32>>, String> {
+    let mut names: BTreeMap<String, Option<u32>> = descriptor_index(root)?
+        .into_keys()
+        .map(|n| (n, None))
+        .collect();
+    for name in engine.get_active_models() {
+        let dim = engine
+            .get_model(&name)
+            .ok()
+            .and_then(|m| m.configuration().params.get("target_dim")?.as_u64())
+            .map(|d| d as u32);
+        names.insert(name, dim);
+    }
     Ok(names)
 }
 

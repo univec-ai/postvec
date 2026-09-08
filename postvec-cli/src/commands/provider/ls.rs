@@ -15,6 +15,12 @@ struct LsModel {
     provider_model_id: String,
     /// An embed model's width; a converter's TARGET width.
     dim: Option<i64>,
+    /// Embed entries: the vector space served, and the explicit routing
+    /// priority when one is set (absent means the default order).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    space: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<u32>,
     /// `kind = "convert"` entries: the route in the resolver's vocabulary,
     /// `source_model[source_dim] -> target_model[dim]`. Absent for embeds.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,7 +59,6 @@ struct LsDocument {
 }
 
 pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exit> {
-    output.note("`provider ls` is an alias of `model ls --provider`; prefer that");
     if args.available {
         return run_available(cli, &args, output).await;
     }
@@ -120,6 +125,9 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                                     d.dim
                                 )
                             });
+                        let embed = typed
+                            .get(&name)
+                            .filter(|d| d.kind == providers::config::ModelKind::Embed);
                         LsModel {
                             // A parked or refused file is not expected to be
                             // served, so do not invite a reload that would
@@ -127,6 +135,8 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
                             served: (enabled && refused.is_none())
                                 .then(|| served.as_ref().map(|set| set.contains(&name)))
                                 .flatten(),
+                            space: embed.map(|d| d.space_name().to_string()),
+                            priority: embed.and_then(|d| d.priority),
                             name,
                             provider_model_id: id,
                             dim,
@@ -187,11 +197,19 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
             let shape = match &model.converts {
                 Some(route) => format!("converts {route}"),
                 None => format!(
-                    "dim {:<6}",
+                    "dim {:<6}{}{}",
                     model
                         .dim
                         .map(|d| d.to_string())
-                        .unwrap_or_else(|| "?".to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    match &model.space {
+                        Some(space) if *space != model.name => format!(" space {space}"),
+                        _ => String::new(),
+                    },
+                    match model.priority {
+                        Some(p) => format!(" priority {p}"),
+                        None => String::new(),
+                    }
                 ),
             };
             output.progress(&format!(

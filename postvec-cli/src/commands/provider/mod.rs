@@ -755,6 +755,31 @@ impl ProviderFileDoc {
     }
 }
 
+/// Embed routes of `space` across the directory: `(file, name, explicit
+/// priority)`, in file order. `--space`-less entries serve their own name.
+pub fn space_routes(dir: &Path, space: &str) -> Result<Vec<(PathBuf, String, Option<u32>)>> {
+    let mut out = Vec::new();
+    for path in ls::provider_files(dir).map_err(CliError::precondition)? {
+        let Some(doc) = ProviderFileDoc::load(&path)? else {
+            continue;
+        };
+        for d in doc.descriptors() {
+            if d.kind == providers::config::ModelKind::Embed && d.space_name() == space {
+                out.push((path.clone(), d.name, d.priority));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The route holding explicit priority 1 in `space`, outside `except`.
+pub fn explicit_first(dir: &Path, space: &str, except: &Path) -> Result<Option<(PathBuf, String)>> {
+    Ok(space_routes(dir, space)?
+        .into_iter()
+        .find(|(path, _, p)| *p == Some(1) && path != except)
+        .map(|(path, name, _)| (path, name)))
+}
+
 /// One field change on a named `[[models]]` entry.
 pub enum EntryEdit {
     Set {
@@ -2036,15 +2061,29 @@ pub async fn refresh_databases(target: &mut ProviderTarget, journal: &mut ApplyJ
 
 // ---- The privacy / in-use scan -------------------------------------------
 
-/// Every managed column bound to one of `names`, across every configured
-/// database, excluding names the running host already serves as a **local**
-/// embed model (local wins the collision, so nothing changes for those).
-/// A database that cannot be inspected is reported as unknown, never as
-/// clean; an unreachable host is treated as "no local model wins" — the
-/// conservative direction for a privacy gate.
+/// What a column scan asks about a set of routes.
+#[derive(Clone, Copy)]
+pub enum Scan {
+    /// Routes that start serving: `(route, space)` pairs. A column is
+    /// affected when it is bound to the route by name, or bound in its space
+    /// and the route becomes its preferred one — because nothing serves the
+    /// space yet, or because `prefer` puts it first.
+    Gains { prefer: bool },
+    /// Routes that stop serving. A column is affected when the route in use
+    /// is one of them and no other served route remains in its space.
+    Loses,
+}
+
+/// Every managed column whose embedding route `scan` changes, across every
+/// configured database. `routes` are `(name, space)` pairs; a `Loses` scan
+/// needs only the names. Resolution follows `postvec._route()` over what
+/// the running host serves; an unreachable host is read as "nothing served"
+/// and an uninspectable database is reported as unknown, never as clean —
+/// the conservative direction for a privacy gate.
 pub async fn columns_bound_to(
     target: &mut ProviderTarget,
-    names: &[String],
+    routes: &[(String, String)],
+    scan: Scan,
     timeout: std::time::Duration,
 ) -> (Vec<crate::plan::InUseColumn>, Vec<String>) {
     let ProviderTarget::Embedded {
@@ -2059,60 +2098,74 @@ pub async fn columns_bound_to(
         return (Vec::new(), databases);
     };
 
-    // What the running host serves from its own engine right now: an enabled
-    // LOCAL embed model under a colliding name keeps that name local,
-    // so its columns are not affected either way.
-    //
-    // `m.provider.is_none()` is load-bearing. `/config` carries provider
-    // descriptors in the same list, so without it a name already served by
-    // some *other* provider file would count as "local wins" and its columns
-    // would be dropped from the privacy warning — for a change that does
-    // move their text, from one provider to another.
-    let locally_served: std::collections::BTreeSet<String> =
+    // Served embed routes as `(name, space, priority)`, `/config` order.
+    let served: Vec<(String, String, u32)> =
         match crate::commands::model::admin::loaded_inventory(&listen, timeout).await {
             Some(inventory) => inventory
                 .models
                 .iter()
-                .filter(|m| {
-                    m.enabled && m.model_type.as_deref() == Some("embed") && m.provider.is_none()
+                .filter(|m| m.enabled && m.model_type.as_deref() == Some("embed"))
+                .map(|m| {
+                    let space = m.space.clone().unwrap_or_else(|| m.name.clone());
+                    let priority =
+                        m.priority
+                            .unwrap_or(if m.provider.is_none() { 100 } else { 200 });
+                    (m.name.clone(), space, priority)
                 })
-                .map(|m| m.name.clone())
                 .collect(),
-            None => Default::default(),
+            None => Vec::new(),
         };
+    let names: Vec<&str> = routes.iter().map(|(n, _)| n.as_str()).collect();
+    let preferred = |space: &str, except: &[&str]| -> Option<&str> {
+        served
+            .iter()
+            .filter(|(n, s, _)| s == space && !except.contains(&n.as_str()))
+            .min_by_key(|(n, _, p)| (*p, n.clone()))
+            .map(|(n, _, _)| n.as_str())
+    };
 
     let mut columns = Vec::new();
     let mut unknown = Vec::new();
     for database in databases {
         let facts = match context.db.inspect_database(&database).await {
-            Ok(facts) => facts,
-            Err(_) => {
+            Ok(facts) if facts.unreachable.is_none() => facts,
+            _ => {
                 unknown.push(database);
                 continue;
             }
         };
-        if facts.unreachable.is_some() {
-            unknown.push(database);
-            continue;
-        }
         if !facts.exists || facts.postvec.is_none() {
             continue;
         }
         for entry in &facts.registry {
-            let Some(name) = names.iter().find(|name| **name == entry.model) else {
-                continue;
+            let space = entry.space.as_deref().unwrap_or(&entry.model);
+            let by_name = served.iter().any(|(n, _, _)| *n == entry.model);
+            let current = if by_name {
+                Some(entry.model.as_str())
+            } else {
+                preferred(space, &[])
             };
-            if locally_served.contains(name) {
-                continue;
+            let hit = match scan {
+                Scan::Gains { prefer } => routes.iter().find(|(name, s)| {
+                    (*name == entry.model && current != Some(name.as_str()))
+                        || (s == space
+                            && current != Some(name.as_str())
+                            && (current.is_none() || (prefer && !by_name)))
+                }),
+                Scan::Loses => current
+                    .filter(|c| names.contains(c) && preferred(space, &names).is_none())
+                    .and_then(|c| routes.iter().find(|(n, _)| n == c)),
+            };
+            if let Some((name, _)) = hit {
+                columns.push(crate::plan::InUseColumn {
+                    model: name.clone(),
+                    declared_model: entry.model.clone(),
+                    database: database.clone(),
+                    relation: entry.relation.clone(),
+                    column: entry.source_column.clone(),
+                    state: entry.state.clone(),
+                });
             }
-            columns.push(crate::plan::InUseColumn {
-                model: name.clone(),
-                declared_model: entry.model.clone(),
-                database: database.clone(),
-                relation: entry.relation.clone(),
-                column: entry.source_column.clone(),
-                state: entry.state.clone(),
-            });
         }
     }
     (columns, unknown)

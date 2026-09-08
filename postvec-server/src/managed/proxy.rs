@@ -368,7 +368,7 @@ impl Proxy {
             }
         };
         let client = self.client.read().await;
-        let (name, route) = client.route(&model, purpose)?;
+        let (name, route) = client.route(&model, None, purpose)?;
         let mut rows = client
             .predict(&[text.to_string()], None, &name, &route)
             .await?;

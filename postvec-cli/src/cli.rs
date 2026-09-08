@@ -551,18 +551,6 @@ pub struct ModelLsArgs {
     #[arg(long)]
     pub available: bool,
 
-    /// Filter to this space or route name.
-    #[arg(value_name = "SPACE|ROUTE")]
-    pub filter: Option<String>,
-
-    /// Local engine routes only.
-    #[arg(long)]
-    pub local: bool,
-
-    /// Provider routes only. Optional connector type.
-    #[arg(long, value_name = "TYPE", num_args = 0..=1, default_missing_value = "")]
-    pub provider: Option<String>,
-
     /// Inspect this engine root instead of the selected cluster's.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
     /// then /opt/postvec when no cluster exists.
@@ -579,14 +567,20 @@ pub struct ModelPreferArgs {
     /// Space whose routes to order.
     #[arg(value_name = "SPACE")]
     pub space: String,
-    /// Routes in preferred order (priority 1, 2, ...). Omit with --default.
+    /// Provider routes in preferred order (priority 1, 2, ...). Every other
+    /// provider route of the space returns to the default order behind the
+    /// local model. Omit with --default.
     #[arg(value_name = "ROUTE")]
     pub routes: Vec<String>,
     /// Remove every explicit priority in the space.
     #[arg(long)]
     pub default: bool,
+    /// providers.d directory to edit (default: the selected cluster's).
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
+    /// Accept that the listed columns change where their text is embedded.
+    #[arg(long)]
+    pub acknowledge_in_use: bool,
     #[arg(long)]
     pub yes: bool,
     #[arg(long)]
@@ -595,12 +589,18 @@ pub struct ModelPreferArgs {
 
 #[derive(Debug, Args, Clone)]
 pub struct ModelSetSpaceArgs {
+    /// A provider route (a `[[models]]` entry name).
     #[arg(value_name = "ROUTE")]
     pub route: String,
+    /// The space it serves; naming the route itself makes it its own space.
     #[arg(value_name = "SPACE")]
     pub space: String,
+    /// providers.d directory to edit (default: the selected cluster's).
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
+    /// Accept that the listed columns lose or change their route.
+    #[arg(long)]
+    pub acknowledge_in_use: bool,
     #[arg(long)]
     pub yes: bool,
     #[arg(long)]

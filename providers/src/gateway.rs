@@ -238,24 +238,29 @@ impl Inner {
                 space_dim.insert(name.clone(), (*dim, name.clone()));
             }
         }
-        let mut skipped: BTreeSet<(String, String)> = BTreeSet::new();
+        // Names are unique across accepted files (`load_dir` refuses
+        // contested ones), so a skipped route is keyed by name alone.
+        let mut skipped: BTreeSet<String> = BTreeSet::new();
         for provider in &accepted {
-            for model in &provider.models {
-                if model.kind != ModelKind::Embed {
-                    continue;
-                }
+            for model in provider
+                .models
+                .iter()
+                .filter(|m| m.kind == ModelKind::Embed)
+            {
                 let space = model.space_name();
-                if let Some((dim, other)) = space_dim.get(space) {
-                    if *dim != model.dim {
+                match space_dim.get(space) {
+                    Some((dim, other)) if *dim != model.dim => {
                         errors.push(format!(
                             "provider {:?}: model {:?} (dim {}) disagrees with {:?} (dim {dim}) \
                              on space {space:?}; not serving {:?}",
                             provider.name, model.name, model.dim, other, model.name
                         ));
-                        skipped.insert((provider.name.clone(), model.name.clone()));
+                        skipped.insert(model.name.clone());
                     }
-                } else {
-                    space_dim.insert(space.to_string(), (model.dim, model.name.clone()));
+                    Some(_) => {}
+                    None => {
+                        space_dim.insert(space.to_string(), (model.dim, model.name.clone()));
+                    }
                 }
             }
         }
@@ -273,10 +278,11 @@ impl Inner {
             });
         }
         for provider in &accepted {
-            for model in &provider.models {
-                if skipped.contains(&(provider.name.clone(), model.name.clone())) {
-                    continue;
-                }
+            for model in provider
+                .models
+                .iter()
+                .filter(|m| !skipped.contains(&m.name))
+            {
                 route_inputs.push(RouteInput {
                     name: &model.name,
                     space: model.space_name(),
@@ -344,10 +350,11 @@ impl Inner {
             );
 
             let mut entries = Vec::with_capacity(provider.models.len());
-            for model in &provider.models {
-                if skipped.contains(&(provider.name.clone(), model.name.clone())) {
-                    continue;
-                }
+            for model in provider
+                .models
+                .iter()
+                .filter(|m| !skipped.contains(&m.name))
+            {
                 let backends = match model.kind {
                     ModelKind::Embed => {
                         let build = |input_type: &str| {
@@ -469,17 +476,13 @@ impl Gateway {
         }
     }
 
-    /// Local engine names as the load/reload reservation map (unknown dims).
-    pub fn reserve(
-        names: impl IntoIterator<Item = impl Into<String>>,
-    ) -> BTreeMap<String, Option<u32>> {
-        names.into_iter().map(|n| (n.into(), None)).collect()
-    }
-
     /// Load a providers.d directory. Failures — structural or per-file —
     /// are logged and isolated; the returned gateway always exists and
     /// serves whatever loaded (possibly nothing). A missing directory is
-    /// the ordinary zero-config case and logs nothing.
+    /// the ordinary zero-config case and logs nothing. `local_models` maps
+    /// every local engine name to its dimension when the host knows it
+    /// (loaded models); a provider route claiming that space at another
+    /// width is not served.
     pub fn load(dir: &Path, local_models: &BTreeMap<String, Option<u32>>) -> Self {
         let gateway = Gateway::empty();
         match gateway.reload(dir, local_models) {

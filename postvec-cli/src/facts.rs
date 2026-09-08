@@ -300,6 +300,9 @@ pub struct RegistryEntryFacts {
     pub source_column: String,
     pub vector_column: String,
     pub model: String,
+    /// The vector space `model` resolves in, once the worker has seen it.
+    #[serde(default)]
+    pub space: Option<String>,
     pub dim: i32,
     pub state: String,
     pub pending_jobs: i64,
@@ -423,15 +426,18 @@ pub struct InventoryModel {
     pub provider_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_dim: Option<u32>,
+    /// Embed routes: the vector space served (`target_model`), and the
+    /// effective routing priority the host advertises (lower wins).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<u32>,
 }
 
 /// A parsed inference-host `/config` envelope.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigInventory {
     pub models: Vec<InventoryModel>,
-    /// Host advertises space/priority on `/config` (this feature).
-    #[serde(default)]
-    pub spaces: bool,
 }
 
 impl ConfigInventory {
@@ -848,7 +854,6 @@ mod tests {
     #[test]
     fn inventory_reports_enabled_models_only() {
         let inv = ConfigInventory {
-            spaces: false,
             models: vec![
                 InventoryModel {
                     name: "a".into(),
@@ -859,6 +864,8 @@ mod tests {
                     provider_endpoint: None,
                     provider_model_id: None,
                     target_dim: None,
+                    space: None,
+                    priority: None,
                 },
                 InventoryModel {
                     name: "b".into(),
@@ -869,6 +876,8 @@ mod tests {
                     provider_endpoint: None,
                     provider_model_id: None,
                     target_dim: None,
+                    space: None,
+                    priority: None,
                 },
             ],
         };
@@ -932,7 +941,6 @@ mod tests {
                     health: HealthOutcome::Ok { status: 200 },
                     config_status: Some(200),
                     config: Some(ConfigInventory {
-                        spaces: false,
                         models: vec![InventoryModel {
                             name: "m".into(),
                             enabled: true,
@@ -942,6 +950,8 @@ mod tests {
                             provider_endpoint: None,
                             provider_model_id: None,
                             target_dim: None,
+                            space: None,
+                            priority: None,
                         }],
                     }),
                     error: None,
@@ -953,7 +963,6 @@ mod tests {
                     health: HealthOutcome::Ok { status: 200 },
                     config_status: Some(200),
                     config: Some(ConfigInventory {
-                        spaces: false,
                         models: vec![InventoryModel {
                             name: "m".into(),
                             enabled: true,
@@ -963,6 +972,8 @@ mod tests {
                             provider_endpoint: None,
                             provider_model_id: None,
                             target_dim: None,
+                            space: None,
+                            priority: None,
                         }],
                     }),
                     error: None,

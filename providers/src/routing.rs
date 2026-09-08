@@ -28,11 +28,8 @@ pub struct Effective {
 /// Converters are ignored — `resolve_convert` keeps its own order.
 pub fn effective_priorities(routes: &[RouteInput<'_>]) -> Vec<Effective> {
     let mut out = Vec::new();
-    let mut unprioritised: Vec<(usize, &RouteInput<'_>)> = Vec::new();
-    for (i, route) in routes.iter().enumerate() {
-        if route.kind != ModelKind::Embed {
-            continue;
-        }
+    let mut unprioritised: Vec<&RouteInput<'_>> = Vec::new();
+    for route in routes.iter().filter(|r| r.kind == ModelKind::Embed) {
         if route.local {
             out.push(Effective {
                 name: route.name.to_string(),
@@ -48,18 +45,17 @@ pub fn effective_priorities(routes: &[RouteInput<'_>]) -> Vec<Effective> {
                 explicit: true,
             });
         } else {
-            unprioritised.push((i, route));
+            unprioritised.push(route);
         }
     }
-    unprioritised.sort_by(|(_, a), (_, b)| {
+    unprioritised.sort_by(|a, b| {
         added_ord(a.added)
             .cmp(&added_ord(b.added))
             .then_with(|| a.file_stem.cmp(b.file_stem))
             .then_with(|| a.name.cmp(b.name))
-            .then_with(|| a.space.cmp(b.space))
     });
     let mut rank_in_space: std::collections::BTreeMap<&str, u32> = Default::default();
-    for (_, route) in unprioritised {
+    for route in unprioritised {
         let rank = rank_in_space.entry(route.space).or_insert(0);
         out.push(Effective {
             name: route.name.to_string(),

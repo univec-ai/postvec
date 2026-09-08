@@ -111,14 +111,23 @@ impl Client {
         }
         Ok(())
     }
+    /// Same order as `postvec._route()`: the exact route, else the space's
+    /// routes by priority, else the entry's remembered `space`; then the
+    /// embed-bridge tier through a local converter into that space.
     pub fn route(
         &self,
         name: &str,
+        space: Option<&str>,
         purpose: EmbedPurpose,
     ) -> Result<(String, EmbedRoute), PvError> {
-        if let Some(m) = self.pick_embed(name) {
+        let space = space.filter(|s| *s != name);
+        if let Some(m) = self
+            .pick_embed(name)
+            .or_else(|| space.and_then(|s| self.pick_embed(s)))
+        {
             return Ok((m.name.clone(), EmbedRoute::default().with_purpose(purpose)));
         }
+        let name = space.unwrap_or(name);
         for (_, models) in &self.nodes {
             for c in models.iter().filter(|m| {
                 m.model_type == "convert"
@@ -147,21 +156,6 @@ impl Client {
             }
         }
         Err(PvError::UnknownModel(name.into()))
-    }
-
-    pub fn route_for(
-        &self,
-        name: &str,
-        space: Option<&str>,
-        purpose: EmbedPurpose,
-    ) -> Result<(String, EmbedRoute), PvError> {
-        match self.route(name, purpose) {
-            Ok(r) => Ok(r),
-            Err(PvError::UnknownModel(_)) if space.is_some_and(|s| s != name) => {
-                self.route(space.unwrap(), purpose)
-            }
-            other => other,
-        }
     }
 
     fn pick_embed(&self, name: &str) -> Option<&ModelInfo> {

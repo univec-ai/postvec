@@ -127,7 +127,7 @@ No `--drop-destinations`. See [uninstall](/docs/install/uninstall).
 See [pull / upgrade / rm](/docs/models/pull) and [login](/docs/models/login).
 
 ```
-model ls [SPACE|ROUTE] [--local] [--provider [TYPE]] [--available] [--path DIR]
+model ls [--available] [--path DIR]
 model show NAME [--verify] [--path DIR]
 model pull NAME... [--path DIR] [--api-key-file FILE]
             [--accept-license ID@VERSION] [--dry-run] [--yes]
@@ -137,8 +137,9 @@ model rm NAME... [--path DIR] [--force] [--acknowledge-in-use]
 model activate [NAME...|--all] [--path DIR] [--dry-run] [--yes]
 model deactivate NAME... [--path DIR] [--force] [--acknowledge-in-use]
             [--dry-run] [--yes]
-model prefer SPACE ROUTE... [--default] [--path DIR] [--dry-run] [--yes]
-model set-space ROUTE SPACE [--path DIR] [--dry-run] [--yes]
+model prefer SPACE ROUTE... [--default] [--path DIR] [--acknowledge-in-use]
+            [--dry-run] [--yes]
+model set-space ROUTE SPACE [--path DIR] [--acknowledge-in-use] [--dry-run] [--yes]
 ```
 
 `POSTVEC_PATH` has the same meaning as `--path`. Container images set it,
@@ -148,7 +149,12 @@ so `docker exec <ctr> postvec model ...` needs no extra flags.
 that change serving state, and both persist across a PostgreSQL restart.
 `--acknowledge-in-use` is required (with `--yes`) when managed columns would
 lose their embedding route, directly or through a local `embed-bridge` route
-the model is part of; `--yes` and `--force` never stand in for it.
+the model is part of; `--yes` and `--force` never stand in for it. `prefer`
+and `set-space` ask for the same flag when columns change where their text
+is embedded: `prefer` lists provider routes only (a local model is always
+priority 100), warns about and skips a route no file declares, and with
+`--default` drops every explicit priority in the space; `set-space` refuses
+a space served at another dimension and refuses local routes.
 
 ## `provider`
 
@@ -163,7 +169,7 @@ provider add TYPE --model ID... [--name STEM] [--path DIR]
 provider add univec [--model ID...] [--convert SRC:DST...] [--convert-to MODEL...]
             [--convert-from MODEL...] [--all-converters] [--converter-name NAME]
             [--api-key-from-login] [--no-catalog] [common add options]
-provider ls [--path DIR]   # alias of `model ls --provider`; deprecated
+provider ls [--path DIR]
 provider ls --available [PROVIDER] [--kind embed|convert] [--to MODEL]
             [--from MODEL] [--path DIR]
 provider test NAME [--model ID] [--path DIR]

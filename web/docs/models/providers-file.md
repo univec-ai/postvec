@@ -252,8 +252,11 @@ Any other id works too. The probe measures the dimension, or `--dim`
 states it. OpenRouter ids are namespaced, so
 `--model openai/text-embedding-3-large` becomes route
 `openrouter-openai-text-embedding-3-large` in space
-`openai-text-embedding-3-large`. Two embed entries in one file that
-claim the same space at different dimensions refuse the file.
+`openai-text-embedding-3-large`. A space has one width: two embed
+entries in one file that disagree refuse the file; an entry that
+disagrees with another file or with a loaded local model is skipped
+at load time (the rest of its file serves), and the cache refresh
+skips a contradicting row with a WARNING.
 
 UniVec ids are not in the CLI's built-in catalogue. `provider add univec`
 measures an embed model's dimension. For example, `--model baai-bge-m3`

@@ -11,6 +11,12 @@ use pgrx::{extension_sql, extension_sql_file};
 extension_sql_file!("../sql/managed/models.sql", name = "postvec_models_table");
 
 extension_sql_file!(
+    "../sql/managed/routes.sql",
+    name = "postvec_routes",
+    requires = ["postvec_models_table"]
+);
+
+extension_sql_file!(
     "../sql/managed/control.sql",
     name = "postvec_control_tables",
     requires = ["postvec_models_table"]

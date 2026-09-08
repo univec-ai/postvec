@@ -847,9 +847,8 @@ fn worker_wake(state: &mut WorkerState<'_>) -> WakeOutcome {
             // `claimed_any` keeps crash recovery working: stale claims are
             // reclaimed by the claim path's probe even with nothing due.
             let refreshed = summary.refresh_due && chunk::step(&mut state.counters);
-            let claimed =
-                (summary.embed_due || summary.claimed_any)
-                    && run_one_cycle(&mut state.counters, &mut state.last_route);
+            let claimed = (summary.embed_due || summary.claimed_any)
+                && run_one_cycle(&mut state.counters, &mut state.last_route);
             let migrated = summary.migration_due && migrate::drain_step(&mut state.counters);
             let enqueued = if summary.cursor_any {
                 backfill::step()
@@ -1174,6 +1173,53 @@ fn tcp_reachable(addr: &str) -> bool {
     std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
+/// Log once when an entry starts embedding through a different route than
+/// last time, and keep `registry.space` in step with the route in use.
+fn note_route(
+    last: &mut std::collections::HashMap<i64, String>,
+    entry: &crate::registry::RegistryEntry,
+    migrating: bool,
+    resolution: &crate::api::embed::EmbedResolution,
+) {
+    use crate::api::embed::EmbedResolution;
+    let route = match resolution {
+        EmbedResolution::Direct(name) => name.clone(),
+        EmbedResolution::Bridge { executor, via, .. } => format!("{executor} via {via}"),
+    };
+    let old = last.insert(entry.id, route.clone());
+    if migrating || old.as_ref() == Some(&route) {
+        return;
+    }
+    let direct = match resolution {
+        EmbedResolution::Direct(name) => Some(name.clone()),
+        _ => None,
+    };
+    let (id, rel, col) = (
+        entry.id,
+        format!("{}.{}", entry.table_schema, entry.table_name),
+        entry.source_column.clone(),
+    );
+    let _ = try_transaction(move || {
+        let provider = direct.and_then(|name| {
+            let _ = Spi::run_with_args(
+                "UPDATE postvec.registry
+                    SET space = (SELECT space FROM postvec._route($1))
+                  WHERE id = $2 AND space IS DISTINCT FROM (SELECT space FROM postvec._route($1))",
+                &[name.as_str().into(), id.into()],
+            );
+            crate::api::registry::external_provider_of(&name)
+        });
+        if let Some(old) = old {
+            let egress = provider
+                .map(|p| format!("; source text of {col:?} now leaves the host for provider {p:?}"))
+                .unwrap_or_default();
+            log!(
+                "postvec: entry {id} ({rel}.{col}) now embeds through {route} (was {old}){egress}"
+            );
+        }
+    });
+}
+
 /// One claim→embed→write-back pass over a single batch. Returns whether any
 /// jobs were claimed (i.e. whether the queue may still hold work).
 fn run_one_cycle(
@@ -1222,52 +1268,17 @@ fn run_one_cycle(
             .collect();
 
         // Resolve public model -> embed call (SPI, own txn). During a
-        // migration the routing carries the NEW model. A model with no embed
-        // model of its own rides an embed-bridge route (convert-only targets).
+        // migration the routing carries the NEW model, so the entry's
+        // remembered space applies only while the two agree. A model with
+        // no embed model of its own rides an embed-bridge route.
         let model = routing.model.clone();
-        let space = entry.space.clone();
+        let migrating = routing.model != entry.model;
+        let space = entry.space.clone().filter(|_| !migrating);
         let resolved = try_transaction(move || {
             crate::api::embed::resolve_embed_route_for(&model, space.as_deref())
         });
-        if let Ok(Ok(ref resolution)) = resolved {
-            let new_route = match resolution {
-                crate::api::embed::EmbedResolution::Direct(name) => name.clone(),
-                crate::api::embed::EmbedResolution::Bridge { executor, .. } => executor.clone(),
-            };
-            if let Some(old) = last_route.get(&entry.id) {
-                if old != &new_route {
-                    pgrx::notice!(
-                        "postvec: entry {} ({}.{}) now embeds through {new_route} (was {old})",
-                        entry.id,
-                        entry.table_schema,
-                        entry.source_column
-                    );
-                    if matches!(resolution, crate::api::embed::EmbedResolution::Direct(_)) {
-                        crate::api::registry::notice_external_provider(
-                            &new_route,
-                            &entry.source_column,
-                        );
-                    }
-                }
-            }
-            last_route.insert(entry.id, new_route.clone());
-            if let crate::api::embed::EmbedResolution::Direct(name) = resolution {
-                let name = name.clone();
-                let id = entry.id;
-                let _ = try_transaction(move || {
-                    Spi::run_with_args(
-                        "UPDATE postvec.registry
-                            SET space = COALESCE(
-                                (SELECT COALESCE(target_model, name) FROM postvec.models
-                                  WHERE name = $1), space)
-                          WHERE id = $2
-                            AND space IS DISTINCT FROM
-                                (SELECT COALESCE(target_model, name) FROM postvec.models
-                                  WHERE name = $1)",
-                        &[name.as_str().into(), id.into()],
-                    )
-                });
-            }
+        if let Ok(Ok(resolution)) = &resolved {
+            note_route(last_route, &entry, migrating, resolution);
         }
 
         // Network phase (no transaction).

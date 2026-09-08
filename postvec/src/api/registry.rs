@@ -151,31 +151,10 @@ pub(crate) fn column_type(oid: pg_sys::Oid, column: &str) -> Option<String> {
 /// embed path (direct or bridged) — the worker has to embed fresh writes into
 /// this column forever after.
 pub(crate) fn resolve_dim(model: &str) -> i32 {
-    let found: Option<(String, Option<i32>)> = Spi::connect(|c| {
-        let t = c
-            .select(
-                "SELECT name, target_dim FROM postvec.models
-                  WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
-                  ORDER BY (name = $1) DESC,
-                           COALESCE((raw->'extra'->>'priority')::int,
-                                    CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
-                           name
-                  LIMIT 1",
-                Some(1),
-                &[model.into()],
-            )
-            .unwrap();
-        t.into_iter().next().map(|r| {
-            (
-                r.get::<String>(1).unwrap().unwrap(),
-                r.get::<i32>(2).unwrap(),
-            )
-        })
-    });
-    match found {
-        Some((_name, Some(d))) if d > 0 => return d,
-        Some(_) => {} // embed model known, dimension missing: probe below
-        None => {
+    match crate::api::embed::lookup_route(model, None) {
+        Ok(Some(crate::api::embed::Route { dim: Some(d), .. })) if d > 0 => return d,
+        Ok(Some(_)) => {} // embed route known, dimension missing: probe below
+        _ => {
             // Not an embed model. Insist on an embed route (bridge) before
             // trusting the converter's target_dim — otherwise the error is
             // the resolver's, which names what's missing.
@@ -201,6 +180,7 @@ pub(crate) fn resolve_dim(model: &str) -> i32 {
     match embed_texts(
         &["dimension probe".to_string()],
         model,
+        None,
         crate::client::EmbedPurpose::Document,
     ) {
         Ok(vecs) if vecs.first().map(|v| v.len()).unwrap_or(0) > 0 => vecs[0].len() as i32,
@@ -2113,23 +2093,13 @@ fn check_not_null_policy(rel: &RelInfo, vec_col: &str, not_null: bool, sync: boo
     }
 }
 
-/// The external provider serving `model`, if any. Discovery stores
-/// HubModel extras under `raw->'extra'`; provider-backed rows carry
-/// `provider` there. Same preference as `resolve_dim`: the public
-/// `target_model` match wins over the internal name.
+/// The external provider serving `model`, if any: the `provider` extra of
+/// the route `postvec._route()` picks for it.
 pub(crate) fn external_provider_of(model: &str) -> Option<String> {
-    Spi::get_one_with_args::<String>(
-        "SELECT raw->'extra'->>'provider' FROM postvec.models
-          WHERE model_type = 'embed' AND (name = $1 OR target_model = $1)
-          ORDER BY (name = $1) DESC,
-                   COALESCE((raw->'extra'->>'priority')::int,
-                            CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
-                   name
-          LIMIT 1",
-        &[model.into()],
-    )
-    .ok()
-    .flatten()
+    crate::api::embed::lookup_route(model, None)
+        .ok()
+        .flatten()
+        .and_then(|r| r.provider)
 }
 
 /// The external provider serving converter `name`, if any — the convert
@@ -2402,7 +2372,8 @@ fn promote_observed_entry(
     // trigger or job. Do not special-case the observed state that was
     // accepted earlier.
     check_not_null_policy(&rel, &prior.vector_column, info.not_null, true, backfill);
-    if let Err(e) = crate::api::embed::resolve_embed_route(&prior.model) {
+    if let Err(e) = crate::api::embed::resolve_embed_route_for(&prior.model, prior.space.as_deref())
+    {
         error!("postvec: {e}; promotion to sync => true requires an embed route");
     }
 
@@ -2517,7 +2488,8 @@ fn set_format(relation: &str, column_name: &str, format: Option<&str>) {
     // The finite refresh writes every row (the worker-write policy): it
     // needs an embed route, and a NOT NULL vector column would abort the
     // NULL-source refresh jobs that clear stale vectors.
-    if let Err(e) = crate::api::embed::resolve_embed_route(&entry.model) {
+    if let Err(e) = crate::api::embed::resolve_embed_route_for(&entry.model, entry.space.as_deref())
+    {
         error!(
             "postvec: {e}; set_format()'s full refresh re-embeds every row and requires an \
              embed route"

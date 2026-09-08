@@ -179,7 +179,6 @@ pub async fn config_envelope(state: &ServerState) -> Value {
             &state.gateway,
         )),
     );
-    data.insert("spaces".to_string(), Value::Bool(true));
     data.insert("server".to_string(), server_object(state));
     data.insert("cluster".to_string(), cluster_object(state).await);
     data.insert("system".to_string(), system_object());

@@ -1360,6 +1360,7 @@ postvec.http_endpoints = 'https://192.0.2.2:22222'
                 source_column: "body".into(),
                 vector_column: "body_semantic".into(),
                 model: "m".into(),
+                space: None,
                 dim: 4,
                 state: "active".into(),
                 pending_jobs: 4,

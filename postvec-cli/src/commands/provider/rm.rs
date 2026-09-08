@@ -7,7 +7,7 @@
 
 use super::{
     columns_bound_to, reload_host, resolve_target, validate_provider_name, ProviderFileDoc,
-    ProviderTarget,
+    ProviderTarget, Scan,
 };
 use crate::cli::{Cli, ProviderRmArgs};
 use crate::error::{CliError, Exit, Result};
@@ -232,13 +232,28 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
 
     let scanned = matches!(target, ProviderTarget::Embedded { .. });
     let (columns, unknown_databases) = if scanned {
-        columns_bound_to(&mut target, &truly_going_away, cli.timeout).await
+        let lost: Vec<(String, String)> = truly_going_away
+            .iter()
+            .map(|n| (n.clone(), String::new()))
+            .collect();
+        columns_bound_to(&mut target, &lost, Scan::Loses, cli.timeout).await
     } else {
         (Vec::new(), Vec::new())
     };
-    let activated_names: Vec<String> = activated.iter().map(|(n, _)| n.clone()).collect();
+    // Space unknown for a handoff (only the name moves files), so the scan
+    // is by bound name alone.
+    let activated_names: Vec<(String, String)> = activated
+        .iter()
+        .map(|(n, _)| (n.clone(), String::new()))
+        .collect();
     let (activated_columns, activated_unknown) = if scanned && !activated_names.is_empty() {
-        columns_bound_to(&mut target, &activated_names, cli.timeout).await
+        columns_bound_to(
+            &mut target,
+            &activated_names,
+            Scan::Gains { prefer: false },
+            cli.timeout,
+        )
+        .await
     } else {
         (Vec::new(), Vec::new())
     };

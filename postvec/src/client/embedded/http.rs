@@ -82,7 +82,7 @@ pub(crate) fn config_envelope(configs: &[ModelConfiguration], gateway: &Gateway)
         }
         models.push(descriptor);
     }
-    json!({ "success": true, "data": { "models": models, "spaces": true } })
+    json!({ "success": true, "data": { "models": models } })
 }
 
 fn engine_envelope(engine: &InferenceEngine, gateway: &Gateway) -> Value {
@@ -644,10 +644,7 @@ pub(super) fn spawn(
                         // snapshot rather than reloading against a narrowed
                         // reservation.
                         let local = crate::client::embedded::reserved_local_names(&root, &engine)?;
-                        gateway.reload(
-                            &path,
-                            &providers::gateway::Gateway::reserve(local),
-                        )
+                        gateway.reload(&path, &local)
                     })
                     .await;
                     match outcome {

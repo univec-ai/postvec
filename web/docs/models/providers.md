@@ -109,18 +109,19 @@ own model.
 
 ## Adding a key can change an existing column
 
-Adding a route never changes where an existing column's text goes. A
-new provider joins at the back of its space until `model prefer` (or
-`provider add --prefer`) says otherwise. Exact route bindings stay on
-that route while it is served.
+A new route joins at the back of its space: a column already served
+there keeps its route until `model prefer` (or `provider add
+--prefer`) puts the new one first. A column bound to a route by name
+stays on it while it is served.
 
-::::: warning Columns already bound to this name
+::::: warning Columns whose route becomes this one
 [Route resolution](/docs/guides/bridge) prefers a direct embed over a
-converter. A column that was bridging into this space starts sending
-source text to the provider on the next worker cycle. `enable()` stays
-as it is.
+converter. A column bound in a space nothing serves directly (one
+bridging through a converter, or bound to the new route's own name)
+starts sending source text to the provider on the next worker cycle.
+`enable()` stays as it is.
 
-`provider add` lists those columns and waits for
+`provider add` and `model prefer` list those columns and wait for
 `--acknowledge-in-use` (or the typed answer). `--yes` confirms the
 write; this acknowledgement is separate.
 :::::
@@ -136,12 +137,13 @@ sudo postvec provider add openrouter --model google/gemini-embedding-001
 sudo postvec model prefer gemini-embedding-001 openrouter-google-gemini-embedding-001
 ```
 
-`status()` shows `space`, `route` and `route_execution`. Nothing is
-re-embedded.
+`status()` shows `space`, `route` and `route_execution`; the worker
+logs one line per column the first time it embeds through the new
+route. Nothing is re-embedded.
 
 A database the command could not inspect is listed as `UNKNOWN`. Columns
-already served by a loaded local model are omitted: the local model
-keeps the name.
+whose route does not change (a local model or an earlier provider route
+stays preferred) are omitted.
 
 ## Adopt existing provider vectors
 

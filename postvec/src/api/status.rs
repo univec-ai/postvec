@@ -106,26 +106,16 @@ fn status() -> TableIterator<
                           FROM postvec.jobs_dead GROUP BY registry_id
                    ) jd ON jd.registry_id = r.id
                    LEFT JOIN LATERAL (
-                        SELECT last_seen,
-                               COALESCE(target_model, name) AS space,
-                               name AS route,
-                               CASE WHEN model_type <> 'embed' THEN 'bridge'
-                                    WHEN raw->'extra'->>'provider' IS NULL THEN 'local'
-                                    ELSE 'provider ' || (raw->'extra'->>'provider')
-                               END AS route_execution
-                          FROM postvec.models
-                         WHERE (model_type = 'embed'
-                                AND (name = r.model OR target_model = r.model
-                                     OR (r.space IS NOT NULL
-                                         AND (name = r.space OR target_model = r.space))))
-                            OR (model_type = 'convert'
-                                AND (target_model = r.model OR target_model = r.space))
-                         ORDER BY (model_type = 'embed') DESC,
-                                  (name = r.model) DESC,
-                                  COALESCE((raw->'extra'->>'priority')::int,
-                                           CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),
-                                  name
-                         LIMIT 1
+                        -- The served embed route, else the converter that
+                        -- targets the entry's space (an embed-bridge entry).
+                        SELECT last_seen, space, route, route_execution FROM (
+                            SELECT 0 AS tier, last_seen, space, route, execution AS route_execution
+                              FROM postvec._route(r.model, r.space)
+                            UNION ALL
+                            SELECT 1, last_seen, target_model, name, 'bridge'
+                              FROM postvec.models
+                             WHERE model_type = 'convert' AND target_model IN (r.model, r.space)
+                        ) x ORDER BY tier, route LIMIT 1
                    ) mm ON true
                    LEFT JOIN (SELECT pid, last_beat FROM postvec.worker_heartbeat LIMIT 1) hb ON true
                   ORDER BY r.id"
@@ -291,6 +281,29 @@ mod tests {
         let backfill =
             Spi::get_one::<String>("SELECT backfill_mode FROM postvec.status()").unwrap();
         assert_eq!(backfill.as_deref(), Some("queue"));
+    }
+
+    /// `space`/`route`/`route_execution` follow `postvec._route()`: the
+    /// route in use, and the entry's remembered space once it is served by
+    /// another route of that space.
+    #[pg_test]
+    fn status_reports_space_and_route() {
+        setup_docs(0);
+        let row = Spi::get_one::<String>(
+            "SELECT space || '|' || route || '|' || route_execution FROM postvec.status()",
+        )
+        .unwrap();
+        assert_eq!(row.as_deref(), Some("m|m|local"));
+        Spi::run(
+            "UPDATE postvec.models SET name = 'hosted-m', target_model = 'm',
+                    raw = '{\"extra\":{\"provider\":\"openai\"}}' WHERE name = 'm'",
+        )
+        .unwrap();
+        let row = Spi::get_one::<String>(
+            "SELECT space || '|' || route || '|' || route_execution FROM postvec.status()",
+        )
+        .unwrap();
+        assert_eq!(row.as_deref(), Some("m|hosted-m|provider openai"));
     }
 
     /// A convert-only model (embed-bridge routed entry) has no embed row in

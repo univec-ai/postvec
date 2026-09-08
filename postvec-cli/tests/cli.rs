@@ -4098,3 +4098,120 @@ mod univec_discovery {
         );
     }
 }
+
+/// `model prefer` / `model set-space` rewrite the `[[models]]` entries of
+/// several files at once and refuse a width disagreement; `provider add`
+/// records the catalogue space and an `added` stamp.
+#[test]
+fn model_prefer_and_set_space_rewrite_provider_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = provider_root();
+    let key = root.path().join("k.key");
+    std::fs::write(&key, "test-key-value\n").unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let root_arg = root.path().to_str().unwrap();
+    let key_arg = key.to_str().unwrap();
+    let add = |provider: &str, model: &str, dim: &str| {
+        let out = run(&[
+            "provider",
+            "add",
+            provider,
+            "--model",
+            model,
+            "--dim",
+            dim,
+            "--api-key-file",
+            key_arg,
+            "--path",
+            root_arg,
+            "--no-verify",
+            "--acknowledge-in-use",
+            "--yes",
+        ]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+    };
+    add("google", "gemini-embedding-001", "3072");
+    add("openrouter", "google/gemini-embedding-001", "3072");
+    add("openai", "text-embedding-3-small", "1536");
+    let file = |stem: &str| {
+        std::fs::read_to_string(root.path().join("providers.d").join(format!("{stem}.toml")))
+            .unwrap()
+    };
+    assert!(file("openrouter").contains("space = \"gemini-embedding-001\""));
+    assert!(file("openrouter").contains("added = \""));
+    assert!(
+        !file("google").contains("space ="),
+        "own space is not written"
+    );
+
+    let space = "gemini-embedding-001";
+    let prefer = |routes: &[&str]| {
+        let mut args = vec!["model", "prefer", space];
+        args.extend(routes);
+        args.extend(["--path", root_arg, "--acknowledge-in-use", "--yes"]);
+        run(&args)
+    };
+    let out = prefer(&["openrouter-google-gemini-embedding-001", "nope"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stderr(&out).contains("unknown route \"nope\""));
+    assert!(file("openrouter").contains("priority = 1"));
+    assert!(!file("google").contains("priority"));
+
+    let out = prefer(&[
+        "gemini-embedding-001",
+        "openrouter-google-gemini-embedding-001",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(file("google").contains("priority = 1"));
+    assert!(file("openrouter").contains("priority = 2"));
+
+    let out = prefer(&["--default"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(!file("google").contains("priority") && !file("openrouter").contains("priority"));
+
+    let out = run(&[
+        "model", "prefer", space, "nope", "--path", root_arg, "--yes",
+    ]);
+    assert_ne!(code(&out), 0, "no known route is an error");
+
+    // A different width is a different model, not a label.
+    let out = run(&[
+        "model",
+        "set-space",
+        "gemini-embedding-001",
+        "openai-text-embedding-3-small",
+        "--path",
+        root_arg,
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_ne!(code(&out), 0);
+    assert!(stderr(&out).contains("dim 1536"), "{}", stderr(&out));
+    let out = run(&[
+        "model",
+        "set-space",
+        "openrouter-google-gemini-embedding-001",
+        "acme-embed",
+        "--path",
+        root_arg,
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(file("openrouter").contains("space = \"acme-embed\""));
+    let out = run(&[
+        "model",
+        "set-space",
+        "openrouter-google-gemini-embedding-001",
+        "openrouter-google-gemini-embedding-001",
+        "--path",
+        root_arg,
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !file("openrouter").contains("space ="),
+        "own name drops the field"
+    );
+}

@@ -36,10 +36,11 @@ served route with the lowest priority. Local models are priority 100.
 Provider routes without an explicit `priority` follow the order they
 were added.
 
-`postvec.routes` lists every embed route. `model prefer` changes the
-order without a migration. `model set-space` edits a mis-declared
-space. Adding a route never changes where an existing column's text
-goes.
+`postvec.routes` lists every embed route; `postvec._route(model, space)`
+is the resolution itself. `model prefer` changes the order without a
+migration. `model set-space` edits a mis-declared space. Adding a route
+changes an existing column only when it becomes that column's preferred
+route: the space had no direct route yet, or `--prefer` puts it first.
 
 ## Direct and bridged embedding
 

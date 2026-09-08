@@ -358,10 +358,9 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // partial reservation is how a provider would steal a local name.
     let gateway = Arc::new(
         match crate::models::reserved_local_names(&settings.root, &engine) {
-            Ok(local_models) => providers::gateway::Gateway::load(
-                &settings.providers_path,
-                &providers::gateway::Gateway::reserve(local_models),
-            ),
+            Ok(local_models) => {
+                providers::gateway::Gateway::load(&settings.providers_path, &local_models)
+            }
             Err(e) => {
                 log::error!(
                     "cannot enumerate local models under {} ({e}); serving no external \

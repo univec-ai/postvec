@@ -38,8 +38,6 @@ struct Envelope {
 struct EnvelopeData {
     #[serde(default)]
     models: Vec<HubModel>,
-    #[serde(default)]
-    spaces: bool,
 }
 
 /// The subset of a hub model the CLI needs, tolerant of everything else.
@@ -59,6 +57,8 @@ struct HubModel {
     provider_endpoint: Option<String>,
     #[serde(default)]
     provider_model_id: Option<String>,
+    #[serde(default)]
+    priority: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -128,6 +128,17 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
         .into_iter()
         .map(|model| InventoryModel {
             enabled: model.configuration.as_ref().is_some_and(|c| c.enabled),
+            space: model
+                .configuration
+                .as_ref()
+                .filter(|_| model.model_type().as_deref() == Some("embed"))
+                .and_then(|c| {
+                    c.params
+                        .target_model
+                        .clone()
+                        .or_else(|| Some(model.name.clone()))
+                }),
+            priority: model.priority,
             model_type: model.model_type(),
             provider: model.provider,
             provider_file: model.provider_file,
@@ -141,10 +152,7 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
         })
         .collect();
     models.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(ConfigInventory {
-        models,
-        spaces: data.spaces,
-    })
+    Ok(ConfigInventory { models })
 }
 
 /// HTTP clients for discovery probes.

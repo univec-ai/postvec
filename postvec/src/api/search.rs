@@ -747,6 +747,7 @@ fn search(
     let qvec = match embed_texts(
         &[query.to_string()],
         &entry.model,
+        entry.space.as_deref(),
         crate::client::EmbedPurpose::Query,
     ) {
         Ok(vecs) => match validate_query_embedding(&entry, vecs) {

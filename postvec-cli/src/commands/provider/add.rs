@@ -20,7 +20,7 @@
 use super::{
     columns_bound_to, read_secret_file, reload_host, require_private_secret_file,
     resolve_doc_secret, resolve_target, univec, validate_provider_name, ProviderFileDoc,
-    ProviderTarget,
+    ProviderTarget, Scan,
 };
 use crate::cli::{Cli, ProviderAddArgs};
 use crate::error::{CliError, Exit, Result};
@@ -289,11 +289,18 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             }
         }
         let catalogue_space = catalog::public_space(&canonical, id);
-        let space = args.space.clone().unwrap_or(catalogue_space.clone());
-        if args.space.is_some() && catalog::lookup(&canonical, id).is_none() {
-            output.note(&format!(
-                "warning: {space:?} is not in the catalogue; the space is your claim"
-            ));
+        let space = args
+            .space
+            .clone()
+            .unwrap_or_else(|| catalogue_space.clone());
+        if args.space.is_some() && space != catalogue_space {
+            output.note(&if catalog::lookup(&canonical, id).is_some() {
+                format!(
+                    "warning: the catalogue puts {id} in space {catalogue_space:?}, not {space:?}"
+                )
+            } else {
+                format!("warning: {space:?} is not in the catalogue; the space is your claim")
+            });
         }
         catalog::validate_public_name(&space)
             .map_err(|e| CliError::usage(format!("--space: {e}")))?;
@@ -308,9 +315,33 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             max_batch: known.map(|k| k.max_batch),
             catalogued: listed.is_some(),
             convert: None,
-            space: Some(space),
+            space,
             prefer: args.prefer,
         });
+    }
+    if args.space.is_some() && new_models.len() > 1 {
+        return Err(CliError::usage(
+            "--space names one vector space; add several models one at a time",
+        ));
+    }
+    if args.prefer {
+        // Priority 1 must stay unique in the space: a tie would fall back
+        // to route-name order, which is not what "prefer" says.
+        for model in new_models.iter().filter(|m| m.convert.is_none()) {
+            if let Some((file, other)) =
+                super::explicit_first(target.dir(), &model.space, &file_path)?
+            {
+                return Err(CliError::precondition(format!(
+                    "{other} in {} already has priority 1 in space {:?}",
+                    file.display(),
+                    model.space
+                ))
+                .with_fix(format!(
+                    "add without --prefer, then `postvec model prefer {} {} {other}`",
+                    model.space, model.public_name
+                )));
+            }
+        }
     }
     // Converters: the manual entry, or the catalogue selection. A rerun
     // with the same route is a no-op note, exactly like an embed id the
@@ -433,18 +464,29 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     // its consent moment lives (the migrate-time NOTICE naming the
     // provider). Putting converter names through this gate would make the
     // acknowledgement assert something false.
-    let new_names: Vec<String> = new_models
+    let new_names: Vec<(String, String)> = new_models
         .iter()
         .filter(|m| m.convert.is_none())
-        .map(|m| m.public_name.clone())
+        .map(|m| (m.public_name.clone(), m.space.clone()))
         .collect();
-    // Every name this file will serve, when the recipient moves; only the
-    // new ones otherwise.
-    let public_names: Vec<String> = if endpoint_changes {
-        let mut all: Vec<String> = already_declared
+    // Every route this file will serve, when the recipient moves; only the
+    // new ones otherwise. `(name, space)`: a column bound in the space is
+    // affected too when the route becomes its preferred one.
+    let public_names: Vec<(String, String)> = if endpoint_changes {
+        let spaces: std::collections::BTreeMap<String, String> = existing_for_probe
+            .iter()
+            .flat_map(|doc| doc.descriptors())
+            .map(|d| (d.name.clone(), d.space_name().to_string()))
+            .collect();
+        let mut all: Vec<(String, String)> = already_declared
             .iter()
             .filter(|(n, _)| !existing_converters.contains(n))
-            .map(|(n, _)| n.clone())
+            .map(|(n, _)| {
+                (
+                    n.clone(),
+                    spaces.get(n).cloned().unwrap_or_else(|| n.clone()),
+                )
+            })
             .collect();
         all.extend(new_names.iter().cloned());
         all
@@ -453,7 +495,15 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     };
     let scanned = matches!(target, ProviderTarget::Embedded { .. });
     let (columns, unknown_databases) = if scanned && !public_names.is_empty() {
-        columns_bound_to(&mut target, &public_names, cli.timeout).await
+        columns_bound_to(
+            &mut target,
+            &public_names,
+            Scan::Gains {
+                prefer: args.prefer,
+            },
+            cli.timeout,
+        )
+        .await
     } else {
         (Vec::new(), Vec::new())
     };
@@ -463,7 +513,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     let file_parked = existing.as_ref().is_some_and(|doc| !doc.enabled());
 
     let mut plan = Plan::new("provider add", target.label());
-    for name in public_names.iter().filter(|_| !file_parked) {
+    for (name, _) in public_names.iter().filter(|_| !file_parked) {
         let mine: Vec<crate::plan::InUseColumn> = columns
             .iter()
             .filter(|column| &column.model == name)
@@ -937,7 +987,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     Ok(Exit::from_code(result.exit_code))
 }
 
-fn scanned_note_needed(public_names: &[String]) -> bool {
+fn scanned_note_needed(public_names: &[(String, String)]) -> bool {
     !public_names.is_empty()
 }
 
@@ -957,8 +1007,9 @@ pub(super) struct NewModel {
     pub catalogued: bool,
     /// `Some` makes this a `kind = "convert"` entry.
     pub convert: Option<ConvertSpec>,
-    /// Embed only: space this route joins. Written when it differs from name.
-    pub space: Option<String>,
+    /// Space this route joins (embed: the catalogue's or `--space`;
+    /// convert: the target). Written when it differs from name.
+    pub space: String,
     /// Embed only: write explicit priority 1.
     pub prefer: bool,
 }
@@ -1315,13 +1366,13 @@ fn converter_new_model(args: &ProviderAddArgs, canonical: &str) -> Result<Option
         max_tokens: None,
         max_batch: None,
         catalogued: false,
+        space: target_model.clone(),
         convert: Some(ConvertSpec {
             provider_source_id,
             source_model,
             target_model,
             source_dim,
         }),
-        space: None,
         prefer: false,
     }))
 }
@@ -1408,10 +1459,8 @@ fn model_entry(model: &NewModel) -> toml::Value {
             toml::Value::Integer(convert.source_dim as i64),
         );
     } else {
-        if let Some(space) = &model.space {
-            if space != &model.public_name {
-                entry.insert("space".into(), toml::Value::String(space.clone()));
-            }
+        if model.space != model.public_name {
+            entry.insert("space".into(), toml::Value::String(model.space.clone()));
         }
         if model.prefer {
             entry.insert("priority".into(), toml::Value::Integer(1));

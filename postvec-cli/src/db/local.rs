@@ -441,6 +441,7 @@ impl Direct {
                     source_column: row.try_get("source_column")?,
                     vector_column: row.try_get("vector_column")?,
                     model: row.try_get("model")?,
+                    space: row.try_get("space")?,
                     dim: row.try_get("dim")?,
                     state: row.try_get("state")?,
                     pending_jobs: row.try_get("pending_jobs")?,

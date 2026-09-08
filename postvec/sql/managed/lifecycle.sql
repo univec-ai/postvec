@@ -156,7 +156,7 @@ BEGIN
       JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE i.indrelid=relation AND i.indisprimary AND k.ord<=i.indnkeyatts;
     IF keys IS NULL THEN RAISE EXCEPTION 'primary key required'; END IF;
     SELECT format('%I.vector',n.nspname) INTO vt FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector';
-    SELECT target_dim INTO dimension FROM postvec.models WHERE (name=model_name OR target_model=model_name) AND target_dim>0 ORDER BY (model_type='embed') DESC,(name=model_name) DESC,COALESCE((raw->'extra'->>'priority')::int,CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),name LIMIT 1;
+    dimension:=COALESCE((SELECT dim FROM postvec._route(model_name) WHERE dim>0),(SELECT target_dim FROM postvec.models WHERE model_type='convert' AND target_model=model_name AND target_dim>0 ORDER BY name LIMIT 1));
     IF adopted THEN
         SELECT atttypmod INTO STRICT dimension FROM pg_attribute WHERE attrelid=relation AND attname=vec AND atttypid=vt::regtype AND NOT attisdropped AND attnum>0;
         IF EXISTS(SELECT FROM pg_attribute WHERE attrelid=relation AND attname=vec AND (attgenerated<>'' OR attidentity<>'' OR atthasdef OR (attnotnull AND (trig_mode<>'none' OR backfill<>'none')))) THEN RAISE EXCEPTION 'vector column has incompatible generation, default or NOT NULL'; END IF;
@@ -167,7 +167,7 @@ BEGIN
     PERFORM postvec._format(relation,template,col,chunking='recursive');
     IF chunking='recursive' AND (adopted OR cardinality(keys)<>1 OR col='chunk' OR chunk_size NOT BETWEEN 64 AND 100000 OR chunk_overlap<0 OR chunk_overlap>=chunk_size) THEN RAISE EXCEPTION 'invalid recursive configuration'; END IF;
     INSERT INTO postvec.registry(table_schema,table_name,source_column,vector_column,pk_columns,pk_types,model,space,dim,fts_config,distance,trigger_mode,backfill_mode,owns_vector_column,format,index_mode,chunking,chunk_size,chunk_overlap,destination_schema,destination_table,destination_view,destination_token)
-    VALUES(ns,tbl,col,vec,keys,types,model_name,(SELECT COALESCE(target_model,name) FROM postvec.models WHERE model_type='embed' AND (name=model_name OR target_model=model_name) ORDER BY (name=model_name) DESC,COALESCE((raw->'extra'->>'priority')::int,CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),name LIMIT 1),dimension,fts::regconfig,distance,trig_mode,backfill,NOT adopted,template,index_mode,chunking,CASE WHEN chunking='recursive' THEN chunk_size END,CASE WHEN chunking='recursive' THEN chunk_overlap END,CASE WHEN chunking='recursive' THEN ns END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN gen_random_uuid()::text END) RETURNING * INTO r;
+    VALUES(ns,tbl,col,vec,keys,types,model_name,(SELECT space FROM postvec._route(model_name)),dimension,fts::regconfig,distance,trig_mode,backfill,NOT adopted,template,index_mode,chunking,CASE WHEN chunking='recursive' THEN chunk_size END,CASE WHEN chunking='recursive' THEN chunk_overlap END,CASE WHEN chunking='recursive' THEN ns END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN gen_random_uuid()::text END) RETURNING * INTO r;
     IF chunking='recursive' THEN
         dest:=parse_ident(coalesce(destination,tbl||'_'||col||'_chunks'));
         IF cardinality(dest) NOT IN (1,2) THEN RAISE EXCEPTION 'invalid destination'; END IF;
@@ -276,7 +276,7 @@ BEGIN
     SELECT name INTO converter FROM postvec.models WHERE model_type='convert' AND source_model=COALESCE(r.space,r.model) AND target_model=new_model ORDER BY (raw->'extra'->>'provider') IS NOT NULL,name LIMIT 1;
     IF strategy='convert' AND converter IS NULL THEN RAISE EXCEPTION 'no direct converter'; END IF;
     via:=CASE WHEN strategy='reembed' OR converter IS NULL THEN jsonb_build_object('kind','reembed') ELSE jsonb_build_object('kind','convert','model',converter) END;
-    SELECT target_dim INTO dimension FROM postvec.models WHERE (name=new_model OR target_model=new_model) AND target_dim>0 ORDER BY (model_type='embed') DESC,(name=new_model) DESC,COALESCE((raw->'extra'->>'priority')::int,CASE WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END),name LIMIT 1;
+    dimension:=COALESCE((SELECT dim FROM postvec._route(new_model) WHERE dim>0),(SELECT target_dim FROM postvec.models WHERE model_type='convert' AND target_model=new_model AND target_dim>0 ORDER BY name LIMIT 1));
     IF dimension IS NULL THEN RAISE EXCEPTION 'target dimension unavailable'; END IF;
     newcol:='postvec_new_'||r.id;
     SELECT format('%I.vector',n.nspname) INTO vt FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='vector';
