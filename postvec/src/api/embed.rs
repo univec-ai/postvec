@@ -185,10 +185,6 @@ pub(crate) fn cache_space(model: &str) -> Option<String> {
 }
 
 /// First-tier embed resolution: exact served route, else space by priority.
-pub(crate) fn resolve_embed(model: &str) -> Result<String, PvError> {
-    resolve_embed_for_entry(model, None)
-}
-
 pub(crate) fn resolve_embed_for_entry(
     model: &str,
     space_hint: Option<&str>,
@@ -742,15 +738,15 @@ mod tests {
     fn embed_resolution() {
         load_fixture();
         assert_eq!(
-            resolve_embed("snowflake-arctic-embed-l-v2.0").unwrap(),
+            resolve_embed_for_entry("snowflake-arctic-embed-l-v2.0", None).unwrap(),
             "snowflake-arctic-embed-l-v2.0"
         );
         assert!(matches!(
-            resolve_embed("nope"),
+            resolve_embed_for_entry("nope", None),
             Err(PvError::UnknownModel(_))
         ));
         // convert models are not embed-resolvable
-        assert!(resolve_embed("model-b").is_err());
+        assert!(resolve_embed_for_entry("model-b", None).is_err());
     }
 
     /// Exact served route wins over another route of the same space.
@@ -765,12 +761,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve_embed("hosted-a").unwrap(),
+            resolve_embed_for_entry("hosted-a", None).unwrap(),
             "hosted-a",
             "a column bound to a route name keeps that route"
         );
         assert_eq!(
-            resolve_embed("space-a").unwrap(),
+            resolve_embed_for_entry("space-a", None).unwrap(),
             "space-a",
             "a column bound to the space takes the lowest priority"
         );
@@ -784,7 +780,7 @@ mod tests {
                      '{\"extra\":{\"provider\":\"openrouter\",\"priority\":1}}'::jsonb)",
         )
         .unwrap();
-        assert!(resolve_embed("google-gemini").is_err());
+        assert!(resolve_embed_for_entry("google-gemini", None).is_err());
         assert_eq!(
             resolve_embed_for_entry("google-gemini", Some("gemini-embedding-001")).unwrap(),
             "openrouter-gemini"
@@ -822,7 +818,7 @@ mod tests {
         Spi::run("CREATE TABLE widths(id int PRIMARY KEY, body text); SELECT postvec.enable('widths','body','stable',backfill=>false)").unwrap();
         for _ in 0..2 {
             upsert_models(&[model(4)]).unwrap();
-            assert!(resolve_embed("stable").is_err());
+            assert!(resolve_embed_for_entry("stable", None).is_err());
         }
     }
 
