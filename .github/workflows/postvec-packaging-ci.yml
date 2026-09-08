@@ -116,7 +116,7 @@ jobs:
           python3 -c 'import json, sys; json.load(open(sys.argv[1]))' \
             packaging/postvec/server/config.json
           grep -q '^\[Service\]$' packaging/postvec/server/packaged.conf
-          grep -q '^Environment=POSTVEC_SERVER_ROOT=/opt/postvec$' packaging/postvec/server/packaged.conf
+          grep -q '^Environment=POSTVEC_SERVER_ROOT=/opt/postvec$' postvec-server/systemd/postvec-server.service
 
       - name: ShellCheck
         run: |
