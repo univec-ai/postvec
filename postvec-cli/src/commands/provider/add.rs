@@ -900,6 +900,25 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         }
     }
 
+    // A space has one width; the host would skip a disagreeing entry at
+    // reload, so refuse here with the measured value in hand.
+    for model in new_models.iter().filter(|m| m.convert.is_none()) {
+        match (
+            model.dim,
+            super::space_width(target.dir(), &model.space, &target, cli.timeout).await?,
+        ) {
+            (Some(dim), Some((other, other_dim))) if dim != other_dim => {
+                return Err(CliError::precondition(format!(
+                    "{} is dim {dim} but space {:?} is served by {other:?} at dim {other_dim}; \
+                     that is a different model",
+                    model.public_name, model.space
+                ))
+                .with_fix("pass --space with the space this model really belongs to"));
+            }
+            _ => {}
+        }
+    }
+
     // ---- Apply: finish the document, write, reload ----
     // Every entry is already present and already validated; only the
     // dimensions the probe measured are still placeholders. `write` runs the

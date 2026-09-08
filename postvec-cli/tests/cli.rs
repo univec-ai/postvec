@@ -4251,4 +4251,27 @@ fn model_prefer_and_set_space_rewrite_provider_files() {
         "{}",
         stderr(&out)
     );
+
+    // `add` refuses a claimed space at another width before writing.
+    let out = run(&[
+        "provider",
+        "add",
+        "mistral",
+        "--model",
+        "mistral-embed",
+        "--dim",
+        "1024",
+        "--space",
+        "gemini-embedding-001",
+        "--api-key-file",
+        key_arg,
+        "--path",
+        root_arg,
+        "--no-verify",
+        "--acknowledge-in-use",
+        "--yes",
+    ]);
+    assert_ne!(code(&out), 0);
+    assert!(stderr(&out).contains("dim 3072"), "{}", stderr(&out));
+    assert!(!root.path().join("providers.d/mistral.toml").exists());
 }

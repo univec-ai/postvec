@@ -1187,9 +1187,9 @@ fn note_route(
         EmbedResolution::Bridge { executor, via, .. } => format!("{executor} via {via}"),
     };
     let old = last.insert(entry.id, route.clone());
-    if migrating || old.as_ref() == Some(&route) {
+    let Some(old) = old.filter(|old| !migrating && *old != route) else {
         return;
-    }
+    };
     let direct = match resolution {
         EmbedResolution::Direct(name) => Some(name.clone()),
         _ => None,
@@ -1200,15 +1200,11 @@ fn note_route(
         entry.source_column.clone(),
     );
     let _ = try_transaction(move || {
-        let provider = direct.and_then(|name| crate::api::registry::external_provider_of(&name));
-        if let Some(old) = old {
-            let egress = provider
-                .map(|p| format!("; source text of {col:?} now leaves the host for provider {p:?}"))
-                .unwrap_or_default();
-            log!(
-                "postvec: entry {id} ({rel}.{col}) now embeds through {route} (was {old}){egress}"
-            );
-        }
+        let egress = direct
+            .and_then(|name| crate::api::registry::external_provider_of(&name))
+            .map(|p| format!("; source text of {col:?} now leaves the host for provider {p:?}"))
+            .unwrap_or_default();
+        log!("postvec: entry {id} ({rel}.{col}) now embeds through {route} (was {old}){egress}");
     });
 }
 

@@ -3,8 +3,8 @@
 
 use crate::cli::{Cli, ModelSetSpaceArgs};
 use crate::commands::provider::{
-    columns_bound_to, lock_provider_dir, reload_host, resolve_target, rewrite_entries,
-    space_routes, EntryEdit, ProviderFileDoc, Scan,
+    columns_bound_to, lock_provider_dir, reload_host, resolve_target, rewrite_entries, space_width,
+    EntryEdit, ProviderFileDoc, Scan,
 };
 use crate::error::{CliError, Exit, Result};
 use crate::output::Output;
@@ -51,33 +51,15 @@ pub async fn run(cli: &Cli, args: ModelSetSpaceArgs, output: &Output) -> Result<
         ));
         return Ok(Exit::Success);
     }
-    // A space has one width: refuse on disagreement with any route of the
-    // new space, in the files or served by the host (local models included).
-    let mut widths: Vec<(String, u32)> = space_routes(&dir, &args.space)?
-        .into_iter()
-        .filter_map(|(p, name, _)| {
-            let d = ProviderFileDoc::load(&p).ok().flatten()?;
-            let dim = d.descriptors().into_iter().find(|d| d.name == name)?.dim;
-            Some((name, dim))
-        })
-        .collect();
-    if let Some(listen) = target.embedded_listen() {
-        if let Some(inv) =
-            crate::commands::model::admin::loaded_inventory(&listen, cli.timeout).await
-        {
-            widths.extend(inv.models.iter().filter_map(|m| {
-                (m.enabled && m.space.as_deref() == Some(&args.space))
-                    .then(|| Some((m.name.clone(), m.target_dim?)))
-                    .flatten()
-            }));
+    // A space has one width: a different width is a different model.
+    if let Some((other, other_dim)) = space_width(&dir, &args.space, &target, cli.timeout).await? {
+        if other_dim != dim {
+            return Err(CliError::precondition(format!(
+                "route {:?} is dim {dim} but space {:?} is served by {other:?} at dim {other_dim}; \
+                 that is a different model, not a label",
+                args.route, args.space
+            )));
         }
-    }
-    if let Some((other, other_dim)) = widths.iter().find(|(_, d)| *d != dim) {
-        return Err(CliError::precondition(format!(
-            "route {:?} is dim {dim} but space {:?} is served by {other:?} at dim {other_dim}; \
-             that is a different model, not a label",
-            args.route, args.space
-        )));
     }
 
     output.progress(&format!(

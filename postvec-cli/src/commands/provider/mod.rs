@@ -792,6 +792,34 @@ pub fn explicit_first(dir: &Path, space: &str) -> Result<Option<(PathBuf, String
         .map(|(path, name, _)| (path, name)))
 }
 
+/// The width `space` already has: the first embed route serving it in the
+/// files, else on the running host (local models included), as `(route, dim)`.
+pub async fn space_width(
+    dir: &Path,
+    space: &str,
+    target: &ProviderTarget,
+    timeout: std::time::Duration,
+) -> Result<Option<(String, u32)>> {
+    for (path, name, _) in space_routes(dir, space)? {
+        if let Some(doc) = ProviderFileDoc::load(&path)? {
+            if let Some(d) = doc.descriptors().into_iter().find(|d| d.name == name) {
+                return Ok(Some((name, d.dim)));
+            }
+        }
+    }
+    let Some(listen) = target.embedded_listen() else {
+        return Ok(None);
+    };
+    let Some(inv) = crate::commands::model::admin::loaded_inventory(&listen, timeout).await else {
+        return Ok(None);
+    };
+    Ok(inv.models.iter().find_map(|m| {
+        (m.enabled && m.space.as_deref() == Some(space))
+            .then(|| Some((m.name.clone(), m.target_dim?)))
+            .flatten()
+    }))
+}
+
 /// One field change on a named `[[models]]` entry.
 pub enum EntryEdit {
     Set {
