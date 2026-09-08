@@ -509,14 +509,11 @@ fn migrate(
     // executor were removed ahead of that executor's deprecation.) This is
     // what prevents a late route failure after millions of rows are in
     // flight.
+    let new_space =
+        crate::api::embed::cache_space(new_model).unwrap_or_else(|| new_model.to_string());
     let mut resolved_via: serde_json::Value = match strategy.as_str() {
         "reembed" => serde_json::json!({ "kind": "reembed" }),
-        _ => match resolve_convert(
-            entry.space.as_deref().unwrap_or(&entry.model),
-            crate::api::embed::cache_space(new_model)
-                .as_deref()
-                .unwrap_or(new_model),
-        ) {
+        _ => match resolve_convert(entry.space.as_deref().unwrap_or(&entry.model), &new_space) {
             Ok(name) => {
                 serde_json::json!({ "kind": "direct", "model": name })
             }
@@ -547,9 +544,7 @@ fn migrate(
             );
         }
     }
-    resolved_via["space"] = serde_json::json!(
-        crate::api::embed::cache_space(new_model).unwrap_or_else(|| new_model.to_string())
-    );
+    resolved_via["space"] = serde_json::json!(new_space);
     let is_reembed = resolved_via["kind"] == "reembed";
 
     let new_column = format!("{}_new", entry.vector_column);

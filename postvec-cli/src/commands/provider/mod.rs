@@ -2116,12 +2116,12 @@ pub enum Scan {
     /// affected when it is bound to the route by name, or bound in its space
     /// and the route becomes its preferred one — because nothing serves the
     /// space yet, or because `prefer` puts it first.
-    Gains {
-        prefer: bool,
-    },
+    Gains { prefer: bool },
     /// Routes that stop serving. A column is affected when the route in use
     /// is one of them and no other served route remains in its space.
     Loses,
+    /// Routes whose serving changes in place (relabel, endpoint move, reset):
+    /// every column whose route in use is one of them.
     Changes,
 }
 
