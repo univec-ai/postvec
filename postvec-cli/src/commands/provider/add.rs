@@ -341,6 +341,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             }
         }
     }
+    refuse_wrong_width(&new_models, &target, cli.timeout).await?;
     // Converters: the manual entry, or the catalogue selection. A rerun
     // with the same route is a no-op note, exactly like an embed id the
     // file already declares; the same name with a DIFFERENT route is a
@@ -900,24 +901,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         }
     }
 
-    // A space has one width; the host would skip a disagreeing entry at
-    // reload, so refuse here with the measured value in hand.
-    for model in new_models.iter().filter(|m| m.convert.is_none()) {
-        match (
-            model.dim,
-            super::space_width(target.dir(), &model.space, &target, cli.timeout).await?,
-        ) {
-            (Some(dim), Some((other, other_dim))) if dim != other_dim => {
-                return Err(CliError::precondition(format!(
-                    "{} is dim {dim} but space {:?} is served by {other:?} at dim {other_dim}; \
-                     that is a different model",
-                    model.public_name, model.space
-                ))
-                .with_fix("pass --space with the space this model really belongs to"));
-            }
-            _ => {}
-        }
-    }
+    refuse_wrong_width(&new_models, &target, cli.timeout).await?;
 
     // ---- Apply: finish the document, write, reload ----
     // Every entry is already present and already validated; only the
@@ -1014,6 +998,29 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
 
 fn scanned_note_needed(public_names: &[(String, String)]) -> bool {
     !public_names.is_empty()
+}
+
+async fn refuse_wrong_width(
+    models: &[NewModel],
+    target: &ProviderTarget,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    for model in models.iter().filter(|m| m.convert.is_none()) {
+        let Some(dim) = model.dim else { continue };
+        if let Some((other, other_dim)) =
+            super::space_width(target.dir(), &model.space, target, timeout).await?
+        {
+            if dim != other_dim {
+                return Err(CliError::precondition(format!(
+                    "{} is dim {dim} but space {:?} is served by {other:?} at dim {other_dim}; \
+                     that is a different model",
+                    model.public_name, model.space
+                ))
+                .with_fix("pass --space with the space this model really belongs to"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One descriptor this run is adding.
