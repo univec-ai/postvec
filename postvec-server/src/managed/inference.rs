@@ -88,22 +88,14 @@ impl Client {
                 }
             }
         }
-        let mut models = BTreeMap::new();
-        for (_, rows) in self.nodes.iter().rev() {
-            for m in rows {
-                models.insert(m.name.clone(), m.clone());
-            }
-        }
-        self.models = models.into_values().collect();
-        retain_space_dims(&mut self.models, BTreeMap::new(), |m, other, dim| {
-            log::warn!(
-                "skipping route {}: {other} serves its space at dim {dim}",
-                m.name
-            );
-        });
+        self.models = self
+            .nodes
+            .iter()
+            .flat_map(|(_, rows)| rows.iter().cloned())
+            .collect();
         Ok(())
     }
-    pub async fn cache(&mut self, conn: &mut PgConnection) -> anyhow::Result<()> {
+    pub async fn constrain(&mut self, conn: &mut PgConnection) -> anyhow::Result<Vec<String>> {
         let known: Vec<(String, i32, String)> = sqlx::query_as(
             "SELECT COALESCE(target_model,name),target_dim,name FROM postvec.models
              WHERE model_type='embed' AND target_dim>0
@@ -115,14 +107,11 @@ impl Client {
             .into_iter()
             .map(|(space, dim, name)| (space, (dim as u32, name)))
             .collect();
-        let mut rejected = Vec::new();
-        retain_space_dims(&mut self.models, known, |m, other, dim| {
-            log::warn!(
-                "skipping route {}: {other} serves its space at dim {dim}",
-                m.name
-            );
-            rejected.push(m.name.clone());
-        });
+        Ok(constrain_models(&mut self.models, &mut self.nodes, known))
+    }
+
+    pub async fn cache(&mut self, conn: &mut PgConnection) -> anyhow::Result<()> {
+        let rejected = self.constrain(conn).await?;
         sqlx::query("DELETE FROM postvec.models WHERE name=ANY($1)")
             .bind(rejected)
             .execute(&mut *conn)
@@ -333,6 +322,40 @@ impl Client {
     }
 }
 
+fn constrain_models(
+    models: &mut Vec<ModelInfo>,
+    nodes: &mut [(Option<Channel>, Vec<ModelInfo>)],
+    known: BTreeMap<String, (u32, String)>,
+) -> Vec<String> {
+    let mut rejected = Vec::new();
+    retain_space_dims(models, known, |m, other, dim| {
+        log::warn!(
+            "skipping route {}: {other} serves its space at dim {dim}",
+            m.name
+        );
+        rejected.push(m.name.clone());
+    });
+    let unique: BTreeMap<_, _> = models
+        .drain(..)
+        .rev()
+        .map(|m| (m.name.clone(), m))
+        .collect();
+    for (_, rows) in nodes {
+        rows.retain(|m| unique.get(&m.name).is_some_and(|a| same_space(a, m)));
+    }
+    rejected.retain(|name| !unique.contains_key(name));
+    *models = unique.into_values().collect();
+    rejected
+}
+
+fn same_space(a: &ModelInfo, b: &ModelInfo) -> bool {
+    a.model_type == b.model_type
+        && a.target_model == b.target_model
+        && a.target_dim == b.target_dim
+        && a.source_model == b.source_model
+        && a.source_dim == b.source_dim
+}
+
 fn embed_priority(m: &ModelInfo) -> i32 {
     m.raw["extra"]["priority"]
         .as_i64()
@@ -363,4 +386,38 @@ fn decode(rows: Option<prost_types::ListValue>) -> Result<Vec<Vec<f32>>, PvError
                 .collect()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_width_wins_before_route_deduplication() {
+        let model = |name: &str, dim| ModelInfo {
+            name: name.into(),
+            model_type: "embed".into(),
+            source_model: None,
+            target_model: Some("s".into()),
+            source_dim: None,
+            target_dim: Some(dim),
+            sequence_len: None,
+            raw: serde_json::json!({}),
+        };
+        let wrong = model("a", 4);
+        let right = model("z", 3);
+        let replica = model("a", 3);
+        let mut models = vec![wrong.clone(), right.clone(), replica.clone()];
+        let mut nodes = vec![(None, vec![wrong]), (None, vec![right, replica])];
+        let rejected = constrain_models(
+            &mut models,
+            &mut nodes,
+            BTreeMap::from([("s".into(), (3, "bound-column".into()))]),
+        );
+        assert!(rejected.is_empty());
+        assert_eq!(models.len(), 2);
+        assert!(models.iter().all(|m| m.target_dim == Some(3)));
+        assert!(nodes[0].1.is_empty());
+        assert_eq!(nodes[1].1.len(), 2);
+    }
 }

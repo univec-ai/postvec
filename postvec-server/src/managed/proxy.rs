@@ -105,8 +105,15 @@ pub(super) async fn serve(
     });
     async fn discover(proxy: &Proxy) {
         let mut client = Client::new(&proxy.state);
-        if let Err(e) = client.refresh(&proxy.state).await {
+        let result = async {
+            client.refresh(&proxy.state).await?;
+            client.constrain(&mut *proxy.pool.acquire().await?).await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        if let Err(e) = result {
             log::warn!("proxy {}: model discovery: {e}", proxy.name);
+            return;
         }
         *proxy.client.write().await = client;
     }

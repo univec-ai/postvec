@@ -767,19 +767,24 @@ impl ProviderFileDoc {
     }
 }
 
-/// Embed routes of `space` across the directory: `(file, name, explicit
-/// priority)`, in file order. `--space`-less entries serve their own name.
-pub fn space_routes(dir: &Path, space: &str) -> Result<Vec<(PathBuf, String, Option<u32>)>> {
+/// Embed routes of `space` across the directory, in file order.
+pub fn space_routes(
+    dir: &Path,
+    space: &str,
+) -> Result<Vec<(PathBuf, providers::config::ModelDescriptor)>> {
     let mut out = Vec::new();
     for path in ls::provider_files(dir).map_err(CliError::precondition)? {
         let Some(doc) = ProviderFileDoc::load(&path)? else {
             continue;
         };
-        for d in doc.descriptors() {
-            if d.kind == providers::config::ModelKind::Embed && d.space_name() == space {
-                out.push((path.clone(), d.name, d.priority));
-            }
-        }
+        out.extend(
+            doc.descriptors()
+                .into_iter()
+                .filter(|d| {
+                    d.kind == providers::config::ModelKind::Embed && d.space_name() == space
+                })
+                .map(|d| (path.clone(), d)),
+        );
     }
     Ok(out)
 }
@@ -788,36 +793,39 @@ pub fn space_routes(dir: &Path, space: &str) -> Result<Vec<(PathBuf, String, Opt
 pub fn explicit_first(dir: &Path, space: &str) -> Result<Option<(PathBuf, String)>> {
     Ok(space_routes(dir, space)?
         .into_iter()
-        .find(|(_, _, p)| *p == Some(1))
-        .map(|(path, name, _)| (path, name)))
+        .find(|(_, d)| d.priority == Some(1))
+        .map(|(path, d)| (path, d.name)))
 }
 
-/// The width `space` already has: the first embed route serving it in the
-/// files, else on the running host (local models included), as `(route, dim)`.
+/// The width `space` already has, `(route, dim)`, from the files and the
+/// running host (local models included); an existing disagreement is an error.
 pub async fn space_width(
     dir: &Path,
     space: &str,
     target: &ProviderTarget,
     timeout: std::time::Duration,
 ) -> Result<Option<(String, u32)>> {
-    for (path, name, _) in space_routes(dir, space)? {
-        if let Some(doc) = ProviderFileDoc::load(&path)? {
-            if let Some(d) = doc.descriptors().into_iter().find(|d| d.name == name) {
-                return Ok(Some((name, d.dim)));
-            }
+    let mut widths: Vec<(String, u32)> = space_routes(dir, space)?
+        .into_iter()
+        .map(|(_, d)| (d.name, d.dim))
+        .collect();
+    if let Some(listen) = target.embedded_listen() {
+        if let Some(inv) = crate::commands::model::admin::loaded_inventory(&listen, timeout).await {
+            widths.extend(inv.models.into_iter().filter_map(|m| {
+                (m.enabled && m.space.as_deref() == Some(space))
+                    .then(|| Some((m.name, m.target_dim?)))
+                    .flatten()
+            }));
         }
     }
-    let Some(listen) = target.embedded_listen() else {
-        return Ok(None);
-    };
-    let Some(inv) = crate::commands::model::admin::loaded_inventory(&listen, timeout).await else {
-        return Ok(None);
-    };
-    Ok(inv.models.iter().find_map(|m| {
-        (m.enabled && m.space.as_deref() == Some(space))
-            .then(|| Some((m.name.clone(), m.target_dim?)))
-            .flatten()
-    }))
+    if let [(name, width), ..] = widths.as_slice() {
+        if let Some((other, dim)) = widths.iter().find(|(_, d)| d != width) {
+            return Err(CliError::precondition(format!(
+                "space {space:?} has conflicting widths: {name:?} is dim {width}, {other:?} is dim {dim}"
+            )));
+        }
+    }
+    Ok(widths.into_iter().next())
 }
 
 /// One field change on a named `[[models]]` entry.
@@ -2256,6 +2264,57 @@ pub async fn columns_bound_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn configured_width_does_not_hide_a_conflicting_host() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("provider.toml");
+        std::fs::write(&path, "provider='openai'\napi_key='test'\n[[models]]\nname='hosted'\nprovider_model_id='custom'\ndim=3\nspace='s'\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            let body = r#"{"success":true,"data":{"models":[{"name":"local","configuration":{"enabled":true,"params":{"model_type":"embed","target_model":"s","target_dim":4}}}]}}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let target = ProviderTarget::Embedded {
+            dir: dir.path().into(),
+            context: None,
+            cluster_id: "test".into(),
+            settings: SettingsSnapshot {
+                rows: vec![crate::facts::SettingRow {
+                    name: "postvec.embedded_http_listen".into(),
+                    setting: address,
+                    context: String::new(),
+                    source: String::new(),
+                    sourcefile: None,
+                    sourceline: None,
+                    pending_restart: false,
+                }],
+                file_rows: vec![],
+            },
+        };
+        let error = space_width(dir.path(), "s", &target, std::time::Duration::from_secs(2))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("conflicting widths"));
+        assert!(error.to_string().contains("local"));
+        server.await.unwrap();
+    }
 
     #[test]
     fn route_rewrite_rolls_back_a_later_file_failure() {

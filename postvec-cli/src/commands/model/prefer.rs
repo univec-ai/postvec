@@ -37,7 +37,7 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
 
     let mut listed: Vec<String> = Vec::new();
     for route in &args.routes {
-        if known.iter().any(|(_, name, _)| name == route) {
+        if known.iter().any(|(_, d)| d.name == *route) {
             if !listed.contains(route) {
                 listed.push(route.clone());
             }
@@ -56,9 +56,10 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
     }
 
     let mut edits = Vec::new();
-    for (path, name, priority) in &known {
+    for (path, d) in &known {
+        let (name, priority) = (&d.name, d.priority);
         let want = listed.iter().position(|r| r == name).map(|i| i as u32 + 1);
-        if *priority == want {
+        if priority == want {
             continue;
         }
         let edit = match want {
@@ -71,7 +72,8 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
         edits.push((path.clone(), name.clone(), vec![edit]));
     }
     output.progress(&args.space);
-    for (path, name, priority) in &known {
+    for (path, d) in &known {
+        let (name, priority) = (&d.name, d.priority);
         let want = listed.iter().position(|r| r == name).map(|i| i as u32 + 1);
         output.progress(&format!(
             "  {name:<44} {}{}",
@@ -80,7 +82,7 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
                 None => "default".to_string(),
             },
             match (priority, want) {
-                (a, b) if *a == b => String::new(),
+                (a, b) if a == b => String::new(),
                 (Some(p), _) => format!(" (was {p}, {})", stem(path)),
                 (None, _) => format!(" (was default, {})", stem(path)),
             }
@@ -123,8 +125,8 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
         if !columns.is_empty() || !unknown.is_empty() {
             let provider = known
                 .iter()
-                .find(|(_, n, _)| n == first)
-                .and_then(|(p, ..)| ProviderFileDoc::load(p).ok().flatten())
+                .find(|(_, d)| d.name == *first)
+                .and_then(|(p, _)| ProviderFileDoc::load(p).ok().flatten())
                 .and_then(|d| d.provider_type().map(str::to_string))
                 .unwrap_or_default();
             plan.push(PlanStep::AcknowledgeProviderPrivacy {
@@ -138,7 +140,7 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
     if args.default {
         let routes: Vec<_> = known
             .iter()
-            .map(|(_, name, _)| (name.clone(), args.space.clone()))
+            .map(|(_, d)| (d.name.clone(), args.space.clone()))
             .collect();
         let (columns, unknown) = if target.files_only().is_some() {
             (
