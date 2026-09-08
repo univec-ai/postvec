@@ -865,9 +865,11 @@ jobs:
         if: matrix.variant == 'remote' && matrix.pg == 18
         env:
           SERVER_REPOSITORY: ${{ needs.validate.outputs.server_repository }}
+          REPOSITORY: ${{ needs.validate.outputs.repository }}
           RELEASE_ID: ${{ needs.validate.outputs.release_id }}
         run: |
-          packaging/postvec/tests/server-image-test.sh "${SERVER_REPOSITORY}:${RELEASE_ID}"
+          POSTVEC_MANAGED_POSTGRES_IMAGE="${REPOSITORY}:${RELEASE_ID}-pg18-remote" \
+            packaging/postvec/tests/server-image-test.sh "${SERVER_REPOSITORY}:${RELEASE_ID}"
 
       # Native, on the architecture the image is for. This is what makes the
       # manifest list assembled later meaningful.

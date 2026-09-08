@@ -180,10 +180,6 @@ if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
     step "image: postvec-server"
     "${PKG_DIR}/scripts/build-server-image.sh" --arch "${ARCH}" --load
     SERVER_TAG="${SERVER_IMAGE_REPOSITORY}:${RELEASE_ID}"
-    if (( ! SKIP_TESTS )); then
-        step "image: postvec-server on its own"
-        "${PKG_DIR}/tests/server-image-test.sh" "${SERVER_TAG}"
-    fi
 
     for major in "${PG_MAJORS[@]}"; do
         for variant in "${REMOTE_IMAGE_VARIANT}" "${LOCAL_IMAGE_VARIANT}"; do
@@ -227,6 +223,13 @@ if (( ! SKIP_IMAGES )) && (( IMAGES_WANTED )); then
             fi
         done
     done
+    if (( ! SKIP_TESTS )); then
+        # After the loop: the managed-schema case needs a database image
+        # from this run, not a pulled one.
+        step "image: postvec-server on its own"
+        POSTVEC_MANAGED_POSTGRES_IMAGE="${IMAGE_REPOSITORY}:${RELEASE_ID}-pg${PG_MAJORS[0]}${REMOTE_IMAGE_SUFFIX}" \
+            "${PKG_DIR}/tests/server-image-test.sh" "${SERVER_TAG}"
+    fi
 fi
 
 step "release manifest"
