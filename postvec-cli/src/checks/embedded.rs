@@ -535,6 +535,7 @@ mod tests {
             models: names
                 .iter()
                 .map(|name| InventoryModel {
+                    source_model: None,
                     name: (*name).to_string(),
                     enabled: true,
                     model_type: Some("embed".into()),

@@ -24,7 +24,7 @@ pub struct Effective {
 
 /// Local engine models are fixed at 100. Explicit `priority` is used as-is.
 /// Remaining provider embed routes in a space get 200 plus their rank among
-/// themselves: oldest `added` first (missing last), then file stem, then name.
+/// themselves: oldest `added` first (unstamped routes first), then file stem, then name.
 /// Converters are ignored — `resolve_convert` keeps its own order.
 pub fn effective_priorities(routes: &[RouteInput<'_>]) -> Vec<Effective> {
     let mut out = Vec::new();
@@ -70,8 +70,8 @@ pub fn effective_priorities(routes: &[RouteInput<'_>]) -> Vec<Effective> {
 
 fn added_ord(added: Option<&str>) -> (bool, i64) {
     match added.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
-        Some(dt) => (false, dt.timestamp_millis()),
-        None => (true, 0),
+        Some(dt) => (true, dt.timestamp_micros()),
+        None => (false, 0),
     }
 }
 
@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_added_sorts_last() {
+    fn new_stamped_routes_do_not_displace_unstamped_routes() {
         let routes = [
             embed(
                 "stamped",
@@ -130,8 +130,8 @@ mod tests {
         ];
         let out = effective_priorities(&routes);
         let map = by_name(&out);
-        assert_eq!(map["stamped"], 200);
-        assert_eq!(map["unstamped"], 201);
+        assert_eq!(map["stamped"], 201);
+        assert_eq!(map["unstamped"], 200);
     }
 
     #[test]

@@ -345,11 +345,11 @@ impl Proxy {
     /// Embed one text for a call: `search()` resolves the entry's model,
     /// `embed()` names it directly.
     async fn embed(&self, call: &Call, text: &str) -> Result<Vec<f32>> {
-        let (model, dim, purpose) = if call.embed {
-            (call.relation.clone(), None, EmbedPurpose::Document)
+        let (model, space, dim, purpose) = if call.embed {
+            (call.relation.clone(), None, None, EmbedPurpose::Document)
         } else {
-            let rows: Vec<(String, i32)> = sqlx::query_as(
-                "SELECT model, dim FROM postvec.registry WHERE source_column=$2 AND state<>'disabled'
+            let rows: Vec<(String, Option<String>, i32)> = sqlx::query_as(
+                "SELECT model, space, dim FROM postvec.registry WHERE source_column=$2 AND state<>'disabled'
                  AND table_name=(parse_ident($1))[cardinality(parse_ident($1))]
                  AND (cardinality(parse_ident($1))=1 OR table_schema=(parse_ident($1))[1])",
             )
@@ -359,7 +359,12 @@ impl Proxy {
             .await
             .context("registry lookup")?;
             match rows.as_slice() {
-                [(model, dim)] => (model.clone(), Some(*dim), EmbedPurpose::Query),
+                [(model, space, dim)] => (
+                    model.clone(),
+                    space.clone(),
+                    Some(*dim),
+                    EmbedPurpose::Query,
+                ),
                 [] => bail!("postvec: {}.{} is not enabled", call.relation, call.column),
                 _ => bail!(
                     "postvec: relation {} is ambiguous; qualify it with a schema",
@@ -368,7 +373,7 @@ impl Proxy {
             }
         };
         let client = self.client.read().await;
-        let (name, route) = client.route(&model, None, purpose)?;
+        let (name, route) = client.route(&model, space.as_deref(), purpose)?;
         let mut rows = client
             .predict(&[text.to_string()], None, &name, &route)
             .await?;

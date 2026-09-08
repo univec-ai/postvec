@@ -158,6 +158,7 @@ pub const CHECK_ORDER: &[&str] = &[
     "models.cache",
     "models.cache-freshness",
     "registry.dependencies",
+    "registry.routes",
     "registry.indexes",
     "migrations.state",
     // inference
@@ -185,6 +186,8 @@ pub const CHECK_ORDER: &[&str] = &[
     "provider.key-source",
     "provider.served",
     "provider.catalogue",
+    "provider.space-dim",
+    "provider.space-priority",
     // model store (postvec model …)
     "models.receipts",
     "models.unactivated",

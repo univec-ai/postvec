@@ -50,6 +50,32 @@ pub struct DiscoveryReport {
     pub failed_nodes: usize,
 }
 
+/// Reject incompatible widths before either installer publishes routes.
+pub fn retain_space_dims(
+    models: &mut Vec<ModelInfo>,
+    mut known: std::collections::BTreeMap<String, (u32, String)>,
+    mut conflict: impl FnMut(&ModelInfo, &str, u32),
+) {
+    models.retain(|m| {
+        if m.model_type != "embed" {
+            return true;
+        }
+        let Some(dim) = m.target_dim.filter(|d| *d > 0) else {
+            return true;
+        };
+        let space = m.target_model.as_ref().unwrap_or(&m.name);
+        if let Some((width, name)) = known.get(space) {
+            if *width != dim {
+                conflict(m, name, *width);
+                return false;
+            }
+        } else {
+            known.insert(space.clone(), (dim, m.name.clone()));
+        }
+        true
+    });
+}
+
 /// `{ "success": true, "data": ... }` envelope every inference HTTP route uses.
 #[derive(Debug, Deserialize)]
 struct Envelope {

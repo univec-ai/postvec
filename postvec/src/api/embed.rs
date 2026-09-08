@@ -410,7 +410,7 @@ pub(crate) fn upsert_models(models: &[ModelInfo]) -> Result<(), pgrx::spi::Error
     if models.is_empty() {
         return Ok(());
     }
-    let models = skip_space_dim_conflicts(models);
+    let models = skip_space_dim_conflicts(models)?;
     if models.is_empty() {
         return Ok(());
     }
@@ -472,6 +472,11 @@ pub(crate) fn upsert_models(models: &[ModelInfo]) -> Result<(), pgrx::spi::Error
                 raws.into(),
             ],
         )?;
+        client.update(
+            "UPDATE postvec.registry r SET space=(SELECT space FROM postvec._route(r.model,r.space))
+             WHERE state<>'migrating' AND EXISTS(SELECT FROM postvec._route(r.model,r.space) x WHERE x.space IS DISTINCT FROM r.space)",
+            None, &[],
+        )?;
         Ok(())
     })
 }
@@ -479,59 +484,46 @@ pub(crate) fn upsert_models(models: &[ModelInfo]) -> Result<(), pgrx::spi::Error
 /// Drop embed rows whose `target_dim` contradicts another row of the same
 /// space (incoming or already cached). The gateway refuses these; this is
 /// the mixed-fleet backstop.
-fn skip_space_dim_conflicts(models: &[ModelInfo]) -> Vec<ModelInfo> {
-    let mut space_dim: std::collections::BTreeMap<String, (i32, String)> = Spi::connect(|c| {
-        let t = c
-            .select(
-                "SELECT COALESCE(target_model, name), target_dim, name
-                       FROM postvec.models
-                      WHERE model_type = 'embed' AND target_dim IS NOT NULL AND target_dim > 0",
-                None,
-                &[],
-            )
-            .ok()?;
-        Some(
-            t.into_iter()
-                .filter_map(|r| {
-                    Some((
-                        r.get::<String>(1).ok()??,
-                        (r.get::<i32>(2).ok()??, r.get::<String>(3).ok()??),
+fn skip_space_dim_conflicts(models: &[ModelInfo]) -> Result<Vec<ModelInfo>, pgrx::spi::Error> {
+    let known = Spi::connect(|c| {
+        c.select(
+            "SELECT COALESCE(target_model, name), target_dim, name FROM postvec.models
+             WHERE model_type = 'embed' AND target_dim > 0
+             UNION ALL SELECT COALESCE(space, model), dim, model FROM postvec.registry",
+            None,
+            &[],
+        )
+        .map(|rows| {
+            rows.into_iter()
+                .map(|r| {
+                    Ok((
+                        r.get::<String>(1)?.unwrap(),
+                        (
+                            r.get::<i32>(2)?.unwrap() as u32,
+                            r.get::<String>(3)?.unwrap(),
+                        ),
                     ))
                 })
-                .collect(),
-        )
-    })
-    .unwrap_or_default();
-    let mut kept = Vec::with_capacity(models.len());
-    for model in models {
-        if model.model_type != "embed" {
-            kept.push(model.clone());
-            continue;
-        }
-        let Some(dim) = model.target_dim.filter(|d| *d > 0).map(|d| d as i32) else {
-            kept.push(model.clone());
-            continue;
-        };
-        let space = model
-            .target_model
-            .clone()
-            .unwrap_or_else(|| model.name.clone());
-        if let Some((known, other)) = space_dim.get(&space) {
-            if *known != dim && other != &model.name {
-                warning!(
-                    "postvec: skipping embed route {:?} (dim {dim}) because {:?} already \
-                     serves space {space:?} at dim {known}",
-                    model.name,
-                    other
-                );
-                continue;
-            }
-        } else {
-            space_dim.insert(space, (dim, model.name.clone()));
-        }
-        kept.push(model.clone());
-    }
-    kept
+                .collect::<Result<std::collections::BTreeMap<_, _>, pgrx::spi::Error>>()
+        })?
+    })?;
+    let mut kept = models.to_vec();
+    let mut rejected = Vec::new();
+    postvec_core::client::discovery::retain_space_dims(&mut kept, known, |m, other, dim| {
+        warning!(
+            "postvec: skipping embed route {:?} (dim {:?}): {:?} serves space {:?} at dim {dim}",
+            m.name,
+            m.target_dim,
+            other,
+            m.target_model.as_ref().unwrap_or(&m.name)
+        );
+        rejected.push(m.name.clone());
+    });
+    Spi::run_with_args(
+        "DELETE FROM postvec.models WHERE name = ANY($1)",
+        &[rejected.into()],
+    )?;
+    Ok(kept)
 }
 
 /// Remove cache rows for models absent from a complete discovery refresh.
@@ -797,6 +789,41 @@ mod tests {
             resolve_embed_for_entry("google-gemini", Some("gemini-embedding-001")).unwrap(),
             "openrouter-gemini"
         );
+    }
+
+    #[pg_test]
+    fn route_metadata_and_space_hint_are_safe() {
+        Spi::run(r#"INSERT INTO postvec.models(name,model_type,target_model,target_dim,raw) VALUES
+            ('hint','embed','unrelated',3,'{"extra":{"priority":1}}'),
+            ('preferred','embed','hint',3,'{"extra":{"priority":2}}'),
+            ('a','embed','malformed',3,'{"extra":{"provider":"p","priority":1.5,"priority_explicit":"bad"}}'),
+            ('b','embed','malformed',3,'{"extra":{"provider":"p","priority":999999999999999999999999999}}'),
+            ('c','embed','malformed',3,'{"extra":{"provider":"p","priority":"bad"}}')"#).unwrap();
+        assert_eq!(
+            resolve_embed_for_entry("removed", Some("hint")).unwrap(),
+            "preferred"
+        );
+        assert_eq!(Spi::get_one::<i64>("SELECT count(*) FROM postvec.routes WHERE space='malformed' AND priority=200 AND NOT explicit").unwrap(), Some(3));
+    }
+
+    #[pg_test]
+    fn refresh_rejects_width_changes_under_the_same_name() {
+        let model = |dim| ModelInfo {
+            name: "stable".into(),
+            model_type: "embed".into(),
+            source_model: None,
+            target_model: Some("stable-space".into()),
+            source_dim: None,
+            target_dim: Some(dim),
+            sequence_len: None,
+            raw: serde_json::json!({}),
+        };
+        upsert_models(&[model(3)]).unwrap();
+        Spi::run("CREATE TABLE widths(id int PRIMARY KEY, body text); SELECT postvec.enable('widths','body','stable',backfill=>false)").unwrap();
+        for _ in 0..2 {
+            upsert_models(&[model(4)]).unwrap();
+            assert!(resolve_embed("stable").is_err());
+        }
     }
 
     /// A mixed fleet may still present two routes of one space at

@@ -154,7 +154,16 @@ and `set-space` ask for the same flag when columns change where their text
 is embedded: `prefer` lists provider routes only (a local model is always
 priority 100), warns about and skips a route no file declares, and with
 `--default` drops every explicit priority in the space; `set-space` refuses
-a space served at another dimension and refuses local routes.
+a space served at another dimension and refuses local routes. `--default`
+also requires acknowledgement when the reset can change a column's provider.
+No-op priority changes do not reload the host. Multi-file edits check each
+file against its inspected version and restore earlier writes if a later
+write fails.
+
+Doctor reports columns with no available embedding route, incompatible
+route dimensions, and bindings using their remembered-space fallback.
+Incomplete discovery produces a warning rather than a definitive missing-route
+failure; local embedding bridges are included in this check.
 
 ## `provider`
 

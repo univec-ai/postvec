@@ -394,6 +394,7 @@ async fn exercise(dsn: &str) -> Result<()> {
     .await;
     let mut via = via.context("proxy did not accept connections")?;
     wait(&mut via, "SELECT count(*)=3 FROM postvec.models").await?;
+    db.execute("UPDATE postvec.registry SET model='retired-route',space=COALESCE(space,model) WHERE table_name='docs' AND source_column='body'").await?;
     let simple: Vec<String> =
         sqlx::raw_sql("SELECT pk_value FROM postvec.search('docs', 'body', 'hello', limit_n => 1)")
             .fetch_all(&mut via)

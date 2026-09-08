@@ -5,7 +5,8 @@ use crate::{
     state::ServerState,
 };
 use postvec_core::client::{
-    discovery::parse_config, EmbedPurpose, EmbedRoute, ErrorClass, ModelInfo, PvError, RavennaCode,
+    discovery::{parse_config, retain_space_dims},
+    EmbedPurpose, EmbedRoute, ErrorClass, ModelInfo, PvError, RavennaCode,
 };
 use sqlx::PgConnection;
 use std::{
@@ -22,6 +23,7 @@ pub(super) struct Client {
     complete: bool,
     timeout: Duration,
     cursor: AtomicUsize,
+    last_routes: BTreeMap<i64, String>,
 }
 impl Client {
     pub fn new(state: &ServerState) -> Self {
@@ -32,6 +34,7 @@ impl Client {
             complete: false,
             timeout: state.settings.predict_timeout,
             cursor: AtomicUsize::new(0),
+            last_routes: BTreeMap::new(),
         }
     }
     pub fn visibility_secs(&self) -> i64 {
@@ -92,9 +95,38 @@ impl Client {
             }
         }
         self.models = models.into_values().collect();
+        retain_space_dims(&mut self.models, BTreeMap::new(), |m, other, dim| {
+            log::warn!(
+                "skipping route {}: {other} serves its space at dim {dim}",
+                m.name
+            );
+        });
         Ok(())
     }
-    pub async fn cache(&self, conn: &mut PgConnection) -> anyhow::Result<()> {
+    pub async fn cache(&mut self, conn: &mut PgConnection) -> anyhow::Result<()> {
+        let known: Vec<(String, i32, String)> = sqlx::query_as(
+            "SELECT COALESCE(target_model,name),target_dim,name FROM postvec.models
+             WHERE model_type='embed' AND target_dim>0
+             UNION ALL SELECT COALESCE(space,model),dim,model FROM postvec.registry",
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        let known = known
+            .into_iter()
+            .map(|(space, dim, name)| (space, (dim as u32, name)))
+            .collect();
+        let mut rejected = Vec::new();
+        retain_space_dims(&mut self.models, known, |m, other, dim| {
+            log::warn!(
+                "skipping route {}: {other} serves its space at dim {dim}",
+                m.name
+            );
+            rejected.push(m.name.clone());
+        });
+        sqlx::query("DELETE FROM postvec.models WHERE name=ANY($1)")
+            .bind(rejected)
+            .execute(&mut *conn)
+            .await?;
         for m in &self.models {
             sqlx::query("INSERT INTO postvec.models(name,model_type,source_model,target_model,source_dim,target_dim,sequence_len,raw) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(name) DO UPDATE SET model_type=excluded.model_type,source_model=excluded.source_model,target_model=excluded.target_model,source_dim=excluded.source_dim,target_dim=excluded.target_dim,sequence_len=excluded.sequence_len,raw=excluded.raw,last_seen=now() WHERE (models.model_type,models.source_model,models.target_model,models.source_dim,models.target_dim,models.sequence_len,models.raw) IS DISTINCT FROM (excluded.model_type,excluded.source_model,excluded.target_model,excluded.source_dim,excluded.target_dim,excluded.sequence_len,excluded.raw)")
                 .bind(&m.name).bind(&m.model_type).bind(&m.source_model).bind(&m.target_model)
@@ -107,7 +139,23 @@ impl Client {
                 .bind(names)
                 .execute(&mut *conn)
                 .await?;
-            sqlx::query("UPDATE postvec.worker_heartbeat SET model_refreshes=model_refreshes+1,models_refreshed_at=now() WHERE id=1").execute(conn).await?;
+            sqlx::query("UPDATE postvec.worker_heartbeat SET model_refreshes=model_refreshes+1,models_refreshed_at=now() WHERE id=1").execute(&mut *conn).await?;
+        }
+        sqlx::query("UPDATE postvec.registry r SET space=(SELECT space FROM postvec._route(r.model,r.space))
+                     WHERE state<>'migrating' AND EXISTS(SELECT FROM postvec._route(r.model,r.space) x WHERE x.space IS DISTINCT FROM r.space)")
+            .execute(&mut *conn).await?;
+        let routes: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT r.id,format('%I.%I.%I',r.table_schema,r.table_name,r.source_column),x.route,x.provider
+             FROM postvec.registry r CROSS JOIN LATERAL postvec._route(r.model,r.space) x WHERE r.state<>'migrating'",
+        ).fetch_all(&mut *conn).await?;
+        let previous = std::mem::take(&mut self.last_routes);
+        for (id, column, route, provider) in routes {
+            if let Some(old) = previous.get(&id) {
+                if old != &route {
+                    log::info!("managed entry {id} ({column}) now embeds through {route} (was {old}); provider={provider:?}");
+                }
+            }
+            self.last_routes.insert(id, route);
         }
         Ok(())
     }
@@ -120,10 +168,23 @@ impl Client {
         space: Option<&str>,
         purpose: EmbedPurpose,
     ) -> Result<(String, EmbedRoute), PvError> {
-        let space = space.filter(|s| *s != name);
         if let Some(m) = self
-            .pick_embed(name)
-            .or_else(|| space.and_then(|s| self.pick_embed(s)))
+            .models
+            .iter()
+            .filter(|m| {
+                m.model_type == "embed"
+                    && (m.name == name
+                        || m.target_model.as_deref().unwrap_or(&m.name) == name
+                        || space == Some(m.target_model.as_deref().unwrap_or(&m.name)))
+            })
+            .min_by_key(|m| {
+                (
+                    m.name != name,
+                    m.target_model.as_deref().unwrap_or(&m.name) != name,
+                    embed_priority(m),
+                    &m.name,
+                )
+            })
         {
             return Ok((m.name.clone(), EmbedRoute::default().with_purpose(purpose)));
         }
@@ -158,23 +219,6 @@ impl Client {
         Err(PvError::UnknownModel(name.into()))
     }
 
-    fn pick_embed(&self, name: &str) -> Option<&ModelInfo> {
-        let mut direct: Vec<_> = self
-            .models
-            .iter()
-            .filter(|m| {
-                m.model_type == "embed"
-                    && (m.name == name || m.target_model.as_deref() == Some(name))
-            })
-            .collect();
-        direct.sort_by(|a, b| {
-            (a.name != name)
-                .cmp(&(b.name != name))
-                .then(embed_priority(a).cmp(&embed_priority(b)))
-                .then(a.name.cmp(&b.name))
-        });
-        direct.into_iter().next()
-    }
     pub async fn predict(
         &self,
         texts: &[String],
@@ -292,6 +336,7 @@ impl Client {
 fn embed_priority(m: &ModelInfo) -> i32 {
     m.raw["extra"]["priority"]
         .as_i64()
+        .filter(|p| (1..=65535).contains(p))
         .map(|p| p as i32)
         .unwrap_or(if m.raw["extra"]["provider"].is_null() {
             100

@@ -127,17 +127,17 @@ pub fn parse_config_body(body: &str) -> Result<ConfigInventory> {
         .models
         .into_iter()
         .map(|model| InventoryModel {
-            enabled: model.configuration.as_ref().is_some_and(|c| c.enabled),
-            space: model
+            source_model: model
                 .configuration
                 .as_ref()
-                .filter(|_| model.model_type().as_deref() == Some("embed"))
-                .and_then(|c| {
-                    c.params
-                        .target_model
-                        .clone()
-                        .or_else(|| Some(model.name.clone()))
-                }),
+                .and_then(|c| c.params.source_model.clone()),
+            enabled: model.configuration.as_ref().is_some_and(|c| c.enabled),
+            space: model.configuration.as_ref().and_then(|c| {
+                c.params
+                    .target_model
+                    .clone()
+                    .or_else(|| Some(model.name.clone()))
+            }),
             priority: model.priority,
             model_type: model.model_type(),
             provider: model.provider,

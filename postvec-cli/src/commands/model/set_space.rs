@@ -98,14 +98,18 @@ pub async fn run(cli: &Cli, args: ModelSetSpaceArgs, output: &Output) -> Result<
             vec!["databases served by this host (files only)".into()],
         )
     } else {
-        let (lost, unknown) = columns_bound_to(&mut target, &route, Scan::Loses, cli.timeout).await;
-        let (gained, _) = columns_bound_to(
+        let (lost, mut unknown) =
+            columns_bound_to(&mut target, &route, Scan::Changes, cli.timeout).await;
+        let (gained, more_unknown) = columns_bound_to(
             &mut target,
             &route,
-            Scan::Gains { prefer: false },
+            Scan::Gains { prefer: true },
             cli.timeout,
         )
         .await;
+        unknown.extend(more_unknown);
+        unknown.sort();
+        unknown.dedup();
         (lost, gained, unknown)
     };
     if !lost.is_empty() || !unknown.is_empty() {

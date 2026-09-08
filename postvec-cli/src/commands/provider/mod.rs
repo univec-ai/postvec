@@ -363,6 +363,10 @@ pub struct ProviderFileDoc {
 
 impl ProviderFileDoc {
     pub fn load(path: &Path) -> Result<Option<Self>> {
+        Ok(Self::snapshot(path)?.map(|(doc, _, _)| doc))
+    }
+
+    fn snapshot(path: &Path) -> Result<Option<(Self, String, ApprovedFile)>> {
         use std::io::Read;
         use std::os::unix::fs::OpenOptionsExt;
 
@@ -392,6 +396,9 @@ impl ProviderFileDoc {
                 )))
             }
         };
+        let meta = file
+            .metadata()
+            .map_err(|e| CliError::precondition(e.to_string()))?;
         let mut raw = String::new();
         // `take(limit + 1)`, exactly as the loader's `read_private` does. A
         // `take(limit)` followed by `len() > limit` is an unreachable check:
@@ -412,10 +419,15 @@ impl ProviderFileDoc {
         let value: toml::Value = raw
             .parse()
             .map_err(|e| CliError::precondition(format!("cannot parse {}: {e}", path.display())))?;
-        Ok(Some(Self {
-            path: path.to_path_buf(),
-            value,
-        }))
+        let approved = ApprovedFile::capture(&meta, raw.as_bytes());
+        Ok(Some((
+            Self {
+                path: path.to_path_buf(),
+                value,
+            },
+            raw,
+            approved,
+        )))
     }
 
     pub fn provider_type(&self) -> Option<&str> {
@@ -803,10 +815,12 @@ pub fn rewrite_entries(
     }
     let mut docs: std::collections::BTreeMap<PathBuf, ProviderFileDoc> =
         std::collections::BTreeMap::new();
+    let mut snapshots = std::collections::BTreeMap::new();
     for (path, entry, changes) in edits {
         if !docs.contains_key(&path) {
-            let doc = ProviderFileDoc::load(&path)?
+            let (doc, raw, approved) = ProviderFileDoc::snapshot(&path)?
                 .ok_or_else(|| CliError::precondition(format!("{} is gone", path.display())))?;
+            snapshots.insert(path.clone(), (raw, approved));
             docs.insert(path.clone(), doc);
         }
         let doc = docs.get_mut(&path).expect("just inserted");
@@ -838,8 +852,42 @@ pub fn rewrite_entries(
             ))
         })?;
     }
-    for doc in docs.values() {
-        doc.write(owner)?;
+    let mut installed = Vec::new();
+    for (path, doc) in &docs {
+        let (_, approved) = &snapshots[path];
+        match install_secret_file(
+            path,
+            doc.body()?.as_bytes(),
+            owner,
+            &InstallGuard::Exact(approved.clone()),
+        ) {
+            Ok(token) => installed.push((path, token)),
+            Err(error) => {
+                let mut detail = format!("{}; install state: {:?}", error.error, error.state);
+                if let InstallState::Applied {
+                    installed: token, ..
+                } = error.state
+                {
+                    installed.push((path, token));
+                }
+                for (path, token) in installed.into_iter().rev() {
+                    if let Err(restore) = install_secret_file(
+                        path,
+                        snapshots[path].0.as_bytes(),
+                        owner,
+                        &InstallGuard::Exact(token),
+                    ) {
+                        detail.push_str(&format!(
+                            "; could not durably restore {}: {} ({:?})",
+                            path.display(),
+                            restore.error,
+                            restore.state
+                        ));
+                    }
+                }
+                return Err(CliError::apply(detail));
+            }
+        }
     }
     Ok(())
 }
@@ -2068,17 +2116,20 @@ pub enum Scan {
     /// affected when it is bound to the route by name, or bound in its space
     /// and the route becomes its preferred one — because nothing serves the
     /// space yet, or because `prefer` puts it first.
-    Gains { prefer: bool },
+    Gains {
+        prefer: bool,
+    },
     /// Routes that stop serving. A column is affected when the route in use
     /// is one of them and no other served route remains in its space.
     Loses,
+    Changes,
 }
 
 /// Every managed column whose embedding route `scan` changes, across every
 /// configured database. `routes` are `(name, space)` pairs; a `Loses` scan
 /// needs only the names. Resolution follows `postvec._route()` over what
-/// the running host serves; an unreachable host is read as "nothing served"
-/// and an uninspectable database is reported as unknown, never as clean —
+/// the running host serves; an unreachable host or uninspectable database
+/// is reported as unknown, never as clean —
 /// the conservative direction for a privacy gate.
 pub async fn columns_bound_to(
     target: &mut ProviderTarget,
@@ -2113,7 +2164,7 @@ pub async fn columns_bound_to(
                     (m.name.clone(), space, priority)
                 })
                 .collect(),
-            None => Vec::new(),
+            None => return (Vec::new(), databases),
         };
     let names: Vec<&str> = routes.iter().map(|(n, _)| n.as_str()).collect();
     let preferred = |space: &str, except: &[&str]| -> Option<&str> {
@@ -2152,6 +2203,9 @@ pub async fn columns_bound_to(
                             && current != Some(name.as_str())
                             && (current.is_none() || (prefer && !by_name)))
                 }),
+                Scan::Changes => current
+                    .filter(|c| names.contains(c))
+                    .and_then(|c| routes.iter().find(|(n, _)| n == c)),
                 Scan::Loses => current
                     .filter(|c| names.contains(c) && preferred(space, &names).is_none())
                     .and_then(|c| routes.iter().find(|(n, _)| n == c)),
@@ -2174,6 +2228,42 @@ pub async fn columns_bound_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_rewrite_rolls_back_a_later_file_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let paths: Vec<_> = ["a", "b"].iter().map(|name| {
+            let path = dir.path().join(format!("{name}.toml"));
+            let body = format!("provider='openai'\napi_key='test'\n[[models]]\nname='{name}'\nprovider_model_id='text-embedding-3-small'\ndim=1536\nspace='s'\n");
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        }).collect();
+        let before: Vec<_> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+        let edits = paths
+            .iter()
+            .zip(["a", "b"])
+            .map(|(p, name)| {
+                (
+                    p.clone(),
+                    name.into(),
+                    vec![EntryEdit::Set {
+                        key: "priority",
+                        value: toml::Value::Integer(1),
+                    }],
+                )
+            })
+            .collect();
+        set_failpoints(&[("exchange", 2)]);
+        let result = rewrite_entries(dir.path(), edits, None);
+        set_failpoint(None);
+        assert!(result.is_err());
+        for (path, raw) in paths.iter().zip(before) {
+            assert_eq!(std::fs::read(path).unwrap(), raw);
+        }
+    }
 
     /// The guarded install takes the destination only in the state preflight
     /// approved: a file that appeared is never replaced; a file that was

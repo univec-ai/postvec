@@ -249,6 +249,35 @@ async fn exercise(dsn: &str) -> Result<()> {
     "#).await?;
     ensure!(db.execute("SELECT postvec.migration_finalize(id) FROM postvec.migrations WHERE new_column='new_v'").await.is_err(), "cutover discarded partition metadata");
     db.execute("COMMENT ON COLUMN partition_child.v IS NULL;SELECT postvec.migration_finalize(id) FROM postvec.migrations WHERE new_column='new_v'").await?;
+    ensure!(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT space FROM postvec.registry WHERE table_name='partitioned'"
+        )
+        .fetch_one(&mut db)
+        .await?
+        .is_none(),
+        "cutover retained the old space"
+    );
+    db.execute(r#"INSERT INTO postvec.models(name,model_type,target_model,target_dim,raw) VALUES
+        ('hint','embed','unrelated',3,'{"extra":{"priority":1}}'),
+        ('preferred','embed','hint',3,'{"extra":{"priority":2}}'),
+        ('bad-priority','embed','bad-space',3,'{"extra":{"provider":"p","priority":1e50,"priority_explicit":"bad"}}')"#).await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT route FROM postvec._route('removed','hint')")
+            .fetch_one(&mut db)
+            .await?
+            == "preferred",
+        "hint resolved as a route"
+    );
+    ensure!(
+        sqlx::query_scalar::<_, i32>(
+            "SELECT priority FROM postvec.routes WHERE route='bad-priority'"
+        )
+        .fetch_one(&mut db)
+        .await?
+            == 200,
+        "invalid priority did not fall back"
+    );
     let mut other = PgConnection::connect(dsn).await?;
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut other)

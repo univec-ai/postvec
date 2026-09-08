@@ -11,13 +11,16 @@ SELECT COALESCE(target_model, name) AS space,
        COALESCE('provider ' || (raw->'extra'->>'provider'), 'local') AS execution,
        target_dim AS dim,
        priority,
-       COALESCE((raw->'extra'->>'priority_explicit')::boolean, false) AS explicit,
+       COALESCE(raw->'extra'->'priority_explicit' = 'true'::jsonb, false) AS explicit,
        row_number() OVER (PARTITION BY COALESCE(target_model, name) ORDER BY priority, name) = 1
            AS preferred,
        last_seen
   FROM (SELECT *,
                CASE WHEN jsonb_typeof(raw->'extra'->'priority') = 'number'
-                    THEN (raw->'extra'->>'priority')::int
+                         AND raw->'extra'->>'priority' ~ '^[0-9]{1,5}$'
+                         THEN CASE WHEN (raw->'extra'->>'priority')::int BETWEEN 1 AND 65535
+                              THEN (raw->'extra'->>'priority')::int
+                              WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END
                     WHEN raw->'extra'->>'provider' IS NULL THEN 100 ELSE 200 END AS priority
           FROM postvec.models WHERE model_type = 'embed') m;
 GRANT SELECT ON postvec.routes TO PUBLIC;
@@ -25,6 +28,6 @@ GRANT SELECT ON postvec.routes TO PUBLIC;
 CREATE OR REPLACE FUNCTION postvec._route(model text, space text DEFAULT NULL)
 RETURNS SETOF postvec.routes LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
   SELECT * FROM postvec.routes
-   WHERE route IN ($1, $2) OR space IN ($1, $2)
+   WHERE route = $1 OR space IN ($1, $2)
    ORDER BY (route = $1) DESC, (space = $1) DESC, priority, route LIMIT 1
 $$;

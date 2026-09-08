@@ -66,6 +66,89 @@ pub fn checks(input: &DatabaseInput<'_>) -> Vec<CheckResult> {
     out
 }
 
+pub fn routes(
+    facts: &DatabaseFacts,
+    inventories: &[&crate::facts::ConfigInventory],
+    complete: bool,
+) -> Vec<CheckResult> {
+    let mut out = Vec::new();
+    for entry in facts.registry.iter().filter(|e| e.state != "disabled") {
+        let space = entry.space.as_deref().unwrap_or(&entry.model);
+        let route = inventories
+            .iter()
+            .flat_map(|i| &i.models)
+            .filter(|m| {
+                let target = m.space.as_deref().unwrap_or(&m.name);
+                m.enabled
+                    && m.model_type.as_deref() == Some("embed")
+                    && (m.name == entry.model || target == entry.model || target == space)
+            })
+            .min_by_key(|m| {
+                (
+                    m.name != entry.model,
+                    m.space.as_deref().unwrap_or(&m.name) != entry.model,
+                    m.priority
+                        .unwrap_or(if m.provider.is_none() { 100 } else { 200 }),
+                    &m.name,
+                )
+            });
+        let label = format!(
+            "{}.{} (space {space:?})",
+            entry.relation, entry.source_column
+        );
+        if let Some(route) = route {
+            if route.target_dim.is_some_and(|d| d != entry.dim as u32) {
+                out.push(CheckResult::fail(
+                    "registry.routes",
+                    facts.scope(),
+                    format!(
+                        "{label}: route {} has an incompatible dimension",
+                        route.name
+                    ),
+                ));
+            } else if entry.space.as_deref().is_some_and(|s| s != entry.model)
+                && route.name != entry.model
+            {
+                out.push(CheckResult::warn(
+                    "registry.routes",
+                    facts.scope(),
+                    format!(
+                        "{label}: bound route {} is unavailable; using {}",
+                        entry.model, route.name
+                    ),
+                ));
+            }
+            continue;
+        }
+        let bridged = inventories.iter().any(|i| {
+            let local = |m: &&crate::facts::InventoryModel| m.enabled && m.provider.is_none();
+            i.models
+                .iter()
+                .filter(local)
+                .any(|m| m.model_type.as_deref() == Some("embed-bridge"))
+                && i.models.iter().filter(local).any(|c| {
+                    c.model_type.as_deref() == Some("convert")
+                        && c.space.as_deref() == Some(space)
+                        && i.models.iter().filter(local).any(|m| {
+                            m.model_type.as_deref() == Some("embed")
+                                && c.source_model.as_deref()
+                                    == Some(m.space.as_deref().unwrap_or(&m.name))
+                        })
+                })
+        });
+        if !bridged {
+            let status = if complete {
+                super::CheckStatus::Fail
+            } else {
+                super::CheckStatus::Warn
+            };
+            out.push(CheckResult::new("registry.routes", facts.scope(), status, format!("{label}: no embedding route found{}", if complete { "" } else { " (incomplete discovery)" }))
+                .with_fix("activate a route in this space, repair its provider configuration, or install a local embedding bridge"));
+        }
+    }
+    out
+}
+
 fn exists(input: &DatabaseInput<'_>, scope: &str) -> CheckResult {
     if !input.facts.exists {
         return CheckResult::fail(
@@ -972,6 +1055,35 @@ mod tests {
 
     fn status(checks: &[CheckResult], id: &str) -> Option<CheckStatus> {
         checks.iter().find(|c| c.id == id).map(|c| c.status)
+    }
+
+    #[test]
+    fn routes_distinguish_fallback_absence_and_local_bridges() {
+        let mut facts = healthy();
+        let mut bound = entry(true, true);
+        bound.model = "removed".into();
+        bound.space = Some("space".into());
+        bound.dim = 3;
+        facts.registry = vec![bound];
+        let inventory = crate::engine::parse_config_body(r#"{"success":true,"data":{"models":[
+            {"name":"hosted","configuration":{"enabled":true,"params":{"model_type":"embed","target_model":"space","target_dim":3}}}
+        ]}}"#).unwrap();
+        let checks = routes(&facts, &[&inventory], true);
+        assert_eq!(checks[0].status, CheckStatus::Warn);
+        assert!(checks[0].summary.contains("using hosted"));
+        assert_eq!(routes(&facts, &[], true)[0].status, CheckStatus::Fail);
+        assert_eq!(routes(&facts, &[], false)[0].status, CheckStatus::Warn);
+        facts.registry[0].dim = 4;
+        assert_eq!(
+            routes(&facts, &[&inventory], true)[0].status,
+            CheckStatus::Fail
+        );
+        let bridge = crate::engine::parse_config_body(r#"{"success":true,"data":{"models":[
+            {"name":"local","configuration":{"enabled":true,"params":{"model_type":"embed","target_model":"source","target_dim":3}}},
+            {"name":"converter","configuration":{"enabled":true,"params":{"model_type":"convert","source_model":"source","target_model":"space","target_dim":4}}},
+            {"name":"bridge","configuration":{"enabled":true,"params":{"model_type":"embed-bridge"}}}
+        ]}}"#).unwrap();
+        assert!(routes(&facts, &[&bridge], true).is_empty());
     }
 
     #[test]

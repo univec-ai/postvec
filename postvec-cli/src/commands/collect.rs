@@ -410,9 +410,18 @@ pub fn evaluate(
         instance_identity: identity.clone(),
     });
 
+    let (inventories, complete): (Vec<_>, bool) = match inference {
+        InferenceProbe::Embedded(p) => (p.loaded.iter().collect(), p.loaded.is_some()),
+        InferenceProbe::Remote(p) => (
+            p.http.iter().filter_map(|n| n.config.as_ref()).collect(),
+            !p.http.is_empty() && p.http.iter().all(|n| n.config.is_some()),
+        ),
+        _ => (Vec::new(), false),
+    };
     let reachable = inference.reachable();
     let mode = snapshot.settings.mode();
     for facts in databases {
+        out.extend(checks::database::routes(facts, &inventories, complete));
         out.extend(checks::database::checks(&checks::database::DatabaseInput {
             facts,
             settings: &snapshot.settings,
@@ -548,6 +557,7 @@ mod tests {
             models: names
                 .iter()
                 .map(|name| InventoryModel {
+                    source_model: None,
                     name: (*name).to_string(),
                     enabled: true,
                     model_type: Some("embed".into()),

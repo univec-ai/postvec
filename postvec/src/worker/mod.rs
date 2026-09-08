@@ -1174,7 +1174,7 @@ fn tcp_reachable(addr: &str) -> bool {
 }
 
 /// Log once when an entry starts embedding through a different route than
-/// last time, and keep `registry.space` in step with the route in use.
+/// last time. Space bookkeeping runs with the model-cache refresh.
 fn note_route(
     last: &mut std::collections::HashMap<i64, String>,
     entry: &crate::registry::RegistryEntry,
@@ -1200,15 +1200,7 @@ fn note_route(
         entry.source_column.clone(),
     );
     let _ = try_transaction(move || {
-        let provider = direct.and_then(|name| {
-            let _ = Spi::run_with_args(
-                "UPDATE postvec.registry
-                    SET space = (SELECT space FROM postvec._route($1))
-                  WHERE id = $2 AND space IS DISTINCT FROM (SELECT space FROM postvec._route($1))",
-                &[name.as_str().into(), id.into()],
-            );
-            crate::api::registry::external_provider_of(&name)
-        });
+        let provider = direct.and_then(|name| crate::api::registry::external_provider_of(&name));
         if let Some(old) = old {
             let egress = provider
                 .map(|p| format!("; source text of {col:?} now leaves the host for provider {p:?}"))
@@ -1273,7 +1265,7 @@ fn run_one_cycle(
         // no embed model of its own rides an embed-bridge route.
         let model = routing.model.clone();
         let migrating = routing.model != entry.model;
-        let space = entry.space.clone().filter(|_| !migrating);
+        let space = routing.space.clone();
         let resolved = try_transaction(move || {
             crate::api::embed::resolve_embed_route_for(&model, space.as_deref())
         });

@@ -273,9 +273,10 @@ BEGIN
     SELECT * INTO STRICT r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation::regclass AND source_column=column_name FOR UPDATE;
     IF r.state<>'active' OR r.model=new_model OR strategy NOT IN ('convert','reembed','auto') OR reindex NOT IN ('manual','blocking') THEN RAISE EXCEPTION 'invalid migration state or options'; END IF;
     IF r.trigger_mode='none' AND NOT observed_writes_quiesced THEN RAISE EXCEPTION 'observed writes must be quiesced'; END IF;
-    SELECT name INTO converter FROM postvec.models WHERE model_type='convert' AND source_model=COALESCE(r.space,r.model) AND target_model=new_model ORDER BY (raw->'extra'->>'provider') IS NOT NULL,name LIMIT 1;
+    SELECT name INTO converter FROM postvec.models WHERE model_type='convert' AND source_model=COALESCE(r.space,r.model) AND target_model=COALESCE((SELECT space FROM postvec._route(new_model)),new_model) ORDER BY (raw->'extra'->>'provider') IS NOT NULL,name LIMIT 1;
     IF strategy='convert' AND converter IS NULL THEN RAISE EXCEPTION 'no direct converter'; END IF;
     via:=CASE WHEN strategy='reembed' OR converter IS NULL THEN jsonb_build_object('kind','reembed') ELSE jsonb_build_object('kind','convert','model',converter) END;
+    via:=via || jsonb_build_object('space',COALESCE((SELECT space FROM postvec._route(new_model)),new_model));
     dimension:=COALESCE((SELECT dim FROM postvec._route(new_model) WHERE dim>0),(SELECT target_dim FROM postvec.models WHERE model_type='convert' AND target_model=new_model AND target_dim>0 ORDER BY name LIMIT 1));
     IF dimension IS NULL THEN RAISE EXCEPTION 'target dimension unavailable'; END IF;
     newcol:='postvec_new_'||r.id;
@@ -334,7 +335,7 @@ BEGIN
     END LOOP;
     EXECUTE format('ALTER TABLE %s DROP COLUMN %I RESTRICT',target,r.vector_column);
     EXECUTE format('ALTER TABLE %s RENAME COLUMN %I TO %I',target,m.new_column,r.vector_column);
-    UPDATE postvec.registry SET state='active',model=m.new_model,dim=m.new_dim,owns_vector_column=true WHERE id=r.id;
+    UPDATE postvec.registry SET state='active',model=m.new_model,space=COALESCE(m.resolved_via->>'space',(SELECT space FROM postvec._route(m.new_model))),dim=m.new_dim,owns_vector_column=true WHERE id=r.id;
     IF m.reindex='blocking' THEN PERFORM postvec.create_vector_index(format('%I.%I',r.table_schema,r.table_name)::regclass,r.source_column);
     ELSIF had_index THEN
         UPDATE postvec.migrations SET state='awaiting_index' WHERE id=m.id;

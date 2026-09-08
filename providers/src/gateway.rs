@@ -1853,8 +1853,8 @@ mod tests {
         let models = gateway.models();
         let stamped = models.iter().find(|m| m["name"] == "stamped").unwrap();
         let unstamped = models.iter().find(|m| m["name"] == "unstamped").unwrap();
-        assert_eq!(stamped["priority"], 200);
-        assert_eq!(unstamped["priority"], 201);
+        assert_eq!(stamped["priority"], 201);
+        assert_eq!(unstamped["priority"], 200);
         assert_eq!(stamped["priority_explicit"], false);
     }
 }

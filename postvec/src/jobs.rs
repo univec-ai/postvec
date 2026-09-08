@@ -37,6 +37,7 @@ pub struct EmbedRouting {
     pub migration_id: Option<i64>,
     /// Public model name (embed-resolution key).
     pub model: String,
+    pub space: Option<String>,
     /// Target vector column.
     pub vector_column: String,
     pub dim: i32,
@@ -48,7 +49,7 @@ pub fn embed_routing(entry: &RegistryEntry) -> EmbedRouting {
         let live = Spi::connect(|c| {
             let t = c
                 .select(
-                    "SELECT id, new_model, new_column, new_dim
+                    "SELECT id, new_model, new_column, new_dim, resolved_via->>'space'
                       FROM postvec.migrations
                      WHERE registry_id = $1
                         AND state IN ('running','awaiting_finalize')
@@ -63,13 +64,15 @@ pub fn embed_routing(entry: &RegistryEntry) -> EmbedRouting {
                     r.get::<String>(2).unwrap().unwrap(),
                     r.get::<String>(3).unwrap().unwrap(),
                     r.get::<i32>(4).unwrap().unwrap(),
+                    r.get::<String>(5).unwrap(),
                 )
             })
         });
-        if let Some((id, model, column, dim)) = live {
+        if let Some((id, model, column, dim, space)) = live {
             return EmbedRouting {
                 migration_id: Some(id),
                 model,
+                space,
                 vector_column: column,
                 dim,
             };
@@ -78,6 +81,7 @@ pub fn embed_routing(entry: &RegistryEntry) -> EmbedRouting {
     EmbedRouting {
         migration_id: None,
         model: entry.model.clone(),
+        space: entry.space.clone(),
         vector_column: entry.vector_column.clone(),
         dim: entry.dim,
     }

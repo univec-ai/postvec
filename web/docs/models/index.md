@@ -34,11 +34,14 @@ route is served, it is used; otherwise resolution treats the string as
 a space (or as the vanished route's remembered space) and picks the
 served route with the lowest priority. Local models are priority 100.
 Provider routes without an explicit `priority` follow the order they
-were added.
+were added. Entries without an `added` timestamp come first, so adding a
+stamped route does not displace an existing unstamped route.
 
 `postvec.routes` lists every embed route; `postvec._route(model, space)`
 is the resolution itself. `model prefer` changes the order without a
-migration. `model set-space` edits a mis-declared space. Adding a route
+migration for space bindings. Exact route bindings still win over priority:
+if a local route is also named `baai-bge-m3`, that binding continues using
+it while it is served. `model set-space` edits a mis-declared space. Adding a route
 changes an existing column only when it becomes that column's preferred
 route: the space had no direct route yet, or `--prefer` puts it first.
 

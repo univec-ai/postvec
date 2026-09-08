@@ -520,6 +520,27 @@ scenario_A_live_verification() {
     wait_for "the provider model reaches the model cache" 30 model_cached \
         && ok "${PROV_MODEL} is served and cached" \
         || bad "${PROV_MODEL} never reached postvec.models"
+    local root=/opt/postvec owner; owner="$(provider_file_owner)"
+    (( EMBEDDED )) && root=/etc/postvec
+    docker exec -i -u root "${SRV}" bash -c "umask 077; cat > ${root}/providers.d/space-smoke.toml; chown ${owner}:${owner} ${root}/providers.d/space-smoke.toml" <<EOF
+provider = "openai"
+api_key_file = "$(provider_key_path)"
+base_url = "http://127.0.0.1:${MOCK_PORT}"
+[[models]]
+name = "space-smoke"
+provider_model_id = "text-embedding-3-small"
+dim = 1536
+space = "${PROV_MODEL}"
+priority = 1
+EOF
+    reload_providers >/dev/null
+    dbsql "SELECT postvec.refresh_models()" >/dev/null
+    [[ "$(dbsql "SELECT space = '${PROV_MODEL}' AND priority = 1 AND explicit AND preferred FROM postvec.routes WHERE route = 'space-smoke'")" == t ]] \
+        && ok "packaged host and SQL preserve space and priority" \
+        || bad "space/priority descriptor did not reach postvec.routes"
+    docker exec -u root "${SRV}" rm "${root}/providers.d/space-smoke.toml"
+    reload_providers >/dev/null
+    dbsql "SELECT postvec.refresh_models()" >/dev/null
 }
 
 scenario_B_success_and_search() {

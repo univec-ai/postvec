@@ -398,6 +398,8 @@ impl DatabaseFacts {
 /// One model as advertised by a `/config` response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InventoryModel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_model: Option<String>,
     pub name: String,
     pub enabled: bool,
     pub model_type: Option<String>,
@@ -856,6 +858,7 @@ mod tests {
         let inv = ConfigInventory {
             models: vec![
                 InventoryModel {
+                    source_model: None,
                     name: "a".into(),
                     enabled: true,
                     model_type: Some("embed".into()),
@@ -868,6 +871,7 @@ mod tests {
                     priority: None,
                 },
                 InventoryModel {
+                    source_model: None,
                     name: "b".into(),
                     enabled: false,
                     model_type: Some("embed".into()),
@@ -942,6 +946,7 @@ mod tests {
                     config_status: Some(200),
                     config: Some(ConfigInventory {
                         models: vec![InventoryModel {
+                            source_model: None,
                             name: "m".into(),
                             enabled: true,
                             model_type: Some("embed".into()),
@@ -964,6 +969,7 @@ mod tests {
                     config_status: Some(200),
                     config: Some(ConfigInventory {
                         models: vec![InventoryModel {
+                            source_model: None,
                             name: "m".into(),
                             enabled: true,
                             model_type: Some("convert".into()),

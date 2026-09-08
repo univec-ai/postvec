@@ -509,9 +509,14 @@ fn migrate(
     // executor were removed ahead of that executor's deprecation.) This is
     // what prevents a late route failure after millions of rows are in
     // flight.
-    let resolved_via: serde_json::Value = match strategy.as_str() {
+    let mut resolved_via: serde_json::Value = match strategy.as_str() {
         "reembed" => serde_json::json!({ "kind": "reembed" }),
-        _ => match resolve_convert(entry.space.as_deref().unwrap_or(&entry.model), new_model) {
+        _ => match resolve_convert(
+            entry.space.as_deref().unwrap_or(&entry.model),
+            crate::api::embed::cache_space(new_model)
+                .as_deref()
+                .unwrap_or(new_model),
+        ) {
             Ok(name) => {
                 serde_json::json!({ "kind": "direct", "model": name })
             }
@@ -542,6 +547,9 @@ fn migrate(
             );
         }
     }
+    resolved_via["space"] = serde_json::json!(
+        crate::api::embed::cache_space(new_model).unwrap_or_else(|| new_model.to_string())
+    );
     let is_reembed = resolved_via["kind"] == "reembed";
 
     let new_column = format!("{}_new", entry.vector_column);
@@ -849,12 +857,14 @@ fn migration_finalize(migration_id: i64) {
     // observed entry stays observed until promoted.
     Spi::run_with_args(
         "UPDATE postvec.registry
-            SET model = $1, dim = $2, state = 'active', owns_vector_column = true
+            SET model = $1, space = COALESCE($4, (SELECT space FROM postvec._route($1))),
+                dim = $2, state = 'active', owns_vector_column = true
           WHERE id = $3",
         &[
             m.new_model.as_str().into(),
             m.new_dim.into(),
             entry.id.into(),
+            m.resolved_via["space"].as_str().into(),
         ],
     )
     .unwrap();
@@ -1077,6 +1087,38 @@ pub(crate) mod test_fixtures {
 mod tests {
     use super::test_fixtures::docs_enabled;
     use pgrx::prelude::*;
+
+    #[pg_test]
+    fn migration_uses_target_space_and_replaces_source_hint() {
+        docs_enabled();
+        Spi::run(
+            "INSERT INTO postvec.models(name,model_type,target_model,target_dim,raw)
+                  VALUES ('hosted-m2','embed','m2',4,'{}');
+                  DELETE FROM postvec.jobs;
+                  DELETE FROM docs",
+        )
+        .unwrap();
+        let mid = Spi::get_one::<i64>(
+            "SELECT postvec.migrate('docs','body','hosted-m2',strategy=>'convert')",
+        )
+        .unwrap()
+        .unwrap();
+        Spi::run(
+            "UPDATE postvec.migrations SET state='awaiting_finalize'; DELETE FROM postvec.jobs; DELETE FROM postvec.models WHERE name='hosted-m2'",
+        )
+        .unwrap();
+        Spi::run(&format!("SELECT postvec.migration_finalize({mid})")).unwrap();
+        assert_eq!(
+            Spi::get_one::<String>("SELECT space FROM postvec.registry")
+                .unwrap()
+                .as_deref(),
+            Some("m2")
+        );
+        assert_eq!(
+            crate::api::embed::resolve_embed_for_entry("hosted-m2", Some("m2")).unwrap(),
+            "m2"
+        );
+    }
 
     #[pg_test]
     fn migrate_preflight_direct_convert() {

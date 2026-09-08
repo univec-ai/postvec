@@ -87,6 +87,11 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
         ));
     }
 
+    if edits.is_empty() {
+        output.note("priorities are already configured; nothing changed");
+        return Ok(Exit::Success);
+    }
+
     let mut plan = Plan::new("model prefer", target.label());
     let mut files: Vec<_> = edits.iter().map(|(p, ..)| p.clone()).collect();
     files.dedup();
@@ -125,6 +130,28 @@ pub async fn run(cli: &Cli, args: ModelPreferArgs, output: &Output) -> Result<Ex
             plan.push(PlanStep::AcknowledgeProviderPrivacy {
                 provider,
                 model: first.clone(),
+                columns,
+                unknown_databases: unknown,
+            });
+        }
+    }
+    if args.default {
+        let routes: Vec<_> = known
+            .iter()
+            .map(|(_, name, _)| (name.clone(), args.space.clone()))
+            .collect();
+        let (columns, unknown) = if target.files_only().is_some() {
+            (
+                Vec::new(),
+                vec!["databases served by this host (files only)".into()],
+            )
+        } else {
+            columns_bound_to(&mut target, &routes, Scan::Changes, cli.timeout).await
+        };
+        if !columns.is_empty() || !unknown.is_empty() {
+            plan.push(PlanStep::AcknowledgeProviderPrivacy {
+                provider: "configured providers".into(),
+                model: args.space.clone(),
                 columns,
                 unknown_databases: unknown,
             });

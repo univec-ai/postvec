@@ -115,21 +115,24 @@ pub(super) async fn entry(
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Routing {
     pub model: String,
+    pub space: Option<String>,
     pub column: String,
     pub dim: i32,
     pub migration: Option<i64>,
 }
 pub(super) async fn routing(conn: &mut PgConnection, e: &RegistryEntry) -> Result<Routing> {
-    let m: Option<(i64,String,String,i32)> = sqlx::query_as("SELECT id,new_model,new_column,new_dim FROM postvec.migrations WHERE registry_id=$1 AND state IN ('running','awaiting_finalize') ORDER BY id DESC LIMIT 1") .bind(e.id).fetch_optional(conn).await?;
+    let m: Option<(i64,String,String,i32,Option<String>)> = sqlx::query_as("SELECT id,new_model,new_column,new_dim,resolved_via->>'space' FROM postvec.migrations WHERE registry_id=$1 AND state IN ('running','awaiting_finalize') ORDER BY id DESC LIMIT 1") .bind(e.id).fetch_optional(conn).await?;
     Ok(match m {
-        Some((id, model, column, dim)) => Routing {
+        Some((id, model, column, dim, space)) => Routing {
             model,
+            space,
             column,
             dim,
             migration: Some(id),
         },
         None => Routing {
             model: e.model.clone(),
+            space: e.space.clone(),
             column: e.vector_column.clone(),
             dim: e.dim,
             migration: None,
@@ -263,11 +266,7 @@ pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedD
     }
     tx.commit().await?;
     let texts: Vec<_> = jobs.iter().filter_map(|j| j.text.clone()).collect();
-    let space = if expected.migration.is_some() {
-        None
-    } else {
-        e.space.as_deref()
-    };
+    let space = expected.space.as_deref();
     let outcomes = infer(client, &texts, None, &expected.model, space, expected.dim).await;
     let mut tx = conn.begin().await?;
     guard(&mut tx).await?;

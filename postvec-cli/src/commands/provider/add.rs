@@ -494,7 +494,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         new_names.clone()
     };
     let scanned = matches!(target, ProviderTarget::Embedded { .. });
-    let (columns, unknown_databases) = if scanned && !public_names.is_empty() {
+    let (mut columns, mut unknown_databases) = if scanned && !public_names.is_empty() {
         columns_bound_to(
             &mut target,
             &public_names,
@@ -507,6 +507,14 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     } else {
         (Vec::new(), Vec::new())
     };
+    if scanned && endpoint_changes {
+        let (affected, unknown) =
+            columns_bound_to(&mut target, &public_names, Scan::Changes, cli.timeout).await;
+        columns.extend(affected);
+        unknown_databases.extend(unknown);
+        unknown_databases.sort();
+        unknown_databases.dedup();
+    }
     // A file parked with `enabled = false` serves nothing, so nothing starts
     // being sent anywhere: no privacy step, or the plan would warn about a
     // recipient that does not exist. The journal says the file is parked.
@@ -1468,7 +1476,7 @@ fn model_entry(model: &NewModel) -> toml::Value {
         entry.insert(
             "added".into(),
             toml::Value::String(
-                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
             ),
         );
     }

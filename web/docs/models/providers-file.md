@@ -34,7 +34,7 @@ max_batch         = 512    # host sub-batches to this
 max_tokens        = 8191   # advertised as sequence_len
 # space    = "openai-text-embedding-3-small"  # vector space; default is name
 # priority = 1                                # lower wins; omit for derived order
-# added    = "2026-09-08T00:00:00Z"           # RFC 3339; orders unprioritised routes
+# added    = "2026-09-08T00:00:00Z"           # RFC 3339; unstamped routes precede stamped ones
 ```
 
 `base_url` replaces the **origin only**. Each connector appends its own path.

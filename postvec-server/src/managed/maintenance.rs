@@ -297,7 +297,7 @@ async fn migrate(
         &payloads,
         if reembed { None } else { Some(&parsed) },
         target,
-        None,
+        via["space"].as_str(),
         dim,
     )
     .await;

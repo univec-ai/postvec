@@ -93,7 +93,10 @@ pub fn read_migration_batch(migration_id: i64, limit: i32) -> BatchRead {
     let is_reembed = m.resolved_via["kind"] == "reembed";
 
     let embed_call = if is_reembed {
-        match crate::api::embed::resolve_embed_route(&m.new_model) {
+        match crate::api::embed::resolve_embed_route_for(
+            &m.new_model,
+            m.resolved_via["space"].as_str(),
+        ) {
             Ok(resolution) => Some(resolution.into_call()),
             Err(e) => {
                 // Cache may be stale (models refresh on cadence): retry later.
