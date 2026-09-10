@@ -448,17 +448,16 @@ Fix that directory's ownership/mode, or set TMPDIR to a private directory."
 #
 #   anonymous_model_pull <cli> <engine-root> <model-name>
 #
-# Anonymous, deliberately. The receipt's `access == "public"` check is the
-# authoritative gate (scripts/check-model-bundle.py); this is defence in depth,
-# so that a credential which happens to be in the build environment cannot
-# quietly put a private model inside a public package.
+# Anonymous. The receipt's `access == "public"` check is the authoritative
+# gate (scripts/check-model-bundle.py); this is defence in depth, so a
+# credential in the build environment cannot quietly put a private model
+# inside a public package.
 #
-# For a non-root build, unsetting POSTVEC_API_KEY and pointing XDG_CONFIG_HOME
-# at a scratch directory hides the effective user's store. Root is different:
-# the CLI intentionally reads /var/lib/postvec/auth.json regardless of XDG, so
-# there is no scratch that hides it — and moving, deleting or reading around an
-# operator's credential file is not something a build script may do. It refuses
-# instead.
+# For a non-root build, unsetting POSTVEC_API_KEY and pointing
+# XDG_CONFIG_HOME at a scratch directory hides the effective user's store.
+# Root is different: the CLI reads /var/lib/postvec/auth.json regardless of
+# XDG, so there is no scratch that hides it. The script refuses; it does
+# not move, delete or read around an operator's credential file.
 anonymous_model_pull() {
     local cli="$1" root="$2" name="$3"
     [[ "${root}" == /* ]] || die "anonymous_model_pull: the engine root must be absolute"
@@ -564,17 +563,14 @@ require_pg_major() {
 # Where built packages live.
 #
 # Three roots, because the packages have three different identities.
-# `postvec-cli` and ONNX Runtime are native code identical for every PostgreSQL
-# major — building them per major would produce several files with the same
-# name — so they belong to a (distribution, architecture) cell. The model bundle
-# and the metapackage are `all`/`noarch` and belong to a distribution alone
-# (`noarch_dist_dir`). The extension packages belong to a (distribution, major,
-# architecture) cell.
+# `postvec-cli` and ONNX Runtime are native code identical for every
+# PostgreSQL major, so they belong to a (distribution, architecture) cell.
+# The model bundle and the metapackage are `all`/`noarch` and belong to a
+# distribution alone (`noarch_dist_dir`). The extension packages belong to a
+# (distribution, major, architecture) cell.
 #
-# Everything that *consumes* packages has to read all three. A PG 16 install
-# test looking only in its own cell would find no CLI at all, and would silently
-# have been testing nothing but PG 18 (where the cells happen to coincide if you
-# flatten them).
+# Everything that consumes packages has to read all three. A PG 16 install
+# test looking only in its own cell would find no CLI at all.
 common_dist_dir() {
     printf '%s/dist/common/%s-%s\n' "${PKG_DIR}" "$1" "$2"
 }
@@ -668,19 +664,18 @@ PY
 
 # Render the changelog every package ships, and compress it.
 #
-# Debian Policy §12.7 requires /usr/share/doc/<package>/changelog.Debian.gz in
-# every non-native package; lintian reports its absence as an error, and it is
-# where `apt changelog` and every Debian administrator looks first.
+# Debian Policy §12.7 requires /usr/share/doc/<package>/changelog.Debian.gz
+# in every non-native package; lintian reports its absence as an error, and
+# it is where `apt changelog` looks first.
 #
-# nFPM has a `changelog:` field and it is deliberately not used for this. Its
-# .deb output omits the `<distribution>; urgency=` header that the format
-# requires, so dpkg and lintian both reject the result as "not a Debian
-# changelog" — which would trade a missing file for a malformed one. The source
-# is therefore kept in the format it is published in, and rendered here.
+# nFPM has a `changelog:` field. Its .deb output omits the
+# `<distribution>; urgency=` header that the format requires, so dpkg and
+# lintian both reject the result as "not a Debian changelog". The source is
+# kept in the format it is published in, and rendered here.
 #
-# `gzip -n` because the file name and timestamp gzip would otherwise embed are
-# build-time facts: with them, the same source produces different bytes on every
-# run and the packages stop being reproducible.
+# `gzip -n` because the file name and timestamp gzip would otherwise embed
+# are build-time facts: with them, the same source produces different bytes
+# on every run and the packages stop being reproducible.
 render_changelog() {
     local template="$1" dest="$2" plain="${2%.gz}"
     need python3

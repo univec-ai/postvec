@@ -67,15 +67,14 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         ),
     };
 
-    // What the host would serve after this change, against what it serves
-    // **now** — and "now" is the live snapshot where one can be asked, not
-    // the files. The two diverge: a reload that failed kept the previous
-    // snapshot, so a route can be serving from a file the directory as it
-    // stands would no longer load (over a ceiling, a contest introduced
-    // since). Modelling "now" from the files would call that route absent,
-    // and `rm --yes` would take a working route away with no acknowledgement.
-    // The files are the fallback when no host answers, and the plan says
-    // which source it used.
+    // Compare what the host would serve after this change with what it
+    // serves now. "Now" is the live snapshot. The two diverge: a reload
+    // that failed kept the previous snapshot, so a route can still be
+    // serving from a file the directory as it stands would no longer load
+    // (over a ceiling, a contest introduced since). Modelling "now" from
+    // the files would call that route absent, and `rm --yes` would take a
+    // working route away with no acknowledgement. The files are the
+    // fallback when no host answers, and the plan says which source it used.
     let structural_now =
         providers::config::served_names_if(target.dir(), &file_path, Some(&doc.body()?))
             .map_err(CliError::precondition)?;
@@ -258,21 +257,19 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         (Vec::new(), Vec::new())
     };
 
-    // `--path` cannot inspect a cluster, so "no bound column was found" is
-    // not "no bound column exists". The lost-route acknowledgement is pushed
-    // anyway, with the databases marked UNKNOWN — exactly as `provider add`
-    // treats the mirror case. `--path` is the documented way to administer
-    // remote nodes; it must not be the one mode where `--yes` takes a route
-    // away unasked.
+    // `--path` cannot inspect a cluster. The lost-route acknowledgement is
+    // pushed anyway, with the databases marked UNKNOWN, as `provider add`
+    // treats the mirror case. `--path` is how remote nodes are administered,
+    // so `--yes` still needs the same acknowledgement.
     // No host answered and the whole file goes: the unreachable host may be
-    // serving routes from an *earlier* version of this file that the document
-    // no longer declares — after an edit, or with its models section gone
-    // altogether. Nothing on disk can recover them, so the file itself is the
-    // route whose loss is acknowledged. With routes still declared they are
+    // serving routes from an earlier version of this file that the document
+    // no longer declares, after an edit, or with its models section gone.
+    // Nothing on disk can recover them, so the file itself is the route
+    // whose loss is acknowledged. With routes still declared they are
     // already in the lost set and carry the same acknowledgement.
-    // The route is named by the file alone — one typeable token, because the
-    // interactive acknowledgement is the operator typing the names back. The
-    // explanation goes in the UNKNOWN line.
+    // The route is named by the file alone, one typeable token, because
+    // the interactive acknowledgement is the operator typing the names
+    // back. The explanation goes in the UNKNOWN line.
     let mut truly_going_away = truly_going_away;
     let file_is_the_route = host_unknown && remove_file && truly_going_away.is_empty();
     if file_is_the_route && !served_after.is_empty() {

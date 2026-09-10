@@ -1,16 +1,11 @@
 #!/bin/sh
 # Runs after the extension package's files are removed.
 #
-# The only thing this script is permitted to do is *say* something. It must not
-# stop, start, reload or reconfigure PostgreSQL, must not connect to a
-# database, must not run CREATE/ALTER/DROP EXTENSION, and must not delete data
-# or engine assets. Package removal removes package-owned files; database state
-# is the operator's, and only `postvec uninstall` may touch it.
+# Prints a hint. Package removal removes package-owned files. Database
+# state is the operator's; only `postvec uninstall` may touch it.
 #
-# It must also never fail. A package that cannot be removed because a message
-# could not be written to a closed stderr is a far worse problem than a missing
-# hint — so this script deliberately runs *without* `set -e`, and ends in an
-# unconditional `exit 0`.
+# Runs without `set -e` and ends in an unconditional `exit 0`, so a closed
+# stderr cannot fail the removal.
 
 # Debian passes "remove"/"purge"/"upgrade"; RPM passes the number of remaining
 # copies of this package (1 = an upgrade, 0 = a real removal). Say nothing

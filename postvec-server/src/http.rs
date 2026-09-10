@@ -7,8 +7,8 @@
 //! Admin mutation routes live on the loopback listener in [`crate::admin`].
 //!
 //! `GET /config` `data.models` is the compatibility surface: an array of
-//! `{name, status, configuration}`. Additions are safe. Renaming or nesting
-//! `models` is not. The list is what is loaded now, not what is on disk.
+//! `{name, status, configuration}`. Additions are safe; renaming or nesting
+//! `models` is a breaking change. The list is what is loaded now.
 
 use crate::api;
 use crate::cluster::ClusterMember;
@@ -51,8 +51,8 @@ pub fn config_models(configs: &[ModelConfiguration]) -> Vec<Value> {
 
 /// [`config_models`] plus the provider gateway's descriptors (already in
 /// the nested HubModel shape), appended after the engine's own models. A
-/// public name that collides with a local model is skipped with a warning:
-/// the local model wins, same rule as the gRPC dispatch.
+/// public name that collides with a local model is skipped: the local model
+/// wins, same rule as the gRPC dispatch.
 pub fn merged_config_models(
     configs: &[ModelConfiguration],
     gateway: &providers::gateway::Gateway,
@@ -61,10 +61,8 @@ pub fn merged_config_models(
     for descriptor in gateway.models() {
         let name = descriptor["name"].as_str().unwrap_or_default();
         if configs.iter().any(|cfg| cfg.name == name) {
-            // Debug, not warn: `/config` is polled on every discovery
-            // refresh (once a minute per database, per node), and a
-            // deliberate collision is a *steady state*, not an event. At
-            // warn this printed the same line forever. `provider ls` and
+            // Debug: `/config` is polled on every discovery refresh, and a
+            // deliberate collision is a steady state. `provider ls` and
             // `postvec doctor` report the collision where it is actionable.
             log::debug!(
                 "provider model {name:?} collides with a local engine model; \
@@ -88,10 +86,9 @@ fn loaded_configs(engine: &InferenceEngine) -> Vec<ModelConfiguration> {
 
 /// Memory, from `/proc/meminfo` where it exists.
 ///
-/// Memory is the binding constraint on an inference node — every resident
-/// model is a set of native sessions — so a discovery read that already
-/// costs a round trip may as well carry it. Zeroes elsewhere, matching what
-/// the upstream engine reports when it cannot measure.
+/// Every resident model is a set of native sessions, so a discovery read
+/// that already costs a round trip carries the figures. Zeroes when the
+/// host cannot measure.
 fn system_object() -> Value {
     let (total, available) = read_meminfo().unwrap_or((0, 0));
     json!({
@@ -122,19 +119,18 @@ fn server_object(state: &ServerState) -> Value {
         "draining": state.draining(),
         "manage": state.settings.manage,
         "predict_timeout_ms": state.settings.predict_timeout.as_millis() as u64,
-        // The engine root, so `postvec-server status` can read the on-disk
-        // inventory without being told which tree this node was started with.
+        // Engine root, so `postvec-server status` can read the on-disk
+        // inventory without a second flag.
         "root": state.settings.root.to_string_lossy(),
         "frontend": state.identity.frontend,
-        // The `--models` allow-list, empty when there is none. Without it a
-        // client comparing disk against loaded reports every deliberately
-        // excluded model as a missing one.
+        // `--models` allow-list, empty when there is none. A client comparing
+        // disk against loaded uses this to skip names that were excluded.
         "models_allowed": state.settings.models,
         "managed": state.managed.snapshot(),
     })
 }
 
-/// This node, as a cluster member. Used when gossip is down so the UI still
+/// This node as a cluster member. Used when gossip is down so the UI still
 /// has a peer to send `/api/{model}` at (this process).
 fn current_member(state: &ServerState) -> ClusterMember {
     ClusterMember {
@@ -155,7 +151,7 @@ async fn cluster_object(state: &ServerState) -> Value {
     };
     // A node that could not start gossip, or that has not yet seen itself in
     // the memberlist, still serves. The dashboard queries `cluster.nodes`;
-    // an empty list would look like "no live nodes" on a working process.
+    // an empty list would look like no live nodes on a working process.
     if !nodes.iter().any(|n| n.current) {
         nodes.insert(0, current_member(state));
     }
@@ -292,10 +288,10 @@ async fn no_spa() -> Json<Value> {
 }
 
 /// Shared routes (discovery, health, native `/api/{model}`, OpenAI adaptor,
-/// the registry). The public listener adds CORS + the SPA fallback; the
+/// the registry). The public listener adds CORS and the SPA fallback; the
 /// admin listener merges mutation routes and serves the dashboard without
-/// cross-origin access. `manage` mounts the registry's mutating routes too: always on
-/// the admin listener, on the public one only by explicit choice.
+/// cross-origin access. `manage` mounts the registry's mutating routes:
+/// always on the admin listener, on the public one only by explicit choice.
 pub fn router(metrics_enabled: bool, manage: bool) -> Router<Arc<ServerState>> {
     // Native `/api/{model}`, the OpenAI adaptor and the registry share this
     // nest. Their static paths are two segments, so they never collide with
@@ -332,8 +328,8 @@ pub(crate) fn finish_ui(router: Router<Arc<ServerState>>, state: Arc<ServerState
     let router = if let Some(dir) = web_ui {
         log::info!("serving UI from {}", dir.display());
         let index = dir.join("index.html");
-        // `fallback` (not `not_found_service`): SPA client routes must stay
-        // HTTP 200 with index.html. `not_found_service` forces 404.
+        // `fallback` keeps SPA client routes HTTP 200 with index.html.
+        // `not_found_service` would force 404.
         router.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)))
     } else {
         router.route("/", get(no_spa))
@@ -557,8 +553,8 @@ mod tests {
         assert_eq!(parsed.data.unwrap().models.len(), 2);
     }
 
-    /// A disabled model still appears; the parser is what filters it. Keeping
-    /// that split means the server never has to guess which consumers care.
+    /// A disabled model still appears; the parser is what filters it. The
+    /// server leaves that choice to each consumer.
     #[test]
     fn disabled_models_are_rendered_and_filtered_by_the_consumer() {
         let raw = json!({

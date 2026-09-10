@@ -62,7 +62,7 @@ pub enum Ownership {
     Foreign { content: String },
     /// The file carries the management marker but there is no ownership state
     /// (state directory wiped, or written by a different root filesystem).
-    /// Adoptable: the CLI wrote this file, it just no longer remembers which
+    /// Adoptable: the CLI wrote this file and no longer remembers which
     /// databases were its own, so every database already configured is
     /// treated as preserved.
     AdoptableMarker { content: String },

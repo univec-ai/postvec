@@ -1,7 +1,7 @@
 # Inference node for postvec.mode=grpc. Native, no PostgreSQL major:
 # built once per (distribution, architecture) into the common root.
 #
-# Not PostgreSQL-licensed. Identifier is SERVER_LICENSE in versions.env;
+# Business Source License 1.1. Identifier is SERVER_LICENSE in versions.env;
 # assert-versions.sh refuses a mismatch with the crate and the LICENSING.md index.
 
 name: postvec-server
@@ -52,10 +52,10 @@ contents:
     file_info: { mode: 0644, owner: root, group: root }
 
   # The configuration file the unit's ExecStart names. Shipped as a conffile
-  # (`noreplace` on RPM) so an upgrade never overwrites an operator's peers,
-  # ports or certificate paths. Minimal on purpose: the example with every key
-  # explained goes to the documentation directory, because installing it as
-  # the live configuration would have a fresh node gossiping at example
+  # (`noreplace` on RPM) so an upgrade leaves an operator's peers, ports and
+  # certificate paths in place. Minimal on purpose: the example with every
+  # key explained goes to the documentation directory. Installing it as the
+  # live configuration would have a fresh node gossiping at example
   # addresses. It names /etc/postvec-server/server.{crt,key} as the
   # certificate pair: the service account cannot write /opt/postvec, so the
   # crate's <root>/certs default is unreachable on a package host.
@@ -106,23 +106,23 @@ contents:
     file_info: { mode: 0644, owner: root, group: root }
 
 # The SHLIB_DEPENDS splice carries what the target distribution's own generator
-# found — notably the OpenSSL runtime the TLS listener links, which is spelled
+# found, notably the OpenSSL runtime the TLS listener links, which is spelled
 # differently on every supported release. Only the block matching the packager
 # in use is read.
 #
-# The policy: a plain `apt install postvec-server` from a repository is a
-# node that serves local inference out of the box. That is the extras
-# metapackage — it pins the exact ONNX Runtime and the reviewed model, which
-# is why the runtime is not recommended a second time on its own — plus the
-# CLI, for `postvec model pull`. Both are Recommends, never Depends: a node
-# that serves only external providers (providers.d) needs no runtime and no
-# model, the engine dlopen()s the runtime rather than linking it, the daemon
-# never calls the CLI, and a Depends on the CLI would drag postgresql-common
-# onto every node. apt and dnf both install Recommends by default, and
-# `--no-install-recommends` (`--setopt=install_weak_deps=False`) gives a
-# fleet the slim, model-free node. The CLI carries the same version bounds
-# the extension package uses, so a node and its CLI can never be silently
-# mixed across incompatible lines. verify-package.sh asserts these fields.
+# A plain `apt install postvec-server` from a repository is a node that
+# serves local inference out of the box. The extras metapackage pins the
+# exact ONNX Runtime and the reviewed model (so the runtime is not
+# recommended a second time on its own), plus the CLI for `postvec model
+# pull`. Both are Recommends: a node that serves only external providers
+# (providers.d) needs no runtime and no model, the engine dlopen()s the
+# runtime, the daemon does not call the CLI, and a Depends on the CLI
+# would drag postgresql-common onto every node. apt and dnf both install
+# Recommends by default; `--no-install-recommends`
+# (`--setopt=install_weak_deps=False`) gives a fleet the slim, model-free
+# node. The CLI carries the same version bounds the extension package uses,
+# so a node and its CLI stay on compatible lines. verify-package.sh asserts
+# these fields.
 overrides:
   deb:
     depends:

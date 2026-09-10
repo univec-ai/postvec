@@ -2,9 +2,9 @@
 # postvec-server container entrypoint. Job: the TLS pair the discovery
 # listener requires. The server will not start without a readable pair.
 #
-# If none is present, generate a self-signed pair at container start, not
-# in the image: a baked-in key would be shared by every pull. Mount your
-# own pair or pass --insecure and this does nothing.
+# If none is present, generate a self-signed pair at container start. A
+# baked-in key would be shared by every pull. Mount your own pair or pass
+# --insecure and this skips generation.
 #
 # POSTVEC_SERVER_CERTS_DIR matches the packaged config
 # (/etc/postvec-server/server.{crt,key}). The crate default is <root>/certs.

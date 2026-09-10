@@ -53,16 +53,15 @@ file_env POSTGRES_DB "${POSTGRES_USER}"
 file_env POSTVEC_DATABASES "${POSTGRES_DB}"
 file_env POSTVEC_SHARED_PRELOAD_LIBRARIES ""
 
-# `${VAR-default}`, not `${VAR:-default}`: an *empty* POSTVEC_MODE is user
-# error and must say so, not quietly become grpc. Compose renders an
-# undefined interpolation as the empty string, so `POSTVEC_MODE: "${MODE}"`
-# with MODE unset would otherwise disable the engine a local image was
-# built around — silently, and only visibly as "search returns FTS only".
+# `${VAR-default}`, not `${VAR:-default}`: an empty POSTVEC_MODE is user
+# error and must say so. Compose renders an undefined interpolation as the
+# empty string, so `POSTVEC_MODE: "${MODE}"` with MODE unset would otherwise
+# disable the engine a local image was built around, visible only as
+# "search returns FTS only".
 #
-# The unset fallback stays grpc rather than following the extension's own
-# default (`embedded`), because the image knows something the extension does
-# not: whether it carries engine assets. Both variants pin POSTVEC_MODE
-# explicitly, so this is a net, not a policy.
+# The unset fallback is grpc. The image knows whether it carries engine
+# assets; the extension's own default (`embedded`) does not. Both variants
+# pin POSTVEC_MODE explicitly, so this is a net.
 mode="${POSTVEC_MODE-grpc}"
 case "${mode}" in
 grpc|embedded) ;;
@@ -84,14 +83,13 @@ done
 [[ -n "${POSTVEC_DATABASES//[[:space:],]/}" ]] \
     || usage "POSTVEC_DATABASES is empty — name at least one database to serve"
 
-# `shared_preload_libraries` has its own grammar — quoting, `""` escapes, and
-# no case folding, because the items are file names — so the merge is delegated
-# to the CLI, which implements exactly that grammar. A user list is preserved
-# in order (load order matters to some extensions) and postvec is appended only
-# if absent.
-# It also *validates*: a value the postmaster would reject (an unterminated
-# quote, an empty item) is refused here rather than silently repaired into
-# something that starts. The CLI prints the reason on stderr.
+# `shared_preload_libraries` has its own grammar (quoting, `""` escapes, and
+# no case folding, because the items are file names), so the merge is
+# delegated to the CLI, which implements that grammar. A user list is
+# preserved in order (load order matters to some extensions) and postvec is
+# appended only if absent. It also validates: a value the postmaster would
+# reject (an unterminated quote, an empty item) is refused here. The CLI
+# prints the reason on stderr.
 if ! preloads="$(postvec __preload-merge "${POSTVEC_SHARED_PRELOAD_LIBRARIES}")"; then
     usage "POSTVEC_SHARED_PRELOAD_LIBRARIES is not a valid shared_preload_libraries value"
 fi

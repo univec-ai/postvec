@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Configure the package repositories postvec's packages need, and nothing else.
+# Configure the package repositories postvec's packages need.
 #
 #   gh attestation verify postvec-prerequisites.sh --repo <repo>   # first
 #   less postvec-prerequisites.sh                                  # then read it
@@ -8,68 +8,61 @@
 #   sudo bash ./postvec-prerequisites.sh --pg 18 --yes    # do it, unattended
 #        bash ./postvec-prerequisites.sh --pg 18 --print  # show the commands only
 #
-# On a distribution postvec does not test, it prints the commands and refuses to
-# run them; `--force-untested` overrides that deliberately.
+# On a distribution postvec does not test, it prints the commands and stops;
+# `--force-untested` runs them anyway.
 #
-# `bash ./…`, not `./…`: a GitHub release asset does not keep its executable
-# bit, so a freshly downloaded copy is not directly runnable.
+# Use `bash ./...`: a GitHub release asset does not keep its executable bit,
+# so a freshly downloaded copy is not directly runnable.
 #
 # ---------------------------------------------------------------------------
 #
-# **Why this exists.** postvec's packages name an exact PostgreSQL major —
-# `postgresql-18-postvec` depends on `postgresql-18` and
-# `postgresql-18-pgvector` — and no supported distribution ships that
-# combination in its own archives at the versions required. Debian 12 carries
-# PostgreSQL 15; Ubuntu 22.04 carries 14; EL9 carries 13 in a module that
-# shadows anything else; pgvector 0.8 is not in any of them for every major.
-# So `apt install ./postgresql-18-postvec_*.deb` on an untouched host fails at
-# dependency resolution, and that is a property of the platform, not of these
-# packages: the PostgreSQL project's own instructions require the same
-# repositories for the same reason.
+# postvec's packages name an exact PostgreSQL major (`postgresql-18-postvec`
+# depends on `postgresql-18` and `postgresql-18-pgvector`) and no supported
+# distribution ships that combination in its own archives at the versions
+# required. Debian 12 carries PostgreSQL 15; Ubuntu 22.04 carries 14; EL9
+# carries 13 in a module that shadows anything else; pgvector 0.8 is not in
+# any of them for every major. `apt install ./postgresql-18-postvec_*.deb`
+# on an untouched host fails at dependency resolution. The PostgreSQL
+# project's own instructions require the same repositories:
 #
 #   https://www.postgresql.org/download/linux/debian/
 #   https://www.postgresql.org/download/linux/redhat/
 #
-# This script does exactly what those pages tell you to do, and stops. It
-# installs no postvec package, touches no cluster, and writes no PostgreSQL
-# configuration — `postvec setup` is where consented change to a database
-# happens, and it is a separate command for that reason.
+# This script does what those pages tell you to do, and stops. It leaves
+# postvec packages, clusters and PostgreSQL configuration alone; `postvec
+# setup` is the command that changes a database.
 #
-# **If you would rather not run a script you downloaded**, that is a reasonable
-# position, and the honest answer is `less` — `--print` is still this program
-# running, so it is a convenience for after you trust it, not a substitute for
-# reading it. The commands it prints are short enough to follow by hand.
+# `--print` still runs this program. The commands it prints are short
+# enough to follow by hand after you have read the script.
 #
-# **What it changes**, and nothing else:
+# What it changes:
 #
-#   Debian / Ubuntu   the PGDG signing key in /usr/share/keyrings — downloaded,
-#                     fingerprint-verified, and re-verified if a keyring is
-#                     already there — one apt source, and apt update
+#   Debian / Ubuntu   the PGDG signing key in /usr/share/keyrings
+#                     (downloaded, fingerprint-verified, and re-verified if
+#                     a keyring is already there), one apt source, and apt
+#                     update
 #   RHEL family       CodeReady Builder (`crb` on the rebuilds,
 #                     `codeready-builder-for-rhel-9-<arch>-rpms` through
 #                     subscription-manager on RHEL itself); EPEL (the
 #                     `epel-release` package on the rebuilds, plus
-#                     `epel-next-release` on CentOS Stream, Fedora's release RPM
-#                     by URL on RHEL); the PGDG repository RPM,
-#                     signature-checked against PGDG's fingerprint-verified RPM
-#                     key before install; and `module disable postgresql`, which
-#                     otherwise shadows every PGDG package
+#                     `epel-next-release` on CentOS Stream, Fedora's
+#                     release RPM by URL on RHEL); the PGDG repository RPM,
+#                     signature-checked against PGDG's fingerprint-verified
+#                     RPM key before install; and `module disable postgresql`,
+#                     which otherwise shadows every PGDG package
 #
-# **It runs on Debian 12, Ubuntu 22.04, Ubuntu 24.04, AlmaLinux 9 and Rocky 9,
-# and each of those is executed by tests/bootstrap-test.sh in CI** — twice, in a
-# clean container, asserting the fingerprint check ran and PostgreSQL resolves
-# afterwards. Rocky is on the list because it is run, not because it is
-# AlmaLinux's rebuild.
+# Tested on Debian 12, Ubuntu 22.04, Ubuntu 24.04, AlmaLinux 9 and Rocky 9
+# by tests/bootstrap-test.sh in CI: twice, in a clean container, asserting
+# the fingerprint check ran and PostgreSQL resolves afterwards. Rocky is
+# on the list because it is run.
 #
-# CentOS Stream 9 and subscribed RHEL 9 differ in real ways — RHEL has no
-# `epel-release` package and needs Fedora's release RPM by URL, CentOS Stream
-# also wants `epel-next-release` — so the commands are generated correctly for
-# each and asserted by tests/unit-test.sh, but they are *printed rather than
-# executed* unless you pass --force-untested. Generating the right text and
-# surviving execution are different claims, and only one of them has evidence
-# for those two.
+# CentOS Stream 9 and subscribed RHEL 9 differ: RHEL has no `epel-release`
+# package and needs Fedora's release RPM by URL; CentOS Stream also wants
+# `epel-next-release`. The commands are generated correctly for each and
+# asserted by tests/unit-test.sh. They are printed; `--force-untested`
+# executes them.
 #
-# It is idempotent: running it twice changes nothing the second time.
+# Idempotent: running it twice changes nothing the second time.
 
 set -Eeuo pipefail
 

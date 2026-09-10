@@ -22,10 +22,10 @@ esac
 # The first configured model is the one the image promises. This release
 # bundles exactly one; if that ever changes, compare sets here.
 #
-# There is deliberately no default. The image always sets
-# POSTVEC_EMBEDDED_MODELS from the bundle it was built with, so an unset value
-# in embedded mode is a misconfigured image — and a hard-coded fallback would
-# probe a model that may not be installed and report the wrong fault.
+# No default. The image always sets POSTVEC_EMBEDDED_MODELS from the bundle
+# it was built with, so an unset value in embedded mode is a misconfigured
+# image. A hard-coded fallback would probe a model that may not be installed
+# and report the wrong fault.
 model="${POSTVEC_EMBEDDED_MODELS:-}"
 if [[ "${mode}" == embedded && -z "${model}" ]]; then
     echo "unhealthy: POSTVEC_EMBEDDED_MODELS is unset in an embedded-mode container;" >&2
@@ -42,15 +42,14 @@ max_beat_age="${POSTVEC_HEALTHCHECK_BEAT_AGE:-}"
 
 pg_isready --quiet --username "${user}" --dbname "${database}" || exit 1
 
-# One round trip, one boolean per property, so a failure names itself instead
-# of arriving as a bare "unhealthy".
+# One round trip, one boolean per property, so a failure names itself.
 #
-# The status is captured rather than inherited. Under `set -e` a failing
-# command substitution in an assignment ends the script *with psql's own exit
-# code* — 2 for a connection that dropped mid-check — which is the one value
-# Docker reserves in the health-check contract, and which skips every
-# diagnostic below. A health check that cannot connect is unhealthy, and it
-# should say why.
+# The status is captured. Under `set -e` a failing command substitution in
+# an assignment ends the script with psql's own exit code (2 for a
+# connection that dropped mid-check), which is the one value Docker
+# reserves in the health-check contract, and which skips every diagnostic
+# below. A health check that cannot connect is unhealthy, and it should
+# say why.
 report=""
 psql_status=0
 report="$(

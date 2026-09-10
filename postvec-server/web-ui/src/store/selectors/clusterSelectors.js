@@ -1,6 +1,6 @@
 // Query targets. The node that served the page is addressed as this
-// origin rather than by its advertised address, so a dashboard opened via
-// localhost or a tunnel keeps working; peers use what they advertise.
+// origin, so a dashboard opened via localhost or a tunnel keeps working.
+// Peers use what they advertise.
 export const getClusterMembers = (state) => {
   const members = state.cluster.map((node) =>
     node.current ? state.api_endpoint : node.frontend_address || node.address,

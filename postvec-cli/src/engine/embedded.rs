@@ -1,17 +1,17 @@
 //! Probing an embedded-mode installation: the engine root on disk, and the
 //! launcher's loopback listeners.
 //!
-//! Everything here mirrors what the `engine` crate actually does, because a
-//! diagnosis that disagrees with the loader is worse than no diagnosis:
+//! Everything here mirrors what the `engine` crate actually does, so a
+//! diagnosis agrees with the loader:
 //!
 //! - models live at exactly `<root>/models/<backend>/<model>/ninference.hub.json`
-//!   (two directory levels, no deeper — `engine/src/lib.rs`);
-//! - scan-loading takes descriptors whose `enabled` is true and registers them
-//!   under `configuration.name`;
-//! - an explicitly requested model is resolved by matching the *directory*
+//!   (two directory levels, no deeper; `engine/src/lib.rs`);
+//! - scan-loading takes descriptors whose `enabled` is true and registers
+//!   them under `configuration.name`;
+//! - an explicitly requested model is resolved by matching the directory
 //!   name, which is why both names are recorded;
 //! - the ONNX Runtime library is found by an exact filename match
-//!   (`libonnxruntime.so` on Linux), so a versioned `libonnxruntime.so.1.22.0`
+//!   (`libonnxruntime.so` on Linux). A versioned `libonnxruntime.so.1.22.0`
 //!   alone will not satisfy the loader.
 
 use super::{parse_config_body, HttpProbes, ProbeOutcome};

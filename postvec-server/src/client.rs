@@ -3,10 +3,10 @@
 
 //! Node-local subcommands: `status`, `load`, `unload`.
 //!
-//! All three talk to `127.0.0.1` on the admin port. Nothing here mutates a
-//! peer. `status --fleet` is read-only: it compares alive peers' `/config`
-//! inventories, because postvec round-robins its gRPC endpoints and a
-//! missing converter on one node looks like a fluke.
+//! All three talk to `127.0.0.1` on the admin port. `status --fleet` is
+//! read-only: it compares alive peers' `/config` inventories. postvec
+//! round-robins its gRPC endpoints, so a missing converter on one node
+//! looks like a fluke.
 //!
 //! Exit codes: `0` healthy, `1` reachable but degraded, `2` unreachable.
 
@@ -36,11 +36,10 @@ fn timeout(args: &LocalArgs) -> Duration {
 
 /// One HTTP client for the whole invocation.
 ///
-/// Invalid certificates are accepted for the same reason postvec's own
-/// discovery accepts them: peers serve `/config` with a self-signed
-/// certificate on a private network, and the trust boundary is the network,
-/// not the PKI. It only ever matters for `--fleet`; the local calls are
-/// plain loopback HTTP.
+/// Invalid certificates are accepted because peers serve `/config` with a
+/// self-signed certificate on a private network. The trust boundary is the
+/// network. It only matters for `--fleet`; the local calls are plain
+/// loopback HTTP.
 fn http_client(args: &LocalArgs) -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -62,16 +61,15 @@ fn unreachable_hint(args: &LocalArgs, error: &dyn std::fmt::Display) -> String {
 /// The subset of `/config` this client reads.
 struct NodeReport {
     models: Vec<String>,
-    /// Provider-backed entries: public name → connector type, read from the
-    /// entry's top-level `provider` extra. These have no on-disk descriptor
-    /// (the serving truth is a providers.d file), so the descriptor-drift
-    /// checks skip them and the fleet report labels them.
+    /// Provider-backed entries: public name -> connector type, from the
+    /// entry's top-level `provider` extra. The serving truth is a providers.d
+    /// file, so descriptor-drift checks skip them and the fleet report labels
+    /// them.
     providers: BTreeMap<String, String>,
-    /// Public name → the secret-free routing identity behind it. Name parity
-    /// alone cannot see two nodes serving one name from different files,
-    /// model ids or dimensions — which round-robin turns into intermittent
-    /// dimension failures, or worse, same-dimension vectors from a different
-    /// model that nothing downstream can detect.
+    /// Public name -> the secret-free routing identity behind it. Name
+    /// parity alone misses two nodes serving one name from different files,
+    /// model ids or dimensions. Round-robin then produces intermittent
+    /// dimension failures, or same-dimension vectors from a different model.
     fingerprints: BTreeMap<String, String>,
     server: Value,
     cluster: Value,

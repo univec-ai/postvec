@@ -1,17 +1,16 @@
 #!/bin/sh
 # Runs after postvec-server's files are removed.
 #
-# Only says something. It must not stop or disable the unit (the operator
-# does that first; systemd keeps running a unit whose file is gone until the
-# next reload), must not delete the engine root, the certificates or the
-# service account, and must never fail — hence no `set -e` and an
-# unconditional `exit 0`.
+# Prints a hint. The operator stops or disables the unit first; systemd
+# keeps running a unit whose file is gone until the next reload. The engine
+# root, certificates and service account stay in place.
 #
-# What happens to the configuration file is the package manager's rule, not
-# this script's, and the two families differ — so the message is per family.
-# Debian: `remove` keeps the conffile, `purge` deletes it. RPM: an unchanged
-# config.json is removed with the package; an edited one is kept as
-# config.json.rpmsave.
+# No `set -e`; ends in an unconditional `exit 0`.
+#
+# What happens to the configuration file is the package manager's rule, and
+# the two families differ, so the message is per family. Debian: `remove`
+# keeps the conffile, `purge` deletes it. RPM: an unchanged config.json is
+# removed with the package; an edited one is kept as config.json.rpmsave.
 
 # Debian passes "remove"/"purge"/"upgrade"; RPM passes the number of remaining
 # copies (1 = an upgrade, 0 = a real removal). Say nothing during an upgrade.

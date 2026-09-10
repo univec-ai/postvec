@@ -57,17 +57,17 @@ contents:
 
 # Dependencies are per-packager: PGDG's Debian and RPM lines name PostgreSQL
 # and pgvector differently, and the version-relation syntax differs too. An
-# `overrides` block replaces rather than extends, so each is stated in full.
+# `overrides` block replaces the whole list, so each is stated in full.
 #
-# The postvec-cli bounds are the interesting pair: the lower bound keeps an
-# older CLI from claiming to manage a newer extension, and the upper bound is
-# the next version allowed to break compatibility, so a CLI from a future
-# incompatible line cannot satisfy this dependency either.
+# The postvec-cli bounds: the lower bound keeps an older CLI from claiming
+# to manage a newer extension, and the upper bound is the next version
+# allowed to break compatibility, so a CLI from a future incompatible line
+# cannot satisfy this dependency either.
 #
 # The SHLIB_DEPENDS splice below is filled by scripts/build-packages.sh from
-# the target distribution's own dependency generator (dpkg-shlibdeps / rpmdeps).
-# nFPM runs neither, so without that step the package would declare no libc
-# dependency at all and install happily on a host that cannot load it.
+# the target distribution's own dependency generator (dpkg-shlibdeps /
+# rpmdeps). nFPM runs neither, so without that step the package would
+# declare no libc dependency and install on a host that cannot load it.
 overrides:
   deb:
     depends:

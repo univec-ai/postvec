@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn selector_combinations_are_validated() {
-        // The happy path clap used to reject.
+        // Combinations clap accepts.
         assert!(selectors(&["univec"]).is_ok());
         assert!(selectors(&["univec", "--model", "a", "--convert-to", "b"]).is_ok());
         let ok = selectors(&["univec", "--convert", "a:b", "--convert", " c : d "]).unwrap();

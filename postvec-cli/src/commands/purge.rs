@@ -1,5 +1,5 @@
 //! `postvec uninstall --all --purge`: host-side sweep. Experimental.
-//! Destructive cleanup for disposable test hosts, not a production promise.
+//! Destructive cleanup for disposable test hosts.
 //!
 //! Deletes only paths with positive evidence postvec created them, under
 //! roots that pass [`safe_root`]. Model dirs need `ninference.hub.json`.
@@ -10,8 +10,8 @@
 //!
 //! Every leaf is classified (device/inode, every package database,
 //! fail-closed). Apply re-enumerates and deletes only an identical leaf
-//! set, file by file, directories with `rmdir` never recursive. Unreadable
-//! candidates are retained and the run is partial (exit 3).
+//! set, file by file, directories with `rmdir`. Unreadable candidates are
+//! retained and the run is partial (exit 3).
 //!
 //! Caller holds the host lock exclusive and has stopped the cluster.
 //! [`apply`] then takes the model-store and providers locks, re-checks,

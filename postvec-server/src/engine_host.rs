@@ -5,7 +5,7 @@
 //!
 //! An explicit `--models` list: any failure is fatal.
 //! A scan of the root: one bad model is a warning and the rest load.
-//! An ambiguous name is excluded, never picked by directory order.
+//! An ambiguous name is excluded; directory order is not a tie-break.
 //! Zero models is a warning; `/ready` stays 503 until one is loaded.
 
 use crate::config::Settings;
@@ -16,13 +16,12 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The executor key whose warmup payload is known and safe to synthesise.
-/// Converters need a vector of exactly the right dimension and bridges need
-/// a chain resolved first; guessing either would turn warmup into a source
-/// of spurious boot errors.
+/// Executor key whose warmup payload is known and safe to synthesise.
+/// Converters need a vector of the right dimension and bridges need a
+/// resolved chain first.
 const WARMUP_EXECUTOR: &str = "transformer-sequence-embedding";
-/// Warmup gets its own budget: a cold ONNX session on a slow disk can take a
-/// while, and this is not on any caller's clock.
+/// Warmup budget. A cold ONNX session on a slow disk can take a while, and
+/// this is off any caller's clock.
 const WARMUP_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Default)]
@@ -51,9 +50,8 @@ pub async fn build(
     };
 
     // Prove the resident cost of the whole set before creating one native
-    // session. Loading an arbitrary prefix and discovering the ceiling
-    // halfway through would leave the node in a state no configuration
-    // describes.
+    // session. Loading an arbitrary prefix and hitting the ceiling halfway
+    // would leave the node in a state no configuration describes.
     let index = models::descriptor_index(&settings.root)?;
     let closure = models::closure_of(&index, &roots, settings.max_resident_models)?;
     log::info!(
@@ -65,11 +63,8 @@ pub async fn build(
 
     let config = Arc::new(EngineConfig {
         root_path: settings.root.clone(),
-        // A dedicated inference node keeps the throughput-oriented engine
-        // defaults: no admission gate, onnxruntime's own session threading.
-        // The conservative host policy exists for an engine sharing a box
-        // with PostgreSQL, which this is not — here `--max-inflight` is the
-        // bound, applied at the transport.
+        // Throughput-oriented engine defaults: onnxruntime's own session
+        // threading. `--max-inflight` is the bound, applied at the transport.
         host_policy: Default::default(),
     });
     let engine = Arc::new(InferenceEngine::new(config));
@@ -117,7 +112,7 @@ pub async fn build(
 
 /// One throwaway prediction per embedding model. `/ready` is true before
 /// the first inference has run; without this the first caller pays session
-/// warmup. Never fatal. Failures are counted and logged.
+/// warmup. Failures are counted and logged.
 pub async fn warm_up(engine: &Arc<InferenceEngine>, metrics: &Metrics) {
     let candidates: Vec<String> = engine
         .get_active_models()
@@ -275,8 +270,8 @@ mod tests {
         assert!(err.contains("resident ceiling"), "{err}");
     }
 
-    /// A disabled model is invisible to scan mode, and so is an ambiguous
-    /// one — the preflight sees neither, so neither can consume a slot.
+    /// Scan mode skips disabled and ambiguous models; the preflight sees
+    /// neither, so neither consumes a slot.
     #[tokio::test]
     async fn scan_mode_skips_disabled_and_ambiguous_models() {
         let dir = tempfile::tempdir().unwrap();

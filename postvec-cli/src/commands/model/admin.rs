@@ -83,10 +83,10 @@ async fn post(
 
 /// Statuses that prove a requested unload really happened.
 pub const UNLOADED: &[&str] = &["unloaded", "not-loaded"];
-/// Statuses that prove a **fresh** load happened. `already-loaded` is
-/// deliberately absent: after a confirmed unload it would mean the engine
-/// still holds the previous bytes, which is precisely the state an in-place
-/// replacement must never commit on.
+/// Statuses that prove a fresh load happened. `already-loaded` is absent:
+/// after a confirmed unload it would mean the engine still holds the
+/// previous bytes, which is the state an in-place replacement must not
+/// commit on.
 pub const LOADED_FRESH: &[&str] = &["loaded"];
 /// For a model that was not resident to begin with, either answer is proof.
 pub const LOADED_ANY: &[&str] = &["loaded", "already-loaded"];

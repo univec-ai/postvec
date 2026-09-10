@@ -15,9 +15,9 @@ const METHODS: [&str; 2] = ["embed_texts", "convert_embeddings"];
 
 /// Every label `postvec_server_request_errors_total` can carry.
 ///
-/// The first thirteen are `shared::ErrorCode` in declaration order — the
+/// The first thirteen are `shared::ErrorCode` in declaration order, the
 /// pinned wire taxonomy. The rest cover refusals raised by the transport
-/// itself, which carry a gRPC status but no `x-ravenna-error-code`.
+/// itself, which carry a gRPC status.
 const CODES: [&str; 20] = [
     "INTERNAL_ERROR",
     "INVALID_INPUT",
@@ -83,9 +83,8 @@ pub struct Metrics {
     admin_unloads: AtomicU64,
     admin_refusals: AtomicU64,
     config_requests: AtomicU64,
-    /// Boot-time warmup predictions that failed. A non-zero value here with
-    /// a green `/ready` means a model is resident but has never successfully
-    /// answered.
+    /// Boot-time warmup predictions that failed. A non-zero value with a
+    /// green `/ready` means a model is resident but has not answered yet.
     warmup_failures: AtomicU64,
 }
 
@@ -114,9 +113,9 @@ impl Metrics {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A request that produced a response. Records latency; the histogram
-    /// deliberately excludes failures, whose duration says more about when a
-    /// guard fired than about how long inference takes.
+    /// A request that produced a response. Records latency. The histogram
+    /// excludes failures, whose duration says more about when a guard fired
+    /// than about how long inference takes.
     pub fn request_completed(&self, method: usize, items: usize, elapsed: Duration) {
         let m = &self.methods[method];
         self.in_flight.fetch_sub(1, Ordering::Relaxed);

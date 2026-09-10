@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
 
-//! The model registry over HTTP: what `postvec model ls`, `ls --available`,
-//! `pull`, `activate` and `deactivate` do, on the node, built on the
-//! primitives postvec-cli's `registry` module already provides (index
-//! fetch, verified download, strict extraction, receipts, the root lock).
+//! Model registry over HTTP: what `postvec model ls`, `ls --available`,
+//! `pull`, `activate` and `deactivate` do on the node, built on the same
+//! primitives as postvec-cli (index fetch, verified download, strict
+//! extraction, receipts, the root lock).
 //!
 //! Reads are on every listener. Mutations are on the loopback admin listener
-//! and, with `--manage`, on the public one too, so the dashboard can
-//! drive them: nothing here authenticates, like the rest of the node.
+//! and, with `--manage`, on the public one too, so the dashboard can drive
+//! them. Nothing here authenticates, like the rest of the node.
 //!
-//! `pull` installs deactivated, like the CLI: activating is a second step,
-//! which also loads the model. A pull runs detached, one at a time, and is
-//! followed through `GET /api/registry/pulls`. `remove` unloads first, then
-//! deletes the directory.
+//! `pull` installs deactivated, as the CLI does: activating is a second
+//! step, which also loads the model. A pull runs detached, one at a time,
+//! and is followed through `GET /api/registry/pulls`. `remove` unloads
+//! first, then deletes the directory.
 
 use crate::admin::{load_models, model_result, unload_models};
 use crate::models::validate_model_name;
@@ -136,9 +136,10 @@ async fn installed(state: &ServerState) -> Result<Vec<InstalledModel>, String> {
     blocking(move || root.installed()).await
 }
 
-/// A key the caller sends for this request only (`Authorization: Bearer`,
-/// what the dashboard does); never stored. Absent means the node's own
-/// credential: `POSTVEC_API_KEY` or the service account's `postvec login`.
+/// Key the caller sends for this request only (`Authorization: Bearer`,
+/// what the dashboard does). It lives in the request. Absent means the
+/// node's own credential: `POSTVEC_API_KEY` or the service account's
+/// `postvec login`.
 fn request_key(headers: &HeaderMap) -> Result<Option<Credential>, (StatusCode, String)> {
     let Some(raw) = headers.get(header::AUTHORIZATION) else {
         return Ok(None);

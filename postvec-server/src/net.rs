@@ -54,18 +54,12 @@ pub fn resolve_advertise(settings: &Settings) -> Result<Advertise, String> {
     })
 }
 
-/// The URL a human (or `postvec doctor`) can curl to reach this node's HTTP
-/// API.
+/// URL a human (or `postvec doctor`) can curl to reach this node's HTTP API.
 ///
-/// This is the upstream engine's `frontend_address`, which exists because the
-/// reachable URL is not always `{scheme}://{advertise}:{http_port}` — NAT, a
-/// load balancer, a DNS name the operator would rather see printed. It is
-/// gossiped and echoed in `/config`; nothing dials it, and postvec never
-/// reads it.
-///
-/// It is never discovered from the network. A database-adjacent process that
-/// asks the internet "what is my IP" is the telemetry temptation wearing a
-/// different hat.
+/// This is the upstream engine's `frontend_address`. The reachable URL may
+/// differ from `{scheme}://{advertise}:{http_port}` under NAT, a load
+/// balancer or a DNS name. It is gossiped and echoed in `/config`; nothing
+/// dials it. The operator sets it; it is not discovered from the network.
 pub fn frontend_url(settings: &Settings, advertise: IpAddr) -> String {
     if let Some(explicit) = &settings.frontend {
         return explicit.clone();
@@ -98,9 +92,8 @@ pub enum PeerTarget {
 /// Parse one peer entry.
 ///
 /// Accepted, in this order: `ip:port`, `[v6]:port`, a bare IP, `[v6]`, a bare
-/// name, and `name:port`. A bare entry takes the fleet-wide gossip port,
-/// which is the happy path — every node in a fleet uses identical ports, and
-/// `host:port` is the escape hatch for the one deployment with a collision.
+/// name, and `name:port`. A bare entry takes the fleet-wide gossip port.
+/// `host:port` is for a deployment with a port collision.
 pub fn parse_peer(raw: &str, default_port: u16) -> Result<PeerTarget, String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -151,11 +144,9 @@ pub fn parse_peer(raw: &str, default_port: u16) -> Result<PeerTarget, String> {
 /// Resolve every peer entry to socket addresses.
 ///
 /// A name that resolves to several addresses contributes all of them:
-/// memberlist tries seeds in order until one answers, so more candidates is
-/// strictly better. A name that does not resolve is a **warning**, not a
-/// failure — the same posture the rest of joining takes, because a peer that
-/// is not in DNS yet is the normal state during a rolling deploy, and the
-/// maintenance worker will retry.
+/// memberlist tries seeds in order until one answers. A name that fails to
+/// resolve is a warning. A peer that is not in DNS yet is the normal state
+/// during a rolling deploy, and the maintenance worker retries.
 pub async fn resolve_peers(peers: &[String], default_port: u16) -> (Vec<SocketAddr>, Vec<String>) {
     let mut resolved: Vec<SocketAddr> = Vec::new();
     let mut problems: Vec<String> = Vec::new();

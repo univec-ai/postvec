@@ -1,5 +1,5 @@
 // The registry key lives in this tab only: sent as a bearer on catalogue
-// and pull requests, never stored on the node, gone when the tab closes.
+// and pull requests, gone when the tab closes. The node does not store it.
 const KEY = 'postvec-registry-key'
 const savedKey = () => {
   try {

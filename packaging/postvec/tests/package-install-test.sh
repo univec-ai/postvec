@@ -7,16 +7,17 @@
 #   tests/package-install-test.sh --distro el9 --pg 18
 #   tests/package-install-test.sh --distro debian12 --pg 18 --minimal  # no engine assets
 #
-# `verify-package.sh` already answers "is this a well-formed package" from the
-# file alone. This answers the questions only a live system can:
+# `verify-package.sh` already answers "is this a well-formed package" from
+# the file alone. This answers the questions only a live system can:
 #
-#   * does the documented prerequisite bootstrap work, and do dependencies then
-#     resolve from the archives it configured (PGDG, plus EPEL/CRB on EL9);
+#   * does the documented prerequisite bootstrap work, and do dependencies
+#     then resolve from the archives it configured (PGDG, plus EPEL/CRB on
+#     EL9);
 #   * do two PostgreSQL majors coexist;
-#   * does installing change *nothing* about the running database;
-#   * does the shipped library actually load into that distribution's
-#     PostgreSQL — `CREATE EXTENSION`, `postvec.build_info()`, and, when the
-#     engine assets are installed, a real embedding;
+#   * does installing leave the running database unchanged;
+#   * does the shipped library load into that distribution's PostgreSQL
+#     (`CREATE EXTENSION`, `postvec.build_info()`, and, when the engine
+#     assets are installed, a real embedding);
 #   * do `postvec setup` / `doctor` / `uninstall` work against it;
 #   * does removal leave user data alone.
 #

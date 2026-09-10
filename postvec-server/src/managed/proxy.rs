@@ -3,8 +3,8 @@
 //! pgwire proxy: the client authenticates against the upstream database
 //! itself; the proxy relays bytes and rewrites `postvec.search()` and
 //! `postvec.embed()` calls, embedding their text on the way through.
-//! Authentication is relayed. SCRAM channel binding cannot survive a proxy,
-//! so SCRAM-SHA-256-PLUS is never offered; libpq falls back to SCRAM-SHA-256.
+//! Authentication is relayed. The proxy offers SCRAM-SHA-256; libpq falls
+//! back from SCRAM-SHA-256-PLUS because channel binding cannot survive a proxy.
 
 use super::{
     inference::Client,
@@ -539,10 +539,10 @@ struct Prepared {
 }
 
 /// Statements the proxy cannot rewrite are forwarded untouched: the managed
-/// schema's own `search()` and `embed()` raise the explanatory error. What
-/// the proxy itself cannot do (embed the text) is reported by running
-/// `postvec._proxy_error()` upstream, so errors stay in order with the
-/// backend's replies and leave the transaction state to the database.
+/// schema's own `search()` and `embed()` raise the explanatory error. When
+/// the proxy cannot embed the text it runs `postvec._proxy_error()` upstream,
+/// so errors stay in order with the backend's replies and leave the
+/// transaction state to the database.
 async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     proxy: &Proxy,
     mut r: R,

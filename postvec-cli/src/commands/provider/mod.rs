@@ -658,15 +658,13 @@ impl ProviderFileDoc {
     /// Run the serving host's own rules over this document as it currently
     /// stands.
     ///
-    /// Called *before* the verification probe as well as at the write. The
-    /// write-time check alone was too late: a paid call had already been made
-    /// against a file the host would refuse for a reason the probe cannot
-    /// see — an unknown field, two sources for one secret, a `dim` outside a
-    /// model's range.
+    /// Called before the verification probe as well as at the write, so a
+    /// paid call is not made against a file the host would refuse for a
+    /// reason the probe cannot see (an unknown field, two sources for one
+    /// secret, a `dim` outside a model's range).
     ///
-    /// Returns whether the file is enabled, so a caller can say so: a model
-    /// added to a parked file is written correctly and serves nothing, and
-    /// "succeeded" without that qualification is a lie.
+    /// Returns whether the file is enabled. A model added to a parked file
+    /// is written correctly and serves nothing, and the caller must say so.
     pub fn validate_prospective(&self) -> Result<bool> {
         let body = self.body()?;
         let label = self.path.display().to_string();
@@ -710,14 +708,14 @@ impl ProviderFileDoc {
     /// Serialize and write: 0600 file, 0700 directory, chowned to `owner`
     /// when one is known and we can (root).
     ///
-    /// The rendered document is checked against the **loader's own rules**
+    /// The rendered document is checked against the loader's own rules
     /// first. The serving host refuses a connector file as a whole, so one
-    /// entry this CLI got wrong — an implausible `dim`, a `base_url` the
-    /// connector cannot use, a connector type with no credential — would take
+    /// entry this CLI got wrong (an implausible `dim`, a `base_url` the
+    /// connector cannot use, a connector type with no credential) would take
     /// that provider's already-working models down at the next reload. The
     /// command composing the file is the last place that can still stop it,
-    /// and running the host's rules rather than restating them is what keeps
-    /// there being one rulebook. No secret is resolved to reach the verdict.
+    /// and running the host's rules keeps there being one rulebook. No
+    /// secret is resolved to reach the verdict.
     // The error carries residue and sync state a two-file commit must
     // inspect; boxing it would only move the bytes.
     #[allow(clippy::result_large_err)]
@@ -929,16 +927,15 @@ pub fn rewrite_entries(
 }
 
 /// Create `dir` 0700, owned by `owner` when we are root acting on their
-/// behalf, and report whether it had to be created. Idempotent, and it never
-/// touches a directory that already exists — the operator's own mode and
-/// ownership are theirs to keep.
+/// behalf, and report whether it had to be created. Idempotent: an existing
+/// directory keeps the operator's mode and ownership.
 ///
-/// This is where the providers.d directory comes from. The packages
-/// deliberately do not ship it: an nfpm-declared owner would have to name
-/// `postgres` (postvec serves clusters owned by other accounts too) and would
-/// be applied at unpack time, before the PostgreSQL packages have created
-/// that account. The CLI, by contrast, knows the cluster owner, so it creates
-/// the directory at `postvec setup --embedded` and here.
+/// This is where the providers.d directory comes from. The packages leave
+/// it to the CLI: an nfpm-declared owner would have to name `postgres`
+/// (postvec serves clusters owned by other accounts too) and would be
+/// applied at unpack time, before the PostgreSQL packages have created that
+/// account. The CLI knows the cluster owner, so it creates the directory at
+/// `postvec setup --embedded` and here.
 pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -948,27 +945,21 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
             .with_fix("chmod 700 the providers.d directory (and make sure it is not a symlink)")
     };
     if dir.exists() {
-        // An existing directory keeps its mode and ownership — but it still
-        // has to be a *directory*, reached without following a symlink,
-        // through a chain nobody else can rewrite. This command runs under
-        // `sudo`; a group-writable providers.d, or one reached through a
-        // parent somebody else owns, means another account chooses what a
-        // root-run `provider add` creates and where the serving host sends
-        // source text. Refuse and name the fix rather than repairing it
-        // implicitly: silently chmod-ing someone's directory is its own
-        // surprise. The serving host applies the identical rule at load
-        // (`providers::config::validate_directory`), which is why this can be
-        // that same function rather than a second opinion.
+        // An existing directory keeps its mode and ownership. It still has
+        // to be a directory, reached without following a symlink, through a
+        // chain nobody else can rewrite. This command runs under `sudo`; a
+        // group-writable providers.d, or one reached through a parent
+        // somebody else owns, means another account chooses what a root-run
+        // `provider add` creates and where the serving host sends source
+        // text. Refuse and name the fix. The serving host applies the same
+        // rule at load (`providers::config::validate_directory`).
         providers::config::validate_directory(dir, expected_uid).map_err(refuse)?;
         return Ok(false);
     }
 
-    // The **create** path needs the same check, before it creates anything.
-    // It had none: `ensure_private_dir` validated only a directory that
-    // already existed, so the first `provider add` on a host built a
-    // credential tree — and then a `.lock` file and a `chown` — under a
-    // parent chain nobody had looked at. The deepest existing ancestor is
-    // what the new directory will hang from, so it is what has to be safe.
+    // The create path needs the same check, before it creates anything.
+    // The deepest existing ancestor is what the new directory will hang
+    // from, so it is what has to be safe.
     let mut anchor = dir.parent();
     while let Some(candidate) = anchor {
         if candidate.exists() {
@@ -1015,22 +1006,17 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
 /// sibling temp file, then rename), chowning both to `owner` when running
 /// as root on their behalf.
 ///
-/// Every step here is the way it is because this runs as **root**:
+/// This runs as root, so every step is hostile-path-safe:
 ///
-/// - the temporary file is `create_new` with `O_NOFOLLOW`. The previous
-///   `create(true).truncate(true)` on a predictable `.NAME.tmp` was a
-///   file-truncation primitive: in a providers.d another account could write
-///   to, that account plants `.openai.toml.tmp` as a symlink to any
-///   root-writable file and the next `sudo postvec provider add` truncates
-///   it. `ensure_private_dir` now refuses such a directory, and this refuses
-///   the symlink even if one appears anyway — two independent barriers,
-///   because the cost of getting it wrong is somebody else's file.
+/// - the temporary file is `create_new` with `O_NOFOLLOW`. In a providers.d
+///   another account can write to, that account can plant `.openai.toml.tmp`
+///   as a symlink to any root-writable file. `ensure_private_dir` refuses
+///   such a directory, and this refuses the symlink even if one appears.
 /// - the destination is checked the same way, so a symlink or a hard-linked
 ///   `openai.toml` cannot redirect the rename either.
-/// - `sync_all` must **succeed**, and the directory is synced after the
-///   rename. `sync_all().ok()` meant "atomic" described only the rename and
-///   not the data: a crash could leave a file this command already reported
-///   as written.
+/// - `sync_all` must succeed, and the directory is synced after the rename.
+///   A crash could otherwise leave a file this command already reported as
+///   written.
 // Same reason as `ProviderFileDoc::write`: the error is the state record.
 #[allow(clippy::result_large_err)]
 pub fn write_secret_file(
@@ -1066,14 +1052,14 @@ pub fn write_secret_file(
 
 /// A failed secret-file write, with everything a caller undoing a
 /// multi-file change needs. `committed`: the new content is already in
-/// place (a directory sync that fails *after* the rename is a durability
-/// doubt, not an unchanged file — rolling a sibling back at that point
-/// would leave the two files describing different states). When not
-/// committed, `residue` names a staged copy of the content — which may
-/// hold an inline API key — that could not be removed, and `sync_error`
-/// a cleanup whose removal is visible but not crash-durable. Only
-/// `{ committed: false, residue: None, sync_error: None }` means "exactly
-/// as it was, durably".
+/// place. A directory sync that fails after the rename is a durability
+/// doubt; rolling a sibling back at that point would leave the two files
+/// describing different states. When not committed, `residue` names a
+/// staged copy of the content (which may hold an inline API key) that
+/// could not be removed, and `sync_error` a cleanup whose removal is
+/// visible but not crash-durable. Only
+/// `{ committed: false, residue: None, sync_error: None }` means the
+/// original file is still in place, durably.
 #[derive(Debug)]
 pub struct WriteError {
     pub committed: bool,

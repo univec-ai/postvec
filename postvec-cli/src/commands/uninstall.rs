@@ -684,12 +684,12 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
 ///
 /// Configured databases are targets whether or not they exist (a dropped
 /// database must still leave the launcher configuration). Every other
-/// database in the cluster — templates included; `template1` is a standard
-/// place to install an extension — is inspected and joins only when the
+/// database in the cluster, templates included (`template1` is a standard
+/// place to install an extension), is inspected and joins only when the
 /// extension is installed. One that cannot be inspected (connections
-/// disallowed, or unreachable) is returned separately: the caller reports it
-/// as incomplete, and refuses a purge over it. `template0` is exempt — it
-/// never allows connections and is not modifiable without changing that.
+/// disallowed, or unreachable) is returned separately: the caller reports
+/// it as incomplete, and refuses a purge over it. `template0` is exempt:
+/// it disallows connections and is not modifiable without changing that.
 async fn discover_all(
     context: &mut Context,
     snapshot: &collect::ClusterSnapshot,

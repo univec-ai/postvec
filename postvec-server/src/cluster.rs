@@ -3,17 +3,13 @@
 
 //! Cluster membership over memberlist gossip (memberlist 0.8, TCP only).
 //!
-//! Default group is `postvec`. Peers are resolved in [`crate::net`] before
-//! they get here. The gossip advertise address is set explicitly.
-//! Self-detection compares this node's real gossip addresses: treating
-//! "same port + wildcard bind" as "this is me" would discard every peer,
-//! because a fleet shares one gossip port.
+//! Default group is `postvec`. Peers are resolved in [`crate::net`]. The
+//! gossip advertise address is set explicitly. Self-detection compares this
+//! node's real gossip addresses: a fleet shares one gossip port, so a
+//! wildcard bind plus that port is not enough to identify this node.
 //!
-//! Reported membership is filtered to this node's group. Leave is graceful.
-//!
-//! postvec never joins this mesh. Membership exists so `/config` and
-//! `postvec-server status` can describe the fleet. It replicates nothing,
-//! elects nothing and balances nothing.
+//! Reported membership is this node's group. Leave is graceful. The mesh
+//! exists so `/config` and `postvec-server status` can describe the fleet.
 
 use crate::config::Settings;
 use crate::state::NodeIdentity;
@@ -35,8 +31,8 @@ pub const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
 /// How long a graceful leave waits for its broadcast.
 const LEAVE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Gossiped node metadata. Kept small on purpose: `memberlist` caps it, and
-/// the cap is enforced below rather than discovered in production.
+/// Gossiped node metadata. Kept small: `memberlist` caps it, and the cap
+/// is enforced below.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeMetadata {
     pub api_address: String,
@@ -44,9 +40,8 @@ pub struct NodeMetadata {
     pub group_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frontend_address: Option<String>,
-    /// The build this peer runs. Version skew across a fleet is the second
-    /// most common cause of inventory drift, after somebody forgetting to
-    /// pull, and it is invisible without this field.
+    /// Build this peer runs. Version skew across a fleet is a common cause
+    /// of inventory drift and is invisible without this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
@@ -93,8 +88,8 @@ impl NodeDelegate for LocalDelegate {
         };
         if bytes.len() > limit {
             // Empty metadata still gossips liveness; peers fall back to the
-            // raw gossip address. Losing the addresses is bad, so say so
-            // loudly rather than shipping a truncated struct.
+            // raw gossip address. Log the overflow; a truncated struct would
+            // be silently wrong.
             log::warn!(
                 "node metadata is {} bytes, over the {limit}-byte gossip limit; peers will see \
                  this node without its addresses (shorten --frontend or --group)",
@@ -132,18 +127,16 @@ pub struct ClusterManager {
     /// This node's own gossip addresses — the ones a seed list may legally
     /// contain and that must not be dialled.
     own_addrs: Vec<SocketAddr>,
-    /// Configured peers that are *not* this node. Empty means "nothing to
-    /// join", which is a correct single-node cluster rather than a degraded
-    /// one.
+    /// Configured peers other than this node. Empty is a single-node cluster.
     seeds: Vec<SocketAddr>,
 }
 
 /// The gossip addresses that mean "this node".
 ///
-/// A wildcard bind means "I listen on every interface", **not** "every
-/// address with my port is me" — conflating those two is what makes a seed
-/// list evaporate. With a wildcard bind the node is reachable at its
-/// advertised address and at loopback; with a specific bind, at that address.
+/// A wildcard bind means the node listens on every interface. It is
+/// reachable at its advertised address and at loopback. A specific bind is
+/// reachable at that address. A fleet shares one gossip port, so the port
+/// alone does not identify this node.
 fn own_gossip_addrs(bind: IpAddr, advertise: IpAddr, port: u16) -> Vec<SocketAddr> {
     let mut addrs = vec![SocketAddr::new(advertise, port)];
     if bind.is_unspecified() {
@@ -167,7 +160,7 @@ impl ClusterManager {
             api_address: identity.api_address.clone(),
             grpc_address: identity.grpc_address.clone(),
             group_name: settings.group.clone(),
-            // Only carried when it says something `api_address` does not.
+            // Only carried when it differs from `api_address`.
             frontend_address: (identity.frontend != identity.api_address)
                 .then(|| identity.frontend.clone()),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -180,11 +173,10 @@ impl ClusterManager {
         let node_id = NodeId::new(Uuid::new_v4().to_string())
             .map_err(|e| ClusterError::Config(format!("node id: {e:?}")))?;
 
-        // Gossip always binds the wildcard address: binding the advertised IP
-        // directly breaks the common container case, where the routable
-        // address is not present on any interface inside the namespace. The
-        // advertise address is set separately, below, and that is what peers
-        // actually dial.
+        // Gossip binds the wildcard address. Binding the advertised IP
+        // directly breaks the container case, where the routable address is
+        // absent from the namespace. The advertise address is set separately
+        // and is what peers dial.
         let bind_addr = SocketAddr::new(settings.bind, settings.gossip_port);
         let mut transport: NetTransportOptions<NodeId, LocalResolver, memberlist::tokio::TokioTcp> =
             NetTransportOptions::new(node_id);
@@ -229,9 +221,9 @@ impl ClusterManager {
         &self.seeds
     }
 
-    /// Contact seeds until one answers. Best-effort by design: a node that
-    /// cannot see its peers still serves the clients that can see *it*, and
-    /// the maintenance worker keeps retrying.
+    /// Contact seeds until one answers. A node that cannot see its peers
+    /// still serves the clients that can see it; the maintenance worker
+    /// keeps retrying.
     pub async fn join(&self) -> Result<(), ClusterError> {
         if self.seeds.is_empty() {
             log::info!("no peers to dial; running as a single-node cluster");
@@ -257,11 +249,10 @@ impl ClusterManager {
         Err(ClusterError::Join(failures.join("; ")))
     }
 
-    /// Members of *this node's group*, this node included.
+    /// Members of this node's group, this node included.
     ///
-    /// Foreign groups are never surfaced: the tag exists to keep unrelated
-    /// fleets apart, and reporting a node you must not route to would defeat
-    /// it.
+    /// The group tag keeps unrelated fleets apart, so only this group is
+    /// reported.
     pub async fn members(&self) -> Vec<ClusterMember> {
         let own_api = &self.metadata.api_address;
         self.memberlist
@@ -299,20 +290,12 @@ impl ClusterManager {
             .collect()
     }
 
-    /// Broadcast a departure, then stop. Peers mark this node dead at once
-    /// instead of waiting out the suspicion timeout, which is the difference
-    /// between a rolling restart that looks clean and one that leaves a
-    /// `suspect` node in every peer's `/config` for tens of seconds.
-    /// Announce the departure, leaving gossip running.
+    /// Queue a leave announcement and leave gossip running so the broadcast
+    /// can go out on the next tick. The caller announces first and tears
+    /// down after the drain window. Peers then mark this node dead without
+    /// waiting out the suspicion timeout.
     ///
-    /// The announcement is queued on the broadcast queue and goes out on the
-    /// gossip loop's own tick, so the transport has to stay up for a moment
-    /// afterwards or peers fall back to learning about it through anti-entropy
-    /// — thirty seconds by default, which is exactly the delay this exists to
-    /// avoid. The caller therefore announces *first* and tears down after the
-    /// drain window, rather than doing both in one breath.
-    /// Returns whether the announcement was made — `false` when there was
-    /// nothing to announce to, or when the broadcast could not be sent.
+    /// Returns whether the announcement was made.
     pub async fn announce_departure(&self) -> bool {
         match self.memberlist.leave(LEAVE_TIMEOUT).await {
             Ok(true) => {
@@ -336,8 +319,8 @@ impl ClusterManager {
     }
 }
 
-/// Count members that are alive or merely suspect. A suspect peer is not yet
-/// evidence of isolation, so it does not trigger a re-join storm.
+/// Count members that are alive or merely suspect. A suspect peer is still
+/// visible, so it leaves the re-join trigger alone.
 fn active_count(members: &[ClusterMember]) -> usize {
     members
         .iter()
@@ -350,16 +333,13 @@ fn active_count(members: &[ClusterMember]) -> usize {
 /// Should a node with this view try to re-join?
 ///
 /// Two triggers: total isolation, and seeing fewer peers than there are
-/// seeds. The second one matters because a partition can heal on one side
-/// only, leaving a node permanently half-connected with nothing to notice it.
-///
-/// With no configured peers there is nothing to re-join to, so a
-/// single-node deployment must not qualify.
+/// seeds. The second catches a partition that healed on one side only.
+/// With no configured peers there is nothing to re-join to.
 pub fn should_rejoin(active: usize, seed_count: usize) -> bool {
     seed_count > 0 && (active <= 1 || active < seed_count)
 }
 
-/// Re-join whenever the view looks degraded. Runs until the process exits.
+/// Re-join when the view looks degraded. Runs until the process exits.
 pub async fn maintenance_worker(cluster: Arc<ClusterManager>) {
     let mut interval = tokio::time::interval(MAINTENANCE_INTERVAL);
     // A missed tick must not produce a burst of catch-up joins.
@@ -475,8 +455,7 @@ mod tests {
         assert_eq!(back.version, meta.version);
     }
 
-    /// A peer running an older build predates `version`; its metadata must
-    /// still deserialize.
+    /// Metadata from a peer whose build predates `version` still deserializes.
     #[test]
     fn metadata_from_an_older_peer_still_parses() {
         let raw = br#"{"api_address":"http://a:1","grpc_address":"a:2","group_name":"postvec"}"#;

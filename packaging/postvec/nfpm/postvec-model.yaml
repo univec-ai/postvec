@@ -54,10 +54,10 @@ contents:
     dst: ${MODEL_DOC_DIR}/model-files.sha256
     file_info: { mode: 0644, owner: root, group: root }
   # Per family, and deliberately not the same file. A Debian copyright must
-  # reference /usr/share/common-licenses/<id> rather than repeat the text; an
-  # RPM's /usr/share/licenses has no such common copy and wants the full
-  # licence. Either way the verbatim licence travels with the weights under
-  # /opt, which is what a redistribution licence requires.
+  # reference /usr/share/common-licenses/<id>; an RPM's /usr/share/licenses
+  # has no such common copy and wants the full licence. Either way the
+  # verbatim licence travels with the weights under /opt, which is what a
+  # redistribution licence requires.
   - src: ${MODEL_LICENSE_SRC}
     dst: ${LICENSE_DST}/${MODEL_PKG_NAME}/${LICENSE_NAME}
     file_info: { mode: 0644, owner: root, group: root }

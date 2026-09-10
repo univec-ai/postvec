@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# The body of the package install test, run *inside* a clean container of the
-# target distribution by tests/package-install-test.sh. Not useful on its own.
+# The body of the package install test, run inside a clean container of the
+# target distribution by tests/package-install-test.sh.
 #
-# It is a separate file rather than an embedded heredoc because it is long
-# enough to deserve syntax checking, shellcheck, and a diff that reads.
+# A separate file so it can be syntax-checked, shellchecked, and diffed.
 #
 # Inputs (environment): PG_MAJORS, POSTVEC_VERSION, BUNDLED_MODEL_NAME,
 # BUNDLED_MODEL_BACKEND, BUNDLED_MODEL_TARGET_DIM, MODEL_PKG_NAME,

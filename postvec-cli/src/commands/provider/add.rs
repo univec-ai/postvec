@@ -1,21 +1,21 @@
 //! `postvec provider add`.
 //!
 //! Write (or extend) one providers.d file, verify the key with one live
-//! single-input embed per model (opt-out `--no-verify` — the probe costs a
+//! single-input embed per model (opt-out `--no-verify`; the probe costs a
 //! paid API call), and nudge the running host to reload. For `univec`,
-//! names, kinds and dimensions come from the public catalogue instead
+//! names, kinds and dimensions come from the public catalogue
 //! (`super::univec`), and the probe proves the key plus one added route per
-//! kind rather than measuring every entry.
+//! kind.
 //!
 //! Two gates run before anything is written:
 //!
 //! - the ordinary confirmation, because this changes what a running host
 //!   serves;
-//! - the **privacy acknowledgement**: any existing column bound to a name
-//!   this command makes live starts sending its source text to the provider
-//!   on the next worker cycle, with no SQL change and no further notice
-//!   (the bridge-upgrade event). `--yes` never
-//!   answers that; `--acknowledge-in-use` or the typed confirmation does.
+//! - the privacy acknowledgement: any existing column bound to a name this
+//!   command makes live starts sending its source text to the provider on
+//!   the next worker cycle, with no SQL change and no further notice (the
+//!   bridge-upgrade event). `--acknowledge-in-use` or the typed
+//!   confirmation answers that; `--yes` does not.
 
 use super::{
     columns_bound_to, read_secret_file, reload_host, require_private_secret_file,
@@ -526,22 +526,18 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             .filter(|column| &column.model == name)
             .cloned()
             .collect();
-        // `--path` has no cluster, so nothing here can list the affected
-        // columns. That is not the same as there being none, and treating an
-        // unanswerable question as a clean answer is the one outcome a
-        // privacy gate must never produce — so the step is pushed anyway,
-        // with the databases marked UNKNOWN. `--yes` is not an answer to "may
-        // this text go somewhere else"; the step is what makes
-        // `--acknowledge-in-use` (or the typed confirmation) the way through.
+        // `--path` has no cluster, so this run cannot list the affected
+        // columns. The step is pushed anyway, with the databases marked
+        // UNKNOWN. `--yes` is not an answer to "may this text go somewhere
+        // else"; `--acknowledge-in-use` or the typed confirmation is.
         //
-        // Every name this run makes newly live, not only an endpoint move: a
-        // *first* `provider add --path openai --model …` on a fleet node is
-        // exactly the bridge-upgrade event — a column already bound to that
-        // public name and served through a converter starts being embedded by
-        // the provider on the next worker cycle. On a cluster target the scan
-        // answers that question; here nothing can, and `--path` is the
-        // documented way to administer remote nodes, so it must not be the
-        // one mode with no gate.
+        // Every name this run makes newly live, not only an endpoint move:
+        // a first `provider add --path openai --model ...` on a fleet node
+        // is the bridge-upgrade event. A column already bound to that
+        // public name and served through a converter starts being embedded
+        // by the provider on the next worker cycle. On a cluster target
+        // the scan answers that question; `--path` is how remote nodes are
+        // administered, so it carries the same gate.
         let unknown = match target.files_only() {
             Some(source) => vec![format!(
                 "databases served by this host ({source}: files only)"
@@ -798,14 +794,12 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         };
 
         // What gets a live call. An additive run verifies what it adds. A
-        // change to the *connector* — a rotated key, a moved endpoint —
-        // changes what every model in the file does, and verifying none of
-        // them (which is what "probe the new models" meant for a run that
-        // adds none) let a key rotation report success without a single
-        // request. That is the failure this command exists to prevent.
-        // Embed probes only: a converter cannot answer an embed call, so
-        // converter entries — the new one and any the file already declares
-        // — go through the convert probe below instead.
+        // change to the connector (a rotated key, a moved endpoint) changes
+        // what every model in the file does, so a run that adds none still
+        // probes: otherwise a key rotation reports success without a single
+        // request. Embed probes only: a converter cannot answer an embed
+        // call, so converter entries (the new one and any the file already
+        // declares) go through the convert probe below.
         // UniVec: a best-effort unbilled identity check before anything is
         // billed. A 401/403 stops here; anything else defers to the probe.
         if canonical == "univec" {
@@ -1074,18 +1068,18 @@ enum Commit {
 /// The two-file commit: the key file (bound to the state preflight
 /// approved), then the connector. The recovery matrix:
 ///
-/// - key not applied → the error, nothing to undo;
-/// - key applied but not durable, or with a displaced file left beside it
-///   → never rolled back (a rename has happened); the connector is still
-///   attempted so the pair can match; if that fails before its rename the
-///   run ends `KeyOnly` with both errors and the full key state recorded;
-/// - key applied cleanly, connector fails *before* its rename → a copied
-///   key is retained (a rerun reuses it; there is no atomic conditional
-///   unlink, and check-then-unlink is the race the guarded install
-///   removed), a rotated key is restored through the guarded exchange bound
-///   to the installed file's token; either way the run ends `KeyOnly`;
-/// - connector fails *after* its rename (directory sync) → the key stays,
-///   the run ends incomplete naming the sync, `Both`.
+/// - key not applied: the error, nothing to undo;
+/// - key applied but not durable, or with a displaced file left beside it:
+///   the rename has happened, so it is left in place. The connector is
+///   still attempted so the pair can match; if that fails before its rename
+///   the run ends `KeyOnly` with both errors and the full key state
+///   recorded;
+/// - key applied cleanly, connector fails before its rename: a copied key
+///   is retained (a rerun reuses it), a rotated key is restored through
+///   the guarded exchange bound to the installed file's token; either way
+///   the run ends `KeyOnly`;
+/// - connector fails after its rename (directory sync): the key stays, the
+///   run ends incomplete naming the sync, `Both`.
 fn commit(
     doc: &ProviderFileDoc,
     key: &KeySpec,

@@ -20,13 +20,12 @@
 //!                     other postvec-server nodes
 //! ```
 //!
-//! Identical nodes, not a control plane. Every node binds the same three
-//! ports and runs the same command. Models are files on disk. This process
-//! never fetches weights.
+//! Every node binds the same three ports and runs the same command. Models
+//! are files on disk.
 //!
 //! Sockets are reserved before model load so a port conflict fails
-//! immediately. ONNX init is fatal. Failing to join the cluster is not: a
-//! node that cannot see its peers still serves every client that can see it.
+//! immediately. ONNX init is fatal. A node that cannot join the cluster
+//! still serves every client that can see it.
 
 pub mod admin;
 pub mod api;
@@ -45,8 +44,7 @@ pub mod net;
 pub mod state;
 
 pub mod registry;
-// Generated code returns `Result<_, tonic::Status>`; newer clippy flags the
-// error variant as large, and that signature is tonic's to choose.
+// tonic::Status is large; the generated signature is tonic's.
 #[allow(clippy::result_large_err)]
 pub mod proto {
     tonic::include_proto!("ninference");
@@ -61,14 +59,13 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-/// Stack size for engine threads. tokio's 2 MiB default is too small:
-/// tokenizer regex recursion runs on the worker and blocking threads, and
-/// the blocking pool inherits this size. Same value the embedded engine uses.
+/// Engine thread stack. Tokenizer regex recursion runs on worker and
+/// blocking threads; the blocking pool inherits this size. Matches the
+/// embedded engine.
 const THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
-/// Ceiling on the blocking pool. tokio's default is 512, which on a
-/// predict-heavy node would mean hundreds of 8 MiB stacks; excess demand
-/// should queue behind the admission limit and hit the request deadline
-/// instead of fanning out.
+/// Blocking-pool ceiling. tokio's default of 512 would allocate hundreds
+/// of 8 MiB stacks on a predict-heavy node. Excess demand queues behind
+/// the admission limit and hits the request deadline.
 const MAX_BLOCKING_THREADS: usize = 64;
 
 pub fn run() -> ExitCode {
@@ -83,8 +80,7 @@ pub fn run() -> ExitCode {
     }
 }
 
-/// The node-local subcommands are short-lived HTTP calls; a single-threaded
-/// runtime is the right size for them.
+/// Node-local subcommands are short-lived HTTP calls on a current-thread runtime.
 fn run_client<F, Fut>(build: F) -> ExitCode
 where
     F: FnOnce() -> Fut,
@@ -113,8 +109,7 @@ fn run_serve(args: ServeArgs) -> ExitCode {
     let settings = match config::load(&args, &ProcessEnv) {
         Ok(settings) => Arc::new(settings),
         Err(e) => {
-            // The logger is not up yet — configuration errors are the one
-            // class that has to be readable without it.
+            // Logger is not up yet; configuration errors print to stderr.
             eprintln!("postvec-server: {e}");
             return ExitCode::FAILURE;
         }
@@ -154,10 +149,10 @@ enum LeaseOutcome {
     Unavailable(String),
 }
 
-/// Lease path: SHA-256 of the canonical engine-root bytes, 64 hex chars,
-/// never unlinked. Same contract as postvec-cli purge. Coordinates only
-/// processes that see the same inode: a container sharing an engine root
-/// across mount namespaces must bind-mount `/run/lock/postvec` too.
+/// Lease path: SHA-256 of the canonical engine-root bytes (64 hex chars).
+/// Kept on disk so postvec-cli purge can flock the same file. Processes
+/// that share an engine root across mount namespaces must also share
+/// `/run/lock/postvec`.
 fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(canonical_root.as_os_str().as_encoded_bytes());
@@ -165,12 +160,11 @@ fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/run/lock/postvec/engine-{hex}.lease"))
 }
 
-/// Take the shared side of the engine-root serving lease. **Fail-closed**:
-/// any failure — the directory missing or unwritable, the flock refused —
-/// prevents serving, because a server without the lease is invisible to a
-/// concurrent `postvec uninstall --purge` on the same host. The shipped
-/// systemd unit and the container image both provide a writable
-/// `/run/lock/postvec`.
+/// Take the shared side of the engine-root serving lease. Fail-closed:
+/// a missing or unwritable directory, or a refused flock, stops serving.
+/// Without the lease a concurrent `postvec uninstall --purge` cannot see
+/// this process. The shipped systemd unit and container image provide a
+/// writable `/run/lock/postvec`.
 fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -191,13 +185,10 @@ fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
             }
         }
     }
-    // A shared flock needs only a readable descriptor. The usual case after
-    // a `postvec uninstall --purge` (or any root-driven CLI use) is a lease
-    // file that already exists as root:root 0644: this unprivileged process
-    // cannot open it for writing and MUST NOT need to — it falls back to
-    // read-only. Creation is attempted only when the file does not exist
-    // yet; failure to create a missing file stays fail-closed. O_NOFOLLOW
-    // on both opens: a planted symlink at the lease path is never followed.
+    // Shared flock needs a readable descriptor. After a root-run CLI the
+    // lease is typically root:root 0644, so this unprivileged process opens
+    // it read-only. Create only when the file is missing; that failure stays
+    // fail-closed. O_NOFOLLOW on both opens.
     let read_write = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -242,8 +233,7 @@ fn init_logging(default_filter: &str) {
         .init();
 }
 
-/// Reserve a socket before anything slow happens, with an error that names
-/// the flag rather than the address.
+/// Bind a socket before anything slow happens. The error names the flag.
 fn reserve(flag: &str, addr: SocketAddr) -> Result<std::net::TcpListener, String> {
     std::net::TcpListener::bind(addr).map_err(|e| {
         format!(
@@ -261,12 +251,9 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         metrics::features()
     );
     log::info!("engine root: {}", settings.root.display());
-    // The serving lease: held (shared) for the whole serving lifetime. A
-    // `postvec uninstall --purge` takes the exclusive side before deleting
-    // anything under an engine root, so a server that is starting or serving
-    // blocks the sweep instead of racing its process scan. Fail-closed: a
-    // server that cannot hold the lease is invisible to a concurrent purge
-    // and must not serve.
+    // Shared serving lease for the process lifetime. `postvec uninstall
+    // --purge` takes the exclusive side before it deletes the root, so a
+    // starting or serving node blocks that sweep. Fail-closed.
     let _serving_lease = match serving_lease(&settings.root) {
         LeaseOutcome::Held(file) => file,
         LeaseOutcome::PurgeInProgress => {
@@ -293,9 +280,8 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
 
     // --- 1. Identity ---------------------------------------------------
     let advertise = net::resolve_advertise(&settings)?;
-    // The guess only matters to peers. A single-node deployment — the common
-    // container case — would otherwise be warned, on every boot, about a NIC
-    // choice that affects nothing it does.
+    // Autodetect warning is for clustered nodes. A single-node container
+    // has no peers to advertise to.
     if advertise.source == AdvertiseSource::Autodetected && !settings.peers.is_empty() {
         log::warn!(
             "advertising {} to the cluster, autodetected from the routing table. On a host \
@@ -313,9 +299,8 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // --- 2. Reserve every socket ---------------------------------------
     let grpc_socket = reserve("--grpc", SocketAddr::new(settings.bind, settings.grpc_port))?;
     let http_socket = reserve("--http", SocketAddr::new(settings.bind, settings.http_port))?;
-    // The admin socket is loopback whatever --bind says. These routes mutate
-    // the engine and have no authentication; a routable bind is not an
-    // option the operator gets.
+    // Admin routes mutate the engine with no authentication, so they bind
+    // loopback regardless of --bind.
     let admin_addr = SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), settings.admin_port);
     let admin_socket = reserve("--admin", admin_addr)?;
     let proxy_sockets = managed::reserve(&settings)?;
@@ -351,11 +336,11 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         engine_host::warm_up(&engine, &metrics).await;
     }
 
-    // One gateway per node, mounted beside the engine. `load` isolates
-    // per-file failures: a broken provider file never degrades local
-    // models. A missing directory is the ordinary zero-config case. If
-    // the local-model list cannot be built, no provider serves: a
-    // partial reservation is how a provider would steal a local name.
+    // One gateway per node, beside the engine. `load` isolates per-file
+    // failures so a broken provider file leaves local models serving.
+    // A missing directory is the zero-config case. If the local-model
+    // list cannot be built, no provider is mounted: a partial reservation
+    // would let a provider claim a local name.
     let gateway = Arc::new(
         match crate::models::reserved_local_names(&settings.root, &engine) {
             Ok(local_models) => {
@@ -391,9 +376,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
             Some(manager)
         }
         Err(e) => {
-            // Gossip is an observability feature here, not a serving
-            // dependency — refusing to start would trade a working node for
-            // a missing one.
+            // Gossip is observability. The node still serves if it cannot start.
             log::error!("gossip did not start: {e}. Continuing without cluster membership.");
             None
         }
@@ -413,8 +396,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // --- 6. Serve ---------------------------------------------------------
     let public = http::spawn(state.clone(), http_socket)?;
     let admin = admin::spawn(state.clone(), admin_socket)?;
-    // Split the join handles out of the listeners: `select!` consumes them,
-    // and the drain below still needs the shutdown handles.
+    // Clone the shutdown handles before `select!` consumes the join handles.
     let public_handle = public.handle.clone();
     let admin_handle = admin.handle.clone();
 
@@ -461,7 +443,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
 
     // --- 8. Drain ---------------------------------------------------------
     // Flip `/ready` to 503 first. Keep `/config` models so a single-node
-    // restart does not prune postvec's SQL cache. Announce departure, wait
+    // restart leaves postvec's SQL cache intact. Announce departure, wait
     // drain-delay so the 503 is observable, then stop. A second signal
     // skips the wait.
     state.begin_drain();
@@ -482,8 +464,8 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         }
     }
 
-    // The managed sessions leave on their own once they see the drain; a
-    // session still inside a long statement is cut here.
+    // Managed sessions exit when they see the drain; a session still inside
+    // a long statement is cut here.
     for task in managed_tasks {
         task.abort();
         let _ = task.await;
@@ -505,9 +487,8 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
 
 /// Wait for in-flight inference to finish, up to `budget`.
 ///
-/// Polling beats a flat sleep in both directions: an idle node stops
-/// immediately instead of padding every restart with the worst case, and a
-/// node with a slow request still gets the whole budget.
+/// An idle node returns immediately; a node with a slow request still
+/// gets the whole budget.
 async fn await_quiet(metrics: &metrics::Metrics, budget: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + budget;
     loop {
@@ -553,12 +534,9 @@ async fn wait_for_signal() -> String {
 mod serving_lease_tests {
     use super::*;
 
-    /// The lease of a root the CLI (running as root) touched first is a
-    /// root-owned 0644 file this service account cannot write. The shared
-    /// side must fall back to a read-only descriptor — flock does not need
-    /// write — or the shipped unit bricks itself in a 5-second restart loop
-    /// after every purge or reboot-then-purge. Simulated single-uid: an
-    /// existing lease file with no write permission.
+    /// After a root-run CLI, the lease is a root-owned 0644 file this
+    /// service account cannot write. The shared side opens it read-only
+    /// (flock needs no write). Simulated as an existing 0444 lease file.
     #[test]
     fn the_shared_side_falls_back_to_read_only_on_an_unwritable_lease() {
         use std::os::unix::fs::PermissionsExt;
@@ -588,7 +566,7 @@ mod serving_lease_tests {
                 }
             ),
         }
-        // And a purge holding the exclusive side still refuses us.
+        // Exclusive lock from purge still wins.
         use std::os::fd::AsRawFd;
         let purge_side = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
         assert_eq!(
@@ -611,8 +589,7 @@ mod serving_lease_tests {
                 "/run/lock/postvec/engine-616ab489616db613212540e426e1245d5dd61ba6bbed138f9cb9ae20c03b6166.lease"
             )
         );
-        // Fixed-length whatever the root: a near-PATH_MAX root must not hit
-        // NAME_MAX.
+        // Hash keeps the filename short for a near-PATH_MAX root.
         let long = format!("/srv/{}", "x".repeat(3900));
         assert_eq!(
             serving_lease_path(std::path::Path::new(&long))

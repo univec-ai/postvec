@@ -1,25 +1,22 @@
 //! Versioned terms notice for `model pull` / `model upgrade`.
 //!
 //! After dependency expansion and preflight, the entries that will actually
-//! be downloaded or replaced are grouped by their **exact** terms document —
-//! (license id, document version, canonical URL, acceptance policy) — into
-//! the plan's `terms` block. A `none` policy is displayed and never asks
-//! anything; a `notice` policy must be acknowledged once per distinct
-//! document before any download and before the ordinary plan confirmation —
-//! interactively, or with the exact, version-specific
-//! `--accept-license <id>@<version>` flag. `--yes` answers only the ordinary
-//! mutation confirmation and never stands in for a terms acknowledgement.
+//! be downloaded or replaced are grouped by their exact terms document
+//! (license id, document version, canonical URL, acceptance policy) into
+//! the plan's `terms` block. A `none` policy is displayed. A `notice`
+//! policy must be acknowledged once per distinct document before any
+//! download and before the ordinary plan confirmation, interactively or
+//! with the exact `--accept-license <id>@<version>` flag. `--yes` answers
+//! only the ordinary mutation confirmation.
 //!
-//! What the acknowledgement is: local evidence that this host was shown
-//! the exact document, recorded in the install receipt. It is not
-//! organization acceptance. An index that requires `organization`
-//! acceptance is refused here; no local prompt stands in for the server
-//! gate.
+//! The acknowledgement is local evidence that this host was shown the
+//! exact document, recorded in the install receipt. An index that requires
+//! `organization` acceptance is refused here; the server gate is the
+//! authority for that policy.
 //!
-//! Staleness mirrors the publisher's acknowledgement rule: a flag naming a
-//! document this run does not need — unknown, wrong version, a `none`
-//! policy, or one already evidenced by the installation being replaced — is
-//! refused rather than silently carried, so a copied command line cannot
+//! A flag naming a document this run does not need (unknown, wrong
+//! version, a `none` policy, or one already evidenced by the installation
+//! being replaced) is refused, so a copied command line cannot
 //! pre-acknowledge the next document.
 
 use crate::error::{CliError, Result};

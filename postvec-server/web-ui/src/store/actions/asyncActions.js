@@ -22,8 +22,8 @@ const envelope = async (request, { manage } = {}) => {
   return data.data
 }
 
-// One request to one peer; never throws. `body` is whatever the node
-// returned (native envelope or OpenAI shape), `ok` whether it succeeded.
+// One request to one peer. Returns `{ok, body}`: `body` is whatever the
+// node returned (native envelope or OpenAI shape).
 const post = async (peer, path, payload, timeout) => {
   const started = performance.now()
   const ms = () => Math.round(performance.now() - started)
@@ -153,7 +153,7 @@ export const createAsyncActions = (set, get) => ({
   },
 
   // Installed + pulls only: what activate, deactivate and remove change.
-  // The catalogue is a network round trip and does not move.
+  // The catalogue is a separate network round trip.
   loadInstalled: async () => {
     try {
       const data = await envelope(

@@ -59,10 +59,11 @@ done
 # postvec-server is the exception, and asserting it is the point: it is a
 # separate program under a separate grant, sitting in a tree where every
 # neighbour is PostgreSQL-licensed. A copy-paste from one of them would
-# relicense it silently, and the LICENSING.md index would then be wrong about
-# a file nobody re-read. All four statements of the fact have to agree: the
-# reviewed pin (SERVER_LICENSE, which is what the postvec-server *package*
-# declares), the crate manifest, the licence text, and the root index.
+# relicense it silently, and the LICENSING.md index would then be wrong
+# about a file nobody re-read. All four statements of the fact have to
+# agree: the reviewed pin (SERVER_LICENSE, which is what the postvec-server
+# package declares), the crate manifest, the licence text, and the root
+# index.
 [[ -f "${REPO_ROOT}/postvec-server/LICENSE" ]] \
     || { echo "  FAIL  postvec-server/LICENSE is missing"; fail=1; }
 check "postvec-server license" "${SERVER_LICENSE}" \

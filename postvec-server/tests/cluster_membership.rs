@@ -193,17 +193,18 @@ async fn nodes_in_different_groups_do_not_merge() {
 
 /// A departing node announces itself, and keeps gossiping while it drains.
 ///
-/// What is asserted here is the local half, because it is the half that is
-/// deterministic. The remote half — how quickly a peer *observes* the
-/// departure — is a property of the gossip transport: the announcement rides
-/// the broadcast queue over UDP, and where UDP gossip is degraded (as it is
-/// between loopback aliases in one process on some kernels) peers fall back
-/// to anti-entropy, which is thirty seconds by default. Asserting a wall
-/// clock here would be testing the host's networking, not this code.
+/// What is asserted here is the local half, because it is deterministic.
+/// How quickly a peer observes the departure is a property of the gossip
+/// transport: the announcement rides the broadcast queue over UDP, and
+/// where UDP gossip is degraded (as it is between loopback aliases in one
+/// process on some kernels) peers fall back to anti-entropy, which is
+/// thirty seconds by default. Asserting a wall clock here would be testing
+/// the host's networking.
 ///
-/// The code's contribution is ordering, and `serve()` gets it right: announce
-/// first, keep gossiping through the drain window, tear down last. Announcing
-/// and shutting down in one breath is what makes peers wait out anti-entropy.
+/// The code's contribution is ordering, and `serve()` gets it right:
+/// announce first, keep gossiping through the drain window, tear down last.
+/// Announcing and shutting down in one breath is what makes peers wait out
+/// anti-entropy.
 #[tokio::test]
 async fn a_departing_node_announces_without_tearing_down_gossip() {
     let port = next_port();

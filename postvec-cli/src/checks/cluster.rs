@@ -61,14 +61,14 @@ pub struct OfflineClusterInput<'a> {
 ///
 /// Two properties are load-bearing and are asserted in the tests below:
 ///
-/// 1. `cluster.reachable` **fails**, so the run can never exit 0. A diagnostic
+/// 1. `cluster.reachable` fails, so the run cannot exit 0. A diagnostic
 ///    tool that returns green on a stopped server is worse than one that
 ///    refuses to run.
-/// 2. Everything that needed the connection becomes a **required skip**, not a
-///    pass. `SettingsSnapshot`'s accessors all return `None`/empty when a
-///    setting is absent, so feeding the normal checks an empty snapshot would
-///    have quietly reported "mode: not set", "no databases configured" and
-///    similar as ordinary findings — indistinguishable from a cluster that is
+/// 2. Everything that needed the connection becomes a required skip.
+///    `SettingsSnapshot`'s accessors all return `None`/empty when a setting
+///    is absent, so feeding the normal checks an empty snapshot would
+///    quietly report "mode: not set", "no databases configured" and similar
+///    as ordinary findings, indistinguishable from a cluster that is
 ///    genuinely misconfigured. Those checks are not run at all.
 pub fn offline_checks(input: &OfflineClusterInput<'_>) -> Vec<CheckResult> {
     // The message carries the underlying error verbatim: "cannot connect" on

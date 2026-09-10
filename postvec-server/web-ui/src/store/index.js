@@ -6,8 +6,9 @@ import createPrefsSlice from './slices/prefsSlice'
 import createNetworkingSlice from './slices/networkingSlice'
 import { createAsyncActions } from './actions/asyncActions'
 
-// Persisted: the selection and what was typed, never responses (an
-// embedding batch would blow the localStorage quota) and never the endpoint.
+// Persisted: the selection and what was typed. Responses stay out
+// (an embedding batch would blow the localStorage quota), as does the
+// endpoint.
 const persisted = (state) => ({
   prefs: {
     ...state.prefs,

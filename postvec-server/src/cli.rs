@@ -4,7 +4,7 @@
 //! Command-line surface.
 //!
 //! Value-carrying flags are `Option` so [`crate::config`] can tell unset
-//! from default. `serve` is the default subcommand: a unit can be
+//! from default. `serve` is the default subcommand, so a unit can be
 //! `ExecStart=... --peers ...` with no verb.
 
 use clap::{ArgAction, Args, Parser, Subcommand};
@@ -21,19 +21,15 @@ pub const DEFAULT_ADMIN_PORT: u16 = 22223;
     version,
     about = "Inference node for postvec's remote (grpc) mode",
     long_about = "\
-Serves postvec's remote mode: the inference gRPC contract (EmbedTexts, \
-ConvertEmbeddings), GET /config discovery, HTTP /api/{model} (native) and \
-/api/openai/embeddings (OpenAI-compatible), backed by ONNX models already \
-present under <root>/models. An optional dashboard is served from the same \
-HTTP port when a built web-ui is found.
+Serves postvec's remote mode: gRPC EmbedTexts and ConvertEmbeddings, GET \
+/config discovery, HTTP /api/{model} and /api/openai/embeddings. Models are \
+ONNX files already present under <root>/models. When a built web-ui is found, \
+the dashboard is served from the same HTTP port.
 
-This process has no model hub and never downloads weights. Put models on disk \
-with `postvec model pull`, a shared volume, or your own copy step.
+Install models with `postvec model pull`, a shared volume or a copy of your own.
 
-SECURITY: the gRPC port has no transport security and no authentication, and \
-the discovery port is unauthenticated. Both are designed for a trusted \
-private network and must not be reachable from the internet. Only the \
-loopback admin port can mutate the engine.",
+SECURITY: the gRPC and discovery ports have no authentication. They belong on \
+a trusted private network. Only the loopback admin port mutates the engine.",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -184,10 +180,8 @@ pub struct ServeArgs {
     #[arg(long, value_name = "LIST", value_delimiter = ',', num_args = 1..)]
     pub models: Option<Vec<String>>,
 
-    /// Directory of external-provider connector files (providers.d).
-    /// A path, never a credential: provider API keys live only in the
-    /// (0600) TOML files under it. Empty or missing means no
-    /// provider-backed models.
+    /// Directory of providers.d connector files. API keys live in the
+    /// 0600 TOML files under it. Empty or missing means no provider models.
     ///
     /// [env: POSTVEC_SERVER_PROVIDERS_PATH] [default: <root>/providers.d]
     #[arg(long = "providers-path", value_name = "PATH")]
@@ -200,8 +194,8 @@ pub struct ServeArgs {
     #[arg(long = "predict-timeout-ms", value_name = "N")]
     pub predict_timeout_ms: Option<u64>,
 
-    /// Concurrently executing predictions. Bounds CPU oversubscription and
-    /// coexisting response trees. [default: CPU count, clamped to 4..=16]
+    /// Concurrent predictions. Bounds CPU oversubscription and coexisting
+    /// response trees. [default: CPU count, clamped to 4..=16]
     ///
     /// [env: POSTVEC_SERVER_MAX_INFLIGHT]
     #[arg(long = "max-inflight", value_name = "N")]
@@ -214,8 +208,8 @@ pub struct ServeArgs {
     pub max_resident_models: Option<usize>,
 
     /// How long to keep serving after a shutdown signal while /ready already
-    /// answers 503, so healthchecks and load balancers observe the node
-    /// leaving before its socket closes. 0 disables. [default: 5000]
+    /// answers 503, so load balancers see the node leave before the socket
+    /// closes. 0 disables. [default: 5000]
     ///
     /// [env: POSTVEC_SERVER_DRAIN_DELAY_MS]
     #[arg(long = "drain-delay-ms", value_name = "N")]
@@ -253,8 +247,7 @@ pub struct ServeArgs {
 }
 
 /// Flags shared by the node-local client subcommands. They talk to
-/// `127.0.0.1` and never to a peer: `status`, `load` and `unload` are
-/// node-local tools, not fleet orchestration.
+/// `127.0.0.1`. `status`, `load` and `unload` act on this node only.
 #[derive(Debug, Args, Default)]
 pub struct LocalArgs {
     /// Admin port of the local node. [default: 22223]
@@ -279,11 +272,7 @@ pub struct StatusArgs {
     #[command(flatten)]
     pub local: LocalArgs,
 
-    /// Also read every alive peer's /config and compare model inventories.
-    ///
-    /// Off by default because `status` is a node-local tool; on, it is the
-    /// check that makes "every node carries the same enabled set" more than
-    /// an operator convention.
+    /// Compare every alive peer's /config inventory with this node.
     #[arg(long, action = ArgAction::SetTrue)]
     pub fleet: bool,
 }
@@ -318,8 +307,8 @@ mod tests {
         );
     }
 
-    /// `--cluster` is accepted as an alias of `--peers`. "cluster" already
-    /// means a PostgreSQL cluster in postvec-cli.
+    /// `--cluster` is an alias of `--peers`. "cluster" already means a
+    /// PostgreSQL cluster in postvec-cli.
     #[test]
     fn cluster_is_an_accepted_alias_for_peers() {
         let cli = Cli::try_parse_from(["postvec-server", "--cluster", "a,b"]).unwrap();
@@ -355,8 +344,6 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Status(a)) if a.fleet));
     }
 
-    /// Absent flags must stay absent, so the merge in `config` can tell
-    /// "unset" from "set to the default".
     #[test]
     fn managed_commands_require_a_dsn() {
         for action in ["install", "status", "uninstall"] {
@@ -372,6 +359,8 @@ mod tests {
         }
     }
 
+    /// Absent flags stay absent so the merge in `config` can tell unset
+    /// from "set to the default".
     #[test]
     fn absent_flags_are_none() {
         let cli = Cli::try_parse_from(["postvec-server"]).unwrap();

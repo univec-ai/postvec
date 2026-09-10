@@ -91,17 +91,16 @@ pub fn apply_server_facts(cluster: &mut Cluster, facts: &crate::facts::ServerFac
         cluster.config_file = Some(PathBuf::from(file));
     }
 
-    // Discovery deliberately leaves `owner` unset: which account owns a
-    // hand-built installation is not knowable from a pg_config path. Once the
-    // server has told us its data directory, though, it *is* knowable — the
-    // directory's owner is the account PostgreSQL requires to be running as,
-    // and PostgreSQL refuses to run as root at all.
+    // Discovery leaves `owner` unset: which account owns a hand-built
+    // installation is not knowable from a pg_config path. Once the server
+    // has told us its data directory, the directory's owner is the account
+    // PostgreSQL requires to be running as.
     //
-    // This matters for more than tidiness: `postgres -C`, which is how the CLI
-    // validates a candidate configuration offline, exits with "must be started
-    // under an unprivileged user ID" when run as root. Without this, every
-    // `sudo postvec setup --pg-config …` on a PGDG-RPM host — the documented
-    // flow for the RHEL family — fails at validation.
+    // `postgres -C`, which is how the CLI validates a candidate
+    // configuration offline, exits with "must be started under an
+    // unprivileged user ID" when run as root. Without this, every
+    // `sudo postvec setup --pg-config ...` on a PGDG-RPM host fails at
+    // validation.
     if cluster.owner.is_none() {
         if let Some(dir) = &cluster.data_dir {
             cluster.owner = OsAccount::owning(dir).ok();

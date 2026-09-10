@@ -5,12 +5,11 @@
 //! `POST /admin/providers/reload`.
 //!
 //! These routes mutate the engine and have no auth. They bind `127.0.0.1`
-//! only. The per-request peer check is a second line, not the boundary.
+//! only. The per-request peer check is a second line behind that bind.
 //! Read-only routes are mirrored so the node-local CLI can hit `/config`
 //! over plain loopback HTTP.
 //!
-//! `postvec-server load` is one node's engine catching up to disk. It is
-//! not fleet orchestration.
+//! `postvec-server load` catches one node's engine up to disk.
 
 use crate::models::{self, DescriptorIndex};
 use crate::state::ServerState;
@@ -57,10 +56,8 @@ fn results_envelope(results: Vec<Value>) -> (StatusCode, Json<Value>) {
     )
 }
 
-/// Defence in depth behind the loopback bind. Kept even though the socket
-/// already answers loopback only, because a listener's bind and a request's
-/// peer are checked in different places and only one of them is visible at
-/// the call site.
+/// Defence in depth behind the loopback bind. The listener bind and the
+/// request peer are checked in different places.
 fn peer_check(peer: SocketAddr) -> Result<(), (StatusCode, Json<Value>)> {
     if peer.ip().is_loopback() {
         Ok(())
@@ -72,9 +69,8 @@ fn peer_check(peer: SocketAddr) -> Result<(), (StatusCode, Json<Value>)> {
     }
 }
 
-/// Decode and bound a request body. An oversized or non-UTF-8 body surfaces
-/// as the extractor's rejection re-wrapped into the JSON envelope, so a
-/// client never has to parse an HTML-ish error page.
+/// Decode and bound a request body. An oversized or non-UTF-8 body is
+/// re-wrapped into the JSON envelope.
 fn parse_request(
     body: Result<String, StringRejection>,
 ) -> Result<Vec<String>, (StatusCode, Json<Value>)> {
@@ -118,7 +114,7 @@ pub(crate) async fn load_models(
     names: Vec<String>,
 ) -> Result<Vec<Value>, String> {
     // Detach the load. If the client disconnects, this task still holds
-    // the lifecycle lock and finishes commit-or-rollback.
+    // the lifecycle lock and finishes.
     let lifecycle = state.lifecycle.clone();
     let root = state.settings.root.clone();
     let outcome = tokio::spawn(async move {
@@ -268,8 +264,8 @@ async fn load_one(state: &ServerState, index: &Arc<DescriptorIndex>, name: &str)
 // ---- /admin/unload -----------------------------------------------------
 
 /// Best-effort direct-dependency edges, read from the same descriptors
-/// `load_model` parses. A missing or broken one just means no ordering
-/// information for that model; the unload still proceeds.
+/// `load_model` parses. A missing or broken descriptor skips ordering
+/// for that model; the unload still proceeds.
 fn request_dependencies(index: &DescriptorIndex, names: &[String]) -> HashMap<String, Vec<String>> {
     let mut deps = HashMap::new();
     for name in names {
@@ -282,11 +278,10 @@ fn request_dependencies(index: &DescriptorIndex, names: &[String]) -> HashMap<St
     deps
 }
 
-/// Order the requested set so a requested dependent unloads before anything
-/// it depends on — the mirror of `load_model`'s dependencies-first
-/// recursion. Duplicates collapse to their first occurrence; a cycle (which
-/// a well-formed root cannot have) degrades to request order. Quadratic, and
-/// fine: at most [`MAX_MODELS_PER_REQUEST`] names.
+/// Order the requested set so a dependent unloads before anything it
+/// depends on, the reverse of `load_model`'s dependencies-first recursion.
+/// Duplicates collapse to their first occurrence; a cycle falls back to
+/// request order. Quadratic, and fine: at most [`MAX_MODELS_PER_REQUEST`] names.
 fn reverse_dependency_order(names: &[String], deps: &HashMap<String, Vec<String>>) -> Vec<String> {
     let mut remaining: Vec<&str> = Vec::new();
     for name in names {
@@ -339,7 +334,7 @@ pub(crate) async fn unload_models(
 
         let mut results = Vec::with_capacity(names.len());
         for name in reverse_dependency_order(&names, &deps) {
-            // `unload_model` is synchronous, takes all three engine write
+            // `unload_model` is synchronous: it takes the engine write
             // locks and tears down native sessions as the pool drops.
             let engine: Arc<InferenceEngine> = state.engine.clone();
             let model = name.clone();
@@ -364,7 +359,7 @@ pub(crate) async fn unload_models(
 
 /// Rescan providers.d and swap the gateway snapshot in atomically.
 /// `postvec provider add/rm --path <root>` calls this after writing
-/// files; a restart also picks changes up. A failed (structural) reload
+/// files; a restart also picks changes up. A failed structural reload
 /// keeps the previous snapshot.
 async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) {
     let gateway = state.gateway.clone();
@@ -373,16 +368,13 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
     // the engine now owns must be refused now.
     let engine = state.engine.clone();
     let root = state.settings.root.clone();
-    // The directory this node actually reads. Reported in the body because
-    // `postvec provider … --path DIR` has to try loopback listeners blind:
-    // without it, whichever host answers first would be credited with a
-    // reload of a directory it never looks at.
+    // Directory this node reads. Reported in the body so `postvec provider
+    // ... --path DIR` can tell which loopback host answered.
     let served_path = path.display().to_string();
     // providers.d scanning is filesystem work (stat, read, key files) —
     // keep it off the serving runtime's workers like the other admin routes.
     let outcome = tokio::task::spawn_blocking(move || {
-        // Fail closed: a scan failure keeps the previous snapshot rather
-        // than reloading against a narrowed reservation.
+        // Fail closed: a scan failure keeps the previous snapshot.
         let local = models::reserved_local_names(&root, &engine)?;
         gateway.reload(&path, &local)
     })
@@ -417,9 +409,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
     let load_state = state.clone();
     let unload_state = state.clone();
     let reload_state = state.clone();
-    // The read-only routes ride along so the node-local CLI can read
-    // `/config` over plain loopback HTTP instead of negotiating TLS with a
-    // self-signed certificate against the public port.
+    // Read-only routes ride along so the node-local CLI can read `/config`
+    // over plain loopback HTTP.
     let router = crate::http::router(state.settings.metrics, true)
         .merge(crate::managed::routes())
         .route(

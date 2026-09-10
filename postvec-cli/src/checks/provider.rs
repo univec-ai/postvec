@@ -470,8 +470,9 @@ fn space_dim_checks(dir: &Path) -> Vec<CheckResult> {
 /// `doctor --deep` only: configured univec entries that UniVec's current
 /// catalogue no longer lists. One attempt per base URL, short timeout, no
 /// retry; an unreachable catalogue is a non-required SKIP naming the
-/// reason. Otherwise a note (PASS), never a warning — the catalogue does not model removals reliably, and `--strict`
-/// must not trip on a UniVec blip. Ordinary `doctor` never opens this socket.
+/// reason. Otherwise a note (PASS). The catalogue does not model removals
+/// reliably, so `--strict` stays quiet on a UniVec blip. Ordinary `doctor`
+/// leaves this socket alone.
 pub async fn catalogue_notes(dir: &Path, timeout: std::time::Duration) -> Vec<CheckResult> {
     use providers::listing::{self, ListedModel, Listing};
     let mut catalogues: std::collections::BTreeMap<String, Result<Vec<ListedModel>, String>> =

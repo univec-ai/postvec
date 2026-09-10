@@ -16,11 +16,11 @@
 # build-model-bundle.sh), and writes .deb or .rpm files to
 # packaging/postvec/dist/<cell>/.
 #
-# One nfpm description per package produces both formats, so a dependency or a
-# file-placement rule is stated once rather than kept in sync between a
-# debian/control and an RPM spec. Where the two ecosystems genuinely differ —
-# package naming, version relations, licence directory — the difference is
-# explicit in the description's `overrides` block or in the variables below.
+# One nfpm description per package produces both formats, so a dependency or
+# a file-placement rule is stated once. Where the two ecosystems genuinely
+# differ (package naming, version relations, licence directory) the
+# difference is explicit in the description's `overrides` block or in the
+# variables below.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

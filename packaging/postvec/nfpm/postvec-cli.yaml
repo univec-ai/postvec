@@ -34,8 +34,7 @@ contents:
     file_info: { mode: 0644, owner: root, group: root }
   # Debian Policy §12.7 requires a changelog in every non-native package. One
   # release, one changelog, shipped by every package it produced; rendered by
-  # scripts/build-packages.sh (see render_changelog in scripts/lib.sh for why
-  # nfpm's own `changelog:` field is not used).
+  # scripts/build-packages.sh (see render_changelog in scripts/lib.sh).
   - src: ${CHANGELOG_FILE}
     dst: /usr/share/doc/postvec-cli/${CHANGELOG_NAME}
     file_info: { mode: 0644, owner: root, group: root }
@@ -44,17 +43,14 @@ contents:
 # distribution's own generator found; see scripts/elf-depends.sh for why that
 # is a separate step. Only the block matching the packager in use is read, so
 # the same list appearing under both is expected.
-# No `recommends` on a PostgreSQL client.
 #
-# The CLI never shells out to psql — it speaks the wire protocol itself — so a
-# client package buys nothing, and both spellings actively cause harm on the
-# hosts this package targets. `postgresql-client` on Debian is a metapackage for
-# whichever major the *distribution* considers default, which on a PGDG host is
-# generally not the major postvec was installed for; `postgresql` on EL9 is the
-# distribution module that the PGDG instructions have you disable. A
-# recommendation that installs the wrong major by default is worse than no
-# recommendation, and there is no major-aware spelling to prefer instead,
-# because the CLI is deliberately not tied to one major.
+# The CLI speaks the wire protocol itself, so a PostgreSQL client package
+# buys nothing. `postgresql-client` on Debian is a metapackage for whichever
+# major the distribution considers default, which on a PGDG host is generally
+# not the major postvec was installed for. `postgresql` on EL9 is the
+# distribution module that the PGDG instructions have you disable. The CLI
+# is not tied to one major, so there is no major-aware client spelling to
+# recommend.
 overrides:
   deb:
     # postgresql-common provides pg_lsclusters and pg_conftool, which the CLI

@@ -355,21 +355,20 @@ pub async fn quiesce(
     })
 }
 
-/// **Restore and prove**: undo the whole batch — put every parked predecessor
-/// back and remove every fresh install — then load the *complete* intended
-/// predecessor set with the exact result set verified, and only then clear the
-/// record.
+/// Restore and prove: undo the whole batch (put every parked predecessor
+/// back and remove every fresh install), then load the complete intended
+/// predecessor set with the exact result set verified, and only then clear
+/// the record.
 ///
 /// The record is the last thing to go. If the reload cannot be proven the
-/// transaction stays on disk, so the next command still sees unsettled state
-/// instead of being allowed to proceed over an engine that is not where it
-/// should be.
+/// transaction stays on disk, so the next command still sees unsettled
+/// state.
 ///
-/// Note the two different name sets. Quiesce covers **every** batch member,
-/// because the engine may have been made to hold any of them. The reload
-/// covers only the **replacements**: a fresh install has no predecessor, and
-/// asking the engine to load a name whose directory was just removed would
-/// fail the very proof this function exists to establish.
+/// Quiesce covers every batch member, because the engine may have been
+/// made to hold any of them. The reload covers only the replacements: a
+/// fresh install has no predecessor, and asking the engine to load a name
+/// whose directory was just removed would fail the proof this function
+/// exists to establish.
 ///
 /// The caller must have run [`quiesce`] over at least this transaction's
 /// names first.
@@ -417,14 +416,14 @@ pub async fn restore_and_prove(
 /// Settle an interrupted `model upgrade` transaction before this command
 /// changes anything else. Every exclusive-lock holder calls this.
 ///
-/// A **confirmed** transaction only has superseded copies to drop. An
-/// **unconfirmed** one means the replacement was never proven loadable, so
-/// the protocol runs in full: quiesce every recorded name (the engine may
-/// hold new bytes, or may hold nothing because the crash happened between the
+/// A confirmed transaction only has superseded copies to drop. An
+/// unconfirmed one means the replacement was never proven loadable, so the
+/// protocol runs in full: quiesce every recorded name (the engine may hold
+/// new bytes, or may hold nothing because the crash happened between the
 /// unload and the rename), restore the filesystem, reload the complete
 /// predecessor set, and clear the record last. If any of that cannot be
-/// proven, the record and every recoverable copy are retained and the command
-/// refuses — guessing here is what would lose the last good revision.
+/// proven, the record and every recoverable copy are retained and the
+/// command refuses: guessing here is what would lose the last good revision.
 ///
 /// A `--path` target has no live engine to consult; the replacement's local
 /// extraction and descriptor checks already passed, and the publisher's load
@@ -621,25 +620,22 @@ fn embed_space_of(model: &InstalledModel) -> &str {
 
 /// The models the engine would actually hold, given an explicit
 /// `postvec.embedded_models` allow-list (empty means scan-load) and a set of
-/// names treated as **already gone**.
+/// names treated as already gone.
 ///
-/// Enabled-on-disk is necessary but not sufficient. With an explicit list the
-/// engine loads only listed **roots** plus their dependency closure, so an
-/// enabled-but-unlisted converter serves nothing — and counting it as a route
-/// would silence the warning for the model that really is serving the column.
+/// Enabled-on-disk is necessary but not sufficient. With an explicit list
+/// the engine loads only listed roots plus their dependency closure, so an
+/// enabled-but-unlisted converter serves nothing. Counting it as a route
+/// would silence the warning for the model that is actually serving the
+/// column.
 ///
 /// A root whose closure contains a deactivated or absent model is dropped
-/// whole: `InferenceEngine::load_model` refuses a disabled config, so the load
-/// fails and the root is not resident either.
+/// whole: `InferenceEngine::load_model` refuses a disabled config, so the
+/// load fails and the root is not resident either.
 ///
-/// `going_away` is why this takes a parameter instead of the caller filtering
-/// the result. Subtracting names from an already-computed resident set answers
-/// a different, weaker question: it drops the named models but keeps every
-/// parent that can no longer load without them. Deactivating an engine
-/// `dependencies` member that is *not* the converter's source and not
-/// `embed-bridge` would then leave the parent looking resident, and the column
-/// it serves would lose its route with no warning. Walking twice makes the two
-/// sides symmetric and the answer exact.
+/// `going_away` is a parameter so the walk can drop parents that fail to
+/// load without those names. Subtracting names from an already-computed
+/// resident set would keep those parents looking resident, and a column
+/// they serve would lose its route with no warning.
 fn resident_models<'a>(
     inventory: &'a [InstalledModel],
     allow_list: &[String],
@@ -745,29 +741,26 @@ fn space_is_servable(resident: &[&InstalledModel], space: &str) -> bool {
         })
 }
 
-/// Every managed column that would **lose its embedding route** if `names`
-/// stopped serving, across every configured database — plus the databases
+/// Every managed column that would lose its embedding route if `names`
+/// stopped serving, across every configured database, plus the databases
 /// whose registry could not be read.
 ///
-/// The question asked is not "does a column name this model" but "can this
-/// column still be embedded afterwards", evaluated against what the engine
-/// would actually hold, with `names` removed. A column whose route was already
-/// missing before this command is not reported: this command is not what broke
-/// it.
+/// The question is whether the column can still be embedded afterwards,
+/// evaluated against what the engine would actually hold with `names`
+/// removed. A column whose route was already missing is omitted: this
+/// command did not break it.
 ///
-/// Reuses the ordinary database inspection rather than adding a second query:
-/// it already tolerates an absent database, an unreachable one and a database
-/// without the extension, and there is then one implementation of "what does
-/// `postvec.registry` say".
+/// Reuses the ordinary database inspection, which already tolerates an
+/// absent, unreachable or extension-less database, so there is one
+/// implementation of what `postvec.registry` says.
 ///
-/// A database that cannot be inspected is reported as **unknown**, never as
-/// "not in use" — a silent "looked clean" is the exact failure this gate
-/// exists to prevent.
+/// A database that cannot be inspected is reported as unknown. A silent
+/// "looked clean" is the failure this gate exists to prevent.
 ///
-/// Known limit: `registry.model` is the entry's *declared* model, so a column
-/// part-way through a `migrate()` still reads as its pre-migration space until
-/// finalization. That is the conservative direction — it warns about the model
-/// the column is still being served by.
+/// `registry.model` is the entry's declared model, so a column part-way
+/// through a `migrate()` still reads as its pre-migration space until
+/// finalization. That is the conservative direction: it warns about the
+/// model the column is still being served by.
 pub async fn in_use_columns(
     target: &mut ModelTarget,
     names: &[String],
@@ -785,11 +778,10 @@ pub async fn in_use_columns(
         return (Vec::new(), databases);
     };
 
-    // What the engine holds now, and what it would hold with `names` gone —
-    // two independent walks, not a subtraction. Both are computed the way the
-    // engine decides residency, not merely from the `enabled` bit: an unlisted
-    // model is not a route, and a parent that can no longer load its whole
-    // closure is not one either.
+    // What the engine holds now, and what it would hold with `names` gone:
+    // two independent walks. Both follow how the engine decides residency.
+    // An unlisted model is not a route, and a parent that cannot load its
+    // whole closure is not one either.
     let before = resident_models(inventory, &allow_list, &[]);
     let after = resident_models(inventory, &allow_list, names);
     // Attribution needs "what if only this one went away", per name rather
@@ -981,10 +973,10 @@ mod tests {
         }
     }
 
-    /// The conversion story, which is the whole reason this product exists:
-    /// a column declared on a legacy space is served by a **converter** plus
-    /// the `embed-bridge` executor, and by nothing carrying that space's name.
-    /// Matching a column by `registry.model == NAME` would see none of this.
+    /// A column declared on a convert-only space is served by a converter
+    /// plus the `embed-bridge` executor, and by nothing carrying that
+    /// space's name. Matching a column by `registry.model == NAME` would
+    /// miss this.
     #[test]
     fn a_convert_only_space_is_servable_through_the_bridge_and_nothing_else() {
         let inventory = [

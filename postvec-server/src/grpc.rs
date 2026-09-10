@@ -3,7 +3,7 @@
 
 //! gRPC inference: `EmbedTexts` and `ConvertEmbeddings` on the canonical proto.
 //!
-//! Requests never load models; an unready name is `MODEL_NOT_LOADED`.
+//! An unready name is `MODEL_NOT_LOADED`; requests do not load models.
 //! This port is plaintext and unauthenticated. It belongs on a private network.
 
 use crate::metrics::{Metrics, METHOD_CONVERT, METHOD_EMBED};
@@ -31,13 +31,11 @@ use tower::{Layer, Service};
 const MAX_DECODE_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_ENCODE_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
-/// The inbound gRPC deadline from the `grpc-timeout` request header (tonic
-/// surfaces it as metadata): 1-8 ASCII digits plus a unit. The loopback
-/// server must honor it — `predict_timeout` (postvec.embed_timeout_ms,
-/// default 30 s) is a CEILING for callers that send no deadline, not a grant
-/// that outlives the caller: a 2 s `search()` must not leave 30 s of native
-/// work running (and holding the admission permit) after the SQL caller has
-/// given up.
+/// Inbound gRPC deadline from the `grpc-timeout` request header (tonic
+/// surfaces it as metadata): 1-8 ASCII digits plus a unit. `predict_timeout`
+/// (postvec.embed_timeout_ms, default 30 s) is a ceiling for callers that
+/// send no deadline. A 2 s `search()` must drop native work and the admission
+/// permit when the SQL caller has given up.
 fn inbound_deadline(md: &tonic::metadata::MetadataMap) -> Option<Duration> {
     let raw = md.get("grpc-timeout")?.to_str().ok()?;
     parse_grpc_timeout(raw)
@@ -48,9 +46,8 @@ fn parse_grpc_timeout(raw: &str) -> Option<Duration> {
         return None;
     }
     let (digits, unit) = raw.split_at(raw.len() - 1);
-    // gRPC's wire grammar permits at most eight decimal digits. Enforcing it
-    // also prevents a hostile saturating duration from reaching Instant
-    // arithmetic.
+    // gRPC's wire grammar permits at most eight decimal digits. That also
+    // keeps a hostile saturating duration out of Instant arithmetic.
     if digits.is_empty() || digits.len() > 8 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -84,12 +81,11 @@ fn request_deadline<T>(request: &Request<T>, ceiling: Duration) -> std::time::In
     deadline_from_budget(std::time::Instant::now(), budget)
 }
 
-/// Ceiling on the transient input/output trees one loopback request may make
-/// the launcher build. Input accounting charges the decoded f32 plus JSON
-/// `Value`; output accounting charges the coexisting JSON plus prost values,
-/// using their actual Rust sizes below and adding per-row overhead. 96 MiB
-/// keeps tree amplification independently below the wire ceiling;
-/// postvec's own client uses the same conservative budget.
+/// Ceiling on the transient input/output trees one loopback request may
+/// build. Input accounting charges the decoded f32 plus JSON `Value`; output
+/// accounting charges the coexisting JSON plus prost values, using their
+/// actual Rust sizes plus per-row overhead. 96 MiB keeps tree amplification
+/// below the wire ceiling.
 const OUTPUT_TREE_BUDGET_BYTES: u64 = 96 * 1024 * 1024;
 
 /// Estimated per-item container overhead in a decoded request + JSON tree:
@@ -98,12 +94,10 @@ const OUTPUT_TREE_BUDGET_BYTES: u64 = 96 * 1024 * 1024;
 const TREE_ITEM_OVERHEAD_BYTES: u64 = 256;
 
 /// Aggregate resident ceiling, in MiB, for provider responses that have been
-/// built but not yet written. Chosen against the shape of a real answer: the
-/// largest batch any supported descriptor can ask for (512 × 3072) encodes to
-/// roughly 24 MiB of prost tree, so this holds several concurrent maxima
-/// while capping the pathological case — a client that opens calls and never
-/// reads them — at a number that fits beside the engine's own envelopes
-/// rather than dwarfing them.
+/// built but not yet written. The largest batch any supported descriptor can
+/// ask for (512 x 3072) encodes to roughly 24 MiB of prost tree, so this
+/// holds several concurrent maxima. A client that opens calls and leaves
+/// them unread is capped at a number that fits beside the engine envelopes.
 const PROVIDER_RESPONSE_BUDGET_MIB: u32 = 256;
 
 /// What a provider response of this shape will occupy once built, in MiB,
@@ -128,18 +122,15 @@ const INPUT_COMPONENT_TRANSIENT_BYTES: u64 =
 const OUTPUT_COMPONENT_TRANSIENT_BYTES: u64 = JSON_COMPONENT_BYTES + PROST_COMPONENT_BYTES;
 const DEADLINE_CHECK_COMPONENTS: u64 = 65_536;
 
-/// Upper bound on a *resolved* response dimension. No real embedding model
-/// is within two orders of magnitude of this; a larger value in a model's
-/// configuration is corrupt or hostile, and casting it onward (i32) or
-/// sizing the response guard from it would unbound the envelope — refuse
-/// instead of falling back.
+/// Upper bound on a resolved response dimension. No real embedding model
+/// is within two orders of magnitude of this. A larger value in a model's
+/// configuration is corrupt or hostile; the request is refused.
 const MAX_PLAUSIBLE_DIM: i64 = 100_000;
 
-/// The response dimension for a request: the model's own `target_dim`, or
-/// the bridge chain's converter (resolved exactly as the executor will).
-/// `Ok(None)` = genuinely unknown — callers fall back to the conservative
-/// 16,000-dim guard. A resolved value above [`MAX_PLAUSIBLE_DIM`] is a
-/// refusal, never a fallback.
+/// Response dimension for a request: the model's own `target_dim`, or the
+/// bridge chain's converter (resolved as the executor will). `Ok(None)` is
+/// unknown; callers use the conservative 16,000-dim guard. A resolved value
+/// above [`MAX_PLAUSIBLE_DIM`] is a refusal.
 #[allow(clippy::result_large_err)]
 fn resolved_response_dim(
     engine: &InferenceEngine,
@@ -177,15 +168,14 @@ pub(crate) struct InferenceService {
     predict_timeout: Duration,
     /// Permit moved into the HTTP response body so a slow reader cannot
     /// pile up prost trees after Tower has released the request future.
-    /// Engine path only; the provider path never takes a slot.
+    /// Engine path only; the provider path skips this slot.
     response_slots: Arc<Semaphore>,
     /// Shared budget, in MiB of finished-but-unsent provider response tree.
     ///
     /// The provider path skips `response_slots` so network calls do not
     /// queue behind ONNX. Encoding is lazy after the handler returns, so
     /// this bound still holds the tree until the body is dropped. One
-    /// budget for the node, not one per provider file. Weight tracks
-    /// response shape: counting responses does not bound memory.
+    /// budget for the node. Weight tracks response shape.
     provider_response_bytes: Arc<Semaphore>,
     /// External-provider gateway. Empty in the zero-config case; `owns()`
     /// decides routing after the engine readiness check.
@@ -292,8 +282,7 @@ impl InferenceService {
         let req = request.into_inner();
         log::debug!("EmbedTexts model={} texts={}", req.model, req.texts.len());
 
-        // Never load from a request. Unready is a refusal. Ready means
-        // pool and executor.
+        // Unready is a refusal. Ready means pool and executor.
         if deadline <= tokio::time::Instant::now() {
             return Err(Status::deadline_exceeded(
                 "deadline exhausted at request entry",
@@ -329,9 +318,8 @@ impl InferenceService {
             &req.bridge_model,
             &req.target_model,
         )?
-        // Unknown must mean maximally conservative, never unguarded.
-        // A request this cap wrongly rejects would have failed
-        // resolution in the executor anyway.
+        // Unknown means the conservative cap. A request this cap wrongly
+        // rejects would have failed resolution in the executor anyway.
         .unwrap_or(16_000);
         let max_items = crate::limits::max_items_for_dim(dim);
         if req.texts.len() > max_items {
@@ -373,9 +361,9 @@ impl InferenceService {
                 Value::Number(req.dimensions.into()),
             );
         }
-        // Do not forward `input_type` to the engine. The client always
-        // sets it for Cohere. Template-less models would warn per request;
-        // templated models would silently change vectors.
+        // `input_type` stays off the engine path. The client always sets it
+        // for Cohere. Template-less models would warn per request; templated
+        // models would silently change vectors.
         let _ = req.input_type;
         let _ = req.user;
 
@@ -475,8 +463,8 @@ impl InferenceService {
         deadline: std::time::Instant,
     ) -> Result<Response<ConvertEmbeddingsResponse>, Status> {
         // The gateway serves direct conversion only; the bridge fields
-        // belong to engine executors. Refusing them beats ignoring them —
-        // a call that names a chain must not silently get a single hop.
+        // belong to engine executors. A call that names a chain is refused
+        // so it cannot silently get a single hop.
         if !(req.source_model.is_empty()
             && req.bridge_model.is_empty()
             && req.target_model.is_empty())
@@ -935,11 +923,10 @@ fn vectors_to_list_value(
     })
 }
 
-/// The refusal for a request naming a model that is not resident+ready:
-/// `FailedPrecondition` + `MODEL_NOT_LOADED`, pointing at the only
-/// legitimate load paths. FailedPrecondition (not NotFound) because the
-/// model may exist on disk — the caller's next step is an admin action,
-/// not a different name.
+/// Refusal for a request naming a model that is not resident+ready:
+/// `FailedPrecondition` + `MODEL_NOT_LOADED`, pointing at the load paths.
+/// FailedPrecondition because the model may exist on disk; the caller's
+/// next step is an admin action.
 #[allow(clippy::result_large_err)]
 fn model_not_loaded_status(model: &str) -> Status {
     let mut status = Status::failed_precondition(format!(

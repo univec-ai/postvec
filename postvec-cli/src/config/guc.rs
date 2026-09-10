@@ -17,19 +17,15 @@
 pub const POSTVEC_LIBRARY: &str = "postvec";
 const POSTVEC_LIBDIR_FORM: &str = "$libdir/postvec";
 
-/// Split a `shared_preload_libraries` value into its items, **leniently**.
+/// Split a `shared_preload_libraries` value into its items, leniently.
 ///
-/// A state machine rather than `split(',')`, because a quoted item may itself
-/// contain a comma.
+/// A state machine, because a quoted item may itself contain a comma.
 ///
-/// Deliberately lenient: it recovers items from input the postmaster would
-/// reject outright (an unterminated quote, an empty item). That is the right
-/// behaviour for *reading* — `doctor` must be able to describe a cluster whose
-/// configuration is broken, not fall over on it — but it is the wrong
-/// behaviour for anything that then writes the value back, because repairing
-/// invalid syntax silently turns a configuration the server refuses into one
-/// it accepts. Every path that renders a list back into a file validates it
-/// first with [`validate_library_list`].
+/// Lenient on purpose: it recovers items from input the postmaster would
+/// reject (an unterminated quote, an empty item). That is the right
+/// behaviour for reading: `doctor` must be able to describe a cluster whose
+/// configuration is broken. Every path that renders a list back into a file
+/// validates it first with [`validate_library_list`].
 pub fn parse_library_list(raw: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut chars = raw.chars().peekable();
@@ -162,14 +158,13 @@ impl std::fmt::Display for ListError {
     }
 }
 
-/// Accept exactly what the postmaster accepts, and nothing else.
+/// Accept exactly what the postmaster accepts.
 ///
-/// This exists because the lenient parser above would otherwise let the CLI
-/// *repair* a malformed value: read `postvec,,`, drop the empty item, render
-/// `postvec`, and write back a file the server now accepts. The operator would
-/// never learn that what they wrote was wrong, and the next hand-edit would
-/// bring the problem back. So anything sourced from outside is checked against
-/// the real grammar first, and a malformed value is refused with the reason.
+/// The lenient parser above recovers items from a malformed value. Writing
+/// that recovery back would turn a configuration the server refuses into one
+/// it accepts, and the operator would not learn that what they wrote was
+/// wrong. Anything sourced from outside is checked against the real grammar
+/// first, and a malformed value is refused with the reason.
 ///
 /// The corpus in the tests was produced by starting PostgreSQL 18 with each
 /// value and recording whether it reported `invalid list syntax`.

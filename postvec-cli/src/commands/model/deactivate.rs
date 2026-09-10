@@ -1,30 +1,28 @@
 //! `postvec model deactivate`.
 //!
-//! The inverse of `activate`, and the only other command that changes serving
-//! state: take the model out of the running engine, then mark its installed
-//! descriptor `enabled: false` so a PostgreSQL restart does not bring it back.
-//! Nothing on disk is removed and no stored vector is touched — `model rm` is
-//! the command that deletes bytes.
+//! Take the model out of the running engine, then mark its installed
+//! descriptor `enabled: false` so a PostgreSQL restart leaves it unloaded.
+//! Bytes on disk and stored vectors stay in place; `model rm` is what
+//! deletes them.
 //!
-//! Order is **unload first, flip second**. A crash after a proven unload
-//! leaves the model out of memory but still enabled on disk, so a restart
-//! reloads it and rerunning finishes the job; the reverse order could leave a
-//! model marked disabled while still serving. "Deactivate returned an error"
-//! should mean "still on".
+//! Order is unload first, flip second. A crash after a proven unload leaves
+//! the model out of memory but still enabled on disk, so a restart reloads
+//! it and rerunning finishes the job. The reverse order could leave a model
+//! marked disabled while still serving. "Deactivate returned an error"
+//! means "still on".
 //!
 //! Refusals, in order: not installed; ambiguous across backends;
-//! package-owned or manual (never overridable — a package upgrade rewrites the
-//! descriptor, so the flip could not be kept); named in an explicit
-//! `postvec.embedded_models` allow-list (a disabled explicit root is a startup
-//! error, not a skip); depended on by another **enabled** installed model
+//! package-owned or manual (a package upgrade rewrites the descriptor, so
+//! the flip would not be kept); named in an explicit
+//! `postvec.embedded_models` allow-list (a disabled explicit root is a
+//! startup error); depended on by another enabled installed model
 //! (`--force` overrides after naming the breakage).
 //!
-//! Columns that lose their embedding route are **not** a refusal. They are a
-//! loud acknowledgement: the plan names every affected entry, and `--force` is
-//! deliberately not the flag that answers it. "Loses its route" is the
-//! resolver's question, not a name match — a column on a convert-only space is
-//! served by a converter plus `embed-bridge`, neither of which carries that
-//! space's name.
+//! Columns that lose their embedding route need a loud acknowledgement:
+//! the plan names every affected entry, and `--force` is not the flag that
+//! answers it. "Loses its route" is the resolver's question. A column on a
+//! convert-only space is served by a converter plus `embed-bridge`, neither
+//! of which carries that space's name.
 
 use crate::cli::{Cli, ModelDeactivateArgs};
 use crate::commands::model::{

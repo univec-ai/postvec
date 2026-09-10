@@ -7,7 +7,7 @@
 //! keyed object whose keys follow `executor.inputs[].json_key` (`texts` for
 //! embed models, `embeddings` for converters). Responses use the ninference
 //! envelope `{success, data}` / `{success, error:{message}}` at HTTP 200, so
-//! a dashboard treats the envelope, not the status, as the contract.
+//! a dashboard treats the envelope as the contract.
 //!
 //! `/api/openai/embeddings` rewrites an OpenAI `/v1/embeddings` body into
 //! that native payload, runs the same path, and reshapes the result. Errors
@@ -41,7 +41,7 @@ fn native_err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(body)).into_response()
 }
 
-/// JSON 404 for unmatched `/api/*` paths, instead of Axum's empty one.
+/// JSON 404 for unmatched `/api/*` paths.
 pub async fn api_not_found() -> Response {
     native_err(
         StatusCode::NOT_FOUND,

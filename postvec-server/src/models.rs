@@ -2,11 +2,11 @@
 // Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
 
 //! On-disk model store: `<root>/models/<backend>/<name>/ninference.hub.json`.
-//! Nothing here fetches. A model that is not on disk is a refusal.
+//! Models are files on disk. A missing name is a refusal.
 //!
 //! A malformed descriptor is a warning; the rest of the root still loads.
 //! A duplicated enabled name is excluded with a warning. Naming it in
-//! `--models` is fatal. A disabled descriptor never loads on any path.
+//! `--models` is fatal. A disabled descriptor stays unloaded on every path.
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -61,8 +61,8 @@ impl Inventory {
             .collect()
     }
 
-    /// Every enabled name, ambiguity included. `status` reports on these so a
-    /// duplicate shows up as a fact rather than as a silent absence.
+    /// Every enabled name, ambiguity included. `status` reports these so a
+    /// duplicate shows up as a fact.
     pub fn enabled(&self) -> Vec<String> {
         self.models
             .iter()
@@ -84,11 +84,11 @@ pub type DescriptorIndex = BTreeMap<String, Vec<PathBuf>>;
 /// descriptor.
 ///
 /// Wider than `get_active_models()`. A configured model that failed to load
-/// is missing from the engine map. Reserving only loaded names would let a
+/// is missing from the engine map; reserving only loaded names would let a
 /// provider file take that name and send source text off-box.
 ///
-/// A failed scan is an error, not a smaller set. The caller keeps the
-/// previous gateway snapshot on reload, or serves no providers at boot.
+/// A failed scan is an error. The caller keeps the previous gateway snapshot
+/// on reload, or serves no providers at boot.
 pub fn reserved_local_names(
     root: &Path,
     engine: &engine::InferenceEngine,
@@ -110,9 +110,8 @@ pub fn reserved_local_names(
 
 /// Walk `<root>/models/*/*/ninference.hub.json`.
 ///
-/// Dot-directories are never backends or models. The CLI stages downloads
-/// in `models/.staging`; a half-written descriptor there must not appear
-/// in a scan.
+/// Dot-directories are skipped. The CLI stages downloads in
+/// `models/.staging`; a half-written descriptor there stays out of the scan.
 pub fn descriptor_index(root: &Path) -> Result<DescriptorIndex, String> {
     let models_dir = root.join(MODELS_DIR);
     let backends = std::fs::read_dir(&models_dir).map_err(|e| {
@@ -222,9 +221,8 @@ pub fn inventory(root: &Path) -> Result<Inventory, String> {
     Ok(inventory_from_index(&descriptor_index(root)?))
 }
 
-/// Validate a request-supplied model name *before* it goes near the
-/// filesystem: names are joined into `<root>/models/<backend>/<name>/`, so
-/// anything path-like is refused outright rather than becoming a traversal.
+/// Validate a request-supplied model name before it is joined into
+/// `<root>/models/<backend>/<name>/`. Path-like names are refused.
 pub fn validate_model_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("model names must be non-empty".to_string());
@@ -258,10 +256,8 @@ pub struct Closure {
 
 /// Walk the dependency closure of `roots`.
 ///
-/// Disabled members are *recorded* rather than raised, because the two
-/// callers want opposite answers from the same walk: the startup preflight
-/// wants a resource count, and `/admin/load` wants a refusal that names the
-/// deactivated model.
+/// Disabled members are recorded. The startup preflight uses the walk for a
+/// resource count; `/admin/load` uses it to refuse a deactivated model.
 pub fn closure_of(
     index: &DescriptorIndex,
     roots: &[String],

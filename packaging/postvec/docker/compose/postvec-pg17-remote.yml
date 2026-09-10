@@ -1,6 +1,5 @@
-# postvec against remote inference nodes — the availability-oriented
-# deployment shape, and the one to use when inference is shared between
-# services, needs a GPU, or must not share a crash domain with PostgreSQL.
+# postvec against remote inference nodes: inference shared between
+# services, on a GPU, or isolated from PostgreSQL's crash domain.
 # (postvec.mode defaults to 'embedded'; this image pins 'grpc'.)
 #
 # The nodes are `postvec-server`, which this repository ships as a package
@@ -8,11 +7,12 @@
 # (ghcr.io/univec-ai/postvec-server:0.1.0-1). This file points at hosts you
 # operate; postvec-server.yml beside it runs one node as a container.
 #
-# Note the volume path: PostgreSQL 16 and 17 images store data in
-# /var/lib/postgresql/data, PostgreSQL 18 in /var/lib/postgresql. This file is
-# for 17; see postvec-pg18-local.yml for the 18 layout. Changing the image
-# tag from pg17 to pg18 against the same volume does *not* upgrade anything —
-# a PostgreSQL major upgrade needs pg_upgrade or dump/restore.
+# Volume path: PostgreSQL 16 and 17 images store data in
+# /var/lib/postgresql/data, PostgreSQL 18 in /var/lib/postgresql. This file
+# is for 17; see postvec-pg18-local.yml for the 18 layout. Changing the
+# image tag from pg17 to pg18 against the same volume leaves the data
+# directory on the old major. A PostgreSQL major upgrade needs pg_upgrade
+# or dump/restore.
 
 services:
   db:
@@ -29,8 +29,7 @@ services:
       # `postvec-server status --fleet` on any node.
       #
       # gRPC is plaintext, so these endpoints must be inside the same trusted
-      # private network as the nodes themselves. This is not a way to reach
-      # inference over the internet.
+      # private network as the nodes themselves.
       POSTVEC_GRPC_ENDPOINTS: "inference-1.internal:33333,inference-2.internal:33333"
       # Used for GET /config model discovery. postvec accepts a node's
       # self-signed certificate on a trusted network.

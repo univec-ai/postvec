@@ -15,7 +15,7 @@ pub(super) const ITEM_CAP: i64 = 1024 * 1024;
 const BATCH_CAP: usize = 8 * 1024 * 1024;
 
 /// A registry entry whose source, destination or vector column no longer
-/// matches what was registered. The entry is disabled instead of retried.
+/// matches what was registered. The entry is disabled.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub(super) struct Quarantine(pub String);

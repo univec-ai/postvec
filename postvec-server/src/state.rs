@@ -64,13 +64,11 @@ pub struct ServerState {
     pub gateway: Arc<Gateway>,
     pub started_at: SystemTime,
     /// Serializes model load/unload. Held across the whole
-    /// admission-check-and-mutate sequence so the resident-count check is an
-    /// admission decision rather than an observation two concurrent admin
-    /// requests can both act on.
+    /// admission-check-and-mutate sequence so the resident-count check is
+    /// the admission decision.
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
     /// Registry pulls started through the API, oldest first. `pull_serial`
-    /// runs them one at a time: a second request queues rather than failing
-    /// on the root lock the first one holds.
+    /// runs them one at a time: a second request queues behind the first.
     pub pulls: std::sync::Mutex<Vec<PullJob>>,
     pub pull_serial: tokio::sync::Mutex<()>,
     draining: AtomicBool,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exercise a built postvec-server image the way a fleet operator would, on
-# its own — without a database in front of it.
+# its own, with no database in front of it.
 #
 #   tests/server-image-test.sh ghcr.io/univec-ai/postvec-server:0.1.0-1
 #

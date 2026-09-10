@@ -1,29 +1,26 @@
 //! `postvec model rm`.
 //!
-//! Refusals, in order: not installed; package-owned (never overridable);
-//! manual with no receipt; named in an explicit `postvec.embedded_models`
-//! allow-list (the operator must update that first, or the next restart
-//! fails or silently changes availability); depended on by another enabled
-//! installed model (`--force` overrides after naming the breakage).
+//! Refusals, in order: not installed; package-owned; manual with no receipt;
+//! named in an explicit `postvec.embedded_models` allow-list (the operator
+//! must update that first, or the next restart fails or silently changes
+//! availability); depended on by another enabled installed model (`--force`
+//! overrides after naming the breakage).
 //!
-//! Columns that lose their embedding route are **not** a refusal, and they
-//! carry the same acknowledgement `model deactivate` uses: the plan names every
-//! affected entry, interactive use types the model names back, and
-//! non-interactive use needs `--acknowledge-in-use` alongside `--yes`.
-//! `--force` answers a different question (breaking other *models*) and
-//! deliberately does not stand in for it.
+//! Columns that lose their embedding route need the same acknowledgement
+//! `model deactivate` uses: the plan names every affected entry, interactive
+//! use types the model names back, and non-interactive use needs
+//! `--acknowledge-in-use` alongside `--yes`. `--force` answers a different
+//! question (breaking other models).
 //!
-//! Apply order on a cluster target: one batched unload request for the
-//! whole removal set (so the engine's dependents-before-dependencies
-//! ordering sees every name), every outcome verified
-//! `unloaded`/`not-loaded`, then rename-to-trash for every directory,
-//! then the SQL cache refresh, and only then trash deletion. Any unload
-//! failure (a transport error, a missing or `error` outcome) aborts with
-//! the disk untouched. An Embedded target implies a live postmaster
-//! (this command is connected to it), so an unreachable engine means
-//! "racing a starting engine", never "cluster is down". Offline removal
-//! is `--path`, which performs no unload and tells the operator to stop
-//! the serving process first.
+//! Apply order on a cluster target: one batched unload for the whole
+//! removal set (so the engine's dependents-before-dependencies ordering
+//! sees every name), every outcome verified `unloaded`/`not-loaded`, then
+//! rename-to-trash for every directory, then the SQL cache refresh, then
+//! trash deletion. Any unload failure aborts with the disk untouched. An
+//! Embedded target implies a live postmaster, so an unreachable engine
+//! means a starting engine is racing this command. Offline removal is
+//! `--path`, which performs no unload and tells the operator to stop the
+//! serving process first.
 
 use crate::cli::{Cli, ModelRmArgs};
 use crate::commands::model::{

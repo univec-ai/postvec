@@ -7,9 +7,9 @@
 # postvec-server, the postvec CLI, ONNX Runtime and the bundled model, with
 # the engine root at /opt/postvec. It serves that model out of the box.
 #
-# LICENCE: postvec-server is not under the PostgreSQL License that covers the
-# rest of postvec. The image's org.opencontainers.image.licenses label and the
-# release manifest's `licenses` block say which licence it carries.
+# LICENCE: postvec-server is Business Source License 1.1. The image's
+# org.opencontainers.image.licenses label and the release manifest's
+# `licenses` block say which licence it carries.
 #
 # The gRPC (33333) and discovery (22222) ports carry no authentication. Keep
 # them on a private network — bind them to a private interface as below, or

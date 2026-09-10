@@ -3,9 +3,9 @@
 //! Resolve target and index, expand the closure, preflight, plan, confirm,
 //! download (resumable, digest-verified), then stage and install. Downloads
 //! finish before any install so a crash leaves `.part` files or complete
-//! models, never half a model.
+//! models.
 //!
-//! `pull` never replaces an installed name; it points at `upgrade`.
+//! `pull` leaves an installed name in place and points at `upgrade`.
 //! `upgrade` swaps in place after the identity contract, and refuses a
 //! lower or equal revision.
 //!
@@ -504,8 +504,8 @@ struct WorkItem<'a> {
     /// the terms plan can honour an acknowledgement it already records.
     installed_receipt: Option<crate::registry::receipt::Receipt>,
     /// The serving state the installed copy must land in: `false` for a fresh
-    /// install (installing is not activating), the previous copy's bit for an
-    /// upgrade (replacing bytes is not a decision about serving).
+    /// install (a pull lands deactivated), the previous copy's bit for an
+    /// upgrade (replacing bytes leaves serving state alone).
     enabled_after: bool,
 }
 
@@ -781,29 +781,28 @@ struct Landed {
     installed: Vec<(String, std::path::PathBuf)>,
 }
 
-/// Apply the whole batch as one **runtime** transaction, not merely a
-/// filesystem one.
+/// Apply the whole batch as one runtime transaction.
 ///
 /// Order, and why:
 ///
-/// 1. stage every archive — a bad download cannot leave the root half-updated;
-/// 2. check each staged descriptor's identity against the install receipt —
-///    the engine consumes the descriptor, so that is the identity that could
-///    move a column's vector space;
-/// 3. **record the transaction durably, before the first engine call** — an
+/// 1. stage every archive, so a bad download leaves the root intact;
+/// 2. check each staged descriptor's identity against the install receipt.
+///    The engine consumes the descriptor, so that is the identity that
+///    could move a column's vector space;
+/// 3. record the transaction durably, before the first engine call. An
 ///    unload that times out may have been applied in part, and the next
 ///    command must find that state;
 /// 4. quiesce: unload every replacement, exact result set verified;
 /// 5. move everything into place;
-/// 6. load, exact result set verified, requiring a genuine `loaded` for each
-///    replacement;
-/// 7. confirm — and only now may a predecessor be discarded.
+/// 6. load, exact result set verified, requiring a genuine `loaded` for
+///    each replacement;
+/// 7. confirm, and only now may a predecessor be discarded.
 ///
 /// Any failure from step 3 onward runs the rollback protocol: quiesce
 /// everything this command could have made resident, restore the
-/// predecessors, remove fresh installs, reload the complete predecessor set,
-/// and clear the record last. If any of that cannot be proven, the record and
-/// every copy are retained and the error says so.
+/// predecessors, remove fresh installs, reload the complete predecessor
+/// set, and clear the record last. If any of that cannot be proven, the
+/// record and every copy are retained and the error says so.
 #[allow(clippy::too_many_arguments)]
 async fn apply(
     root: &ModelRoot,

@@ -7,24 +7,23 @@
 #   tests/node-install-test.sh --distro debian12 --without-cli
 #
 # tests/package-install-test.sh installs the extension, the CLI, the node and
-# the engine assets together: that proves coexistence on a database host, and
-# it hides what installing the node *alone* resolves. This is the other
-# topology — the inference host — and the questions only it can answer:
+# the engine assets together: that proves coexistence on a database host.
+# This is the other topology, the inference host, and the questions only it
+# can answer:
 #
 #   * does `postvec-server` plus the engine assets install on a host with no
 #     PGDG repository and no PostgreSQL, from local files and the
 #     distribution's own archive;
-#   * does nothing PostgreSQL arrive with it (the CLI's postgresql-common is
-#     the one thing allowed through, and only via Recommends);
+#   * is postgresql-common the only PostgreSQL package that arrives, and
+#     only via the CLI's Recommends;
 #   * does the packaged node then serve the packaged model as its service
 #     account, over TLS, with the certificate pair where the packaged
 #     configuration says it is;
 #   * does removal leave the configuration, the engine root and the account;
-#   * with `--without-cli`, does the node package really stand alone.
+#   * with `--without-cli`, does the node package stand alone.
 #
 # No PostgreSQL bootstrap: a node host never runs it, and running it here
-# would be exactly the "something else pulled it in" this test exists to rule
-# out.
+# would hide a package that pulled PostgreSQL in.
 
 set -Eeuo pipefail
 

@@ -13,14 +13,13 @@
 # (distribution × major × architecture), so a per-distribution manifest would
 # reject the other distributions' artifacts sitting beside it in dist/.
 #
-# This is the local equivalent of the release workflow, and it exists so the
-# published pipeline can be rehearsed end to end before a tag is pushed. CI
-# runs the same scripts in the same order; nothing here is a shortcut that only
-# works on a developer's machine.
+# This is the local equivalent of the release workflow, so the published
+# pipeline can be rehearsed end to end before a tag is pushed. CI runs the
+# same scripts in the same order.
 #
-# It builds only for the host architecture. Release artifacts for the other one
-# come from a native runner — a pgrx extension is loaded into a live PostgreSQL
-# process, and emulation is not a substitute for testing that.
+# It builds only for the host architecture. Release artifacts for the other
+# one come from a native runner: a pgrx extension is loaded into a live
+# PostgreSQL process, and emulation is not a substitute for testing that.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

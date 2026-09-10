@@ -3,26 +3,24 @@
 #
 #   verify-release-metadata.sh [release-dir]
 #
-# `write-release-manifest.sh` reads a release out of *file names*. That is the
-# right primary source — a file name is the only thing a user holding a download
-# has, and it is what `sha256sum --check` and `apt install ./file.deb` work
-# from — but it means the publication boundary trusts a string. A package
-# renamed after it was built, by a script or by a hand, satisfies every check in
-# the manifest generator and is a different package from the one the release
-# says it is.
+# `write-release-manifest.sh` reads a release out of file names. That is the
+# right primary source: a file name is the only thing a user holding a
+# download has, and it is what `sha256sum --check` and `apt install ./file.deb`
+# work from. A package renamed after it was built still satisfies every
+# check in the manifest generator and is a different package from the one
+# the release says it is.
 #
-# So this asks the packages instead. For each artifact the manifest lists, it
+# This asks the packages instead. For each artifact the manifest lists, it
 # reads the name, version, release and architecture that `dpkg-deb`/`rpm`
 # report from inside the file, reconstructs the file name those fields imply,
-# and requires it to be the name the file actually has. It also re-hashes every
-# file against the manifest, and requires the directory and the manifest to
-# contain exactly the same set of packages.
+# and requires it to be the name the file actually has. It also re-hashes
+# every file against the manifest, and requires the directory and the
+# manifest to contain exactly the same set of packages.
 #
-# Earlier jobs already inspected real metadata — `verify-package.sh` runs in the
-# job that built each package. This runs at the *boundary*, over the flat
-# directory that is about to be published, so the last thing that happens before
-# publication is independently fail-closed rather than a restatement of a
-# decision taken hours earlier in another job.
+# Earlier jobs already inspected real metadata (`verify-package.sh` runs in
+# the job that built each package). This runs at the boundary, over the
+# flat directory that is about to be published, so the last thing that
+# happens before publication is independently fail-closed.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

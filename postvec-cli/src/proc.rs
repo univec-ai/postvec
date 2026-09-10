@@ -613,15 +613,15 @@ async fn terminate_group(child: &mut tokio::process::Child, pid: Option<u32>) {
 
 /// Take down anything still alive in the command's process group.
 ///
-/// Used on the *success* path: the direct child exiting proves nothing about
+/// Used on the success path: the direct child exiting proves nothing about
 /// the rest of the group, since a helper it backgrounded keeps running. The
 /// timeout path uses [`terminate_group`], which also has a child to reap.
 ///
-/// The group id is the (by now reaped) child's pid, which the kernel could in
-/// principle reuse. Linux allocates pids sequentially through a large space, so
-/// reuse within these few milliseconds does not happen in practice — and the
-/// alternative, leaving processes running behind a call that has already
-/// returned, is a certainty rather than a remote possibility.
+/// The group id is the (by now reaped) child's pid, which the kernel could
+/// in principle reuse. Linux allocates pids sequentially through a large
+/// space, so reuse within these few milliseconds does not happen in
+/// practice. Leaving processes running behind a call that has already
+/// returned is the worse outcome.
 async fn reap_group_leftovers(pid: u32) {
     if !group_exists(pid) {
         return;
@@ -652,17 +652,17 @@ fn group_exists(pid: u32) -> bool {
 /// Abandoning the process between writing a configuration file and verifying
 /// the restart leaves the cluster in a state nobody has looked at. While this
 /// guard is held the first `SIGINT` only prints guidance; the second
-/// terminates, so an operator who really wants out can still get out.
+/// terminates.
 ///
-/// A command may hold several critical sections one after another (`uninstall
-/// --purge` restarts the cluster, then later stops it for the file sweep), so
-/// guards are sequential-safe. The mechanism: tokio's process-wide `SIGINT`
-/// handler is installed once and never removed — tokio will not re-install a
+/// A command may hold several critical sections one after another
+/// (`uninstall --purge` restarts the cluster, then later stops it for the
+/// file sweep), so guards are sequential-safe. tokio's process-wide `SIGINT`
+/// handler is installed once and never removed: tokio will not re-install a
 /// handler it believes is already registered, so handing the signal back to
-/// the kernel between guards would leave every later guard inert. Instead one
+/// the kernel between guards would leave every later guard inert. One
 /// listener task runs for the life of the process and consults [`GUARD`]:
-/// armed means "warn once, terminate on the next", disarmed means "behave as
-/// if unhandled" (restore the default disposition and re-raise).
+/// armed means "warn once, terminate on the next", disarmed means restore
+/// the default disposition and re-raise.
 pub struct InterruptGuard(());
 
 struct GuardState {

@@ -90,16 +90,17 @@ trap cleanup EXIT
 
 # Finish an interrupted promotion.
 #
-# Promotion is two same-filesystem renames — old cache aside, new cache into
-# place — and a kill or a power loss between them leaves the canonical cache
+# Promotion is two same-filesystem renames (old cache aside, new cache into
+# place). A kill or a power loss between them leaves the canonical cache
 # absent with a complete copy sitting in `.replaced`. Nothing is corrupt, but
-# the next run would pull again, which is the one thing that needs the network.
-# So the previous cache is put back.
+# the next run would pull again, which is the one thing that needs the
+# network. So the previous cache is put back.
 #
 # `.replaced` exists only if staging had already completed, so it is a
-# *complete* cache by construction. `.incoming` is not: an interrupted
-# cross-filesystem copy leaves a partial one, and there is no way to tell the
-# two apart, so it is removed as debris and a fresh pull is the right answer.
+# complete cache by construction. `.incoming` is not: an interrupted
+# cross-filesystem copy leaves a partial one, and there is no way to tell
+# the two apart, so it is removed as debris and a fresh pull is the right
+# answer.
 #
 # Recovery is not a trust decision either way: a restored cache goes through
 # `postvec model show --verify` and check-model-bundle.py below exactly like a

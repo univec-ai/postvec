@@ -3,7 +3,7 @@
 
 //! Settings resolution: `defaults < file < environment < flags`.
 //!
-//! An absent flag does not clear a file value. An unknown file key is
+//! An absent flag leaves a file value in place. An unknown file key is
 //! fatal. A node can start with no file at all.
 
 use crate::cli::{
@@ -20,29 +20,24 @@ pub const DEFAULT_PREDICT_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_MAX_RESIDENT_MODELS: usize = 16;
 /// How long a shutdown keeps serving while `/ready` already answers 503.
 ///
-/// Without it the listener stops accepting the instant the signal arrives, so
-/// the 503 window is zero for new connections and a load balancer learns the
-/// node is gone from a refused connection rather than from a health check.
-/// Five seconds covers the usual one-to-five-second probe interval.
+/// Five seconds covers the usual one-to-five-second probe interval, so a
+/// load balancer sees the 503 before the listener closes.
 pub const DEFAULT_DRAIN_DELAY_MS: u64 = 5_000;
 /// Floor and ceiling for the autodetected `--max-inflight`.
 ///
-/// The value bounds concurrently *executing* predictions, which is both a CPU
-/// oversubscription bound (each ONNX session runs its own intra-op pool) and
-/// a memory one (each in-flight request may hold a response tree up to the
-/// envelope in [`crate::limits`]). The fixture's `4` is a test-harness number;
-/// a dedicated node should use its hardware, but not without a ceiling.
+/// The value bounds concurrently executing predictions: each ONNX session
+/// runs its own intra-op pool, and each in-flight request may hold a
+/// response tree up to the envelope in [`crate::limits`]. A dedicated node
+/// uses its hardware, with this ceiling.
 pub const MIN_AUTO_INFLIGHT: usize = 4;
 pub const MAX_AUTO_INFLIGHT: usize = 16;
-/// Refuse an execution budget so small that no real model can answer inside
-/// it — that is a typo, not a policy.
+/// Floor on the execution budget. Below this, no real model can answer.
 pub const MIN_PREDICT_TIMEOUT_MS: u64 = 100;
 
 const CONFIG_FILENAME: &str = "postvec-server.json";
 
-/// Environment lookup, abstracted so the precedence tests do not mutate the
-/// process environment (which would make them order-dependent under
-/// `cargo test`'s thread pool).
+/// Environment lookup, abstracted so the precedence tests stay independent
+/// under `cargo test`'s thread pool.
 pub trait EnvSource {
     fn get(&self, key: &str) -> Option<String>;
 }
@@ -77,9 +72,8 @@ pub struct SslFile {
 }
 
 /// The optional `postvec-server.json`. Every field is optional; unknown
-/// fields are refused. There is deliberately **no** `hub` block — a node that
-/// tries to configure one is a node whose operator expects a downloader that
-/// does not exist, and saying so is better than ignoring it.
+/// fields are refused. There is no `hub` block: this process loads models
+/// from disk.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
@@ -98,8 +92,7 @@ pub struct FileConfig {
     pub ssl: Option<SslFile>,
     pub insecure: Option<bool>,
     pub models: Option<Vec<String>>,
-    /// providers.d directory for external embedding providers. A path,
-    /// never a credential.
+    /// providers.d directory for external embedding providers.
     pub providers_path: Option<String>,
     pub predict_timeout_ms: Option<u64>,
     pub max_inflight: Option<usize>,
@@ -109,7 +102,7 @@ pub struct FileConfig {
     pub metrics: Option<bool>,
     pub log_level: Option<String>,
     /// Serve the registry's pull/activate/deactivate routes on the public
-    /// port too, not only on the loopback admin port.
+    /// port as well as on the loopback admin port.
     pub manage: Option<bool>,
     /// Directory of a built dashboard (`index.html` + assets). Optional.
     pub web_ui: Option<String>,
@@ -117,11 +110,8 @@ pub struct FileConfig {
 
 /// Strip comment keys, recursively.
 ///
-/// JSON has no comments, and `deny_unknown_fields` means an operator cannot
-/// improvise one — so the format defines one: **any key beginning with `//`
-/// is ignored**. That is the convention the shipped example file uses to
-/// explain itself, and a configuration an operator can annotate in place is
-/// worth more than the two lines it costs here.
+/// Any key beginning with `//` is ignored. The shipped example file uses
+/// this so an operator can annotate the configuration in place.
 fn strip_comments(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
@@ -180,9 +170,8 @@ pub struct Settings {
     /// `None` = `--insecure`: discovery is served over plain HTTP.
     pub tls: Option<TlsPaths>,
     pub models: Vec<String>,
-    /// providers.d directory for external embedding providers (a path, never
-    /// a credential; default `<root>/providers.d`). Missing/empty = no
-    /// provider-backed models, zero-config unchanged.
+    /// providers.d directory (default `<root>/providers.d`). Missing or
+    /// empty means no provider-backed models.
     pub providers_path: PathBuf,
     pub predict_timeout: Duration,
     pub max_inflight: usize,
@@ -204,15 +193,15 @@ pub fn default_max_inflight() -> usize {
         .clamp(MIN_AUTO_INFLIGHT, MAX_AUTO_INFLIGHT)
 }
 
-/// The engine root the packages install to and the postvec CLI manages by
-/// default. One path on every host: a database with embedded mode, a node,
+/// Engine root the packages install to and the postvec CLI manages by
+/// default. One path on every host, whether the engine is embedded, remote
 /// or both.
 pub const DEFAULT_ROOT: &str = "/opt/postvec";
 
 /// `--root` > `POSTVEC_SERVER_ROOT` > [`DEFAULT_ROOT`].
 ///
-/// The on-disk layout is shared with embedded mode on purpose: a root is
-/// portable between an in-database engine and this server.
+/// The on-disk layout matches embedded mode, so a root is portable between
+/// an in-database engine and this server.
 pub fn resolve_root(flag: Option<&Path>, env: &dyn EnvSource) -> Result<PathBuf, String> {
     Ok(flag
         .map(|p| p.to_path_buf())
@@ -222,8 +211,8 @@ pub fn resolve_root(flag: Option<&Path>, env: &dyn EnvSource) -> Result<PathBuf,
 
 /// Where to look for the optional configuration file.
 ///
-/// An explicitly requested path that does not exist is an error. An implicit
-/// one that does not exist simply means "no file".
+/// An explicit path that is missing is an error. An implicit candidate that
+/// is missing means no file.
 pub fn resolve_config_path(
     flag: Option<&Path>,
     env: &dyn EnvSource,
@@ -287,8 +276,7 @@ fn env_usize(env: &dyn EnvSource, key: &str) -> Result<Option<usize>, String> {
 }
 
 /// Booleans in the environment: `1/true/yes/on` and `0/false/no/off`, case
-/// insensitive. Anything else is an error rather than a silent `false` —
-/// `POSTVEC_SERVER_INSECURE=maybe` should not quietly enable TLS.
+/// insensitive. Any other value is an error.
 fn env_bool(env: &dyn EnvSource, key: &str) -> Result<Option<bool>, String> {
     match env.get(key) {
         None => Ok(None),
@@ -323,10 +311,9 @@ pub fn split_list(raw: &str) -> Vec<String> {
 
 /// Resolve a possibly-relative path against the engine root.
 ///
-/// Relative certificate paths resolve against the **root**, not against the
-/// configuration file's directory, so a unit that sets
-/// `POSTVEC_SERVER_ROOT=/srv/postvec` and drops certificates under
-/// it does not also have to care where the JSON lives.
+/// Relative certificate paths resolve against the root, so a unit that sets
+/// `POSTVEC_SERVER_ROOT=/srv/postvec` and drops certificates there is
+/// independent of where the JSON lives.
 fn against_root(root: &Path, value: impl AsRef<Path>) -> PathBuf {
     let value = value.as_ref();
     if value.is_absolute() {
@@ -389,8 +376,8 @@ pub fn resolve(
         }
     }
     // The admin listener binds loopback while the others usually bind
-    // 0.0.0.0, which covers loopback — so a shared number is a bind failure
-    // at boot, or worse, an admin route answering on a published port.
+    // 0.0.0.0, which covers loopback. A shared number is a bind failure at
+    // boot, or an admin route answering on a published port.
     let mut seen: Vec<(&str, u16)> = Vec::new();
     for entry in [
         ("--http", http_port),
@@ -525,10 +512,9 @@ pub fn resolve(
         .filter(|m| !m.is_empty())
         .collect::<Vec<_>>();
 
-    // Unlike the extension's GUC (which defaults outside the model tree for
-    // rsync/backup safety), the server default nests under --root: the root
-    // is this process's one configuration anchor, and every node of a fleet
-    // is administered per node anyway (`postvec provider … --path <root>`).
+    // The server default nests under --root: the root is this process's
+    // configuration anchor, and each node is administered with
+    // `postvec provider ... --path <root>`.
     let providers_path = flags
         .providers_path
         .clone()
@@ -865,8 +851,7 @@ mod tests {
         assert_eq!(s.web_ui.as_deref(), Some(Path::new("/from/flag")));
     }
 
-    /// The property the whole layering exists for: an unrelated flag must not
-    /// wipe out a value the file supplied.
+    /// An unrelated flag leaves a file-supplied value in place.
     #[test]
     fn an_absent_flag_does_not_clear_a_file_value() {
         let file = FileConfig {
@@ -925,8 +910,7 @@ mod tests {
         );
     }
 
-    /// JSON has no comments and `deny_unknown_fields` forbids improvising
-    /// one, so the format defines `//`-prefixed keys as comments.
+    /// `//`-prefixed keys are comments.
     #[test]
     fn double_slash_keys_are_comments() {
         let file = FileConfig::parse(
@@ -943,9 +927,7 @@ mod tests {
         assert_eq!(file.ssl.unwrap().cert.as_deref(), Some("a.crt"));
     }
 
-    /// The example file ships next to the binary and is the first thing an
-    /// operator copies. If it stops parsing, that is a broken deliverable,
-    /// not a documentation nit.
+    /// The example file ships next to the binary and must parse.
     #[test]
     fn the_shipped_example_file_parses_and_resolves() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("postvec-server.example.json");

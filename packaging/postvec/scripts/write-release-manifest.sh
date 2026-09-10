@@ -93,13 +93,13 @@ fi
 
 # ------------------------------------------------------- flat release directory
 #
-# Built into a fresh directory and moved into place at the end. Writing into an
-# existing one would let a leftover artifact from an earlier run — a package
-# from a version no longer being released, say — be collected, checksummed and
-# published as part of this release, and it would look entirely valid.
+# Built into a fresh directory and moved into place at the end. Writing into
+# an existing one would let a leftover artifact from an earlier run (a
+# package from a version no longer being released) be collected, checksummed
+# and published as part of this release, and it would look entirely valid.
 
-# On the destination's own filesystem, so the final move is a rename rather
-# than a copy — a half-written release directory is not a state worth having.
+# On the destination's own filesystem, so the final move is a rename. A
+# half-written release directory is not a state worth having.
 mkdir -p "$(dirname "${OUT}")"
 STAGING="$(mktemp -d "$(dirname "${OUT}")/.postvec-release.XXXXXX")"
 trap 'rm -rf "${STAGING}"' EXIT
@@ -394,10 +394,10 @@ if images_path:
 
 manifest_cells = json.loads(pathlib.Path(os.environ["BUILD_CELLS_JSON"]).read_text())
 
-# The exact closure this release is supposed to contain — not "some artifacts
-# exist". Two things make that stricter than a set membership test:
+# The exact closure this release is supposed to contain. Two things make
+# that stricter than a set membership test:
 #
-#   * exactly *one* artifact per (package, distro, arch). A stale build sitting
+#   * exactly one artifact per (package, distro, arch). A stale build sitting
 #     next to the current one collapses into the same tuple, so a set check
 #     reports success and publishes both.
 #   * each artifact's own identity: the version, the packaging revision, the

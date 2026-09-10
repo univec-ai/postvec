@@ -486,13 +486,11 @@ impl Plan {
     /// the operator types the names, non-interactively they pass
     /// `--acknowledge-in-use` alongside `--yes`.
     ///
-    /// An `--acknowledge-in-use` passed when this is empty is **reported, not
-    /// refused** — the callers note it. The `--accept-license` precedent
-    /// refuses a stale token because that flag names a *specific* document, so
-    /// "always pass it" is impossible; this one is a bare boolean, and
-    /// refusing it would break the reasonable habit of passing it
-    /// unconditionally in automation, on exactly the runs where nothing was
-    /// wrong.
+    /// An `--acknowledge-in-use` passed when this is empty is reported; the
+    /// callers note it. `--accept-license` refuses a stale token because that
+    /// flag names a specific document. This one is a bare boolean, and
+    /// refusing it would break the habit of passing it unconditionally in
+    /// automation on the runs where nothing was in use.
     pub fn in_use_models(&self) -> Vec<String> {
         self.steps
             .iter()

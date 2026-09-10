@@ -4,17 +4,17 @@
 #   tests/model-golden-test.sh <image>            # check model/golden/<name>.json
 #   tests/model-golden-test.sh --record <image>   # regenerate the goldens
 #
-# This is the check that protects stored data. A model bundle's *name* is a
+# This is the check that protects stored data. A model bundle's name is a
 # database compatibility identifier: `postvec.models` and every registry row
 # store it, and a vector is only comparable to vectors produced by the same
 # weights, tokenizer, pooling and normalisation. The package version is not
-# part of that identity and never will be — nothing in a database records it —
-# so a bundle whose numbers moved must be published under a new internal name,
-# not as a new version of the old one.
+# part of that identity; nothing in a database records it. A bundle whose
+# numbers moved must be published under a new internal name.
 #
 # Dimension, finiteness, unit norm and "does the obvious sentence rank first"
 # all survive a tokenizer change, a pooling change, a different opset, or a
-# quantised graph slipping into the bundle. Comparing the numbers does not.
+# quantised graph slipping into the bundle. Comparing the numbers catches
+# those.
 #
 # Tolerance is per-element and absolute: ONNX Runtime does not promise
 # bit-identical results across CPU microarchitectures, so this must pass on

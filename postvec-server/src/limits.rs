@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
 
 //! Response-envelope budgets, matching the embedded loopback server.
-//! postvec's own client never comes close; these guard foreign or buggy callers.
+//! These guard foreign or buggy callers.
 
 /// The gRPC response for a batch is `count × dim` doubles in a protobuf
 /// `Value` tree (~12 wire bytes per float, several times that while
@@ -61,8 +61,8 @@ mod tests {
         }
     }
 
-    /// A single embedding always fits, whatever the model claims, and a
-    /// nonsensical dimension never produces a zero or a panic.
+    /// A single embedding always fits, whatever the model claims. A
+    /// nonsensical dimension still returns at least 1.
     #[test]
     fn degenerate_dimensions_stay_safe() {
         for dim in [0, -1, i32::MIN, i32::MAX] {

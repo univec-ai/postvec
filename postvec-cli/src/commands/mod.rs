@@ -232,32 +232,28 @@ impl Context {
         }
     }
 
-    /// Whether the connected server is the instance the selected cluster's own
-    /// endpoint reaches.
+    /// Whether the connected server is the instance the selected cluster's
+    /// own endpoint reaches.
     ///
-    /// Local discovery and `--database-url` are independent: discovery owns the
-    /// host side, the URI owns the database side. Nothing else stops `setup`
-    /// from installing the extension into a server in another datacentre and
-    /// then rewriting the configuration of — and restarting — the cluster on
-    /// this machine.
+    /// Local discovery and `--database-url` are independent: discovery owns
+    /// the host side, the URI owns the database side. Without this proof,
+    /// `setup` could install the extension into a server elsewhere and then
+    /// rewrite and restart the cluster on this machine.
     ///
-    /// The proof is a **second connection through the cluster's own socket**,
+    /// The proof is a second connection through the cluster's own socket,
     /// compared with the supplied one on two values:
     ///
-    /// - the **system identifier**, which identifies a replication *lineage*. A
-    ///   physical standby, or any restored copy, carries its primary's — so on
-    ///   its own it would match a primary against its own standby, which is the
-    ///   pairing most likely to reconfigure the wrong host;
-    /// - the **exact postmaster start time**, which identifies the instance.
+    /// - the system identifier, which identifies a replication lineage. A
+    ///   physical standby, or any restored copy, carries its primary's, so
+    ///   on its own it would match a primary against its own standby.
+    /// - the exact postmaster start time, which identifies the instance.
     ///
-    /// It has to be a second connection. The obvious cheaper source, line 3 of
-    /// `postmaster.pid`, is `MyStartTime`: whole seconds, captured earlier in
-    /// startup than the `PgStartTime` that `pg_postmaster_start_time()`
-    /// returns. Comparing the two would reject the *right* postmaster whenever
-    /// startup crossed a second boundary, and would accept a different
-    /// same-lineage postmaster that happened to start in the same second.
-    /// Asking both connections the same question is the only way to get an
-    /// answer that means what it says.
+    /// Both values come from SQL on each connection. Line 3 of
+    /// `postmaster.pid` is `MyStartTime` (whole seconds, captured earlier
+    /// than `pg_postmaster_start_time()`), so comparing the pid file with
+    /// SQL would reject the right postmaster when startup crossed a second
+    /// boundary, and accept a different same-lineage postmaster that
+    /// started in the same second.
     pub async fn prove_database_is_the_selected_cluster(&self) -> IdentityProof {
         if !self.database_url_supplied || self.cluster.kind == ClusterKind::Remote {
             // A socket target is the cluster's own socket; a remote-only
