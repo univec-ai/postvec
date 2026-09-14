@@ -52,12 +52,14 @@ file_env POSTGRES_USER postgres
 file_env POSTGRES_DB "${POSTGRES_USER}"
 file_env POSTVEC_DATABASES "${POSTGRES_DB}"
 file_env POSTVEC_SHARED_PRELOAD_LIBRARIES ""
+file_env POSTVEC_GRPC_ENDPOINTS
+file_env POSTVEC_HTTP_ENDPOINTS
+# Every other POSTVEC_* is pinned by the image or read by `docker exec`
+# commands, which never see this environment.
 for file_var in $(compgen -e); do
-    case "${file_var}" in
-    POSTVEC_PROVIDERS_PATH_FILE | POSTVEC_HEALTHCHECK_*_FILE)
-        usage "${file_var} is not supported: docker exec commands read ${file_var%_FILE} directly" ;;
-    POSTVEC_*_FILE) file_env "${file_var%_FILE}" ;;
-    esac
+    if [[ "${file_var}" == POSTVEC_*_FILE ]]; then
+        usage "${file_var} is not supported; the _FILE form is for POSTVEC_DATABASES, POSTVEC_SHARED_PRELOAD_LIBRARIES, POSTVEC_GRPC_ENDPOINTS and POSTVEC_HTTP_ENDPOINTS"
+    fi
 done
 
 # `${VAR-default}`, not `${VAR:-default}`: an empty POSTVEC_MODE is user

@@ -78,11 +78,12 @@ unsupported.
 
 ## Environment
 
-`POSTGRES_USER`, `POSTGRES_DB` and the `POSTVEC_*` variables accept the
-`_FILE` secret form. The file is read when the plain variable is unset;
-setting both forms is an error. `POSTVEC_PROVIDERS_PATH` and
-`POSTVEC_HEALTHCHECK_*` are read by `docker exec` commands, which never see
-the entrypoint, so their `_FILE` form is refused at start.
+`POSTGRES_USER`, `POSTGRES_DB`, `POSTVEC_DATABASES`,
+`POSTVEC_SHARED_PRELOAD_LIBRARIES`, `POSTVEC_GRPC_ENDPOINTS` and
+`POSTVEC_HTTP_ENDPOINTS` accept the `_FILE` secret form. The file is read when
+the plain variable is unset; setting both forms is an error. Any other
+`POSTVEC_*_FILE` is refused at start: those variables are pinned by the image
+or read by `docker exec` commands, which never see the entrypoint.
 
 | Variable | Default | Meaning |
 |---|---|---|

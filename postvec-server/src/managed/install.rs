@@ -6,7 +6,16 @@ use postvec_core::registry::quote_ident;
 use sqlx::{postgres::PgConnectOptions, Connection, Executor, PgConnection, Row};
 use std::{io::Read, str::FromStr, time::Duration};
 
-pub(super) const VERSION: i32 = 1;
+/// `UPGRADES[i]` takes an installed schema from version `i + 1` to `i + 2`.
+/// A change to a table or index in `models.sql`/`control.sql` appends one;
+/// the function files are re-applied on every install anyway.
+const UPGRADES: &[&str] = &[
+    "ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text;
+    DROP INDEX postvec.jobs_embed_claim_order;
+    CREATE INDEX jobs_embed_claim_order ON postvec.jobs (registry_id, not_before, id)
+        WHERE claimed_at IS NULL AND op = 'embed';",
+];
+pub(super) const VERSION: i32 = UPGRADES.len() as i32 + 1;
 const MARKER: &str = "postvec managed schema";
 const MODELS: &str = include_str!("../../../postvec/sql/managed/models.sql");
 const ROUTES: &str = include_str!("../../../postvec/sql/managed/routes.sql");
@@ -74,7 +83,8 @@ pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     Ok(connection)
 }
 
-pub(super) async fn check(connection: &mut PgConnection) -> Result<bool> {
+/// The installed managed schema version, `None` when there is no schema.
+pub(super) async fn check(connection: &mut PgConnection) -> Result<Option<i32>> {
     let extension: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT FROM pg_catalog.pg_extension WHERE extname = 'postvec')",
     )
@@ -93,7 +103,7 @@ pub(super) async fn check(connection: &mut PgConnection) -> Result<bool> {
     .fetch_optional(&mut *connection)
     .await?;
     let Some(schema) = schema else {
-        return Ok(false);
+        return Ok(None);
     };
     if schema.get::<Option<String>, _>("marker").as_deref() != Some(MARKER)
         || !schema.get::<bool, _>("owned")
@@ -105,13 +115,13 @@ pub(super) async fn check(connection: &mut PgConnection) -> Result<bool> {
             .fetch_one(connection)
             .await
             .context("invalid managed schema version table")?;
-    if version != (VERSION, "managed".into()) {
+    if version.1 != "managed" || !(1..=VERSION).contains(&version.0) {
         bail!(
-            "unsupported managed schema version {}; this server supports {VERSION}; no changes made",
+            "unsupported managed schema version {}; this server supports 1 to {VERSION}; no changes made",
             version.0
         );
     }
-    Ok(true)
+    Ok(Some(version.0))
 }
 
 pub async fn run(command: Command) -> Result<()> {
@@ -149,26 +159,30 @@ pub async fn run(command: Command) -> Result<()> {
             tx.execute(format!("SELECT {schema}.vector_dims('[0]'::{schema}.vector)").as_str())
                 .await?;
             let platform = super::platform::detect(&mut tx).await?;
-            if !installed {
-                tx.execute(
-                    "CREATE SCHEMA postvec; REVOKE CREATE ON SCHEMA postvec FROM PUBLIC;
-                    COMMENT ON SCHEMA postvec IS 'postvec managed schema'",
-                )
-                .await?;
-                for sql in [MODELS, CONTROL] {
-                    tx.execute(sql).await?;
-                }
-            } else {
-                tx.execute("ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text")
+            match installed {
+                None => {
+                    tx.execute(
+                        "CREATE SCHEMA postvec; REVOKE CREATE ON SCHEMA postvec FROM PUBLIC;
+                        COMMENT ON SCHEMA postvec IS 'postvec managed schema'",
+                    )
                     .await?;
+                    for sql in [MODELS, CONTROL] {
+                        tx.execute(sql).await?;
+                    }
+                }
+                Some(version) => {
+                    for sql in &UPGRADES[version as usize - 1..] {
+                        tx.execute(*sql).await?;
+                    }
+                }
             }
             for sql in [ROUTES, TRIGGERS, LEXICAL, FUNCTIONS] {
                 tx.execute(sql).await?;
             }
-            if !installed {
-                tx.execute("UPDATE postvec.schema_version SET mode = 'managed'")
-                    .await?;
-            }
+            sqlx::query("UPDATE postvec.schema_version SET version = $1, mode = 'managed'")
+                .bind(VERSION)
+                .execute(&mut *tx)
+                .await?;
             tx.execute(include_str!("../../../postvec/sql/managed/lifecycle.sql"))
                 .await?;
             sqlx::query(
@@ -210,7 +224,7 @@ pub async fn run(command: Command) -> Result<()> {
             );
         }
         Command::Status(_) => {
-            if !installed {
+            if installed.is_none() {
                 bail!("managed schema is not installed");
             }
             let status: String = sqlx::query_scalar("SELECT jsonb_build_object(
@@ -229,7 +243,7 @@ pub async fn run(command: Command) -> Result<()> {
             );
         }
         Command::Uninstall(_) => {
-            if !installed {
+            if installed.is_none() {
                 bail!("managed schema is not installed");
             }
             let triggers: Vec<(String, String, String)> = sqlx::query_as(

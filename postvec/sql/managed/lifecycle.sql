@@ -171,7 +171,7 @@ BEGIN
     INSERT INTO postvec.registry(table_schema,table_name,source_column,vector_column,pk_columns,pk_types,model,space,dim,fts_config,distance,trigger_mode,backfill_mode,owns_vector_column,format,index_mode,chunking,chunk_size,chunk_overlap,destination_schema,destination_table,destination_view,destination_token)
     VALUES(ns,tbl,col,vec,keys,types,model_name,(SELECT space FROM postvec._route(model_name)),dimension,fts::regconfig,distance,trig_mode,backfill,NOT adopted,template,index_mode,chunking,CASE WHEN chunking='recursive' THEN chunk_size END,CASE WHEN chunking='recursive' THEN chunk_overlap END,CASE WHEN chunking='recursive' THEN ns END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN 'pending' END,CASE WHEN chunking='recursive' THEN gen_random_uuid()::text END) RETURNING * INTO r;
     IF chunking='recursive' THEN
-        dest:=parse_ident(coalesce(destination,tbl||'_'||col||'_chunks'));
+        dest:=parse_ident(destination);
         IF cardinality(dest) NOT IN (1,2) THEN RAISE EXCEPTION 'invalid destination'; END IF;
         r.destination_schema:=CASE WHEN cardinality(dest)=2 THEN dest[1] ELSE ns END;
         r.destination_table:=dest[cardinality(dest)]; r.destination_view:=r.destination_table||'_view';
@@ -210,13 +210,18 @@ END $$;
 DROP FUNCTION IF EXISTS postvec.enable(regclass,text,text,text,text,boolean,boolean,text,text,text,text,text,text,integer,integer,text);
 CREATE OR REPLACE FUNCTION postvec.enable(relation regclass,column_name text,model text,vector_column text DEFAULT NULL,fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,backfill boolean DEFAULT true,distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',index_mode text DEFAULT 'manual',backfill_mode text DEFAULT 'queue',format text DEFAULT NULL,chunking text DEFAULT 'none',chunk_size integer DEFAULT NULL,chunk_overlap integer DEFAULT NULL,destination text DEFAULT NULL,if_not_exists boolean DEFAULT false)
 RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE rid bigint;
+DECLARE rid bigint; ns text; tbl text; dest text[];
 BEGIN
     IF trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid trigger mode'; END IF;
+    IF chunking='recursive' THEN
+        SELECT n.nspname,c.relname INTO ns,tbl FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=relation;
+        destination:=coalesce(destination,quote_ident(tbl||'_'||column_name||'_chunks'));
+        dest:=parse_ident(destination);
+    END IF;
     IF if_not_exists THEN
         rid:=postvec._existing(relation::regclass,column_name,jsonb_build_object('model',model,'vector_column',coalesce(vector_column,column_name||'_semantic'),'distance',distance,'trigger_mode',trigger_mode,'index_mode',index_mode,'fts_config',fts_config::regconfig,'format',format,'chunking',chunking,
-            'chunk_size',CASE WHEN chunking='recursive' THEN coalesce(chunk_size,1000) END,'chunk_overlap',CASE WHEN chunking='recursive' THEN coalesce(chunk_overlap,200) END)
-            || CASE WHEN chunking='recursive' AND destination IS NOT NULL THEN jsonb_build_object('destination_table',(parse_ident(destination))[cardinality(parse_ident(destination))]) ELSE '{}' END);
+            'chunk_size',CASE WHEN chunking='recursive' THEN coalesce(chunk_size,1000) END,'chunk_overlap',CASE WHEN chunking='recursive' THEN coalesce(chunk_overlap,200) END,
+            'destination_schema',CASE WHEN cardinality(dest)=2 THEN dest[1] ELSE ns END,'destination_table',dest[cardinality(dest)]));
         IF rid IS NOT NULL THEN RETURN rid; END IF;
     END IF;
     RETURN postvec._register(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'),false,trigger_mode,CASE WHEN backfill THEN backfill_mode ELSE 'none' END,distance,fts_config,create_fts_index,format,index_mode,chunking,coalesce(chunk_size,1000),coalesce(chunk_overlap,200),destination);

@@ -1640,8 +1640,7 @@ fn existing_entry_id(prior: &RegistryEntry, mut requested: serde_json::Value) ->
     if let Some(fts) = requested["fts_config"].as_str().map(str::to_string) {
         requested["fts_config"] =
             Spi::get_one_with_args::<String>("SELECT $1::regconfig::text", &[fts.as_str().into()])
-                .ok()
-                .flatten()
+                .unwrap_or_else(|e| error!("postvec: invalid fts_config {fts:?}: {e}"))
                 .into();
     }
     let stored = serde_json::to_value(prior).unwrap_or_default();
@@ -5662,6 +5661,19 @@ mod tests {
             });
             assert!(r.is_err(), "a changed option is refused: {changed}");
         }
+    }
+
+    #[pg_test(error = "text search configuration \"nope\" does not exist")]
+    fn if_not_exists_reports_an_invalid_fts_config() {
+        seed_model("m", 4);
+        make_adoptable_docs();
+        Spi::run("SELECT postvec.adopt('docs','body', vector_column => 'embedding', model => 'm')")
+            .unwrap();
+        Spi::run(
+            "SELECT postvec.adopt('docs','body', vector_column => 'embedding', model => 'm', \
+             fts_config => 'nope', if_not_exists => true)",
+        )
+        .unwrap();
     }
 
     #[pg_test]

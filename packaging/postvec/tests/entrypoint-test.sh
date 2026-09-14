@@ -174,10 +174,10 @@ expect_arg "POSTGRES_DB_FILE is honoured" \
 expect_exit "POSTGRES_DB and POSTGRES_DB_FILE together are refused" 64 \
     POSTGRES_DB=a POSTGRES_DB_FILE="${WORK}/dbname" -- postgres
 printf 'inference:33333' > "${WORK}/endpoints"
-expect_arg "every other POSTVEC_*_FILE is honoured" \
+expect_arg "POSTVEC_GRPC_ENDPOINTS_FILE is honoured" \
     "postvec.grpc_endpoints=inference:33333" \
     POSTVEC_GRPC_ENDPOINTS_FILE="${WORK}/endpoints" -- postgres
-expect_exit "a _FILE only docker exec would read is refused" 64 \
+expect_exit "any other POSTVEC_*_FILE is refused" 64 \
     POSTVEC_HEALTHCHECK_DATABASE_FILE="${WORK}/dbname" -- postgres
 
 echo

@@ -357,7 +357,7 @@ async fn exercise(dsn: &str) -> Result<()> {
     )
     .await?;
     db.execute(
-        "UPDATE postvec.schema_version SET version=2;INSERT INTO docs VALUES(6,'parked','version')",
+        "UPDATE postvec.schema_version SET version=version+100;INSERT INTO docs VALUES(6,'parked','version')",
     )
     .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -367,7 +367,7 @@ async fn exercise(dsn: &str) -> Result<()> {
             .await?,
         "newer schema drained"
     );
-    db.execute("UPDATE postvec.schema_version SET version=1")
+    db.execute("UPDATE postvec.schema_version SET version=version-100")
         .await?;
     wait(
         &mut db,

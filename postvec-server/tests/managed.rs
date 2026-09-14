@@ -100,7 +100,10 @@ async fn exercise(dsn: &str) -> Result<()> {
         "truncate function was not refreshed"
     );
     managed::run(command(dsn, "status")).await?;
-    db.execute("UPDATE postvec.schema_version SET version = 2")
+    let current: i32 = sqlx::query_scalar("SELECT version FROM postvec.schema_version")
+        .fetch_one(&mut db)
+        .await?;
+    db.execute("UPDATE postvec.schema_version SET version = 99")
         .await?;
     for action in ["install", "status", "uninstall"] {
         ensure!(
@@ -108,8 +111,18 @@ async fn exercise(dsn: &str) -> Result<()> {
             "newer version accepted"
         );
     }
-    db.execute("UPDATE postvec.schema_version SET version = 1")
+    db.execute("UPDATE postvec.schema_version SET version = 1; DROP INDEX postvec.jobs_embed_claim_order; CREATE INDEX jobs_embed_claim_order ON postvec.jobs (not_before, id) WHERE claimed_at IS NULL AND op = 'embed'")
         .await?;
+    managed::run(command(dsn, "install")).await?;
+    let (version, index): (i32, String) = sqlx::query_as(
+        "SELECT version, pg_get_indexdef('postvec.jobs_embed_claim_order'::regclass) FROM postvec.schema_version",
+    )
+    .fetch_one(&mut db)
+    .await?;
+    ensure!(
+        version == current && index.contains("(registry_id, not_before, id)"),
+        "an older schema was not upgraded: {version} {index}"
+    );
     db.execute(r#"
         CREATE TABLE docs (id bigint PRIMARY KEY, body text, category varchar(10), v vectors.vector(3));
         INSERT INTO docs VALUES (1,'reset password','account','[1,0,0]'), (2,'billing invoice','billing','[0,1,0]');
@@ -226,6 +239,10 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT postvec.enable('pk_changes','body','fixture')",
         "SELECT postvec.enable('pk_changes','body','other',if_not_exists=>true)",
         "SELECT postvec.enable('pk_changes','body','fixture',distance=>'l2',if_not_exists=>true)",
+        r#"CREATE TABLE "my docs"(id int PRIMARY KEY,body text);
+        SELECT postvec.enable('"my docs"','body','fixture',chunking=>'recursive',chunk_size=>64,chunk_overlap=>0);
+        SELECT postvec.enable('"my docs"','body','fixture',chunking=>'recursive',chunk_size=>64,chunk_overlap=>0,if_not_exists=>true);
+        SELECT postvec.enable('"my docs"','body','fixture',chunking=>'recursive',chunk_size=>64,chunk_overlap=>0,destination=>'other_chunks',if_not_exists=>true)"#,
     ] {
         let error = db
             .execute(repeat)

@@ -241,6 +241,8 @@ fn prepare_claim_entries(batch: i32, vis_secs: f64) -> Vec<i64> {
             .map(|r| r.get::<i64>(1).unwrap().unwrap())
             .collect()
     });
+    // A stale-claim entry can move the cursor past an entry with due work;
+    // the wrap-around branch reaches that entry on a later pass.
     if let Some(last) = ids.last() {
         CLAIM_CURSOR.store(*last, std::sync::atomic::Ordering::Relaxed);
     }

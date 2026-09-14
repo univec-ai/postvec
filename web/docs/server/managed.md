@@ -59,9 +59,10 @@ postvec-server managed install \
 Expected: the `postvec` schema exists, `postvec.settings` is written
 and the command prints any remaining `GRANT` statements.
 
-Installation is transactional and repeatable. Rerun `managed install` to
-add current SQL function bodies. The installer refuses an extension
-database, an unrelated schema or an unsupported schema version.
+Installation is transactional and repeatable. Rerun `managed install` after
+upgrading postvec-server: it upgrades an older schema in place and replaces the
+SQL function bodies. The installer refuses an extension database, an unrelated
+schema or a schema newer than the server.
 
 Passwords stay in the password file. The file must be a regular file
 owned by the service account, mode `0600` or `0400`. Symlinks are
@@ -280,7 +281,8 @@ postvec-server managed uninstall --dsn <DSN> --password-file <PATH>
 boolean is the first column of every `postvec.status()` row, so a SQL session
 and the host command report liveness the same way.
 
-Workers park on schema-version mismatch. Uninstall removes managed
+Workers park on schema-version mismatch until `managed install` upgrades the
+schema. Uninstall removes managed
 triggers and schema objects, retains user vectors and chunks, and
 refuses external dependencies. Stop configured workers before
 uninstalling.
