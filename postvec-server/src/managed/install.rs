@@ -214,8 +214,12 @@ pub async fn run(command: Command) -> Result<()> {
             tx.commit().await?;
             // An interrupted CONCURRENTLY build leaves an invalid index that
             // IF NOT EXISTS would skip; drop it so this run builds it again.
+            // Session lock so overlapping installs neither race the build nor
+            // sweep each other's in-progress (invalid) index. Not key 1, which
+            // would park workers during the build, nor key 2, the worker leader.
+            // Released when the connection closes.
             connection
-                .execute("SET statement_timeout = 0; SET lock_timeout = 0")
+                .execute("SET statement_timeout = 0; SET lock_timeout = 0; SELECT pg_advisory_lock(1886615158, 4)")
                 .await?;
             let invalid: Vec<String> = sqlx::query_scalar(
                 "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_catalog.pg_index i

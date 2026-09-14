@@ -130,7 +130,11 @@ async fn exercise(dsn: &str) -> Result<()> {
     ] {
         db.execute(format!("UPDATE postvec.schema_version SET version = 1; DROP INDEX postvec.jobs_embed_claim_order; {old_index}").as_str())
             .await?;
-        managed::run(command(dsn, "install")).await?;
+        let (first, second) = tokio::join!(
+            managed::run(command(dsn, "install")),
+            managed::run(command(dsn, "install"))
+        );
+        first.and(second).context("overlapping installs")?;
         ensure!(
             sqlx::query_scalar::<_, i32>(version_sql).fetch_one(&mut db).await? == current
                 && table_contract(&mut db).await? == fresh,
