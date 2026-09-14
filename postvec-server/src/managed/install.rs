@@ -6,14 +6,22 @@ use postvec_core::registry::quote_ident;
 use sqlx::{postgres::PgConnectOptions, Connection, Executor, PgConnection, Row};
 use std::{io::Read, str::FromStr, time::Duration};
 
-/// `UPGRADES[i]` takes an installed schema from version `i + 1` to `i + 2`.
-/// A change to a table or index in `models.sql`/`control.sql` appends one;
-/// the function files are re-applied on every install anyway.
+/// `UPGRADES[i]` takes an installed schema from version `i + 1` to `i + 2`,
+/// inside the install transaction. A change to a table or index in
+/// `models.sql`/`control.sql` appends one; the function files are re-applied
+/// on every install anyway. A step must tolerate its own starting state
+/// (`IF EXISTS`) and never builds an index: it renames the old one aside and
+/// `INDEXES` builds the replacement.
 const UPGRADES: &[&str] = &[
     "ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text;
-    DROP INDEX postvec.jobs_embed_claim_order;
-    CREATE INDEX jobs_embed_claim_order ON postvec.jobs (registry_id, not_before, id)
-        WHERE claimed_at IS NULL AND op = 'embed';",
+    ALTER INDEX IF EXISTS postvec.jobs_embed_claim_order RENAME TO jobs_embed_claim_order_v1;",
+];
+/// Run after the install commits, one statement at a time, on every install:
+/// `CONCURRENTLY`, so writers enqueueing jobs never wait on a build. Each is a
+/// no-op once applied.
+const INDEXES: &[&str] = &[
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_embed_claim_order ON postvec.jobs (registry_id, not_before, id) WHERE claimed_at IS NULL AND op = 'embed'",
+    "DROP INDEX CONCURRENTLY IF EXISTS postvec.jobs_embed_claim_order_v1",
 ];
 pub(super) const VERSION: i32 = UPGRADES.len() as i32 + 1;
 const MARKER: &str = "postvec managed schema";
@@ -204,6 +212,27 @@ pub async fn run(command: Command) -> Result<()> {
                     AND d.objid=c.oid AND d.deptype='e') ORDER BY r.rolname::text")
                 .fetch_all(&mut *tx).await?;
             tx.commit().await?;
+            // An interrupted CONCURRENTLY build leaves an invalid index that
+            // IF NOT EXISTS would skip; drop it so this run builds it again.
+            connection
+                .execute("SET statement_timeout = 0; SET lock_timeout = 0")
+                .await?;
+            let invalid: Vec<String> = sqlx::query_scalar(
+                "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_catalog.pg_index i
+                 JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'postvec' AND NOT i.indisvalid",
+            )
+            .fetch_all(&mut connection)
+            .await?;
+            for index in invalid {
+                connection
+                    .execute(format!("DROP INDEX CONCURRENTLY {index}").as_str())
+                    .await?;
+            }
+            for sql in INDEXES {
+                connection.execute(*sql).await?;
+            }
             println!(
                 "Managed schema v{VERSION} ready ({platform}). Configure managed[] or serve --sync to start the worker."
             );

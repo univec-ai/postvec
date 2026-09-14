@@ -4,6 +4,10 @@ use anyhow::{ensure, Context, Result};
 use postvec_server::managed::{self, Command, ConnectionArgs};
 use sqlx::{Connection, Executor, PgConnection};
 
+/// md5 of `table_contract()` for a fresh install, per managed schema version.
+/// A mismatch means a table, constraint or index changed without a version.
+const SCHEMA_FINGERPRINTS: &[(i32, &str)] = &[(2, "d61aea48da0037d0af4a2075b049cc79")];
+
 fn command(dsn: &str, action: &str) -> Command {
     let args = ConnectionArgs {
         dsn: dsn.into(),
@@ -100,9 +104,17 @@ async fn exercise(dsn: &str) -> Result<()> {
         "truncate function was not refreshed"
     );
     managed::run(command(dsn, "status")).await?;
-    let current: i32 = sqlx::query_scalar("SELECT version FROM postvec.schema_version")
+    let version_sql = "SELECT version FROM postvec.schema_version";
+    let current: i32 = sqlx::query_scalar(version_sql).fetch_one(&mut db).await?;
+    let fresh = table_contract(&mut db).await?;
+    let fingerprint: String = sqlx::query_scalar("SELECT md5($1)")
+        .bind(fresh.join("\n"))
         .fetch_one(&mut db)
         .await?;
+    ensure!(
+        SCHEMA_FINGERPRINTS.contains(&(current, fingerprint.as_str())),
+        "managed schema v{current} changed ({fingerprint}): append an UPGRADES step, then pin the fingerprint"
+    );
     db.execute("UPDATE postvec.schema_version SET version = 99")
         .await?;
     for action in ["install", "status", "uninstall"] {
@@ -111,18 +123,20 @@ async fn exercise(dsn: &str) -> Result<()> {
             "newer version accepted"
         );
     }
-    db.execute("UPDATE postvec.schema_version SET version = 1; DROP INDEX postvec.jobs_embed_claim_order; CREATE INDEX jobs_embed_claim_order ON postvec.jobs (not_before, id) WHERE claimed_at IS NULL AND op = 'embed'")
-        .await?;
-    managed::run(command(dsn, "install")).await?;
-    let (version, index): (i32, String) = sqlx::query_as(
-        "SELECT version, pg_get_indexdef('postvec.jobs_embed_claim_order'::regclass) FROM postvec.schema_version",
-    )
-    .fetch_one(&mut db)
-    .await?;
-    ensure!(
-        version == current && index.contains("(registry_id, not_before, id)"),
-        "an older schema was not upgraded: {version} {index}"
-    );
+    // Version 1 as shipped, then a version 1 that lost its claim index.
+    for old_index in [
+        "CREATE INDEX jobs_embed_claim_order ON postvec.jobs (not_before, id) WHERE claimed_at IS NULL AND op = 'embed'",
+        "",
+    ] {
+        db.execute(format!("UPDATE postvec.schema_version SET version = 1; DROP INDEX postvec.jobs_embed_claim_order; {old_index}").as_str())
+            .await?;
+        managed::run(command(dsn, "install")).await?;
+        ensure!(
+            sqlx::query_scalar::<_, i32>(version_sql).fetch_one(&mut db).await? == current
+                && table_contract(&mut db).await? == fresh,
+            "an upgraded schema differs from a fresh one"
+        );
+    }
     db.execute(r#"
         CREATE TABLE docs (id bigint PRIMARY KEY, body text, category varchar(10), v vectors.vector(3));
         INSERT INTO docs VALUES (1,'reset password','account','[1,0,0]'), (2,'billing invoice','billing','[0,1,0]');

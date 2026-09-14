@@ -61,7 +61,9 @@ and the command prints any remaining `GRANT` statements.
 
 Installation is transactional and repeatable. Rerun `managed install` after
 upgrading postvec-server: it upgrades an older schema in place and replaces the
-SQL function bodies. The installer refuses an extension database, an unrelated
+SQL function bodies. Index changes build `CONCURRENTLY` after that commit, so
+application writes continue; the build waits for transactions already open,
+and an interrupted build is retried by the next install. The installer refuses an extension database, an unrelated
 schema or a schema newer than the server.
 
 Passwords stay in the password file. The file must be a regular file
