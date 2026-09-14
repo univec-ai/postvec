@@ -153,7 +153,7 @@ SELECT postvec.migrate(
 
 ::::
 
-`reindex`: `manual` (default) or `blocking`. Use manual mode for tables that
+`reindex` is `manual` (default) or `blocking`. Use manual mode for tables that
 serve application traffic. On managed PostgreSQL, an entry with
 `index_mode => 'auto'` finishes `awaiting_index` by itself: the server
 builds the index concurrently and marks the migration done.

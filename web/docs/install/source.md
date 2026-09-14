@@ -73,7 +73,8 @@ Manually copied models are operator-owned. Remove them by hand.
 ## Build postvec-server
 
 `postvec-server` is an ordinary workspace member, so it needs neither pgrx nor
-PostgreSQL headers:
+PostgreSQL headers. It runs in its own process, so a model fault stays out of
+PostgreSQL and inference can use several threads on the same VM:
 
 ```bash
 cargo build --release -p postvec-server
@@ -86,10 +87,18 @@ covers TLS, the first start and the dashboard.
 
 ## Development rebuild sequence
 
-1. `cargo pgrx package`
-2. Stop PostgreSQL before replacing a preloaded `.so`
-3. Copy the staged files
-4. Recreate a development database if same-version generated SQL changed
+1. Run `cargo pgrx package` again after a change to the extension. It
+   builds the library, regenerates the SQL and stages both under
+   `postvec/target/release/postvec-pgNN/`.
+2. Stop PostgreSQL before you replace the preloaded library. The server
+   releases `postvec.so` on shutdown, so step 3 writes to a file no
+   running process holds.
+3. Copy the staged files into the cluster's library and extension
+   directories. The next start then reads the new library, control file
+   and SQL.
+4. Recreate a development database if the generated SQL for the same
+   version changed. `CREATE EXTENSION postvec` then installs the current
+   SQL.
 
 A new `.so` leaves SQL already in a database as it is. A new extension
 version needs upgrade SQL plus `ALTER EXTENSION postvec UPDATE` in the

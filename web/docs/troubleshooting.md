@@ -19,7 +19,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 
 | Symptom | Meaning or next action |
 |---|---|
-| `CREATE EXTENSION` cannot find pgvector | Install pgvector ≥ 0.8 for the **same** major |
+| `CREATE EXTENSION` cannot find pgvector | Install pgvector >= 0.8 for the **same** major |
 | `CREATE EXTENSION` is denied | Superuser; postvec is untrusted |
 | No advancing `worker_last_beat` | Preload, `postvec.database`, restart finished, worker slots, server log |
 | Jobs pile up with endpoint errors | Restore [postvec-server](/docs/server/); an empty endpoint list leaves jobs pending |
@@ -34,7 +34,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | Worker log wants `ALTER EXTENSION` | Library / SQL skew. Finish [upgrade](/docs/install/upgrade) |
 | `setup` refuses `99-postvec.conf` | Foreign or modified; `--yes` still refuses |
 | Container `doctor` finds no cluster | Expected. Healthcheck or a socket URL. |
-| Worker FATALs for a missing database | Name still in the **running** launcher list. `uninstall` or edit **and restart** |
+| Worker FATALs for a missing database | Name still in the **running** launcher list. The slot respawns on a 15 s to 5 min quarantine and recovers by itself if the database appears; otherwise `uninstall` or edit `postvec.database` **and restart** |
 | `DROP DATABASE` is blocked | Worker holds a connection. `uninstall` then `dropdb --force` |
 | `sudo model pull` is anonymous | Credentials are per user. `sudo postvec login` |
 | `model pull` says package/manual owned | Pull through the package manager or as the original owner. |

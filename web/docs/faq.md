@@ -90,7 +90,10 @@ that space from a local embed-bridge route.
 
 Adding an OpenAI key later changes that: a direct embed route wins over a
 bridge, so the column starts being embedded by the provider. `provider add`
-lists the affected columns and asks first.
+lists the affected columns and asks first. The route order in
+`postvec.routes` decides this: `postvec model prefer <space> <route>` sets
+it, and `provider add --prefer` puts the new provider route first.
+See [external providers](/docs/models/providers).
 
 ## Does embedded inference require internet access?
 
@@ -165,11 +168,13 @@ vectors. `model upgrade` replaces model files.
 
 The extension, CLI and packages use the PostgreSQL License, in either
 inference mode. `postvec-server` is source-available under the Business
-Source License 1.1: free for development, testing, personal use and a 30-day
-production evaluation; production use by an organization needs a
-[postvec Pro](https://univec.ai) subscription. Each version becomes
-PostgreSQL-licensed four years after release. Table and Pro contents:
-[License](/docs/license).
+Source License 1.1: free for development, testing, personal noncommercial
+production and one 30-day production evaluation per organization,
+including its affiliates under common control. Production use by an
+organization needs a [postvec Pro](https://univec.ai) subscription, and
+hosting or embedding the server for third parties needs a platform/OEM
+agreement. Each version becomes PostgreSQL-licensed four years after
+release. Table and Pro contents: [License](/docs/license).
 
 ## Which PostgreSQL versions are supported?
 

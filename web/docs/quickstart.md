@@ -9,7 +9,8 @@ A container with PostgreSQL, postvec and one local model
 ([MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)).
 Inference runs inside that container.
 
-Steps: start the image, enable a column, wait for vectors, index, search.
+Run the image, enable a column, wait for `pending_jobs = 0`, then index and
+search.
 
 The same SQL against [postvec-server](/docs/server/) is
 [quick start remote](/docs/quickstart-remote).

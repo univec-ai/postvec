@@ -5,15 +5,17 @@ description: Run the postvec-server image. MiniLM is loaded at start.
 
 # Docker
 
-The published image is Debian 12 with postvec-server, the CLI, ONNX
-Runtime and the bundled MiniLM model. It serves MiniLM out of the box.
+The published image is Debian 12 with the CPU build of postvec-server,
+the CLI, ONNX Runtime and the bundled MiniLM model. It serves MiniLM out
+of the box.
 
-This image plus the remote PostgreSQL image:
+Pair it with the remote PostgreSQL image in
 [quick start remote](/docs/quickstart-remote).
 
 <PgSnippet id="docker-server" />
 
-Wait until health is `healthy` (`GET /ready` once a model can answer):
+Wait until the container health is `healthy`; the image healthcheck
+calls `GET /ready`:
 
 <div v-pre>
 
@@ -26,9 +28,10 @@ docker inspect --format '{{.State.Health.Status}}' postvec-server
 The container generates a self-signed certificate at start, per
 container. Mount a pair over `/etc/postvec-server/server.crt` and
 `server.key`, or pass `--ssl-cert` / `--ssl-cert-key`. A bind mount
-keeps the host's numeric owner, and the container runs as uid/gid
-**999**: make a mounted key readable by 999, or use Compose secrets
-with `uid: "999"` and `mode: 0400`. The admin port is not exposed.
+keeps the host's numeric owner, so a mounted key must be readable by the
+`postvec-server` account the image runs as; a Compose secret with a
+matching `uid` and `mode: 0400` is one way. The admin port is not
+exposed.
 
 :::: info Optional
 ```bash
@@ -36,8 +39,9 @@ docker exec postvec-server postvec-server status
 curl -sk https://127.0.0.1:22222/ready
 ```
 
-`status` prints version, engine root, addresses and loaded models.
-`/ready` is `200` once a model can serve. Image attestations:
+`status` prints the version and build features, readiness, the frontend
+address, the models and the cluster members. `/ready` is `200` once a
+model can serve. Image attestations:
 [verify artifacts](/docs/install/verify).
 ::::
 

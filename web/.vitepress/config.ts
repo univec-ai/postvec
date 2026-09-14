@@ -133,7 +133,7 @@ export default defineConfig({
           ],
         },
         {
-          text: "Usage",
+          text: "Guides",
           collapsed: true,
           items: [
             {
@@ -179,23 +179,23 @@ export default defineConfig({
               collapsed: true,
               items: [
                 { text: "CLI", link: "/docs/guides/status-cli" },
-                { text: "Retry", link: "/docs/guides/retry" },
-                {
-                  text: "Backup",
-                  link: "/docs/guides/backup",
-                  collapsed: true,
-                  items: [
-                    { text: "CLI", link: "/docs/guides/backup-cli" },
-                  ],
-                },
-                {
-                  text: "Helpers",
-                  link: "/docs/guides/helpers",
-                  collapsed: true,
-                  items: [
-                    { text: "CLI", link: "/docs/guides/helpers-cli" },
-                  ],
-                },
+              ],
+            },
+            { text: "Retry dead jobs", link: "/docs/guides/retry" },
+            {
+              text: "Backup",
+              link: "/docs/guides/backup",
+              collapsed: true,
+              items: [
+                { text: "CLI", link: "/docs/guides/backup-cli" },
+              ],
+            },
+            {
+              text: "Helpers",
+              link: "/docs/guides/helpers",
+              collapsed: true,
+              items: [
+                { text: "CLI", link: "/docs/guides/helpers-cli" },
               ],
             },
           ],

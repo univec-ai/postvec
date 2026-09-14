@@ -5,7 +5,7 @@ description: providers.d format, key sources, loading rules, model names and doc
 
 # Connector files
 
-One TOML file per provider. The host serves what the file declares.
+One TOML file per provider.
 
 Copy-paste setup: [OpenAI](/docs/models/openai),
 [Cohere](/docs/models/cohere), [Amazon Bedrock](/docs/models/aws),
@@ -43,10 +43,10 @@ uses `/v1/convert`, Cohere uses `/v2/embed` and Gemini uses its batch path.
 The URL must be absolute `http` or `https` with a host. It must not carry a
 query string, fragment, userinfo or trailing `/`.
 
-Use it for a reverse proxy, a gateway or a self-hosted OpenAI-compatible
-endpoint. Azure OpenAI classic needs a deployment path and an
-`api-version` query, which this schema cannot write. Azure's `v1` API
-under `/openai/v1` works as a `base_url`.
+A reverse proxy, a gateway, a self-hosted OpenAI-compatible endpoint or
+Azure's `v1` API under `/openai/v1` all work as a `base_url`. Azure
+OpenAI's classic API needs a deployment path and an `api-version`
+query, which this schema has no field for.
 
 Plain `http` to anything but loopback is refused unless the file opts in:
 
@@ -113,9 +113,8 @@ A few AWS specifics:
   1. On a Titan-backed column, lower `postvec.batch_size` rather than
   raising the timeout.
 - `provider add` and `provider test` probe the **bearer-token**
-  variant. A SigV4 file is served normally but cannot be probed from
-  the CLI. Use `--no-verify` and confirm with `provider ls` plus a
-  first write.
+  variant. For a SigV4 file, pass `--no-verify` and confirm with
+  `provider ls` plus a first write.
 
 ## Gemini and Cohere dimensions
 
@@ -190,8 +189,8 @@ sequence.
 - A public name may appear once. Two entries in one file: the file is
   refused. Two files claiming the same name: neither serves until one
   drops it.
-- A loaded local model keeps a colliding name, in `/config` and on the
-  embed or convert path.
+- A name that a loaded local engine model already serves refuses the
+  whole file at load. The local model keeps serving under that name.
 - The directory is bounded as a whole: at most 32 connector files, 512
   provider models and 256 total `max_concurrent` across every file. A
   single file holds at most 256 `[[models]]` entries (one whole UniVec
@@ -206,32 +205,40 @@ before it is written, so existing models on that provider stay up.
 
 `postvec setup --embedded` creates `/etc/postvec/providers.d` (0700,
 owned by the cluster owner), and so does the first `provider add`. The
-packages do not ship it, because only the CLI knows which account owns
-the cluster. An absent directory is the default.
+CLI creates it, because only the CLI knows which account owns the
+cluster. An absent directory is the default.
 
-The directory must not be group- or world-writable, must be owned by
-the account that reads it (or by root) and every ancestor must be one
-only root or that same account can rewrite. Anyone who can write there
-can drop in a connector file and choose where this host sends source
-text or stored vectors. The serving host refuses those cases. `provider add`
-also refuses to write there, and `doctor` fails `provider.directory`.
-Read and execute bits only disclose which providers are configured;
-those stay a warning.
+On a [postvec-server](/docs/server/) node the directory is
+`<server-root>/providers.d`, and a key copied from `postvec login` lands
+in `<server-root>/keys/<stem>.key`. Run
+`postvec provider add --path <server-root>` on the node to write the
+file there.
+
+The directory is owned by the account that reads it (or by root) and
+must not be group- or world-writable. The same account is the only one
+besides root that can rewrite the directory or any ancestor. Anyone who
+can write there can drop in a connector file and choose where this host
+sends source text or stored vectors. The serving host refuses those
+cases. `provider add` also refuses to write there, and `doctor` fails
+`provider.directory`. Read and execute bits only disclose which
+providers are configured; those stay a warning.
 
 `provider add` and `provider rm` take an advisory lock on the directory
 for the whole read-modify-write, so two administrators running them at
 once cannot lose one another's change.
 
-Change the location with `postvec.providers_path` (POSTMASTER, restart)
-or `setup --embedded --providers-path DIR`.
+Change the location with `postvec.providers_path` (SIGHUP) or
+`setup --embedded --providers-path DIR`, and on a
+[postvec-server](/docs/server/) node with `--providers-path` or
+`POSTVEC_SERVER_PROVIDERS_PATH`.
 
 `postvec uninstall` reports connector files and leaves them. Package
 removal does the same.
 
 ## Model names
 
-The CLI uses a curated public name for a model in its built-in catalogue.
-These entries are available:
+The built-in catalogue maps each `--model` id to a public route name and a
+vector space. `same` means the space equals the route name.
 
 | Provider | Model id | Route name | Space | Dim |
 |---|---|---|---|---:|
@@ -245,22 +252,31 @@ These entries are available:
 | aws | `amazon.titan-embed-text-v2:0` | `aws-titan-embed-text-v2-0` | same | 1024 |
 | aws | `amazon.titan-embed-text-v1` | `aws-titan-embed-text-v1` | same | 1536 |
 | mistral | `mistral-embed` | `mistral-mistral-embed` | same | 1024 |
-| openrouter | `google/gemini-embedding-001` | `openrouter-google-gemini-embedding-001` | `gemini-embedding-001` | 3072 |
 | openrouter | `openai/text-embedding-3-small` | `openrouter-openai-text-embedding-3-small` | `openai-text-embedding-3-small` | 1536 |
+| openrouter | `openai/text-embedding-3-large` | `openrouter-openai-text-embedding-3-large` | `openai-text-embedding-3-large` | 3072 |
+| openrouter | `openai/text-embedding-ada-002` | `openrouter-openai-text-embedding-ada-002` | `openai-text-embedding-ada-002` | 1536 |
+| openrouter | `google/gemini-embedding-001` | `openrouter-google-gemini-embedding-001` | `gemini-embedding-001` | 3072 |
+| openrouter | `cohere/embed-v4.0` | `openrouter-cohere-embed-v4-0` | `cohere-embed-v4-0` | 1536 |
+| openrouter | `cohere/embed-english-v3.0` | `openrouter-cohere-embed-english-v3-0` | `cohere-embed-english-v3-0` | 1024 |
+| openrouter | `cohere/embed-multilingual-v3.0` | `openrouter-cohere-embed-multilingual-v3-0` | `cohere-embed-multilingual-v3-0` | 1024 |
+| openrouter | `mistralai/mistral-embed` | `openrouter-mistralai-mistral-embed` | `mistral-mistral-embed` | 1024 |
+
+These 18 entries are the whole catalogue. An OpenRouter entry mirrors a
+vendor route, so it shares that route's space: a column bound to
+`openai-text-embedding-3-small` is served by
+`openrouter-openai-text-embedding-3-small` once only the OpenRouter key
+exists.
 
 Any other id works too. The probe measures the dimension, or `--dim`
-states it. OpenRouter ids are namespaced, so
-`--model openai/text-embedding-3-large` becomes route
-`openrouter-openai-text-embedding-3-large` in space
-`openai-text-embedding-3-large`. A space has one width: two embed
-entries in one file that disagree refuse the file; an entry that
-disagrees with another file or with a loaded local model is skipped
-at load time (the rest of its file serves), and the cache refresh
-skips a contradicting row with a WARNING.
+states it. A space has one width: two embed entries in one file that
+disagree refuse the file; an entry that disagrees with another file or
+with a loaded local model is skipped at load time (the rest of its file
+serves), and the cache refresh skips a contradicting row with a WARNING.
 
-UniVec ids are not in the CLI's built-in catalogue. `provider add univec`
-measures an embed model's dimension. For example, `--model baai-bge-m3`
-becomes `univec-baai-bge-m3`.
+The built-in catalogue covers the six connectors above, not UniVec.
+`provider add univec --model baai-bge-m3` takes the dimension from
+UniVec's catalogue, or measures it for an id the catalogue lacks, and
+writes route `univec-baai-bge-m3`.
 
 For an unlisted id, the name is derived mechanically: lowercase, and
 every character outside `[a-z0-9._-]` becomes `-`. `provider_model_id`
@@ -275,7 +291,7 @@ what you type in SQL.
 | Command | Result | Network |
 |---|---|---|
 | `provider add TYPE --model ID...` | Write or extend the file, verify, reload the host, refresh `postvec.models` | One embed per verified model, unless `--no-verify` |
-| `provider add univec --convert-source ID ...` | Write or extend the file with a converter, verify, reload and refresh | One vector conversion, unless `--no-verify` |
+| `provider add univec --convert-to MODEL` | Write or extend the file with every catalogue converter into `MODEL`, verify, reload and refresh | One vector conversion per added entry, unless `--no-verify` |
 | `provider ls` | Providers, key sources, models, dims and whether the host serves them now | Loopback |
 | `provider test NAME [--model ID]` | Verify embed or converter entries on demand | One embed or vector conversion per selected entry |
 | `provider rm NAME [--model ID]` | Drop one model entry or the whole file, then reload | Loopback |
@@ -285,15 +301,27 @@ Useful options on `add`:
 | Option | Effect |
 |---|---|
 | `--name STEM` | Write `STEM.toml` instead of the type's name. Two OpenAI-compatible endpoints, two files |
-| `--api-key-file P` / `--api-key-env VAR` / `--key-stdin` | Choose the key source. Without any of them and with a TTY, a hidden prompt asks |
+| `--api-key-file P` / `--api-key-env VAR` / `--key-stdin` | Choose the key source. Without any of them and with a TTY, a hidden prompt asks and records the key inline as `api_key` |
+| `--api-key-from-login` | `univec` only. Copy the key `postvec login` stored into `<providers root>/keys/<stem>.key` and use it for inference. An interactive run offers this; a script must ask. Refused when the file holds a different key |
+| `--replace-copied-key` | With `--api-key-from-login`: rotate a key file this command copied for this connector earlier. The new key is verified before the old one is replaced |
 | `--base-url URL` | Gateways, Azure-shaped fronts or a mock server. Not accepted for `aws` |
 | `--region` | Required for `aws`, and only valid there |
-| `--dim N` | For a single unlisted model, together with `--no-verify` |
-| `--convert-source ID --convert-target ID` | UniVec provider ids for a hosted converter |
-| `--source-model NAME --target-model NAME --source-dim N` | Postvec route names and the input dimension for a hosted converter |
-| `--converter-name NAME` | Override the derived `univec-convert-<source>-to-<target>` name |
+| `--dim N` | Vector dimension for a single model, and the requested width where the provider takes one (Gemini, Cohere v4). Required with `--no-verify` when the catalogue and the probe cannot supply it |
+| `--space SPACE` | Vector space this route serves. Default: the catalogue space, else the public name |
+| `--prefer` | Give the new route priority 1 in its space, ahead of the local model |
+| `--convert SRC:DST` | `univec` catalogue converter, by provider id pair. Repeatable |
+| `--convert-to MODEL` | `univec`: every catalogue converter into `MODEL`. Repeatable |
+| `--convert-from MODEL` | `univec`: every catalogue converter out of `MODEL`. Repeatable |
+| `--all-converters` | `univec`: every catalogue converter |
+| `--no-catalog` | `univec`: skip the catalogue fetch. Every dimension then comes from `--dim` or the probe |
+| `--path DIR` | Write into `DIR/providers.d` instead of the selected cluster. Default: `POSTVEC_PROVIDERS_PATH`, then the cluster's providers path |
+| `--acknowledge-in-use` | Accept that columns bound to these names start sending their text to the provider at the next worker cycle. Required with `--yes` when a column is affected |
+| `--yes` | Skip the confirmation prompt. Required for a mutation without a TTY |
 | `--no-verify` | Skip the live probe |
 | `--dry-run` | Print the plan and change nothing |
+| `--convert-source ID --convert-target ID` | Hidden. Manual converter: UniVec provider ids |
+| `--source-model NAME --target-model NAME --source-dim N` | Hidden. Manual converter: postvec route names and the input dimension |
+| `--converter-name NAME` | Override the derived `univec-convert-<source>-to-<target>` name |
 
 The plan is confirmed before the probe. Declining it, or failing the
 in-use acknowledgement, makes no API call.
@@ -308,7 +336,7 @@ Target resolution:
 |---|---|
 | `--path DIR` | Filesystem management of `DIR/providers.d`, or of `DIR` itself when it already is one. `DIR` must already exist. New files inherit its owner. An embed entry requires `--acknowledge-in-use`; a new converter skips that flag |
 | Embedded cluster | Manage `postvec.providers_path`, scan the databases for affected columns, reload the running host |
-| Remote cluster | Refused by name. The message points at `--path` |
+| Remote fleet (`grpc`) | Refused by name on the database host, because connector files live on the inference nodes. The message points at `--path`; run `provider add --path <server-root>` on a [postvec-server](/docs/server/) node |
 
 Reading `provider ls`:
 
@@ -364,9 +392,12 @@ a `--path` target the same situation is a note, not a partial result.
 | Inference transport | Loopback gRPC (embedded) and postvec-server gRPC (remote) are plaintext. Restrict the gRPC port. Use provider-side quotas as the spend control |
 
 - [External providers](/docs/models/providers)
-- [OpenAI](/docs/models/openai) · [Cohere](/docs/models/cohere) ·
-  [Amazon Bedrock](/docs/models/aws) · [Gemini](/docs/models/gemini) ·
-  [Mistral](/docs/models/mistral) · [OpenRouter](/docs/models/openrouter)
+- [OpenAI](/docs/models/openai)
+- [Cohere](/docs/models/cohere)
+- [Amazon Bedrock](/docs/models/aws)
+- [Gemini](/docs/models/gemini)
+- [Mistral](/docs/models/mistral)
+- [OpenRouter](/docs/models/openrouter)
 - [UniVec hosted models](/docs/models/univec)
 - [postvec-server](/docs/server/)
 - [CLI](/docs/reference/cli)

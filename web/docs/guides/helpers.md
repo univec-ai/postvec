@@ -30,8 +30,8 @@ SELECT postvec.refresh_models();
 ```
 
 :::: tip Expected
-MiniLM returns a 384-d vector. `refresh_models()` returns the number of
-rows written into the `postvec.models` cache.
+MiniLM returns a 384-d vector. `refresh_models()` returns the number of models
+seen; the cache write itself rewrites only the rows that changed.
 ::::
 
 Inventory and host checks: [helpers (CLI)](/docs/guides/helpers-cli).
@@ -52,6 +52,31 @@ GRANT EXECUTE ON FUNCTION postvec.convert(real[], text, text) TO app_admin;
 GRANT EXECUTE ON FUNCTION postvec.refresh_models() TO app_admin;
 ```
 
+## Input ceilings
+
+`embed(text[], model)` takes at most 4096 items per call. Each item must fit the
+per-item ceiling: the smallest of `postvec.max_document_bytes`,
+`postvec.max_batch_total_bytes` and the 48 MiB transport limit for one message.
+The items together must fit `postvec.max_batch_total_bytes`. A call over either
+boundary raises before any inference runs.
+
+`embed(text, model)` and the query text of `search()` and
+`search_with_vector()` pay the per-item ceiling too.
+
+## Managed PostgreSQL
+
+On an embedded host these helpers run inference inside the PostgreSQL process.
+On [managed PostgreSQL](/docs/server/managed) the schema is plpgsql and
+postvec-server runs the same jobs in a separate process:
+
+- `embed(input, model)` is a stub that raises, unless the call arrives through
+  the postvec-server proxy port. Only the single-text form exists on a managed
+  host.
+- `convert()` raises. POST `{"source_model","target_model","embeddings"}` to the
+  server's `/api/convert` endpoint.
+- `refresh_models()` returns `void` and notifies the sync worker, which refreshes
+  the `postvec.models` cache from the server host.
+
 Workers refresh `postvec.models` on an interval. `refresh_models()` is
 the immediate path after `postvec model pull` (already done by the CLI
 on an embedded cluster) or after a remote fleet change.
@@ -60,7 +85,6 @@ Column-level work stays on [`enable`](/docs/guides/enable),
 [`adopt`](/docs/guides/adopt),
 [search a retired space](/docs/guides/bridge) and
 [`migrate`](/docs/guides/migrate).
-A one-shot `convert()` returns a vector.
 
 - [Helpers (CLI)](/docs/guides/helpers-cli)
 - [Search](/docs/guides/search)

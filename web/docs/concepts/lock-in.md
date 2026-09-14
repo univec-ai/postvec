@@ -29,14 +29,15 @@ grows the eventual migration.
 
 That accumulated, deferred migration work is **embedding debt**.
 
-The first move is to keep the stored space and search it:
-
 - [Search a retired space](/docs/guides/bridge) converts each query
   vector into the stored space (embed-bridge). The corpus stays.
 - [`search()`](/docs/guides/search) plus [filters](/docs/guides/filters)
   and [BM25](/docs/guides/bm25) combine lexical and semantic retrieval.
 - [Embedded mode](/docs/concepts/modes) runs local open-weight models on
   the database host.
+- [postvec-server](/docs/server/) runs the same models in a separate
+  process, on a CPU or GPU fleet or on managed PostgreSQL. Source text
+  and query strings travel to those nodes.
 
 If later you want the stored contract itself to change,
 [`migrate()`](/docs/guides/migrate) converts stored vectors. The

@@ -1,6 +1,6 @@
 ---
 title: Chunk long documents
-description: Recursive 1:N chunking into a managed destination table.
+description: Recursive 1:N chunking into a destination table postvec manages.
 ---
 
 # Chunk long documents
@@ -33,9 +33,10 @@ SELECT postvec.enable(
 );
 ```
 
-`destination` is required, unqualified and created in the source schema.
-Defaults: `chunk_size` 2000, `chunk_overlap` 200. Bounds: size
-64-100000, overlap 0-size-1.
+`destination` is required: one unqualified name of at most 58 bytes, created in
+the source schema. The bound leaves room for the generated `<destination>_view`
+name inside PostgreSQL's 63-byte identifier limit. Defaults: `chunk_size` 2000,
+`chunk_overlap` 200. Bounds: size 64-100000, overlap 0-size-1.
 
 :::: tip Expected
 `status()` shows `chunking = recursive`, a `destination` and
@@ -102,7 +103,7 @@ CREATE INDEX CONCURRENTLY articles_chunks_hnsw
   USING hnsw (body_semantic vector_cosine_ops);
 ```
 
-or `index_mode => 'auto'` on a small table, or
+Alternatives: `index_mode => 'auto'` on a small table, or
 `postvec.create_vector_index('public.articles', 'body')`.
 
 Storage grows because overlap duplicates text and every chunk is an
@@ -133,8 +134,19 @@ related source row changes again.
   input, <= 4x output amplification per document. Overlap above 75% of
   `chunk_size` can exceed the amplification limit on long documents;
   `enable()` emits a warning.
-- Live splitter reconfiguration is refused. Disable, drop and re-enable
-  to change splitter settings.
+- One chunked `search()` call materializes at most 64 MiB of `chunk_text`.
+  Rows past that ceiling keep their rank and return `chunk_text` NULL, with a
+  WARNING.
+- `enable()` on a live entry is refused. Disable the entry, then enable it
+  again with the new splitter settings. `if_not_exists => true` returns the
+  existing registry id instead: the early return compares `model` and
+  `vector_column` only, so a re-run with a different `chunking`, `chunk_size`
+  or `chunk_overlap` leaves the old splitter in place.
+
+Chunk jobs run on the same worker as column jobs: on an embedded host inside
+the PostgreSQL process, or on [postvec-server](/docs/server/) in a separate
+process that runs multi-threaded and serves a CPU or GPU fleet over the
+network. Queues, retries and dead letters are identical in both modes.
 
 :::: info Chunk destinations are owner-only by default
 Application access requires an explicit grant on the destination and

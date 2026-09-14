@@ -26,8 +26,7 @@ uses packages and `postvec setup` instead.
 
 Organization production use needs [postvec Pro](https://univec.ai).
 Personal use, non-production environments and one 30-day production
-evaluation per organization are free. Compliance is contractual. See
-[License](/docs/license).
+evaluation per organization are free. See [License](/docs/license).
 
 ## 1. Prepare the database
 
@@ -42,8 +41,8 @@ installer prints the applicable `GRANT owner TO worker` commands. A
 superuser (or a role with `ADMIN OPTION` on the table owner) must run
 them. A table owner cannot grant their own role.
 
-Use a **direct** database endpoint, not a transaction-pooling endpoint.
-Leader election takes a session advisory lock.
+Use a **direct** database endpoint. Leader election takes a session
+advisory lock, which a transaction-pooling endpoint does not hold.
 
 ## 2. Install the schema
 
@@ -66,7 +65,8 @@ database, an unrelated schema or an unsupported schema version.
 
 Passwords stay in the password file. The file must be a regular file
 owned by the service account, mode `0600` or `0400`. Symlinks are
-refused. Relative paths resolve against the engine root. DSNs use the
+refused. A relative `--password-file` resolves against the working
+directory of the `managed install` process. DSNs use the
 `postgresql://` URI format.
 
 ## 3. Configure and start
@@ -90,8 +90,9 @@ Add this to `/etc/postvec-server/config.json`:
 }
 ```
 
-Restart postvec-server. Models, provider credentials and a gossip fleet
-already configured on that host serve the worker.
+Restart postvec-server. In the `managed[]` block a relative `password_file`
+resolves against the engine root. Models, provider credentials and a gossip
+fleet already configured on that host serve the worker.
 
 For one database, `postvec-server serve --sync <DSN>` is a shortcut.
 `--proxy 5433` opens the search proxy. `--poll-only` skips LISTEN
@@ -237,9 +238,9 @@ while another node syncs.
 | Supabase | Direct (non-pooler) port for the worker. `search(text)` goes through the proxy. |
 | Neon | Direct endpoint. `poll_only` as above. |
 
-Use your provider's CA configuration for verified TLS. Tests exercise
-local PostgreSQL; verify the provider's role, TLS and network
-configuration before deployment.
+Use your provider's CA configuration for verified TLS. The test suite runs
+against local PostgreSQL; provider role, TLS and network configuration differ
+per platform.
 
 ## Observe and operate
 
@@ -272,6 +273,12 @@ node.
 postvec-server managed status --dsn <DSN> --password-file <PATH>
 postvec-server managed uninstall --dsn <DSN> --password-file <PATH>
 ```
+
+`managed status` prints pretty JSON with `schema_version`, `platform`,
+`worker_alive`, `heartbeat`, `leader`, `queue_depth` and `dead_letters`.
+`worker_alive` is `true` while the last beat is inside 30 seconds. The same
+boolean is the first column of every `postvec.status()` row, so a SQL session
+and the host command report liveness the same way.
 
 Workers park on schema-version mismatch. Uninstall removes managed
 triggers and schema objects, retains user vectors and chunks, and

@@ -15,11 +15,9 @@ The key lives in that file. PostgreSQL holds a path
 column is sent to the provider on every insert, update and query
 embed.
 
-This is inventory on whichever host already runs inference. `postvec.mode`
-stays `embedded` or `grpc`. In embedded mode the host is the database
-machine. In remote mode it is each [postvec-server](/docs/server/)
-process, which is also where you put the files when you want keys off
-the database host.
+A connector file lives on the host that runs inference: the database host in
+embedded mode, each [postvec-server](/docs/server/) process in remote mode.
+`postvec.mode` stays `embedded` or `grpc`.
 
 | Provider | Typical SQL name | Serves |
 |---|---|---|
@@ -90,9 +88,10 @@ SELECT postvec.enable('docs', 'body',
 embed model. A UniVec hosted conversion emits a separate NOTICE that
 stored vectors will leave the host.
 
-`search()` embeds the query in the connection backend.
-`postvec.query_timeout_ms` defaults to 2000 ms, which is tight for a
-hosted API:
+`search()` embeds the query from the PostgreSQL backend. In remote mode that
+embed is a gRPC call to a [postvec-server](/docs/server/) node, so the deadline
+covers the network too. `postvec.query_timeout_ms` defaults to 2000 ms, which
+is tight for a hosted API:
 
 ```sql
 SET postvec.query_timeout_ms = 10000;
@@ -103,8 +102,7 @@ returns lexical ranks only. To embed once in the application, call
 [`search_with_vector()`](/docs/guides/search). Writes use
 `postvec.embed_timeout_ms` (30 s).
 
-Local and hosted columns coexist in one database. Each column names its
-own model.
+Local and hosted columns coexist because each column names its own model.
 
 ## Adding a key can change an existing column
 
@@ -146,9 +144,10 @@ route stays preferred) are omitted.
 
 ## Adopt existing provider vectors
 
-To keep searching an existing ada-002 (or similar) column, name that
-space at adopt time and [search the existing space](/docs/guides/bridge).
-Stored rows stay. A provider key is optional on that path.
+To keep searching an existing `openai-text-embedding-ada-002` (or similar)
+column, name that space at adopt time and [search the existing
+space](/docs/guides/bridge). Stored rows stay. A provider key is optional on
+that path.
 
 ```sql
 SELECT postvec.adopt('docs', 'body',
@@ -204,8 +203,8 @@ dead-letters. Fix the key and re-drive with
 [`retry_dead()`](/docs/guides/retry). A migration retries Config until
 it succeeds.
 
-A file that fails to load leaves local models and other providers
-running.
+A connector file that fails to load is isolated: the other files and the local
+models keep serving, and `provider ls` and `doctor` report the error.
 
 ## Cost
 

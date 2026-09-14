@@ -6,11 +6,10 @@ description: Operational differences between embedded inference and remote gRPC 
 # Embedded vs remote
 
 Embedded is the default: inference on the database host. Remote mode
-runs inference on [postvec-server](/docs/server/). Use postvec-server
-when you want a separate process from PostgreSQL, multi-threaded
-inference on the same VM, a CPU or GPU fleet and model management from
-the dashboard. Managed cloud databases use it too. [When to use
-postvec-server](/docs/server/usage).
+runs inference on [postvec-server](/docs/server/), a separate process
+from PostgreSQL, multi-threaded on the same VM, serving a CPU or GPU
+fleet and managing models from the dashboard. Managed cloud databases
+use it too. [When to use postvec-server](/docs/server/usage).
 
 <figure class="pvd">
 <svg viewBox="0 0 632 368" role="img" aria-labelledby="pvd-modes-title pvd-modes-desc">
@@ -62,9 +61,10 @@ postvec-server](/docs/server/usage).
 </svg>
 </figure>
 
-`postvec.mode` is cluster-wide and POSTMASTER. Changing it requires a
-restart. SQL, the job queue, retry policy and the gRPC wire contract
-stay the same.
+`postvec.mode` is cluster-wide and SIGHUP: the worker reads it at
+start. `postvec setup` restarts the cluster on a mode change, because the
+launcher fixes its own mode when it starts. SQL, the job queue, retry
+policy and the gRPC wire contract stay the same.
 
 | | Embedded | Remote (`grpc`) with postvec-server |
 |---|---|---|
@@ -101,8 +101,9 @@ pull` installs files deactivated; `model activate` is what loads them.
 
 The embedded gRPC/HTTP listeners stay on **127.0.0.1**.
 
-Local inference, weights and text remain on the database host. A column bound
-to a hosted provider sends text through the embedded inference host.
+Local inference, weights and text remain on the database host. A column
+bound to a hosted provider sends its source text to that provider from
+the launcher.
 
 ## Remote gRPC
 
@@ -146,8 +147,8 @@ consuming retry attempts. Lexical search can still run while
 
 ## Switching
 
-Mode is cluster-wide. Switching requires every configured database name
-and the `--switch-mode` flag:
+Mode is cluster-wide. Switching restarts the cluster and requires every
+configured database name and the `--switch-mode` flag:
 
 ```bash
 sudo postvec setup --database app \

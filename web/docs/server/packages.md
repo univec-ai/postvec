@@ -6,9 +6,8 @@ description: Install postvec-server from .deb or .rpm, add TLS and start the uni
 # Packages
 
 `postvec-server` is published with every release as a `.deb` / `.rpm`,
-one per distribution and architecture (no PostgreSQL major). Download
-and verify the files as on the [packages page](/docs/install/packages),
-then:
+one per distribution and architecture (no PostgreSQL major). Verify the
+files as described on the [packages page](/docs/install/packages), then:
 
 <PgSnippet id="packages-server" />
 
@@ -30,18 +29,13 @@ and where `postvec model pull` writes:
 | `postvec-model-minilm-l6-v2` | The bundled 384-d model under `/opt/postvec/models` |
 | `postvec-extras` | Pins the two above |
 | `postvec-cli` | `/usr/bin/postvec`, for `model` and `provider` commands |
-| dashboard | `/opt/postvec/server/ui`, served on port `22222` |
+| dashboard | `/opt/postvec/server/ui`, served on `22222` and the loopback admin port |
 
 ## TLS
 
-The discovery listener requires TLS. Without `--insecure` and without a
-readable certificate pair, the process exits at start.
-
-Operators write `POSTVEC_HTTP_ENDPOINTS=https://...` into a cluster. A
-silent fallback to plain HTTP would leave a listener that answers and a
-client that fails.
-
-Self-signed certificates are accepted. The trust boundary is the network.
+The discovery listener requires TLS: without `--insecure` and without a
+readable certificate pair, the process exits at start. Self-signed
+certificates are accepted, and the trust boundary is the network.
 
 ```bash
 postvec-server \
@@ -56,9 +50,10 @@ package's post-install message prints the two `install` lines.
 
 ## Start the unit
 
-The package installs the unit from `postvec-server/systemd/` plus a
-drop-in that sets `POSTVEC_SERVER_ROOT=/opt/postvec`. It runs
-unprivileged, with a strict sandbox and a read-only model root:
+The package installs the unit from `postvec-server/systemd/`, which sets
+`POSTVEC_SERVER_ROOT=/opt/postvec`, plus a drop-in that hands
+`/opt/postvec/models` to the service account so the node can activate and
+deactivate models. The unit runs unprivileged under a strict sandbox:
 
 ```bash
 sudo systemctl enable --now postvec-server
@@ -91,8 +86,7 @@ Check these two lines:
 
 Sockets are reserved before models load, so a port conflict fails
 immediately. Between reservation and serving the ports are open but
-silent; a healthcheck sees a refused connection while the process is
-still starting.
+silent: a healthcheck waits while the process is still starting.
 
 :::: info Optional
 ```bash
@@ -100,8 +94,9 @@ postvec-server status
 curl -sk https://127.0.0.1:22222/ready
 ```
 
-`status` prints version, engine root, addresses and loaded models.
-`/ready` is `200` once a model can serve, `503` before that.
+`status` prints the version and build features, readiness, the frontend
+address, the models and the cluster members. `/ready` is `200` once a
+model can serve, `503` before that.
 ::::
 
 ::: warning License

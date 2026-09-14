@@ -5,10 +5,10 @@ description: Use UniVec for hosted embeddings or direct vector-space conversion 
 
 # UniVec hosted models
 
-UniVec is one of the [external providers](/docs/models/providers). It is
-the connector that serves hosted embeddings **and** hosted vector
-conversion. Other connectors (OpenAI, Cohere, Amazon Bedrock, Gemini,
-Mistral, OpenRouter) serve embeddings only.
+UniVec is an [external provider](/docs/models/providers) that serves
+hosted embeddings and hosted vector conversion; every other connector
+(OpenAI, Cohere, Amazon Bedrock, Gemini, Mistral, OpenRouter) serves
+embeddings only.
 
 The `univec` connector serves two model types:
 
@@ -17,9 +17,8 @@ The `univec` connector serves two model types:
 | `embed` | UniVec's OpenAI-compatible embeddings API | Source text or a search query |
 | `convert` | UniVec's vector conversion API | Stored vectors |
 
-Other external connectors serve embeddings only. A UniVec connector can
-also expose a direct converter to `postvec.migrate()` and the one-shot
-`postvec.convert()` helper.
+A `convert` entry is a direct route for `postvec.migrate()` and the
+one-shot `postvec.convert()` helper.
 
 Embed and converter entries are independent. They can share one
 `univec.toml` file and key.
@@ -48,9 +47,9 @@ univec  (https://api.univec.ai, public catalogue, 18 embed, 98 convert)
 ```
 :::::
 
-Only UniVec can be listed this way: it is the one provider whose model list
-states dimensions. For every other connector the command says so and points
-at `--model`.
+UniVec is the one connector whose model list states dimensions, so
+`--available` covers it alone. For every other connector the command
+points at `--model`.
 
 ## Add hosted embedding models
 
@@ -89,7 +88,7 @@ in `postvec.models` after the refresh performed by `provider add`. The
 summary line reads `catalogue: 18 embed, 0 convert added, 0 already present`.
 :::::
 
-Bind a column with the normal SQL surface:
+Bind a column:
 
 ```sql
 SELECT postvec.enable(
@@ -240,16 +239,24 @@ SELECT resolved_via, state, rows_done, rows_total
   FROM postvec.migration_status(:migration_id);
 ```
 
-`migrate()` emits a NOTICE before work starts:
+On the extension, `migrate()` emits a NOTICE before work starts:
 
 ```text
 NOTICE: postvec: conversion route "univec-convert-snowflake-to-bge-m3" is served by external provider "univec"; the stored vectors of column "body" will be sent to that provider for conversion
 ```
 
-`resolved_via` records the selected route:
+`resolved_via` records the selected route. A hosted converter is a direct
+route, so the extension reports:
 
 ```json
 {"kind":"direct","model":"univec-convert-snowflake-to-bge-m3"}
+```
+
+The SQL mirror on managed PostgreSQL, where the extension cannot load,
+reports the same route as `kind: "convert"`:
+
+```json
+{"kind":"convert","model":"univec-convert-snowflake-to-bge-m3"}
 ```
 
 Continue with `migration_finalize()` when the state reaches
@@ -282,24 +289,31 @@ that finds one offers it (default no); scripts opt in with
 `--api-key-from-login`. The key is **copied** to
 `/etc/postvec/keys/<name>.key` (or `<server-root>/keys/<name>.key`, one per
 connector file, `univec.key` by default) and referenced from the connector
-file. `postvec logout` leaves serving keys in place. Two connector
-files never share one credential. An existing key file holding a different
-key is never replaced; `--replace-copied-key` rotates a key this command
-copied for exactly this connector, verifying the new key before the old one
-goes and restoring it if the write fails. Rerunning with the same copied key
-changes nothing and sends nothing. The plan states how many billable probe
-attempts a run makes: one per kind added, and on a key rotation one existing
-embed and one existing converter (UniVec keys are account-wide; other
-connectors re-verify every route). A rotated or copied key is installed only
-if the destination is still exactly what the check saw, including its mode,
-owner and link count. Once a copied key is in place it is never deleted by
-this command: if the connector write fails, the key is kept and named, and a
-rerun reuses it. A rotated key is restored only if the file is still the one
-this command installed. In every partial outcome the run ends incomplete,
-reports nothing as written, and says exactly what to check. `POSTVEC_API_KEY` wins over stored logins; when
-root's store and the invoking user's store hold different keys, an
-interactive run asks which and a scripted run refuses. A dedicated
-inference key keeps billing and rotation separate from downloads.
+file. `postvec logout` leaves serving keys in place.
+
+Rules of a copied or rotated key:
+
+- Two connector files never share one credential.
+- An existing key file holding a different key is never replaced.
+  `--replace-copied-key` rotates a key this command copied for exactly this
+  connector, verifying the new key before the old one goes and restoring it
+  if the write fails.
+- Rerunning with the same copied key changes nothing and sends nothing.
+- A key is installed only if the destination is still exactly what the check
+  saw, including its mode, owner and link count.
+- A copied key is never deleted by this command: if the connector write
+  fails, the key is kept and named, and a rerun reuses it. A rotated key is
+  restored only if the file is still the one this command installed.
+- In every partial outcome the run ends incomplete, reports nothing as
+  written, and says exactly what to check.
+
+The plan states how many billable probe attempts a run makes: one per kind
+added, and on a key rotation one existing embed and one existing converter
+(UniVec keys are account-wide; other connectors re-verify every route).
+`POSTVEC_API_KEY` wins over stored logins; when root's store and the
+invoking user's store hold different keys, an interactive run asks which and
+a scripted run refuses. A dedicated inference key keeps billing and rotation
+separate from downloads.
 
 A key with a zero spending limit can read the private model catalogue but
 cannot serve hosted embeddings or conversions. UniVec returns HTTP 402 when
@@ -326,9 +340,12 @@ A node that lacks the converter fails requests routed to it. The fleet report
 labels provider-backed embed and convert entries.
 
 - [External providers](/docs/models/providers)
-- [OpenAI](/docs/models/openai) · [Cohere](/docs/models/cohere) ·
-  [Amazon Bedrock](/docs/models/aws) · [Gemini](/docs/models/gemini) ·
-  [Mistral](/docs/models/mistral) · [OpenRouter](/docs/models/openrouter)
+- [OpenAI](/docs/models/openai)
+- [Cohere](/docs/models/cohere)
+- [Amazon Bedrock](/docs/models/aws)
+- [Gemini](/docs/models/gemini)
+- [Mistral](/docs/models/mistral)
+- [OpenRouter](/docs/models/openrouter)
 - [Connector files](/docs/models/providers-file)
 - [postvec-server](/docs/server/)
 - [Search a retired space](/docs/guides/bridge)

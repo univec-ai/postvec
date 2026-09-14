@@ -5,8 +5,8 @@ description: Cluster files, setup and doctor after a pg_dump restore.
 
 # Backup and restore (CLI)
 
-SQL: [backup and restore](/docs/guides/backup) (what `pg_dump` carries,
-`refresh_models()`, queue checks). The CLI restores cluster
+See [backup and restore](/docs/guides/backup) for what `pg_dump` carries,
+`refresh_models()` and the queue checks. The CLI restores cluster
 configuration and proves the host.
 
 After the dump is restored:
@@ -26,6 +26,13 @@ sudo postvec setup --database app \
 sudo postvec doctor --database app --deep
 ```
 
+Remote mode also restores the [postvec-server](/docs/server/) side: every
+node must serve the same enabled models and the same converters as before
+the dump. A node that lacks one fails that request with `MODEL_NOT_LOADED`
+while its peers answer, so the failure looks intermittent.
+[`refresh_models()`](/docs/guides/helpers) reloads postvec's cache from
+the node list, and [fleet](/docs/server/fleet) covers inventory parity.
+
 ::::: tip Expected
 `doctor` exits 0. Worker heartbeat advances. `99-postvec.conf` matches
 the restored databases in `postvec.database`.
@@ -36,4 +43,5 @@ Install matching packages for that PostgreSQL major first:
 `postvec.database` makes the worker fail and respawn until the list is
 edited and PostgreSQL is restarted.
 
-Inside a container: [Docker](/docs/install/docker#diagnose).
+On a container host, `postvec doctor` finds no `pg_lsclusters` cluster:
+[Docker](/docs/install/docker#diagnose).

@@ -86,7 +86,10 @@ index exists, search scans the vector column sequentially.
 
 `CREATE EXTENSION` exposes the SQL surface immediately. Automatic sync
 needs `shared_preload_libraries = 'postvec'`, a restart and a worker
-for that database.
+for that database. `SELECT postvec.start_worker()` starts that worker
+now, as a superuser, so the database is served before the restart.
+Inference runs in the launcher by default;
+[postvec-server](/docs/server/) runs the same jobs in a separate process.
 
 ## Write path
 
@@ -159,11 +162,16 @@ and `doctor`. [Backup](/docs/guides/backup) has the checklist.
 ## Operational constraints
 
 1. **Vectors fill after commit.** `status()` reports readiness.
-2. **The worker needs preload and a restart.** Every database named in
-   `postvec.database` must exist. A missing name makes the worker fail
-   and respawn about every 15 seconds.
+2. **The worker needs preload to survive a restart.** Every database
+   named in `postvec.database` must exist. A missing name makes the
+   worker fail and respawn on an escalating quarantine, 15 s to 5 min,
+   until the database appears; a worker that lives past 30 s resets the
+   ladder. Managed databases cannot preload: they run the worker in
+   [postvec-server](/docs/server/managed) instead.
 3. **ANN indexes are opt-in.** Missing ANN is a common reason search is
-   slow. `index_mode => 'auto'` is available; the build is blocking.
+   slow. `index_mode => 'auto'` is available; in the extension the build
+   is blocking, while the managed sync worker builds on its own
+   connection with `CREATE INDEX CONCURRENTLY`.
 4. **A new library and `ALTER EXTENSION` belong in one window.** Until
    then the worker pauses.
 5. **`adopt()`'s `model` is an assertion.** The wrong name makes

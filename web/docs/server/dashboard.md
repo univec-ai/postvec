@@ -1,6 +1,6 @@
 ---
 title: Dashboard
-description: Query loaded models and manage the registry from the postvec-server UI.
+description: Query loaded models, manage the registry and inspect managed PostgreSQL instances from the postvec-server UI.
 ---
 
 # Dashboard
@@ -12,13 +12,11 @@ pointing at a built `web-ui/dist`, or the same directory under the
 engine root.
 
 Open `https://<node>:22222` (or `http://` if the node was started with
-`--insecure`). The browser talks to this node and, if you choose them,
-to its peers. Those URLs have to be reachable from the machine you
-browse from.
+`--insecure`). The browser calls this node, and any peers you select, directly.
 
-The sidebar has two sections: **Query** and **Registries**. It also
-lists cluster members, host memory and the models `/config` currently
-advertises. The list refreshes every 30 seconds.
+The sidebar has three sections: **Query**, **Registries** and
+**Databases**. It also lists cluster members, host memory and the models
+`/config` currently advertises. The list refreshes every 30 seconds.
 
 ## Query a model
 
@@ -67,7 +65,7 @@ deactivated; they stay on disk until you remove them with the package
 manager or by deleting that directory. A model another enabled model
 depends on cannot be deactivated or removed.
 
-`model upgrade` stays on the CLI.
+Model upgrades are CLI-only: `postvec model upgrade`.
 
 ### Reads and mutations
 
@@ -95,6 +93,31 @@ tree `postvec model pull` uses.
 The private catalogue is a superset of the public one. A dedicated key
 with a $0 spending limit is enough for registry access; hosted UniVec
 inference is a separate [provider](/docs/models/providers) credential.
+
+## Databases
+
+This tab lists the node's managed PostgreSQL entries. Each entry shows
+`leader` or `standby`, the platform, the schema version, heartbeat age,
+queue depth, dead letters and proxy state (port, connections, search and
+embed rewrites). Migrations in flight are listed with their state, rows
+done and skipped.
+
+**Source-owner grant script** expands the `GRANT owner TO worker`
+statements that `managed install` printed. **Inspect jobs** lists the recent
+job queue, dead letters and quarantine (disabled registry entries with their
+index error). Each dead letter offers **Retry** (`retry_dead()`). **Refresh
+models** reruns `refresh_models()`.
+
+Job inspection, retry and refresh use the loopback admin listener
+(`/admin/managed*`), so they need the dashboard opened through the admin
+port `22223`, usually over an SSH tunnel. Those buttons answer `404` on any
+other port. The [managed PostgreSQL](/docs/server/managed) page has the
+tunnel command.
+
+Heartbeat age is what the page renders. The boolean liveness field is
+`worker_alive`, which is `true` while a beat is inside 30 seconds; it
+comes from `postvec.status()` in SQL and `postvec-server managed status`
+on the host.
 
 ## Build from a checkout
 

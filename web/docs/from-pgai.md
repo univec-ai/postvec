@@ -31,8 +31,6 @@ different stored model.
 | API keys in GUCs or catalog tables | `0600` files in `providers.d` on the inference host |
 | RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) on postvec-server |
 
-SQL lives in the `postvec` schema. Qualify every call.
-
 ## Existing vectors
 
 If the table already has a populated `vector(N)` column, register it and
@@ -47,10 +45,29 @@ SELECT postvec.adopt(
 );
 ```
 
+`postvec.registry` records the entry as application-owned:
+
+```sql
+SELECT owns_vector_column
+  FROM postvec.registry
+ WHERE table_schema = 'public'
+   AND table_name = 'legacy'
+   AND source_column = 'body';
+```
+
 :::: tip Expected
-`owns_vector_column` is false. Stored bytes stay. Future writes stay in
-sync when `sync => true` (the default).
+`owns_vector_column` is false and the stored bytes stay. Future writes stay in
+sync when `sync => true` (the default) and the declared space has a reachable
+embed route. A write whose route cannot be resolved retries, then dead-letters
+after `postvec.max_retries` (5 by default).
 ::::
+
+A space with no route at adopt time needs `sync => false, backfill => 'none'`
+(observed); a later `adopt()` with `sync => true` promotes it once a route
+exists. A column bound to a route name stays on that route while it is served.
+When several routes serve the space,
+[`postvec model prefer`](/docs/models/providers) or `provider add --prefer` puts
+the one you want first; the stored bytes do not change.
 
 For a retired or provider-only space, [search the existing space](/docs/guides/bridge)
 converts each query into that space (embed-bridge). A local converter
@@ -85,8 +102,9 @@ A hosted OpenAI (or similar) column uses the SQL name from
 `provider ls` after [`provider add`](/docs/models/providers). The key
 stays in `providers.d`.
 
-Long documents: [chunking](/docs/guides/chunking) (`chunking => 'recursive'`).
-Title or other row context: [templates](/docs/guides/templates).
+Long documents use [chunking](/docs/guides/chunking) (`chunking =>
+'recursive'`). A title or other row context enters the embedded text through a
+[template](/docs/guides/templates).
 
 ## Search
 
@@ -95,8 +113,9 @@ primary keys. Join back to the source table. `semantic_weight => 0.0`
 is keyword-only; `1.0` is vector-only. Default `0.5` is hybrid.
 
 pgai and pg_vectorize typically returned rows from a destination table
-or a helper that already joined. postvec returns `pk_value` plus scores;
-the join is yours, so it works on any table shape.
+or a helper that already joined. postvec returns `pk_value` plus scores,
+and the caller joins back to the source table, which works on any table
+shape.
 
 ## Change the stored model
 
@@ -128,15 +147,19 @@ with the new model. Confirm provenance at adopt time before converting.
 | GPU, process isolation, a fleet, dashboard | [postvec-server](/docs/server/) in remote mode. SQL is unchanged. |
 | RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed): plain SQL schema, worker in postvec-server |
 
-pg_vectorize already used an HTTP worker plus a wire-protocol proxy on
-managed hosts. postvec-server is that role here: schema install, sync
-worker and an optional `search(text)` proxy.
+pg_vectorize was moving to an external worker plus a wire-protocol
+proxy. postvec-server fills that role here: schema install, sync worker
+and an optional `search(text)` proxy.
 
 ## License
 
 The extension is PostgreSQL-licensed. postvec-server is Business Source
-License 1.1. Personal use, non-production and a 30-day production
-evaluation are free. [License](/docs/license).
+License 1.1. Non-production use, personal noncommercial production and
+one 30-day production evaluation per organization and its affiliates
+under common control are free. Production use by an organization needs
+[postvec Pro](https://univec.ai) at €30/month, and managed PostgreSQL
+hosts are Pro from the first production deployment.
+[License](/docs/license).
 
 - [SQL functions](/docs/guides/)
 - [Adopt](/docs/guides/adopt)

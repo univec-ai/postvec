@@ -19,5 +19,6 @@ advertised by postvec-server (remote). `doctor` exits 0.
 :::::
 
 On remote mode, inventory is on the server:
-[models on postvec-server](/docs/server/models). Pull and activate:
-[pull](/docs/models/pull).
+[models on postvec-server](/docs/server/models). See
+[pull, activate, upgrade, remove](/docs/models/pull) for the pull and
+activate steps.

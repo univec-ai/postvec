@@ -54,10 +54,17 @@ sudo postvec doctor --database app --deep
 | `CONTEXT_LENGTH_EXCEEDED` | Batch is split; one oversized row is isolated |
 | Permanent / retries exhausted | Row moves to `postvec.jobs_dead` |
 | Endpoints empty / engine not up yet | Jobs stay pending; retry counts stay |
+| One fleet node lacks the model or converter | Intermittent failures; jobs can stay pending |
 
 After the underlying cause is resolved, dead letters can be re-driven
 with `retry_dead()`. Direct inserts into `jobs` are unsupported. See
 [Retry](/docs/guides/retry).
+
+Remote mode reaches inference over a node list served by
+[postvec-server](/docs/server/). When the inventories drift, a node
+without the model or converter fails once endpoint rotation reaches it,
+so jobs fail intermittently or stay pending.
+`postvec-server status --fleet` names the model and the nodes missing it.
 
 ## Query path is synchronous
 
@@ -69,7 +76,7 @@ degradation disabled, the search returns an error.
 
 ## Transaction boundary
 
-:::: danger The worker cannot fill a vector before the inserting transaction commits
-Inside that transaction the vector is still NULL. Check readiness in a
-later transaction, after commit.
+:::: danger Readiness is only visible in a later transaction
+A read inside the inserting transaction returns NULL or the previous
+vector. Poll after commit.
 ::::

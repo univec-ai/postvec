@@ -23,7 +23,8 @@ a SAN on that certificate.
 
 Wait until both are `healthy`. Start with the server: PostgreSQL
 discovers models at boot, and a server that is still loading MiniLM
-leaves the worker idle until the next refresh.
+leaves `postvec.models` empty until the worker's next refresh
+(`postvec.model_refresh_interval_ms`, 60 s by default).
 
 <div v-pre>
 
@@ -38,18 +39,7 @@ docker inspect --format '{{.State.Health.Status}}' postvec
 `postvec-server` is `healthy` once MiniLM can answer (`GET /ready`).
 `postvec` is `healthy` once PostgreSQL is up and the worker heartbeat
 advances. The remote image creates the extension in `POSTGRES_DB` on
-first initialization only. If `postvec.models` is empty, the first
-discovery ran before the server was ready:
-
-```bash
-docker exec -it postvec psql -U app -d app
-```
-
-then in psql:
-
-```sql
-SELECT postvec.refresh_models();
-```
+first initialization only.
 :::::
 
 :::: info Optional
@@ -100,7 +90,7 @@ non-NULL:
 docker exec -it postvec psql -U app -d app
 ```
 
-then:
+then (in psql):
 
 ```sql
 SELECT count(*) FILTER (WHERE body_semantic IS NOT NULL) AS filled,

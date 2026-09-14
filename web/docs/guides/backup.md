@@ -22,8 +22,9 @@ Caches rebuilt after restore:
 
 1. Install the **matching** postvec and pgvector files for that major.
 2. Restore cluster configuration (`99-postvec.conf` or its equivalent) and restart so the launcher and workers start. CLI: [backup (CLI)](/docs/guides/backup-cli).
-3. `SELECT postvec.refresh_models();`
-4. Confirm queues and any open migration before reopening writes.
+3. On [managed PostgreSQL](/docs/server/managed), restore the postvec-server `managed` entry for each database: the DSN, the password file and the `sync` setting. Managed hosts load no `.so`, so postvec-server holds the worker, the model fleet and the heartbeat the restored cluster reads.
+4. `SELECT postvec.refresh_models();`
+5. Confirm queues and any open migration before reopening writes.
 
 Restored queued and dead **chunk** work resumes against the restored chunk identities. Destination sequences are therefore part of the dump.
 
@@ -39,6 +40,10 @@ Statement triggers fire on the publisher. Subscriber-applied changes skip them. 
 Missing databases cause workers to repeatedly fail during connection.
 The list must be edited, or postvec uninstalled, followed by a restart before
 the cluster is opened for application traffic.
+
+On a managed host the equivalent is the `managed` entry: the DSN, the password
+file and the `sync` flag. The server config sits outside the dump, so restore it
+separately and confirm the sync worker reconnects after the restore.
 ::::
 
 - [Backup (CLI)](/docs/guides/backup-cli)

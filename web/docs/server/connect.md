@@ -55,8 +55,11 @@ worker starts. Inference waits until a node answers.
 SELECT name, model_type, target_dim FROM postvec.models ORDER BY name;
 ```
 
-An empty result means discovery has not run yet or the node serves nothing.
-`SELECT postvec.refresh_models();` forces a refresh.
+An empty result means the worker has not refreshed the model cache yet, or the
+node serves nothing. The worker refreshes on the
+`postvec.model_refresh_interval_ms` cadence (60 s by default).
+`postvec.refresh_models()` forces a refresh now and is revoked from `PUBLIC`:
+grant `EXECUTE` on it to the calling role, or run it as a superuser.
 
 :::: info Optional
 ```bash
@@ -94,8 +97,8 @@ paths and the full environment table.
 
 ## Switching an existing cluster
 
-Mode is cluster-wide and POSTMASTER, so switching needs a restart, the
-`--switch-mode` flag and **every** configured database named in one command:
+Mode is cluster-wide, so switching needs a restart, the `--switch-mode` flag
+and **every** configured database named in one command:
 
 ```bash
 sudo postvec setup --database app --database analytics \
@@ -103,9 +106,6 @@ sudo postvec setup --database app --database analytics \
   --http https://10.0.0.20:22222 \
   --switch-mode
 ```
-
-Engine files already on the database host are left alone. Deleting them is a
-separate decision.
 
 Stored vectors are unaffected by the switch. A column keeps its model name and
 its dimension, so the node has to serve that model or the column has no

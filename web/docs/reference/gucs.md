@@ -5,8 +5,8 @@ description: postvec.* settings, defaults and which ones need a restart.
 
 # GUCs
 
-`postvec setup` is the supported way to write these. The table is for
-reading what a setting does and whether a restart is required.
+`postvec setup` is the supported way to write these. The table below states
+what each setting does and whether a restart is required.
 
 Each GUC is read at use time, so a `SIGHUP` takes effect without a worker
 restart. The settings a worker reads at start (`database`, `mode`, `path`,
@@ -22,7 +22,7 @@ started with `start_worker()` picks them up when it is started.
 | `database` | - | SIGHUP (comma-separated) |
 | `worker_enabled` | on | SIGHUP |
 | `poll_interval_ms` | 5000 | SIGHUP - idle poll; writers wake the worker at commit |
-| `batch_size` | 64 | SIGHUP (×4 = cursor chunk) |
+| `batch_size` | 64 | SIGHUP (4x = cursor chunk) |
 | `migrate_batch_size` | 256 | SIGHUP |
 | `embed_timeout_ms` | 30000 | SIGHUP |
 | `query_timeout_ms` | 2000 | USERSET |
@@ -61,5 +61,18 @@ The keys stay in the `0600` files under it, and no API key is ever stored in
 a GUC, a catalog table or a SQL argument. An absent directory means no
 provider-backed models, which is the default.
 
-Add databases through `setup`. A missing name makes the worker fail and
-respawn about every 15 seconds.
+Add databases through `setup`. A `database` entry naming a database that does
+not exist fails that worker's connection at startup, and the launcher respawns
+it on a ladder: 15 seconds after the first short-lived exit, then 30, 60, 120,
+240 and 300 seconds, capped at 300 seconds. A worker that stays up for 30
+seconds resets the ladder, so a database created later recovers without a
+restart.
+
+## Managed PostgreSQL
+
+A [managed](/docs/server/managed) install loads no `.so`, so the GUC table above
+does not apply and there is no `postvec setup`. Host-side knobs such as the poll
+interval, the batch size and concurrent index builds come from the `managed[]`
+block of the postvec-server config file. `postvec.settings` holds the detected
+platform and the markers the sync worker keeps at runtime (the leader, the
+backfill cursor and the index state of each entry).

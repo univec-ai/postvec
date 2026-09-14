@@ -6,13 +6,13 @@ outline: deep
 
 # SQL reference
 
-Signatures and grants. Walkthroughs start at [SQL functions](/docs/guides/).
+Every call is `postvec.<name>(...)`; usage examples live in the
+[SQL functions](/docs/guides/) guides.
 
 `relation` and `fts_config` are `text`. The extension resolves them with
-`to_regclass` / `::regconfig`, so `'schema.table'` works. `retry_dead()`
-is the exception: it takes `regclass`.
-
-Every call needs the `postvec` schema qualifier.
+`to_regclass` / `::regconfig`, so `'schema.table'` works. `retry_dead()` and
+`refresh_lexical_stats()` declare `relation` as `regclass`, so the invoking
+role's `search_path` resolves the name before the function body runs.
 
 ## Functions
 
@@ -31,22 +31,21 @@ Every call needs the `postvec` schema qualifier.
 | `migrate(relation, column_name, new_model, strategy DEFAULT 'convert', reindex DEFAULT 'manual', observed_writes_quiesced DEFAULT false)` | `bigint` migration id |
 | `migration_status(migration_id DEFAULT NULL)` | route in `resolved_via`, progress, state and `suggested_index_sql` |
 | `migration_finalize(id)` / `migration_abort(id)` | `void` |
-| `status()` | per-entry health (includes chunk + index columns, `lexical_docs`, `lexical_stats_age_seconds`, `lexical_error`, `space`, `route`, `route_execution`) |
+| `status()` | per-entry health (includes chunk + index columns, `lexical_docs`, `lexical_stats_age_seconds`, `lexical_error`, `space`, `route`, `route_execution`); the [managed](/docs/server/managed) form leads with `worker_alive` |
 | `postvec.routes` | view over embed rows: `space`, `route`, `provider`, `execution`, `dim`, `priority`, `explicit`, `preferred`, `last_seen` |
 | `postvec._route(model, space DEFAULT NULL)` | the served route a bound string resolves to: the exact route named, else that space's routes by priority, else `space` (an entry's remembered space); ties on route name. Every resolver, the worker and `status()` use it |
 | `stats()` | worker / queue counters |
 | `embed(input text, model text)` / `embed(inputs text[], model text)` | `real[]` / `setof real[]` |
 | `convert(embedding real[], source_model text, target_model text)` | `real[]` |
 | `refresh_models()` | `int` |
-| `start_worker()` | `bool`; superuser. Starts this database's worker without `shared_preload_libraries`; false if one is running. Restarted after a crash, not after a server restart |
+| `start_worker()` | `bool`; superuser. Starts this database's worker without `shared_preload_libraries`; false if one is running. A crash restarts it; a server restart re-creates it only through the preload path |
 | `version()` / `build_info()` | `text` / `jsonb` |
 
-Guides: [enable](/docs/guides/enable) · [adopt](/docs/guides/adopt) ·
-[search](/docs/guides/search) · [BM25](/docs/guides/bm25) ·
-[filters](/docs/guides/filters) ·
-[templates](/docs/guides/templates) · [chunking](/docs/guides/chunking) ·
-[migrate](/docs/guides/migrate) · [indexes](/docs/guides/indexes) ·
-[retry](/docs/guides/retry).
+Guides: [enable](/docs/guides/enable), [adopt](/docs/guides/adopt),
+[search](/docs/guides/search), [BM25](/docs/guides/bm25),
+[filters](/docs/guides/filters), [templates](/docs/guides/templates),
+[chunking](/docs/guides/chunking), [migrate](/docs/guides/migrate),
+[indexes](/docs/guides/indexes), [retry](/docs/guides/retry).
 
 ## Option values
 
@@ -54,7 +53,7 @@ Guides: [enable](/docs/guides/enable) · [adopt](/docs/guides/adopt) ·
 |---|---|
 | `distance` | `cosine`, `l2`, `ip` |
 | `trigger_mode` | `statement` (default), `row`; stored `none` for observed adopt |
-| `backfill_mode` | `queue` (default), `cursor` |
+| `backfill_mode` | `queue` (default), `cursor`; a `queue` backfill over a table holding more than 1,000,000 rows is refused, leaving the queue empty |
 | `adopt.backfill` | `missing` (default), `all`, `none` |
 | `index_mode` | `manual` (default), `immediate`, `auto` |
 | `migrate.strategy` | `convert` (default), `reembed`, `auto` |
@@ -65,7 +64,7 @@ Guides: [enable](/docs/guides/enable) · [adopt](/docs/guides/adopt) ·
 
 ## Grants
 
-Untrusted cdylib. `CREATE EXTENSION` needs superuser.
+The extension is an untrusted cdylib; `CREATE EXTENSION` needs superuser.
 
 | Who | What |
 |---|---|
@@ -80,6 +79,31 @@ column-scoped `INSERT (registry_id, pk_value)` on `postvec.jobs`. Those
 grants must stay.
 
 The worker connects as the bootstrap superuser and **bypasses RLS**.
+
+## Managed PostgreSQL
+
+The [managed schema](/docs/server/managed) is plain SQL and uses the same
+function names. Four calls behave differently:
+
+- `search(relation, column_name, query, ...)` is a stub that raises, unless the
+  call arrives through the postvec-server proxy port. The proxy rewrites the
+  text query into `search_with_vector()`. A direct connection raises and names
+  the supported call forms in the HINT.
+- `embed(input, model)` is a stub for the same reason; the HINT names the
+  server's `/api/openai/embeddings` endpoint. Only the single-text form exists
+  on a managed host.
+- `convert()` raises. POST `{"source_model","target_model","embeddings"}` to
+  the server's `/api/convert` endpoint.
+- `refresh_models()` returns `void` and notifies the worker, which refreshes the
+  cache.
+
+`search_with_vector()`, the lifecycle verbs, `stats()` and `status()` run as
+printed above. `status()` leads with `worker_alive`, read from the
+`postvec.worker_heartbeat` row less than 30 seconds old.
+
+A managed host has no GUCs and no `postvec setup`. Host-side settings come from
+the `managed[]` block of the postvec-server config file; `postvec.settings` holds
+the detected platform and the worker's runtime markers.
 
 ## `enable()` requirements
 

@@ -11,8 +11,7 @@ triggers and optionally backfills existing rows.
 
 If the table already has a populated `vector(N)` column, use
 [`adopt()`](/docs/guides/adopt). For a retired or provider-only space,
-[search the existing space](/docs/guides/bridge) after adopt. `enable()`
-creates a new shadow column.
+[search the existing space](/docs/guides/bridge) after adopt.
 
 ## 1. Check the table and the model
 
@@ -84,10 +83,18 @@ leg, GIN and corpus stats: [BM25](/docs/guides/bm25).
 | `trigger_mode` | `statement` | Use `row` on partitioned tables |
 | `index_mode` | `manual` | `auto` only on small, quiet tables |
 | `backfill` | `true` | `false` when the initial load follows configuration |
-| `backfill_mode` | `queue` | `cursor` for a huge existing table |
+| `backfill_mode` | `queue` | `cursor` when the table holds more than 1,000,000 rows |
 | `format` | raw column | See [templates](/docs/guides/templates) |
 | `chunking` | `none` | See [chunking](/docs/guides/chunking) |
-| `if_not_exists` | `false` | Return the existing id when the same model and vector column are already enabled; scripts that rerun |
+| `if_not_exists` | `false` | Return the existing id when the model and vector column match; scripts that rerun |
+
+A `queue` backfill enqueues every eligible row inside the calling transaction,
+with the relation lock held. Above 1,000,000 existing rows `enable()` refuses it
+and names `cursor`; the worker then feeds the backfill in bounded chunks.
+
+`if_not_exists` compares the model and the vector column only. A re-run with
+those two unchanged returns the existing id; other options in the same call are
+ignored. Reconfigure with `disable()` then `enable()`.
 
 Statement triggers fire on the publisher. Subscriber-applied logical
 replication skips them, so run postvec on the **publisher**. On a
@@ -102,8 +109,8 @@ SELECT postvec.disable('public.docs', 'body');
 SELECT postvec.disable('public.docs', 'body', drop_column => true);
 ```
 
-`drop_column` applies only to a shadow column postvec created. Adopted
-columns stay. Chunk destinations are a separate flag; see
+`drop_column` applies only to a shadow column postvec created; an adopted
+column stays. Chunk destinations are a separate flag; see
 [chunking](/docs/guides/chunking).
 
 ## Requirements

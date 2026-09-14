@@ -31,14 +31,15 @@ The dry-run plan names the converter, its embed dependency and the
 `loaded`. `doctor` exits 0.
 :::::
 
-Not every source/target pair is present in the public subset. The
-private catalogue holds the broader conversion inventory.
-[Login](/docs/models/login).
+The public catalogue holds a subset of the source/target pairs; the
+private catalogue holds the broader conversion inventory
+([login](/docs/models/login)).
 
 ## Remote (postvec-server)
 
-Models are administered on each [postvec-server](/docs/server/models).
-Local `postvec model pull` against a remote-mode cluster is refused.
+Models are administered on each [postvec-server](/docs/server/models):
+run the model commands on the node itself, because a database host in
+remote mode refuses a model mutation that would change only local files.
 At least one server must host the complete embed model, converter and
 bridge chain. Pieces discovered on different nodes stay separate.
 
@@ -52,5 +53,6 @@ postvec-server status --fleet
 Then refresh the SQL cache from a database session:
 [`refresh_models()`](/docs/guides/helpers).
 
-Pull details: [pull, activate, upgrade, remove](/docs/models/pull).
-Adopt and search: [search a retired space (SQL)](/docs/guides/bridge).
+See [pull, activate, upgrade, remove](/docs/models/pull) for pull
+details and [search a retired space (SQL)](/docs/guides/bridge) for the
+SQL side.

@@ -27,7 +27,7 @@ embed call, reloads the host and refreshes `postvec.models`.
 ::::: tip Expected
 ```text
 providers.d: /etc/postvec/providers.d
-cohere  (cohere, key: file:/etc/postvec/keys/cohere.key)
+cohere  (cohere, key: inline (redacted))
   cohere-embed-v4-0                            dim 1536   served
 ```
 `doctor` exits 0. The name is in `postvec.models`.
@@ -40,6 +40,10 @@ Built-in catalogue names:
 | `embed-v4.0` | `cohere-embed-v4-0` | 1536 |
 | `embed-english-v3.0` | `cohere-embed-english-v3-0` | 1024 |
 | `embed-multilingual-v3.0` | `cohere-embed-multilingual-v3-0` | 1024 |
+
+Pass `--api-key-file PATH` or `--api-key-env VAR` instead of the prompt.
+With `--api-key-file` the key stays in that file and `provider ls` reports
+`file:PATH` instead of inline.
 
 v4 also accepts `dim` 256, 512 or 1024 (`output_dimension`). v3 widths
 are fixed per model (the `-light-` pair is 384). Pass `--dim` with
@@ -69,13 +73,18 @@ SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
 
 ## On postvec-server
 
+Run the add on a [postvec-server](/docs/server/) node. The CLI finds no
+local cluster there and writes `<server-root>/providers.d`, the directory
+that node serves from:
+
 ```bash
 sudo postvec provider add cohere --model embed-v4.0 \
      --acknowledge-in-use --yes
 ```
 
-Copy the same file onto every node. [External providers](/docs/models/providers)
-covers keys, failures and moving a column off the provider.
+Copy the same file onto every node, then reload each host. [External
+providers](/docs/models/providers) covers keys, failures and moving a
+column off the provider.
 
 - [External providers](/docs/models/providers)
 - [Connector files](/docs/models/providers-file)

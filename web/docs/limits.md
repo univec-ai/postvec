@@ -52,6 +52,7 @@ Embed-bridge uses local models.
 | Chunked `adopt()` | Use `enable(..., chunking => 'recursive')` for new chunked entries |
 | Chunked `index_mode => 'immediate'` | Index the destination after backfill |
 | Composite PK + chunking | Column mode accepts composite PKs; chunking needs a single-column PK |
+| Write made directly to a partition | The default `trigger_mode => 'statement'` covers writes through the parent only. Use `trigger_mode => 'row'`, which clones the trigger to each partition |
 | Live splitter reconfiguration | `disable`, drop, `enable` again |
 | `halfvec` / undimensioned `vector` on adopt | Rewrite to `vector(N)` first; the error includes the `ALTER TABLE` |
 | `NOT NULL` vector the worker would write | Observed adopt (`sync => false`, `backfill => 'none'`) or drop the constraint |
@@ -65,6 +66,14 @@ Embed-bridge uses local models.
 - `query_timeout_ms` (default 2 s) bounds the synchronous query embed.
 - Chunk splitter: at most 10,000 non-blank chunks, 32 MiB UTF-8 and 4x
   amplification per document.
+- `postvec.max_document_bytes` (default 1 MiB) dead-letters a row whose
+  rendered text is larger, with the measured size. Text is never
+  truncated. The same ceiling bounds `embed()` and `search()` query input.
+- `postvec.max_batch_total_bytes` (default 16 MiB) ends a batch at that
+  budget. Rows past it stay pending for the next cycle without consuming
+  a retry attempt.
+- With [postvec-server](/docs/server/), the engine is a separate
+  multi-threaded process, so an inference fault stays inside it.
 
 ## License split
 

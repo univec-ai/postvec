@@ -45,5 +45,6 @@ docker exec -u postgres postvec \
   --database app --deep
 ```
 
-Host-side failures: [troubleshooting](/docs/troubleshooting).
-SQL options, disable and refusals: [enable (SQL)](/docs/guides/enable).
+See [enable (SQL)](/docs/guides/enable) for SQL options, disable and
+refusals, and [troubleshooting](/docs/troubleshooting) for host-side
+failures.

@@ -5,14 +5,18 @@ description: Grants, RLS, credentials and worker visibility.
 
 # Security
 
-The worker sees source text. Filter values are bind parameters.
-Credentials never enter PostgreSQL GUCs.
+The worker reads source text, filter values travel as bind parameters and
+no credential enters a PostgreSQL GUC.
 
-## On-prem operation
+## Where inference runs
 
 Embedded mode runs the engine in the PostgreSQL launcher. Text, weights
 and inference stay on the host. The engine loads packaged libraries such
 as ONNX Runtime from the install.
+
+Remote mode runs the engine in [postvec-server](/docs/server/), so source
+text and query strings leave the database host for those nodes. The
+containment boundary is then the deployment network.
 
 ## Registry credentials
 
@@ -91,8 +95,7 @@ remains granted to PUBLIC.
 
 The CLI refuses configuration writes through symlinks, multiply-linked files
 and group/world-writable parent directories. Every write uses a same-directory temporary file
-+ `rename()` + `fsync`. A half-written `shared_preload_libraries` line
-is a cluster that will not start.
++ `rename()` + `fsync`.
 
 A `Foreign` or `Modified` `99-postvec.conf` is refused, including with
 `--yes`.

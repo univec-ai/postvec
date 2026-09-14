@@ -69,3 +69,10 @@ Use the scalar `null` / `{"is_not": null}` forms.
 Unknown columns, unknown operators, empty operator objects, nested
 objects as values and values the column's type rejects
 (`pg_input_is_valid`) are all refused with a specific error.
+
+## Where inference runs
+
+Filters are rendered in SQL, in embedded mode and remote mode alike, so the
+predicates and the candidate pool are the same. Query embedding runs inside the
+PostgreSQL process by default, or on [postvec-server](/docs/server/) in remote
+mode.

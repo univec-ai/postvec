@@ -32,10 +32,11 @@ serve one space.
 Columns bind to spaces. Binding to a route name still works: if that
 route is served, it is used; otherwise resolution treats the string as
 a space (or as the vanished route's remembered space) and picks the
-served route with the lowest priority. Local models are priority 100.
-Provider routes with no explicit `priority` follow the order they were
-added. Entries with no `added` timestamp come first, so they stay
-preferred until you stamp them or pass `--prefer`.
+served route with the lowest priority. A local route is priority 100. An
+unprioritised provider route ranks 200 plus its position in `added` order,
+unstamped routes first, so a new route joins last until `model prefer` or
+`--prefer` moves it. An explicit `priority` is used as written, so a value
+below 100 outranks a local model.
 
 `postvec.routes` lists every embed route; `postvec._route(model, space)`
 is the resolution itself. `model prefer` changes the order without a
@@ -55,9 +56,9 @@ When `model => 'some-name'` is supplied to `enable()`, `adopt()` or
 2. A converter *targeting* that space whose source is embeddable, routed
    through an `embed-bridge` executor.
 
-A convert-only space such as `ada-002` can then accept new writes and
-query embeddings with the original provider gone and the stored corpus
-unchanged. That is the usual first path for a populated column. See
+A convert-only space such as `openai-text-embedding-ada-002` can then accept
+new writes and query embeddings with the original provider gone and the stored
+corpus unchanged. That is the usual first path for a populated column. See
 [search a retired space](/docs/guides/bridge).
 
 `convert()` and `strategy => 'convert'` migrations require a direct converter.
@@ -137,9 +138,9 @@ Upgrading the extension is a separate lifecycle.
 - [Login](/docs/models/login)
 - [Air-gapped](/docs/models/air-gapped)
 - [External providers](/docs/models/providers)
-- [OpenAI](/docs/models/openai) · [Cohere](/docs/models/cohere) ·
-  [Amazon Bedrock](/docs/models/aws) · [Gemini](/docs/models/gemini) ·
-  [Mistral](/docs/models/mistral) · [OpenRouter](/docs/models/openrouter)
+- [OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
+  [Amazon Bedrock](/docs/models/aws), [Gemini](/docs/models/gemini),
+  [Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter)
 - [UniVec hosted models](/docs/models/univec)
 - [Connector files](/docs/models/providers-file)
 - [postvec-server](/docs/server/)

@@ -58,15 +58,19 @@ Cast `pk_value` back to the PK type (`::bigint`, `::uuid`, ...).
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `limit_n` | 10 | Rows returned |
+| `limit_n` | 10 | Rows returned, 1 to 1000 |
 | `semantic_weight` | 0.5 | 1.0 = vector only, 0.0 = BM25 only. See [BM25](/docs/guides/bm25) |
-| `rrf_k` | 60 | RRF constant |
-| `candidates` | derived | Pool size per leg before fusion |
+| `rrf_k` | 60 | RRF constant, 1 or more |
+| `candidates` | derived | Pool size per leg before fusion, 1 to 100000. Derived from `limit_n` as `limit_n * 4` (at least 50), or `limit_n * 16` (at least 200) for chunked entries |
 | `filter` | none | [Typed metadata](/docs/guides/filters) |
 
 Chunked entries also return `chunk_seq`, `chunk_start`, `chunk_end`,
 `chunk_text` for the **winning** chunk: one row per document.
 Column-mode entries leave those NULL.
+
+The `chunk_text` returned by one call is capped at 64 MiB in total. Rows past
+that ceiling keep their rank and return `chunk_text` NULL, with a WARNING.
+Lower `limit_n`, or re-create the entry with a smaller `chunk_size`.
 
 ## Search with a supplied vector
 

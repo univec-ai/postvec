@@ -10,10 +10,8 @@ pgvector >= 0.8. Superuser and a restart are required. The
 [release artifacts](/download) page lists filenames and publication
 status.
 
-Installation stages:
-
-- Local install - the packages below
-- Cluster configuration - [postvec setup](/docs/install/setup)
+Install the packages below, then run
+[postvec setup](/docs/install/setup) to configure the cluster.
 
 RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
 [managed PostgreSQL](/docs/server/managed).
@@ -44,17 +42,22 @@ unchanged.
 
 ## 1. Prerequisites (PGDG)
 
-Each release includes `postvec-prerequisites.sh`. It adds the PGDG
-archive so the chosen PostgreSQL major and pgvector are available.
+Each release includes `postvec-prerequisites.sh`. It configures the
+PGDG repository and its trust root, then confirms that the chosen
+PostgreSQL major and pgvector resolve.
 
 <PgSnippet id="prerequisites" />
 
 `--pg` is required (`16`, `17` or `18`). `--print` / `--dry-run` shows
 the commands. `--yes` skips the prompt.
 
-The script is idempotent. It installs PostgreSQL and pgvector for the
-chosen major. postvec packages are the next step. On CentOS Stream 9 or
-subscribed RHEL 9 it prints the commands and requires `--force-untested`.
+The script is idempotent. It adds the PGDG repository and its trust
+root, then confirms that the selected PostgreSQL major and pgvector
+resolve, so the install lines below can run. On EL9 it also enables
+CodeReady Builder and EPEL and disables the distribution's `postgresql`
+module, which would otherwise shadow the PGDG packages. On CentOS
+Stream 9 or subscribed RHEL 9 it prints the commands and requires
+`--force-untested`.
 
 ## 2. Local (embedded mode)
 

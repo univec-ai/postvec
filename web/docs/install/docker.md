@@ -11,6 +11,11 @@ and [MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
 The data-directory mount follows the official `postgres` image for the
 selected major.
 
+Inference in the `-local` tag runs in a thread inside the PostgreSQL
+process. The `-remote` tag sends inference to
+[postvec-server](/docs/server/), a separate process that serves a CPU or
+GPU fleet and keeps a model fault out of the database.
+
 - For an existing self-hosted cluster use [packages](/docs/install/packages).
 - RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
   [managed PostgreSQL](/docs/server/managed).
@@ -25,11 +30,9 @@ for published updates).
   caption="A local demo can pass POSTGRES_PASSWORD=demo instead of a secret file. The example binds the port to loopback."
 />
 
-Wait until status is `healthy`:
-
 <div v-pre>
 
-```bash
+```bash [wait for healthy]
 docker inspect --format '{{.State.Health.Status}}' postvec
 ```
 
@@ -39,8 +42,13 @@ The extension exists in `POSTGRES_DB` **only on first initialization** of
 an empty volume. First SQL steps: [quick start local](/docs/quickstart).
 
 :::: info Optional
-`docker exec postvec postvec-healthcheck` exits 0 when the worker and
-engine are ready. Image attestations:
+`docker exec postvec postvec-healthcheck` exits 0 when six properties
+hold: the extension is installed once, the loaded library version equals
+the installed SQL version, the running `postvec.mode` equals
+`POSTVEC_MODE`, the build supports embedded mode, the last worker
+heartbeat is inside the budget and, in embedded mode, the first name in
+`POSTVEC_EMBEDDED_MODELS` is installed. It exits 1 and names the failing
+property otherwise. Image attestations:
 [verify artifacts](/docs/install/verify).
 ::::
 
@@ -70,7 +78,10 @@ unsupported.
 
 ## Environment
 
-Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
+The `_FILE` secret form is available for `POSTGRES_USER`, `POSTGRES_DB`,
+`POSTVEC_DATABASES` and `POSTVEC_SHARED_PRELOAD_LIBRARIES`. The file is
+read when the plain variable is unset; setting both forms is an error.
+The other variables in the table come from the environment.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -79,9 +90,12 @@ Every `POSTVEC_*` variable also accepts the official `_FILE` secret form.
 | `POSTVEC_GRPC_ENDPOINTS` | unset | Remote gRPC |
 | `POSTVEC_HTTP_ENDPOINTS` | unset | Remote `/config` |
 | `POSTVEC_PATH` | `/opt/postvec` | Embedded engine root |
+| `POSTVEC_PROVIDERS_PATH` | `/etc/postvec/providers.d` in `*-local`, unset in `*-remote` | Directory `postvec provider` reads when `--path` is absent |
 | `POSTVEC_EMBEDDED_MODELS` | bundled model | Preload allow-list |
 | `POSTVEC_SHARED_PRELOAD_LIBRARIES` | unset | Existing preloads; postvec is appended |
 | `POSTVEC_CREATE_EXTENSION` | `1` | `0` skips first-run `CREATE EXTENSION` |
+| `POSTVEC_HEALTHCHECK_DATABASE` | `POSTGRES_DB` | Database `postvec-healthcheck` connects to |
+| `POSTVEC_HEALTHCHECK_BEAT_AGE` | unset; heartbeat interval + three poll ticks + 2 s | Worker heartbeat budget in seconds |
 
 Each image sets `POSTVEC_MODE`:
 
@@ -105,17 +119,18 @@ API key. Setup: [external providers](/docs/models/providers).
 The host refuses a connector file (or a key file it references) that is
 readable by other users, so a bind mount has to carry the right mode and
 owner. With Compose secrets, mount the secret with an explicit
-`mode: 0400` and `uid: "999"` and reference it as `api_key_file`. The
-image's `_FILE` convention applies to PostgreSQL's own variables
-(`POSTGRES_PASSWORD_FILE` and the rest).
+`mode: 0400` and `uid: "999"` and reference it as `api_key_file`.
+`POSTGRES_PASSWORD_FILE` and the other PostgreSQL variables use the
+official entrypoint's `_FILE` handling; postvec's own four are listed
+above. Either way the file has to be readable by the container's
+`postgres` uid and by nobody else.
 
 Kubernetes projected secret volumes are symlinks into a `..data`
 directory and are mounted world-readable, so they cannot be referenced
 as `api_key_file`. Use `api_key_env` there.
 ::::
 
-Walkthrough: [external providers](/docs/models/providers). Per-provider
-setup: [OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
+Per-provider setup: [OpenAI](/docs/models/openai), [Cohere](/docs/models/cohere),
 [Amazon Bedrock](/docs/models/aws), [Gemini](/docs/models/gemini),
 [Mistral](/docs/models/mistral), [OpenRouter](/docs/models/openrouter),
 [UniVec](/docs/models/univec). Conversion entries use the same mount and
@@ -135,8 +150,9 @@ CREATE EXTENSION postvec CASCADE;
 ```
 
 Include `analytics` in `POSTVEC_DATABASES` and recreate the container, or
-pass `-c postvec.database=...`. Restart is required because the database
-list is POSTMASTER.
+pass `-c postvec.database=...`. The entrypoint passes this list on the
+`postgres` command line, so a new value applies at the next container
+start.
 
 ## Diagnose inside the image {#diagnose}
 
@@ -168,9 +184,12 @@ mounted directory.
 
 <PgSnippet id="docker-tags" />
 
-Every tag includes the PostgreSQL major. Pin the versioned tag in
-production, preferably by digest. A preview tag may not resolve until
-the release is published.
+Every database-image tag carries the PostgreSQL major; the moving tags
+are `pgNN-local` and `pgNN-remote`. Pin the versioned tag in production,
+preferably by digest. The `postvec-server` image has no PostgreSQL major,
+so its versioned tag is the release identity and its moving tag is
+`latest`. [postvec-server](/docs/server/) explains what runs in that
+image. A preview tag may not resolve until the release is published.
 
 After you pull a new image, run `ALTER EXTENSION` on the existing
 volume. See [upgrade](/docs/install/upgrade).

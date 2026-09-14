@@ -73,6 +73,20 @@ missing model directory:
       [provider-backed via "openai" - check providers.d and its key on that node]
 ```
 
+Provider entries must also match, not just exist on every node. The same
+command fingerprints each provider-backed name by its connector type,
+`providers.d` file stem, `provider_model_id` and declared dimension, and
+reports the names where two nodes disagree:
+
+```text
+  openai-text-embedding-3-small: served with DIFFERENT provider settings across the fleet
+      [<fingerprint> on node-1 | <fingerprint> on node-3 - fix providers.d so every node agrees]
+```
+
+Round-robin sends each caller to one of the disagreeing nodes. A dimension
+mismatch arrives as intermittent dead letters. A different model at the same
+dimension mixes two vector spaces in one column without an error.
+
 Provider-backed embed models and converters are also excluded from the
 descriptor-drift checks, which assume an on-disk descriptor.
 
@@ -82,13 +96,9 @@ On `SIGTERM` or ctrl-c a node drains:
 
 1. `/ready` flips to `503`, so load balancers and healthchecks stop routing
    here, and the node announces its departure to its peers.
-2. It **keeps serving** for `--drain-delay-ms` (5 s by default). That window is
-   what makes step 1 observable. Without it the listener stops accepting the
-   instant the signal lands, and a load balancer learns the node is gone from a
-   refused connection rather than from a health check. It is also the time the
-   gossip announcement needs to reach peers; announce and tear down together
-   and they fall back to anti-entropy, which takes thirty seconds. A second
-   signal skips the wait.
+2. It **keeps serving** for `--drain-delay-ms` (5 s by default). The window is
+   what makes step 1 observable to a load balancer, and the time the gossip
+   announcement needs to reach the other nodes. A second signal skips the wait.
 3. The listeners stop accepting. In-flight requests finish or hit their own
    deadline. An idle node exits immediately rather than padding the worst case.
 4. `/health` stays `200` throughout, so a supervisor leaves the process
@@ -96,8 +106,8 @@ On `SIGTERM` or ctrl-c a node drains:
 
 So a rolling upgrade is: restart one node, wait for its `/ready` to go green,
 move on. Budget `TimeoutStopSec` at more than `--drain-delay-ms` plus your
-longest request. Under Kubernetes the drain delay does the job a `preStop`
-sleep usually does, so you do not need both.
+longest request. `--drain-delay-ms` replaces the usual Kubernetes `preStop`
+sleep.
 
 Version skew across a fleet is visible. Each node gossips its version and
 `postvec-server status` prints it.

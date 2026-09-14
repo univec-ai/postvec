@@ -24,7 +24,8 @@ and [dashboard](/docs/server/dashboard).
 | External providers | `postvec provider ...` |
 | Registry identity | `postvec login` / `whoami` / `logout` |
 
-The CLI has no extension-upgrade command. See [upgrade](/docs/install/upgrade).
+Extension upgrades run through the package manager and `ALTER EXTENSION`: see
+[upgrade](/docs/install/upgrade).
 
 ## Global options
 
@@ -41,14 +42,14 @@ The CLI has no extension-upgrade command. See [upgrade](/docs/install/upgrade).
 Auto-select runs only when exactly one supported online cluster is present.
 Zero or several candidates produce a listing and an error.
 
-`sudo` is only required for host writes and for a peer-authenticated
-database session. Read-only model commands do not need it:
+`sudo` is required for host writes and for a peer-authenticated
+database session. Read-only model commands need neither:
 
 | Need | Commands |
 |---|---|
-| Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm`, `provider add` / `rm` |
+| Root (write `/etc` or `/opt/postvec`) | `setup`, `uninstall`, `model pull` / `upgrade` / `rm` / `activate` / `deactivate`, `provider add` / `rm` |
 | Cluster owner (`postgres`) | `doctor`, `setup` / `uninstall`, cluster-targeted `model pull` / `upgrade` / `rm` / `activate` / `deactivate` and cluster-targeted `provider add` / `rm` / `test` |
-| Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show`, `provider ls`, `provider ls --available` |
+| Neither | `login` / `logout` / `whoami`, `model ls`, `model ls --available`, `model show`, `provider ls --available` |
 
 `sudo postvec ...` covers the first two at once: the parent keeps root
 for the filesystem and a child drops to the cluster owner for database
@@ -77,14 +78,17 @@ sudo postvec setup --database app \
 | `--database NAME` | Repeatable / comma-separated |
 | `--grpc`, `--http` | Remote endpoints. gRPC order is round-robin |
 | `--embedded` | In-process inference |
-| `--path DIR` | Absolute engine root. Defaults to `/opt/postvec` |
-| `--model NAME` | Embedded preload allow-list; omit to load every enabled model |
-| `--providers-path DIR` | Move the [provider](/docs/models/providers) connector directory. Omit to keep `/etc/postvec/providers.d` |
-| `--embedded-grpc-listen`, `--embedded-http-listen` | Loopback only |
+| `--path DIR` | With `--embedded`: absolute engine root. Defaults to `/opt/postvec` |
+| `--model NAME` | With `--embedded`: preload allow-list; omit to load every enabled model |
+| `--providers-path DIR` | With `--embedded`: move the [provider](/docs/models/providers) connector directory. Omit to keep `/etc/postvec/providers.d` |
+| `--embedded-grpc-listen`, `--embedded-http-listen` | With `--embedded`: loopback listeners, `127.0.0.1:33433` and `127.0.0.1:33434` |
 | `--switch-mode` | Acknowledge remote <-> embedded; name every database |
 | `--allow-unreachable` | Stage config before inference exists |
 | `--no-restart` | Write state, exit 4 |
 | `--dry-run`, `--yes` | Preview / non-interactive |
+
+`--path`, `--model`, `--providers-path` and both listener flags require
+`--embedded`. Without it they are a usage error (exit 2).
 
 Owned file: `conf.d/99-postvec.conf`. Foreign or modified files are
 refused, including with `--yes`.
@@ -112,22 +116,31 @@ sudo postvec doctor --format json --strict
 sudo postvec uninstall --database app
 sudo postvec uninstall --database app \
   --drop-columns --acknowledge-data-loss --yes
+sudo postvec uninstall --all \
+  --drop-columns --acknowledge-data-loss --purge --yes
 ```
-
-No `--drop-destinations`. See [uninstall](/docs/install/uninstall).
 
 | Option | Effect |
 |---|---|
-| `--drop-columns --acknowledge-data-loss` | Postvec-created shadow columns only |
+| `--database NAME` | One database; repeatable |
+| `--all` | Every configured database plus any other database with the extension installed |
+| `--drop-columns --acknowledge-data-loss` | Postvec-created shadow columns and, for chunked entries, the managed chunk destination tables and views |
+| `--keep-destinations` | With `--drop-columns`: keep chunk destinations as ordinary frozen tables |
+| `--purge` | **Experimental**. With `--all`: delete postvec's own files on this host, between a cluster stop and start |
 | `--keep-config` | Leave launcher config; required for URI-only |
 | `--no-restart`, `--dry-run`, `--yes` | As elsewhere |
+
+`--database` and `--all` are exclusive. `--purge` requires `--all` and
+refuses `--keep-config` and `--no-restart`. See
+[uninstall](/docs/install/uninstall).
 
 ## `model`
 
 See [pull / upgrade / rm](/docs/models/pull) and [login](/docs/models/login).
 
 ```
-model ls [--available] [--path DIR]
+model ls [--path DIR]
+model ls --available [--api-key-file FILE]
 model show NAME [--verify] [--path DIR]
 model pull NAME... [--path DIR] [--api-key-file FILE]
             [--accept-license ID@VERSION] [--dry-run] [--yes]
@@ -142,8 +155,10 @@ model prefer SPACE ROUTE... [--default] [--path DIR] [--acknowledge-in-use]
 model set-space ROUTE SPACE [--path DIR] [--acknowledge-in-use] [--dry-run] [--yes]
 ```
 
-`POSTVEC_PATH` has the same meaning as `--path`. Container images set it,
-so `docker exec <ctr> postvec model ...` needs no extra flags.
+`--path` and `--available` are exclusive; `--api-key-file` requires
+`--available`. `POSTVEC_PATH` has the same meaning as `--path`. Container
+images set it, so `docker exec <ctr> postvec model ...` needs no extra
+flags.
 
 `pull` installs **deactivated**; `activate` / `deactivate` are the only verbs
 that change serving state, and both persist across a PostgreSQL restart.
@@ -269,7 +284,7 @@ Format, loading rules and `doctor` checks:
 | 0 | Done; `doctor` clean (`--strict` includes warnings) |
 | 1 | Apply / postcondition / diagnostic failure |
 | 2 | Invalid invocation or refused prompt |
-| 3 | Partial multi-target result, or configuration left unchanged |
+| 3 | Partial result: a retained chunk destination, an uninspectable database under `--all`, or configuration left unchanged |
 | 4 | Valid changes written; restart still required |
 
 Automation should use `--format json`, not parse the human layout.

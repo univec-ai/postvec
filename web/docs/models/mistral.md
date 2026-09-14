@@ -24,15 +24,21 @@ embed call, reloads the host and refreshes `postvec.models`.
 ::::: tip Expected
 ```text
 providers.d: /etc/postvec/providers.d
-mistral  (mistral, key: file:/etc/postvec/keys/mistral.key)
+mistral  (mistral, key: inline (redacted))
   mistral-mistral-embed                        dim 1024   served
 ```
 `doctor` exits 0. The name is in `postvec.models`.
 :::::
 
+Built-in catalogue names:
+
 | `--model` | Name in SQL | Dim |
 |---|---|---:|
 | `mistral-embed` | `mistral-mistral-embed` | 1024 |
+
+Pass `--api-key-file PATH` or `--api-key-env VAR` instead of the prompt.
+With `--api-key-file` the key stays in that file and `provider ls` reports
+`file:PATH` instead of inline.
 
 Any other Mistral embedding id works. The probe measures the dimension,
 or `--dim` states it with `--no-verify`. `--base-url` fronts a
@@ -61,13 +67,18 @@ SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
 
 ## On postvec-server
 
+Run the add on a [postvec-server](/docs/server/) node. The CLI finds no
+local cluster there and writes `<server-root>/providers.d`, the directory
+that node serves from:
+
 ```bash
 sudo postvec provider add mistral --model mistral-embed \
      --acknowledge-in-use --yes
 ```
 
-Copy the same file onto every node. [External providers](/docs/models/providers)
-covers keys, failures and moving a column off the provider.
+Copy the same file onto every node, then reload each host. [External
+providers](/docs/models/providers) covers keys, failures and moving a
+column off the provider.
 
 - [External providers](/docs/models/providers)
 - [Connector files](/docs/models/providers-file)

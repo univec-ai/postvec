@@ -13,16 +13,22 @@ Pull, activate and load are separate steps:
 | `postvec model activate NAME --path $root` | Sets `enabled: true` in the descriptor | The node's filesystem |
 | `postvec-server load NAME` | Makes it resident in the running engine | The node's engine |
 
+`$root` is the engine root, `/opt/postvec` by default.
+
 `GET /config` advertises what the node can serve **right now**, which is what
 is loaded. After a pull and an activate, a model is on disk and still invisible
 to discovery until it is loaded, or until a restart loads every enabled
 descriptor.
 
+The shipped postvec-server build runs inference on CPU. GPU inference needs a
+build with the `ort-cuda` or `ort-tensorrt` Cargo feature; without one the
+engine skips the requested execution provider and logs a warning.
+
 ## Add a model
 
 ```bash
-postvec model pull baai-bge-m3
-postvec model activate baai-bge-m3
+postvec model pull baai-bge-m3 --path $root
+postvec model activate baai-bge-m3 --path $root
 postvec-server load baai-bge-m3
 postvec-server status
 ```
@@ -41,7 +47,8 @@ A deactivated descriptor is skipped at load and at restart.
 
 The same pull, activate, deactivate and remove steps are available from
 the node's [dashboard](/docs/server/dashboard) (Registries tab) when the
-node runs with `--manage`. Upgrades stay on the CLI.
+node runs with `--manage`. Model upgrades are CLI-only:
+`postvec model upgrade`.
 
 The registry side of `pull` (the catalogue, private models, `postvec login`)
 is identical to the database-host case: [pull, activate, upgrade,
@@ -130,9 +137,12 @@ the node itself:
 curl -s -X POST http://127.0.0.1:22223/admin/providers/reload
 ```
 
-If two connector files claim the same public name, neither serves. If a
-loaded local model and a provider file claim the same name, the **local
-model wins**, in `/config` and on the embed or convert path alike.
+If two connector files claim the same public name, neither serves. A
+`[[models]]` entry whose name is already served by a local engine model is
+refused at load, because a public name has exactly one owner: the host refuses
+the whole connector file and reports the collision in the reload result, so
+the entry never mounts. `postvec doctor` lists those models as configured but
+not served. Rename the entry in the file.
 
 Format, key sources and the rest: [external
 providers](/docs/models/providers), then [connector

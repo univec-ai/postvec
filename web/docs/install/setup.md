@@ -18,7 +18,7 @@ The command creates missing databases, installs the extension, merges
 it, restarts or reloads if a setting changed, refreshes models and
 checks that the worker heartbeat **advances**.
 
-Where postvec is not preloaded yet, `setup` also starts the worker in each
+Before the cluster preloads postvec, `setup` starts the worker in each
 database immediately with `postvec.start_worker()`, so the database is served
 before the restart. With `--no-restart` the worker runs now and the restart,
 which makes it survive server restarts, can happen later. The same function
@@ -57,13 +57,15 @@ connector directory. Omit it to keep `/etc/postvec/providers.d`. `setup
 --embedded` creates that directory empty (`0700`, cluster owner) if it is
 absent.
 
+`--path`, `--model` and `--providers-path` require `--embedded`.
+
 ## Remote gRPC (postvec-server)
 
 Remote mode uses [postvec-server](/docs/server/) on the local network.
-Typical reasons: GPU inference, a separate process from PostgreSQL,
-multi-threaded inference on the same VM, one engine shared by several
-databases, model management from the dashboard. SQL is unchanged. See
-[when to use postvec-server](/docs/server/usage),
+Reasons to move inference out: a GPU, isolation from the PostgreSQL
+process, multi-threaded inference on the same VM, one engine shared by
+several databases, and model management from the dashboard. SQL is
+unchanged. See [when to use postvec-server](/docs/server/usage),
 [embedded vs remote](/docs/concepts/modes) and
 [connect PostgreSQL](/docs/server/connect).
 
@@ -120,8 +122,7 @@ worker. `setup` creates the database before activating the list.
 `Foreign` and `Modified` files are refused, including with `--yes`.
 Reconcile or move the file.
 
-A manually maintained `postvec.conf` should not coexist with the
-CLI-owned `99-postvec.conf`.
+Set postvec settings in one place: the CLI-owned `99-postvec.conf`.
 
 :::: info Optional
 [Verify artifacts](/docs/install/verify) has `doctor --deep` and the SQL

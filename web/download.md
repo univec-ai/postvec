@@ -18,10 +18,9 @@ Publication channels:
 | [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec-server) `ghcr.io/univec-ai/postvec-server` | postvec-server (`0.1.0-1`, moving tag `latest`) |
 
 The selector reads `univec-ai/postvec` releases tagged `postvec-v*` and
-links assets only when they exist. Install from the downloaded files.
-Checksums and Sigstore attestations are optional:
-[verify artifacts](/docs/install/verify). A signed apt/yum repository is
-planned later.
+links assets only when they exist. Checksums and Sigstore attestations
+are optional: [verify artifacts](/docs/install/verify). A signed apt/yum
+repository is planned later.
 
 <DownloadPanel />
 
@@ -41,6 +40,9 @@ planned later.
 
 The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
 identifies the target OS. Pick the tag that matches the host.
+The `postvec-server` image holds the inference node:
+[postvec-server](/docs/server/) covers what it serves and how a cluster
+reaches it.
 
 ## postvec-server
 

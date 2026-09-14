@@ -5,14 +5,13 @@ description: Docker, packages, managed PostgreSQL or source, then configuration.
 
 # Installation
 
-Installation stages:
-
-- Local install - Docker image, packages or manual install
-- Cluster configuration - `postvec setup`
+Installation has two stages: put the files on the host (Docker, packages
+or source), then run `postvec setup` to configure the cluster.
 
 [postvec-server](/docs/server/) is a separate install: the companion
 inference process for remote mode, GPU hosts and managed cloud
-databases. [When to use it](/docs/server/usage).
+databases, where a model fault stays inside that process.
+[When to use it](/docs/server/usage).
 
 | Host | Path |
 |---|---|

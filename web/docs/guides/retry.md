@@ -89,11 +89,9 @@ rows can share a PK; an already-pending job coalesces. Those rows leave
 `jobs_dead`.
 ::::
 
-`retry_dead()` takes `regclass` (the one exception), so the invoking role's `search_path` resolves the table before the definer body runs. `'public.docs'` is unambiguous.
+`retry_dead()` takes `regclass`, so the invoking role's `search_path` resolves the table before the definer body runs. `'public.docs'` is unambiguous. `refresh_lexical_stats()` declares `relation` the same way.
 
 ## Refusals
-
-Refusals:
 
 - A mixed `dead_ids` list is validated atomically before locking; no locks are acquired if any identifier is invalid or belongs to another entry.
 - The entry must be present, enabled and idle (no live migration).
@@ -102,6 +100,19 @@ Refusals:
 Authorization uses the invoking role (`SET ROLE` counts). `jobs_dead` is PUBLIC-SELECT; the re-drive function is the gated write.
 
 Concurrent calls serialize: one consumes the rows, and the other reports that they are no longer present.
+
+## Managed PostgreSQL
+
+On [managed PostgreSQL](/docs/server/managed) the schema is plpgsql and
+`retry_dead()` behaves as above. postvec-server exposes the same call as
+`POST /admin/managed/{name}/retry-dead` with
+`{"registry_id":1,"dead_ids":[123]}`; omitting `dead_ids` retries the entry's
+eligible dead letters. The server runs the same function against the database,
+so the validation and the dead-row accounting above are unchanged.
+
+Re-driven jobs are embedded by the postvec-server sync worker, in the same
+queue, with the same retry and dead-letter rules. The model fleet is the one
+configured on the server host.
 
 ## Direct queue writes
 

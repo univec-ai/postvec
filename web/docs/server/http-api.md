@@ -15,9 +15,9 @@ routes. Two contracts are served:
 | `POST /api/convert` | `{"source_model", "target_model", "embeddings": [[...]]}`: resolves the converter for the pair (a local one wins over a provider) and runs it; the SQL `convert()` over HTTP. `404` when no converter serves the pair. |
 | `POST /api/{model}` | Native. The request body is keyed like the model's `executor.inputs`; the reply is the `{success, data}` envelope. Works for every model type, converters included. |
 | `POST /api/openai/embeddings` | OpenAI `/v1/embeddings`. Embed models only. |
-| `GET /api/{model}` | The model's input and output layers, native envelope. |
+| `GET /api/{model}` | The model's input and output layers, native envelope. For a provider-backed model the `data` field is the fixed stub `{"inputs": [], "outputs": [], "provider": true}`. |
 
-Neither route is authenticated. Like gRPC, they are meant for a private
+These routes are unauthenticated, like gRPC. Keep them on a private
 network; see [security](/docs/security).
 
 ## Native
@@ -38,16 +38,19 @@ curl -sk https://10.0.0.10:22222/api/baai-bge-m3 \
 Embed models also accept `dimensions` (Matryoshka truncation, refused above
 the model's `target_dim`), `encoding_format` (`float` or `base64`) and
 `input_type` (`search_query` / `search_document`, applied only when the model
-ships templates for it). Conversion:
+ships templates for it). Conversion names the pair in the body instead of the
+model:
 
 ```console
-curl -sk https://10.0.0.10:22222/api/convert-baai_bge_m3-to-cohere_embed_v4.0 \
+curl -sk https://10.0.0.10:22222/api/convert \
   -H 'content-type: application/json' \
-  -d '{"embeddings": [[0.0123, ...]]}'
+  -d '{"source_model": "snowflake-arctic-embed-l-v2.0", "target_model": "baai-bge-m3", "embeddings": [[0.0123, ...]]}'
 ```
 
-Errors keep HTTP `200` and set `success: false`, the way the dashboard and
-the ninference tooling expect:
+The node resolves the converter whose `source_model` and `target_model` match
+the pair. A `404` body names the pair when no converter serves it.
+
+Errors keep HTTP `200` and set `success: false`:
 
 ```json
 {"success": false, "error": {"message": "model \"x\" is not loaded on this node; ..."}}
@@ -90,16 +93,19 @@ Token IDs as `input` are refused: the node tokenizes text itself.
 
 ## Provider-backed models
 
-Models served through an [external provider](/docs/models/providers) answer both
-routes too. They have no post-processing of their own, so `dimensions` and
-`encoding_format: base64` are refused for them with a `400` rather than
-silently ignored, and `usage` reports zeros.
+Models served through an [external provider](/docs/models/providers) answer the
+native and OpenAI routes too. `GET /api/{model}` returns the stub in the table
+above, because the layers live with the provider rather than on the node.
+Provider entries have no post-processing of their own, so `dimensions` and
+`encoding_format: base64` are refused for them instead of being silently
+ignored. The native reply carries the embeddings alone; the OpenAI envelope
+reports zero `usage`.
 
 ## Model registry
 
 The node can also manage its own models, the way `postvec model` does on a
 host: list what is installed, browse the registry catalogue, pull, activate
-and deactivate. Same code, same on-disk result, same receipts.
+and deactivate. The same code writes the same on-disk result.
 
 | Route | Body | Reply |
 |---|---|---|
@@ -137,7 +143,7 @@ walkthrough.
 ## Limits
 
 One request carries at most 4096 items and 64 MiB of body. The execution
-budget is `--predict-timeout-ms` (default 30 s). Neither route is rate
+budget is `--predict-timeout-ms` (default 30 s). The routes are not rate
 limited; put a proxy in front if the network is not yours.
 
 - [Dashboard](/docs/server/dashboard)

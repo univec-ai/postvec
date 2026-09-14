@@ -27,14 +27,16 @@ sudo postvec doctor --database app
 
 The command prompts for the token without echo, writes
 `/etc/postvec/providers.d/aws.toml` (`0600`), probes Titan with one
-embed call, reloads the host and refreshes `postvec.models`.
-`--base-url` is refused: the region is the whole endpoint
-(`bedrock-runtime.<region>.amazonaws.com`).
+embed call, reloads the host and refreshes `postvec.models`. Pass
+`--api-key-file PATH` or `--api-key-env VAR` instead of the prompt; with
+a file the token stays there and `provider ls` reports
+`bearer file:PATH`. `--base-url` is refused: the region is the whole
+endpoint (`bedrock-runtime.<region>.amazonaws.com`).
 
 ::::: tip Expected
 ```text
 providers.d: /etc/postvec/providers.d
-aws  (aws, key: file:/etc/postvec/keys/aws.key, region: us-east-1)
+aws  (aws, key: bearer inline (redacted))
   aws-titan-embed-text-v2-0                    dim 1024   served
 ```
 `doctor` exits 0. The name is in `postvec.models`.
@@ -88,6 +90,10 @@ SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
 
 ## On postvec-server
 
+Run the add on a [postvec-server](/docs/server/) node. The CLI finds no
+local cluster there and writes `<server-root>/providers.d`, the directory
+that node serves from:
+
 ```bash
 sudo postvec provider add aws \
   --model amazon.titan-embed-text-v2:0 \
@@ -95,10 +101,10 @@ sudo postvec provider add aws \
   --acknowledge-in-use --yes
 ```
 
-Copy the same file onto every node. [External providers](/docs/models/providers)
-covers keys, failures and moving a column off the provider.
-[Connector files](/docs/models/providers-file) has the TOML for bearer
-token and SigV4.
+Copy the same file onto every node, then reload each host. [External
+providers](/docs/models/providers) covers keys, failures and moving a
+column off the provider. [Connector files](/docs/models/providers-file)
+has the TOML for a bearer token and for a SigV4 pair.
 
 - [External providers](/docs/models/providers)
 - [Connector files](/docs/models/providers-file)

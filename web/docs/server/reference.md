@@ -32,7 +32,7 @@ with `//` are comments.
 | `--grpc PORT` | `POSTVEC_SERVER_GRPC` | `grpc_port` | `33333` |
 | `--gossip PORT` | `POSTVEC_SERVER_GOSSIP` | `gossip_port` | `11111` |
 | `--admin PORT` | `POSTVEC_SERVER_ADMIN` | `admin_port` | `22223` |
-| `--peers LIST` | `POSTVEC_SERVER_PEERS`, then `..._CLUSTER` | `peers` (or `cluster`) | Empty, a single node |
+| `--peers LIST` | `POSTVEC_SERVER_PEERS`, then `POSTVEC_SERVER_CLUSTER` | `peers` (or `cluster`) | Empty, a single node |
 | `--group NAME` | `POSTVEC_SERVER_GROUP` | `group` | `postvec` |
 | `--advertise IP` | `POSTVEC_SERVER_ADVERTISE` | `advertise` | `--bind` if specific, else autodetected |
 | `--frontend URL` | `POSTVEC_SERVER_FRONTEND` | `frontend` | `{scheme}://{advertise}:{http}` |
@@ -52,7 +52,8 @@ with `//` are comments.
 | `--web-ui DIR` | `POSTVEC_SERVER_WEB_UI` | `web_ui` | `<root>/server/ui`, where the package installs it |
 
 `--cluster` is an accepted alias for `--peers`, and `--ssl-key` for
-`--ssl-cert-key`.
+`--ssl-cert-key`. `--remote` is the deprecated spelling of `--gossip`; it is
+accepted and errors when the two disagree.
 
 ### `--max-inflight` and `--max-resident-models`
 
@@ -90,7 +91,9 @@ and clients actually use.
 | `GET /metrics` | Prometheus text |
 | `GET /api/{model}` | Model layer overview, native envelope |
 | `POST /api/{model}` | Native inference. JSON body keyed like `executor.inputs` (`texts` / `embeddings`). Envelope `{success, data}` or `{success, error:{message}}`; HTTP stays 200 |
+| `POST /api/convert` | The SQL `convert()` over HTTP. Body `{"source_model", "target_model", "embeddings"}`; the node resolves the converter for the pair, and `404` names the pair when none serves it. See [HTTP API](/docs/server/http-api) |
 | `GET /api/registry/{models,available,pulls}`, `POST /api/registry/{pull,activate,deactivate,remove}` | Model management, the `postvec model` commands over HTTP. The `POST`s are on the admin port, and on the public port with `--manage`. See [HTTP API](/docs/server/http-api) and [dashboard](/docs/server/dashboard) |
+| `GET /admin/managed`, `GET /admin/managed/{name}/jobs`, `POST /admin/managed/{name}/refresh-models`, `POST /admin/managed/{name}/retry-dead` | Managed PostgreSQL state, recent jobs, model refresh and dead-letter retry. Loopback admin port only. See [managed PostgreSQL](/docs/server/managed) |
 | `POST /api/openai/embeddings` | OpenAI `/v1/embeddings` adaptor in front of the native path. `{object, data, model, usage}` on success; `{error:{message, type, code}}` and a real status on failure. See [HTTP API](/docs/server/http-api) |
 
 Gate load balancers and compose healthchecks on `/ready`, and supervisors on
@@ -112,6 +115,9 @@ went wrong.
 | `postvec_server_request_duration_seconds` | The p99 your database's `search()` inherits |
 | `postvec_server_models_enabled_on_disk` > `..._models_loaded` | Something was pulled or activated and never loaded |
 | `postvec_server_cluster_members` | Below the fleet size means a partition or a wrong `--advertise` |
+| `postvec_managed_queue_depth{db}`, `postvec_managed_heartbeat_age_seconds{db}`, `postvec_managed_leader{db}` | Managed PostgreSQL worker state, one series per `managed[]` entry |
+| `postvec_managed_jobs_total{db,outcome}` | Managed worker outcomes (`embedded`, `nulled`, `retried`, `dead`). Database-wide and it survives a leader change, so scrape one node |
+| `postvec_proxy_connections{db}`, `postvec_proxy_rewrites_total{db,kind}` | Managed search proxy load; `kind` is `search` or `embed` |
 
 Error codes are the same values that cross the wire and drive postvec's retry
 and dead-letter policy.
@@ -127,14 +133,17 @@ Restrict both ports to a private network with a firewall, a security group
 or `--bind <private-ip>`. The node logs a warning at boot whenever it binds
 every interface.
 
-**Load, unload and provider reload stay on the loopback admin port.**
-`/admin/load`, `/admin/unload` and `/admin/providers/reload` bind
-`127.0.0.1` only. A routable admin bind is a boot failure. A per-request
-loopback peer check sits behind that. Registry pull/activate/deactivate/remove
-use the same admin socket; `--manage` also serves those POSTs on the
-public discovery port so the [dashboard](/docs/server/dashboard) can
-drive them. The trust boundary is local OS users, plus whoever can
-reach port `22222` when `--manage` is on.
+**Load, unload, provider reload and managed recovery stay on the loopback
+admin port.** `/admin/load`, `/admin/unload`, `/admin/providers/reload` and
+`/admin/managed*` bind `127.0.0.1` only. A routable admin bind is a boot
+failure. A per-request loopback peer check sits behind that. Registry
+pull/activate/deactivate/remove use the same admin socket; `--manage` also
+serves those POSTs on the public discovery port so the
+[dashboard](/docs/server/dashboard) can drive them. `postvec-server managed
+status` prints the managed state as JSON, including `worker_alive`, the
+leader, the queue depth and the dead-letter count. The trust
+boundary is local OS users, plus whoever can reach port `22222` when
+`--manage` is on.
 
 No telemetry and no licence check. Models arrive on disk by whatever
 mechanism you choose. An [external provider](/docs/models/providers)

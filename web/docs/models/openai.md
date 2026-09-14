@@ -26,10 +26,10 @@ embed call, reloads the host and refreshes `postvec.models`.
 ::::: tip Expected
 ```text
 providers.d: /etc/postvec/providers.d
-openai  (openai, key: file:/etc/postvec/keys/openai.key)
+openai  (openai, key: inline (redacted))
   openai-text-embedding-3-small                dim 1536   served
 ```
-`doctor` exits 0. The name is in `postvec.models`. No PostgreSQL restart.
+`doctor` exits 0. The name is in `postvec.models`.
 :::::
 
 Built-in catalogue names:
@@ -44,9 +44,10 @@ Any other OpenAI embedding id works. The probe measures the dimension, or
 `--dim` states it with `--no-verify`. Repeat `--model` to add several in
 one file.
 
-Pass `--api-key-file`, `--api-key-env OPENAI_API_KEY` or `--key-stdin`
-instead of the prompt. `--base-url` fronts an OpenAI-compatible origin
-(Azure's `/openai/v1` API is this shape).
+Pass `--api-key-file PATH`, `--api-key-env OPENAI_API_KEY` or `--key-stdin`
+instead of the prompt. With `--api-key-file` the key stays in that file and
+`provider ls` reports `file:PATH` instead of inline. `--base-url` fronts an
+OpenAI-compatible origin (Azure's `/openai/v1` API is this shape).
 
 ## 2. Bind a column
 
@@ -76,20 +77,25 @@ SELECT postvec.create_vector_index('docs', 'body');
 SELECT * FROM postvec.search('docs', 'body', 'revenue outlook', limit_n => 5);
 ```
 
-To keep an existing ada-002 column and search it through a local
-converter, [search a retired space](/docs/guides/bridge). Adding this
-key later creates a direct OpenAI route for that name; `provider add`
-lists affected columns and asks first.
+To keep an existing `openai-text-embedding-ada-002` column and search it
+through a local converter, [search a retired space](/docs/guides/bridge).
+Adding this key later creates a direct OpenAI route for that name;
+`provider add` lists affected columns and asks first.
 
 ## On postvec-server
+
+Run the add on a [postvec-server](/docs/server/) node. The CLI finds no
+local cluster there and writes `<server-root>/providers.d`, the directory
+that node serves from:
 
 ```bash
 sudo postvec provider add openai --model text-embedding-3-small \
      --acknowledge-in-use --yes
 ```
 
-Copy the same file onto every node. [External providers](/docs/models/providers)
-covers keys, failures and moving a column off the provider.
+Copy the same file onto every node, then reload each host. [External
+providers](/docs/models/providers) covers keys, failures and moving a
+column off the provider.
 
 - [External providers](/docs/models/providers)
 - [Connector files](/docs/models/providers-file)

@@ -7,7 +7,7 @@ description: Adopt vectors in a retired or provider-only model space and search 
 
 When a column already holds vectors from a retired or provider-only
 model, keep those vectors and search them as they are. This is the usual
-first path: adopt, then search. Stored bytes stay.
+first path: adopt, then search.
 
 `adopt()` registers the column. `search()` then embeds each query with
 an available local model and converts that one vector into the stored
@@ -16,8 +16,6 @@ byte-for-byte unchanged.
 
 If later you want the stored space itself to change,
 [`migrate()`](/docs/guides/migrate) converts the corpus in place.
-
-`search()` selects the bridge route.
 
 ## Route resolution
 
@@ -188,8 +186,7 @@ returned rank columns also indicate whether the semantic leg ran.
 
 ## Later: change the stored model
 
-Search on the existing space is enough for many deployments. When you
-want the stored corpus itself on a new model:
+Choose between keeping the stored space and moving it:
 
 | Choice | Stored corpus | New queries | New writes with `sync => true` |
 |---|---|---|---|
@@ -197,7 +194,7 @@ want the stored corpus itself on a new model:
 | [`migrate()`](/docs/guides/migrate) | converted to the new space | embedded directly in new space | embedded directly in new space |
 
 A staged path: adopt the existing column, validate search through the
-bridge, then migrate the stored vectors in place if you choose to.
+bridge, then migrate the stored vectors in place.
 
 :::: danger Confirm the source model separately from the dimension
 An incorrect 1536-dimensional model still represents an incompatible
@@ -206,9 +203,8 @@ synchronized writes or conversion.
 ::::
 
 :::: danger Existing rows stay in the old space
-Bridge search produces new vectors (queries and synchronized future
-writes) in the old target space. Existing rows remain exactly as they
-were.
+Bridge search embeds queries and synchronized writes into the old target
+space. Existing rows remain exactly as they were.
 ::::
 
 - [Search a retired space (CLI)](/docs/guides/bridge-cli)

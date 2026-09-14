@@ -29,8 +29,9 @@ postvec-server load "$converter_name"
 postvec-server status --fleet
 ```
 
-Then [`refresh_models()`](/docs/guides/helpers) in SQL if the cache is
-stale. Catalogue, login and receipts: [pull](/docs/models/pull).
+Then run [`refresh_models()`](/docs/guides/helpers) in SQL if the cache
+is stale. See [pull, activate, upgrade, remove](/docs/models/pull) for
+the catalogue, login and receipts.
 
 ## Hosted UniVec converter
 

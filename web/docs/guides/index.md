@@ -1,146 +1,93 @@
 ---
 title: SQL functions
-description: enable, adopt, search a retired space, BM25, migrate and chunking.
+description: The postvec call surface, grouped by task, with the grants each call needs.
 ---
 
 # SQL functions
 
-| Starting point | Call | Result |
+Functions live in the `postvec` schema, so every call is qualified:
+`postvec.enable(...)`, `postvec.search(...)`. Signatures, option values and
+defaults are in the [SQL reference](/docs/reference/sql).
+
+## Where to start
+
+| Situation | First call | Then |
 |---|---|---|
-| Text, no vectors | [`enable()`](/docs/guides/enable) ([CLI](/docs/guides/enable-cli)) | postvec creates and maintains a shadow `vector(N)` column |
-| A populated `vector(N)` column, same model | [`adopt()`](/docs/guides/adopt) | Existing bytes stay. Missing rows can backfill. |
-| Vectors in a retired or provider-only space | [Search a retired space](/docs/guides/bridge) | Adopt, then search. Each query is converted into that space (embed-bridge). The corpus stays. |
-| Hybrid, keyword or vector search | [`search()`](/docs/guides/search), [BM25](/docs/guides/bm25) | One call. `semantic_weight` mixes vector and BM25. |
-| Ready to change the stored model | [`migrate()`](/docs/guides/migrate) | Stored vectors convert in place, or re-embed if you choose that. Do this after search on the current space is working. |
-| Long source documents | [Recursive chunking](/docs/guides/chunking) | A managed 1:N destination stores passage vectors. Search still returns documents. |
-| Hosted embedding API (OpenAI, Cohere, Bedrock, Gemini, Mistral, OpenRouter, UniVec) | [External providers](/docs/models/providers), then `enable()` | A connector file on the inference side. The key stays out of PostgreSQL |
-| GPU, process isolation, a fleet | [postvec-server](/docs/server/), [quick start remote](/docs/quickstart-remote) | Companion inference process. SQL is unchanged. |
-| RDS, Aurora, Cloud SQL, Azure, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) | Plain SQL schema. Worker runs in `postvec-server`. |
-| pgai or pg_vectorize pipeline | [Coming from pgai](/docs/from-pgai) | Map the vectorizer to `enable()` / `adopt()`, then `search()` |
+| A text column with no vectors | [`enable()`](/docs/guides/enable) | [index](/docs/guides/indexes), then [search](/docs/guides/search) |
+| A populated `vector(N)` column | [`adopt()`](/docs/guides/adopt) | [search](/docs/guides/search) on the stored space |
+| Vectors from a model you no longer call | [`adopt()`](/docs/guides/adopt) with that model | [search a retired space](/docs/guides/bridge): each query is converted into the stored space |
+| Long source documents | [`enable(chunking => 'recursive')`](/docs/guides/chunking) | search returns one row per document plus the winning chunk |
+| A stored model to replace | [`migrate()`](/docs/guides/migrate) | [`migration_finalize()`](/docs/guides/migrate) swaps the column |
+| An existing pgai or pg_vectorize pipeline | [Coming from pgai](/docs/from-pgai) | map the vectorizer to `enable()` or `adopt()` |
 
-Functions live in the `postvec` schema (`postvec.enable(...)`).
-Qualify every call.
+## Lifecycle
 
-Table ownership or superuser is required for `enable`, `adopt`,
-`disable`, `migrate`, `set_format`, `retry_dead`,
-`create_vector_index` and `refresh_lexical_stats`. `uninstall()` is
-superuser only. `search()` is executable by PUBLIC. `embed` / `convert` /
-`refresh_models` are revoked from PUBLIC.
+| Call | Effect |
+|---|---|
+| [`enable(relation, column_name, model, ...)`](/docs/guides/enable) | Adds the shadow vector column, installs enqueue triggers and queues the existing rows |
+| [`adopt(relation, column_name, vector_column, model, ...)`](/docs/guides/adopt) | Registers a populated vector column and leaves the stored bytes alone |
+| [`set_format(relation, column_name, format)`](/docs/guides/templates) | Replaces the embedding template and refreshes the entry in one transaction |
+| [`disable(relation, column_name, ...)`](/docs/install/uninstall) | Removes the objects the entry owns and marks its registry row `state = 'disabled'` |
+| [`uninstall(...)`](/docs/install/uninstall) | Tears down every entry and marks each registry row `state = 'disabled'`; tables and vectors stay unless the destructive flags are set |
 
-## Text, no vectors
+A disabled row stays in `postvec.registry`. A later `enable()` or `adopt()` on
+that column clears it and registers a new row.
 
-`enable()` adds `{column}_semantic`, installs enqueue triggers and
-queues existing rows.
+## Search
 
-```sql
-SELECT postvec.enable(
-  'public.docs', 'body',
-  model => 'sentence-transformers-all-minilm-l6-v2',
-  create_fts_index => true
-);
-```
+| Call | Effect |
+|---|---|
+| [`search(relation, column_name, query, ...)`](/docs/guides/search) | Hybrid search in one call. Full-text and vector results fused with reciprocal rank fusion |
+| [`search_with_vector(relation, column_name, query_vector, query_text, ...)`](/docs/guides/search) | The same search when the application already holds the query vector |
+| [`create_vector_index(relation, column_name)`](/docs/guides/indexes) | Builds the ANN index for the entry. `index_mode` can also ask the worker to build it |
+| [`refresh_lexical_stats(relation, column_name)`](/docs/guides/bm25) | Rebuilds the BM25 corpus statistics now |
 
-1. Wait until `pending_jobs = 0` in [`status()`](/docs/guides/status).
-2. [`create_vector_index()`](/docs/guides/indexes).
-3. [`search()`](/docs/guides/search).
+Filters (`filter =>`), the semantic/lexical mix (`semantic_weight`), the candidate
+pool (`candidates`) and chunk collapse are documented in
+[Search](/docs/guides/search), [Filters](/docs/guides/filters) and
+[BM25](/docs/guides/bm25).
 
-:::: tip Expected
-`enable()` returns a registry id. `docs.body_semantic` fills with
-`vector(384)` for MiniLM. `search()` then ranks by meaning and by
-keywords.
-::::
+## Migration
 
-## A populated vector column
+| Call | Effect |
+|---|---|
+| [`migrate(relation, column_name, new_model, strategy => ...)`](/docs/guides/migrate) | Starts a migration: `convert` translates stored vectors, `reembed` re-runs the source text |
+| `migration_status(migration_id)` | State, progress, the route in use and the index statement to run next |
+| `migration_finalize(migration_id)` | Swaps in the migrated column; a fresh ANN index finishes in a second call |
+| `migration_abort(migration_id)` | Stops the migration and keeps the original column |
+| `convert(embedding, source_model, target_model)` | One-shot vector conversion, callable on its own |
 
-`adopt()` registers the existing column and leaves stored bytes as they
-are. The `model` argument names the space those bytes came from. A
-wrong name makes later search and conversion silently invalid.
+## Operations
 
-```sql
-SELECT postvec.adopt(
-  'public.legacy', 'body',
-  vector_column => 'embedding',
-  model => 'sentence-transformers-all-minilm-l6-v2'
-);
-```
+| Call | Effect |
+|---|---|
+| [`status()`](/docs/guides/status) | Per-entry health: queue depth, dead jobs, readiness, chunking, index and lexical state |
+| [`stats()`](/docs/guides/status) | Worker and queue counters |
+| [`retry_dead(relation, column_name, dead_ids)`](/docs/guides/retry) | Re-drives dead-lettered rows as fresh deduplicated jobs |
+| `refresh_models()` | Re-reads the model inventory from the inference host |
+| `embed(input, model)` | One-shot embedding, outside the queue |
+| `version()` / `build_info()` | Extension version and build details |
 
-:::: tip Expected
-`owns_vector_column` is false. Only NULL vectors are queued
-(`backfill => 'missing'`). Future writes stay in sync.
-::::
+## Grants
 
-## Keep a retired space
+`enable`, `adopt`, `disable`, `set_format`, `migrate`, `create_vector_index`,
+`retry_dead` and `refresh_lexical_stats` need the table owner or a superuser.
+`uninstall()` and `start_worker()` are superuser only. `search()`,
+`search_with_vector()`, `status()`, `stats()` and `version()` are executable by
+PUBLIC. `embed`, `convert` and `refresh_models` are revoked from PUBLIC.
 
-Name the original model at adopt time. `search()` embeds the query with
-an available local model and converts that one vector into the stored
-space (embed-bridge). Stored rows stay as they are.
+Non-owner DML on an enabled table needs `USAGE` on schema `postvec` and a
+column-scoped `INSERT (registry_id, pk_value)` on `postvec.jobs`.
 
-```sql
-SELECT postvec.adopt(
-  'public.legacy', 'body',
-  vector_column => 'embedding',
-  model => 'openai-text-embedding-ada-002',
-  backfill => 'none'
-);
-```
+## Where inference runs
 
-The converter (and its embed dependency) must be present. On an
-embedded host that is [`postvec model pull`](/docs/models/pull). Full
-walkthrough: [search a retired space](/docs/guides/bridge).
+Inference runs inside the PostgreSQL process by default. The SQL above is the
+same when the work runs in [postvec-server](/docs/server/): a separate process,
+multi-threaded on the same VM, or a CPU and GPU fleet on the network. A database
+that cannot load the extension uses the server for
+[managed PostgreSQL](/docs/server/managed).
 
-:::: tip Expected
-Existing rows are untouched. Semantic ranks are present. The query
-vector has the stored dimension (1536 for classic ada-002).
-::::
-
-## Change the stored model
-
-Once search on the current space is working, stored vectors can move to
-a new model:
-
-```sql
-SELECT postvec.migrate(
-  'public.docs', 'body',
-  new_model => 'baai-bge-m3'
-);
-```
-
-Default strategy is `convert`: stored vectors are translated. The
-migration **stops and waits** at `awaiting_finalize`. You swap columns
-with `migration_finalize()`. See [change the stored model](/docs/guides/migrate).
-
-:::: tip Expected
-`migration_status()` reaches `awaiting_finalize`. After the first
-finalize the column is live on the new model. If it had an ANN index,
-a second finalize follows the rebuild.
-::::
-
-## Long documents
-
-```sql
-SELECT postvec.enable(
-  'public.articles', 'body',
-  model => 'sentence-transformers-all-minilm-l6-v2',
-  chunking => 'recursive',
-  destination => 'articles_body_chunks',
-  format => E'$title\n\n$chunk'
-);
-```
-
-Search still returns one row per document, plus the winning chunk. See
-[chunking](/docs/guides/chunking).
-
-:::: tip Expected
-`status()` shows `chunking = recursive`. Each article produces one
-refresh job; the worker splits it and fans out one embed job per chunk.
-::::
-
-- [Coming from pgai](/docs/from-pgai)
-- [External providers](/docs/models/providers)
-- [postvec-server](/docs/server/)
-- [BM25](/docs/guides/bm25)
-- [Filters](/docs/guides/filters)
-- [Templates](/docs/guides/templates)
-- [Status](/docs/guides/status) / [doctor](/docs/guides/status-cli)
-- [`retry_dead()`](/docs/guides/retry)
-- [Managed PostgreSQL](/docs/server/managed)
+- [Enable](/docs/guides/enable) - [Adopt](/docs/guides/adopt) - [Search](/docs/guides/search)
+- [Chunking](/docs/guides/chunking) - [Migration](/docs/guides/migrate) - [Indexes](/docs/guides/indexes)
+- [Status](/docs/guides/status) - [Retry](/docs/guides/retry) - [Backup](/docs/guides/backup)
+- [SQL reference](/docs/reference/sql) - [GUCs](/docs/reference/gucs) - [CLI](/docs/reference/cli)

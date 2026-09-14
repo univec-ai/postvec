@@ -24,7 +24,7 @@ Or pass `format => E'$title\n\n$body'` to `enable()` / `adopt()`.
 `set_format()` returns void, then `status().pending_jobs` jumps. Every
 row is re-enqueued, including NULL-source rows (those clear a stale
 vector). Until the queue drains, search sees a mix of old-template and
-new-template vectors.
+new-template vectors. A byte-identical template is a no-op.
 ::::
 
 ## Grammar
@@ -55,7 +55,6 @@ template.
 
 The call takes `SHARE ROW EXCLUSIVE` (blocks writes) while it replaces
 triggers and enqueues every row. Treat it as a maintenance window.
-`$body` and `${body}` are different strings.
 
 Clear a template with `set_format(..., NULL)`.
 
@@ -75,3 +74,9 @@ is a backslash and an `n`.
 :::: danger The template cannot name the vector column
 That would create a continuous re-enqueue loop.
 ::::
+
+## Where inference runs
+
+The worker renders the template inside the database, in both modes. The
+embedding call then goes to the inference host: the PostgreSQL process by
+default, or [postvec-server](/docs/server/) in remote mode.

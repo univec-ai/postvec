@@ -11,8 +11,11 @@ Two lifecycles share one maintenance window:
 2. `ALTER EXTENSION postvec UPDATE` in **every** database that has it.
 
 Do both in that order. Replacing the library alone parks the worker
-until the SQL catches up. `postvec model upgrade` replaces model bytes
-only.
+until the SQL catches up.
+
+Model bytes are separate: `postvec model upgrade NAME...` replaces them in
+place, preserves each model's activation state, and `--all` skips
+withdrawn roots. `model pull` never replaces an installed name.
 
 Replace `NEWVERSION` with the version being installed.
 
@@ -29,7 +32,6 @@ SQL, so application traffic should stay paused until every database is
 updated.
 
 Upgrade the packages, restart, then run `ALTER EXTENSION`.
-`postvec model upgrade` replaces model bytes only.
 
 ## Containers
 
@@ -44,6 +46,15 @@ Run `ALTER EXTENSION` and `postvec-healthcheck` afterward.
 
 A PostgreSQL major change requires `pg_upgrade` or dump/restore;
 changing only the image tag against the same volume is unsupported.
+
+## Inference nodes
+
+[postvec-server](/docs/server/) nodes are built from the same release and
+speak the extension's wire contract. A remote-mode upgrade therefore
+installs the matching node package on every node in the same window:
+restart one node at a time and wait for `/ready` to return 200 before the
+next ([fleet](/docs/server/fleet)). `postvec-server status` prints the
+version of every member, which names a node that was skipped.
 
 ## Rollback
 

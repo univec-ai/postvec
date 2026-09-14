@@ -29,10 +29,9 @@ and are dropped at teardown. A name you chose yourself stays yours.
 | `immediate` | In the `enable()` / `adopt()` transaction | Blocking `CREATE INDEX` |
 | `auto` | After the worker sees the queue drain | Blocking, **and** occupies the only worker |
 
-Both non-manual modes are blocking. PostgreSQL forbids `CONCURRENTLY`
-inside those transactions. `auto` also pauses embedding, migrations,
-cursor backfill and heartbeats for that database while it builds.
-
+In the extension both non-manual modes are blocking. PostgreSQL forbids
+`CONCURRENTLY` inside those transactions. `auto` also pauses embedding,
+migrations, cursor backfill and heartbeats for that database while it builds.
 For that reason `auto` is opt-in and is meant for small, quiet tables.
 Large or write-heavy tables should stay on `manual` and use:
 
@@ -42,18 +41,26 @@ CREATE INDEX CONCURRENTLY docs_body_hnsw
   USING hnsw (body_semantic vector_cosine_ops);
 ```
 
+On managed PostgreSQL the sync worker in
+[postvec-server](/docs/server/managed) builds an `auto` index after the queue
+drains, on its own connection, with `CREATE INDEX CONCURRENTLY`
+(`index_concurrently`, on by default), so table writes continue during the
+build.
+
 Match the opclass to the entry's `distance` (`vector_cosine_ops`,
-`vector_l2_ops`, `vector_ip_ops`). Above 2000 dimensions both
-non-manual modes refuse and suggest a `halfvec` expression index.
+`vector_l2_ops`, `vector_ip_ops`). In the extension, above 2000 dimensions both
+non-manual modes refuse and suggest a `halfvec` expression index. Managed
+builds a `halfvec` expression above 2000 dimensions.
 
 `immediate` is refused for [chunked](/docs/guides/chunking) entries.
 Index the destination after backfill.
 
 ## Auto-build eligibility
 
-Active · `index_error IS NULL` · no live migration (including
-`awaiting_index`) · not cursor-backfilling · no pending or claimed job ·
-dim <= 2000 · no usable index yet.
+In the extension the automatic build needs all of: registry state `active`,
+`index_error IS NULL`, no live migration (including `awaiting_index`), no
+cursor backfill, no pending or claimed job, `dim <= 2000` and no usable index
+yet.
 
 A failed automatic build records `status().index_error` and stops
 retrying. An explicit `create_vector_index()` call clears the error
@@ -66,7 +73,8 @@ suitable user-created index passes.
 ## Constraints
 
 :::: danger `auto` performs a blocking index build
-The worker runs `CREATE INDEX` and stops embedding for the duration.
+In the extension the worker runs `CREATE INDEX` and stops embedding for
+the duration.
 ::::
 
 :::: danger Index ownership follows who created the index

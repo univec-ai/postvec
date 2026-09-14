@@ -21,7 +21,8 @@ loads it and keeps it enabled across restarts.
 :::: tip Expected
 The plan lists the requested model, engine dependencies, download size, peak
 disk and licences, and ends by naming the `model activate` command. After
-`--yes`, `model ls` shows STATE `deactivated`; after `model activate`, `loaded`.
+`--yes`, `model ls` shows STATE `deactivated (CLI)`; after `model activate`,
+`loaded (CLI)`.
 `SELECT vector_dims(postvec.embed('...', 'baai-bge-m3')::vector)` returns
 **1024** for BGE-M3 once the model is active.
 ::::
@@ -77,12 +78,13 @@ state.
   the whole set only when every member is enabled, so enabling only the
   named model would load nothing usable.
 - A bare `activate` (or `--all`) means every eligible CLI-installed model.
-- `deactivate` has no `--all`. Turning every model off in one flag would
-  take search down in a single step.
+- `deactivate` names its models, so no single command takes every model down
+  at once.
 - `deactivate` unloads first, then flips, so "deactivate returned an error"
   means "still on". `activate` flips first, then loads.
-- `--path DIR` flips descriptors only: no engine, no database. That is the
-  air-gapped staging form.
+- `--path DIR` flips descriptors only: no engine load and no SQL refresh.
+  With no cluster in scope it also skips the column-route acknowledgement.
+  That is the air-gapped staging form.
 - Both refuse package-owned and manual directories, and both refuse a model
   named in an explicit `postvec.embedded_models` (a listed model that is
   disabled fails engine **startup**, so change the list first).
@@ -130,11 +132,21 @@ postvec model show baai-bge-m3 --verify
 sudo postvec model rm baai-bge-m3 --dry-run
 ```
 
-- `ls` - name, type/dimension, size, owner, revision and STATE. STATE
-  reconciles the persistent switch against what the engine holds:
-  `loaded`, `deactivated`, `not loaded` (activated but absent; `doctor` warns),
-  or `loaded, deactivate pending` (an unload did not finish; `doctor` fails).
-  `?` means unknown, not current.
+- `ls` prints NAME, TYPE, DIM, SIZE, REV and STATE. STATE reconciles the
+  persistent `enabled` switch against what the engine holds, and names the
+  owner (`CLI`, `package` or `manual`) in brackets:
+  - `loaded (<owner>)` - enabled and loaded.
+  - `loaded, deactivate pending (<owner>)` - loaded although deactivated; an
+    unload did not finish. `doctor` fails.
+  - `deactivated (<owner>)` - not enabled, and not loaded.
+  - `not loaded (<owner>)` - enabled but absent from the engine. `doctor`
+    warns.
+  - `on disk (<owner>)` - enabled, and no engine answered to report the
+    loaded state.
+- `ls --available` lists the catalogue instead: NAME, TYPE, DIM, SIZE,
+  ACCESS, LICENSE, REV, UPDATE and STATE, where STATE is `installed`,
+  `-` or `withdrawn`. UPDATE prints `?` when the installed copy records no
+  revision, and both columns print `?` when no engine root is resolvable.
 - `show --verify` hashes every file against the receipt. Works offline, and
   passes on a deactivated model: the receipt covers the descriptor that was
   actually installed.
@@ -166,9 +178,9 @@ sudo postvec --cluster 18/main model pull baai-bge-m3 --dry-run
 ```
 
 :::: tip Expected
-In remote mode the cluster-targeted `pull` names the server root and
-stops. Put model files on each `postvec-server` node (CLI, [dashboard](/docs/server/dashboard),
-or `--path` on that host).
+In remote mode a cluster-targeted `pull` stops with a remote-inference
+refusal and names `--path`. Put model files on each `postvec-server` node
+(CLI, [dashboard](/docs/server/dashboard), or a staged `--path` copy).
 ::::
 
 ## Credential scope

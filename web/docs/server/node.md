@@ -5,19 +5,24 @@ description: Docker, packages or a source build for the companion inference serv
 
 # Install postvec-server
 
-After install you have a process serving gRPC on `33333` and discovery
-on `22222`, with at least one model loaded. Point PostgreSQL at it with
-[Connect PostgreSQL](/docs/server/connect), or attach a managed database
-with [managed PostgreSQL](/docs/server/managed).
+A running node serves gRPC on `33333` and TLS discovery on `22222`. It is the
+inference host for [remote mode](/docs/server/usage). Embedded mode runs the
+engine inside the PostgreSQL process. Point PostgreSQL at the node with
+[Connect PostgreSQL](/docs/server/connect), or attach a managed database with
+[managed PostgreSQL](/docs/server/managed).
 
-Both containers together:
-[quick start remote](/docs/quickstart-remote).
-
-| Method | When |
+| Method | Choose it when |
 |---|---|
-| [Docker](/docs/server/docker) | Image with MiniLM already loaded |
-| [Packages](/docs/server/packages) | `.deb` / `.rpm` and a systemd unit |
-| [From source](/docs/server/source) | A checkout, no PostgreSQL headers |
+| [Docker](/docs/server/docker) | You want the bundled MiniLM model and no host setup. The container generates its own certificate at start |
+| [Packages](/docs/server/packages) | You want the systemd unit, the packaged configuration file and upgrades through `apt` or `dnf` |
+| [From source](/docs/server/source) | You need a build the packages do not ship, such as a GPU build, or you work on the code |
+
+The image and the packages carry the CPU build. A GPU node is a source build
+with the `ort-cuda` or `ort-tensorrt` Cargo feature; see
+[From source](/docs/server/source).
+
+The Docker image pairs with the remote PostgreSQL image in
+[quick start remote](/docs/quickstart-remote).
 
 ::: warning License
 `postvec-server` is **Business Source License 1.1** (source-available).

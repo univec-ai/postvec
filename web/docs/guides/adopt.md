@@ -36,9 +36,9 @@ operator-supplied assertion. The catalogue checks that dimension against
 the named model. Confirm the model that produced the bytes before
 search or convert.
 
-To change what a column *claims* to be (re-attribution, not a provider
-switch), disable without dropping the vector column and adopt again
-with the new space name. Re-declare `format` if you had one.
+To re-attribute a column to a different space, disable without dropping
+the vector column and adopt again with the new space name. Re-declare
+`format` if you had one.
 
 ```sql
 SELECT postvec.disable('public.legacy', 'body', drop_column => false);
@@ -49,8 +49,8 @@ SELECT postvec.adopt(
 );
 ```
 
-Switching the *route* that produces vectors in the same space is
-configuration (`model prefer`), not this recipe.
+Switching the route that produces vectors in the same space is
+configuration (`model prefer`).
 
 An incorrect assertion makes `search()` embed the query into an
 incompatible space. `migrate(strategy => 'convert')` then converts
@@ -62,13 +62,16 @@ those bytes as if they belonged to the named model.
 |---|---|---|
 | `sync` | `true` | Install enqueue triggers |
 | `backfill` | `missing` | `missing` / `all` / `none` |
-| `backfill_mode` | `queue` | `cursor` refused with `all` |
-| `if_not_exists` | `false` | Return the existing id for a matching model and vector column |
+| `backfill_mode` | `queue` | `cursor` when the table holds more than 1,000,000 rows; `all` needs `queue` |
+| `if_not_exists` | `false` | Return the existing id when the model and vector column match |
 | `create_fts_index` | `false` | Build a GIN for the [BM25](/docs/guides/bm25) leg |
 | `fts_config` | `pg_catalog.english` | Text-search configuration |
 | others | same as `enable()` | distance, format, index_mode |
 
-`sync` and `backfill` are independent options.
+`sync` installs the write path; `backfill` performs the one-time pass over
+existing rows. A `queue` backfill enqueues the eligible rows inside the calling
+transaction. Above 1,000,000 existing rows `adopt()` refuses it and names
+`cursor`, which the worker feeds in bounded chunks.
 
 ## Observed (read-only) adoption
 
@@ -125,3 +128,11 @@ Columns with uncertain provenance should be rebuilt, or backfilled with
 A `NOT NULL` vector column is refused for synchronized adoption. Remove
 the constraint first, or use observed mode with `backfill => 'none'`.
 ::::
+
+## Where inference runs
+
+Search and backfill embed through the inference host: the PostgreSQL process
+by default. [postvec-server](/docs/server/) runs the same jobs in a separate
+process. In remote mode the model inventory and the bridge chain for a retired
+space are administered on the server ([models on
+postvec-server](/docs/server/models)).

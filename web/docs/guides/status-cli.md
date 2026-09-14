@@ -47,8 +47,11 @@ postvec-server status
 curl -sk https://127.0.0.1:22222/ready
 ```
 
-`status` prints version, engine root, addresses and loaded models.
-`/ready` is `200` once a model can serve.
+`status` prints the binary version, the resident models, and every
+member of the cluster with its address, status and version. `/ready`
+answers `200` once a model can serve, and `503` with a reason before the
+first model loads and during a drain.
 
-Column queues and worker counters: [status (SQL)](/docs/guides/status).
-Symptom table: [troubleshooting](/docs/troubleshooting).
+See [status (SQL)](/docs/guides/status) for column queues and worker
+counters, and [troubleshooting](/docs/troubleshooting) for the symptom
+table.
