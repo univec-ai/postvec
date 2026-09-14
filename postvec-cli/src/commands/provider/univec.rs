@@ -675,6 +675,7 @@ mod tests {
         };
         assert!(err(&["openai"]).contains("--model is required"));
         assert!(err(&["openai", "--model", "m", "--convert-to", "x"]).contains("univec"));
+        assert!(err(&["cohere", "--model", "m", "--api-key-from-login"]).contains("univec"));
         assert!(err(&["univec", "--convert", "ab"]).contains("SRC:DST"));
         assert!(err(&["univec", "--convert", ":b"]).contains("SRC:DST"));
         assert!(err(&["univec", "--no-catalog"]).contains("nothing to add"));

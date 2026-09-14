@@ -7,15 +7,21 @@
 # has owned a lease file or a home directory is not one to reuse.
 set -e
 
+# uid/gid 999 when free (always in the image, whose USER is numeric);
+# otherwise the next free system id.
+free_999() { getent "$1" 999 >/dev/null 2>&1 || echo 999; }
+
 if ! getent group postvec-server >/dev/null 2>&1; then
-    groupadd --system postvec-server
+    gid="$(free_999 group)"
+    groupadd --system ${gid:+--gid "$gid"} postvec-server
 fi
 if ! getent passwd postvec-server >/dev/null 2>&1; then
+    uid="$(free_999 passwd)"
     # --no-create-home: /opt/postvec is package-owned and unpacked right
     # after this, so useradd must not race it into existence with the wrong
     # mode. /usr/sbin/nologin exists on every supported distribution (all of
     # them are merged-/usr).
-    useradd --system --gid postvec-server \
+    useradd --system ${uid:+--uid "$uid"} --gid postvec-server \
         --home-dir /opt/postvec --no-create-home \
         --shell /usr/sbin/nologin \
         --comment "postvec inference node" \

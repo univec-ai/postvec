@@ -29,8 +29,8 @@ The container generates a self-signed certificate at start, per
 container. Mount a pair over `/etc/postvec-server/server.crt` and
 `server.key`, or pass `--ssl-cert` / `--ssl-cert-key`. A bind mount
 keeps the host's numeric owner, so a mounted key must be readable by the
-`postvec-server` account the image runs as; a Compose secret with a
-matching `uid` and `mode: 0400` is one way. The admin port is not
+`postvec-server` account the image runs as (uid and gid `999`); a Compose
+secret with `uid: "999"` and `mode: 0400` is one way. The admin port is not
 exposed.
 
 :::: info Optional

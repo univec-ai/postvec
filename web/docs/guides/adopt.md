@@ -63,7 +63,7 @@ those bytes as if they belonged to the named model.
 | `sync` | `true` | Install enqueue triggers |
 | `backfill` | `missing` | `missing` / `all` / `none` |
 | `backfill_mode` | `queue` | `cursor` when the table holds more than 1,000,000 rows; `all` needs `queue` |
-| `if_not_exists` | `false` | Return the existing id when the model and vector column match |
+| `if_not_exists` | `false` | Return the existing id when the entry already has these options; a difference raises, as for [`enable()`](/docs/guides/enable) |
 | `create_fts_index` | `false` | Build a GIN for the [BM25](/docs/guides/bm25) leg |
 | `fts_config` | `pg_catalog.english` | Text-search configuration |
 | others | same as `enable()` | distance, format, index_mode |

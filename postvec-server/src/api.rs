@@ -68,7 +68,13 @@ pub async fn model_details(
         };
     }
     if state.gateway.owns(&model) {
-        return native_ok(json!({ "inputs": [], "outputs": [], "provider": true }));
+        return native_err(
+            StatusCode::OK,
+            format!(
+                "model {model:?} is served by an external provider and has no local layers to \
+                 describe; POST /api/{model} or /api/openai/embeddings runs it"
+            ),
+        );
     }
     native_err(StatusCode::OK, not_loaded(&model))
 }

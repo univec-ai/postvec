@@ -267,6 +267,15 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT state='awaiting_finalize' FROM postvec.migrations WHERE id=2",
     )
     .await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT resolved_via->>'kind' FROM postvec.migrations WHERE id=2"
+        )
+        .fetch_one(&mut db)
+        .await?
+            == "direct",
+        "a converter route is recorded as direct, as in the extension"
+    );
     db.execute("SELECT postvec.migration_finalize(2)").await?;
     ensure!(
         sqlx::query_scalar::<_, String>("SELECT v::text FROM converted")

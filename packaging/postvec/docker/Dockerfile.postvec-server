@@ -66,7 +66,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     test -d /opt/postvec/libs; \
     test -d /opt/postvec/models; \
     test -f /opt/postvec/server/ui/index.html; \
-    getent passwd postvec-server >/dev/null
+    test "$(id -u postvec-server):$(id -g postvec-server)" = 999:999
 
 COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
 
@@ -88,7 +88,8 @@ RUN set -eux; \
     chown -R postvec-server:postvec-server /opt/postvec /etc/postvec-server; \
     chmod 0750 /etc/postvec-server; \
     install -d -m 1775 -o root -g postvec-server /run/lock/postvec
-USER postvec-server
+# postvec-server, numeric so Kubernetes runAsNonRoot can verify it.
+USER 999:999
 
 # 22222 discovery, HTTP inference and the dashboard (HTTPS), 33333 gRPC
 # (plaintext), 11111 gossip. The admin port

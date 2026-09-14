@@ -86,15 +86,18 @@ leg, GIN and corpus stats: [BM25](/docs/guides/bm25).
 | `backfill_mode` | `queue` | `cursor` when the table holds more than 1,000,000 rows |
 | `format` | raw column | See [templates](/docs/guides/templates) |
 | `chunking` | `none` | See [chunking](/docs/guides/chunking) |
-| `if_not_exists` | `false` | Return the existing id when the model and vector column match; scripts that rerun |
+| `if_not_exists` | `false` | Return the existing id when the entry already has these options; scripts that rerun |
 
 A `queue` backfill enqueues every eligible row inside the calling transaction,
 with the relation lock held. Above 1,000,000 existing rows `enable()` refuses it
 and names `cursor`; the worker then feeds the backfill in bounded chunks.
 
-`if_not_exists` compares the model and the vector column only. A re-run with
-those two unchanged returns the existing id; other options in the same call are
-ignored. Reconfigure with `disable()` then `enable()`.
+`if_not_exists` compares `model`, `vector_column`, `distance`, `trigger_mode`,
+`index_mode`, `fts_config`, `format` and the chunking settings with the existing
+entry. When they match it returns the existing id; a difference raises and
+names it. `backfill`, `backfill_mode` and `create_fts_index` act once, at
+creation, and are not compared. Reconfigure with `disable()` then `enable()`,
+or change a template with `set_format()`.
 
 Statement triggers fire on the publisher. Subscriber-applied logical
 replication skips them, so run postvec on the **publisher**. On a

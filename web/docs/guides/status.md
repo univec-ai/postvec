@@ -28,17 +28,19 @@ SELECT relation, model, dim, state,
 |---|---|
 | Backfill done | `pending_jobs = 0` (and refresh/embed = 0 if chunked) |
 | Failures | `dead_jobs`, `last_error` |
-| Worker alive | `worker_last_beat` **advances**; on managed PostgreSQL, the `worker_alive` column |
+| Worker alive | `worker_alive` |
 | Search will be fast | `has_vector_index` |
 | Automatic index build paused after failure | `index_error` |
 | BM25 corpus stats | `lexical_docs`, `lexical_stats_age_seconds`, `lexical_error` |
 | Quarantined entry | `state` (source/vector/template column vanished) |
 
-A heartbeat row survives a worker crash. Health requires the timestamp to advance between samples.
+The first column, `worker_alive`, reads the age of the `postvec.worker_heartbeat`
+row, which survives a worker crash: true while the last beat is within
+`heartbeat_interval_ms` plus three `poll_interval_ms` ticks plus 2 s, the budget
+`postvec doctor` uses.
 
-On [managed PostgreSQL](/docs/server/managed) the first column is `worker_alive`,
-a boolean read from the `postvec.worker_heartbeat` row: true when the last beat is
-less than 30 seconds old. The same signal drives the dashboard's Databases page
+On [managed PostgreSQL](/docs/server/managed) `worker_alive` is true when the
+last beat is less than 30 seconds old. The same signal drives the dashboard's Databases page
 and `GET /admin/managed`; the route also reports the leader node, the queue depth
 and the dead-letter count. The worker there runs in postvec-server, so a stopped
 server reports `worker_alive = false` while the database stays up.

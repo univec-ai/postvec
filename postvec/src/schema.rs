@@ -110,7 +110,11 @@ mod tests {
             ),
             (
                 "jobs_embed_claim_order",
-                vec!["not_before, id", "claimed_at IS NULL", "op = 'embed'"],
+                vec![
+                    "registry_id, not_before, id",
+                    "claimed_at IS NULL",
+                    "op = 'embed'",
+                ],
             ),
             (
                 "jobs_refresh_claim_order",

@@ -186,6 +186,9 @@ fn reclaim_stale(vis_secs: f64, max_retries: i32, registry_ids: &[i64]) {
     );
 }
 
+/// The registry id the last claim served; the next claim starts after it.
+static CLAIM_CURSOR: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
 /// Resolve and pin every relation whose jobs this transaction may touch.
 ///
 /// Lifecycle verbs take relation locks before registry/job rows. Claiming a
@@ -196,16 +199,27 @@ fn reclaim_stale(vis_secs: f64, max_retries: i32, registry_ids: &[i64]) {
 /// claim is restricted to the returned IDs, and a new candidate waits for the
 /// next cycle. Invalid entries are quarantined while the correct relation
 /// locks are held, before any job row is claimed.
+///
+/// Candidates are the next entry with due work after the last one served
+/// (round-robin, so one entry's backlog cannot hold back the others) plus
+/// the entries holding stale claims.
 fn prepare_claim_entries(batch: i32, vis_secs: f64) -> Vec<i64> {
     let ids: Vec<i64> = Spi::connect(|c| {
         let table = c
             .select(
                 "SELECT DISTINCT registry_id
                    FROM (
-                         (SELECT registry_id FROM postvec.jobs
-                           WHERE claimed_at IS NULL AND not_before <= now()
-                             AND op = 'embed'
-                           ORDER BY not_before, id LIMIT $1)
+                         (SELECT registry_id FROM (
+                              (SELECT registry_id FROM postvec.jobs
+                                WHERE claimed_at IS NULL AND not_before <= now()
+                                  AND op = 'embed' AND registry_id > $3
+                                ORDER BY registry_id LIMIT 1)
+                              UNION ALL
+                              (SELECT registry_id FROM postvec.jobs
+                                WHERE claimed_at IS NULL AND not_before <= now()
+                                  AND op = 'embed'
+                                ORDER BY registry_id LIMIT 1)
+                          ) next_entry LIMIT 1)
                          UNION ALL
                          (SELECT registry_id FROM postvec.jobs
                            WHERE claimed_at < now() - make_interval(secs => $2)
@@ -213,7 +227,13 @@ fn prepare_claim_entries(batch: i32, vis_secs: f64) -> Vec<i64> {
                         ) candidates
                   ORDER BY registry_id",
                 None,
-                &[(batch as i64).into(), vis_secs.into()],
+                &[
+                    (batch as i64).into(),
+                    vis_secs.into(),
+                    CLAIM_CURSOR
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        .into(),
+                ],
             )
             .expect("postvec: claim candidate scan failed");
         table
@@ -221,6 +241,9 @@ fn prepare_claim_entries(batch: i32, vis_secs: f64) -> Vec<i64> {
             .map(|r| r.get::<i64>(1).unwrap().unwrap())
             .collect()
     });
+    if let Some(last) = ids.last() {
+        CLAIM_CURSOR.store(*last, std::sync::atomic::Ordering::Relaxed);
+    }
 
     let mut prepared = Vec::with_capacity(ids.len());
     for id in ids {
@@ -249,10 +272,9 @@ fn prepare_claim_entries(batch: i32, vis_secs: f64) -> Vec<i64> {
 /// before any network I/O; a crash between claim and write-back re-delivers
 /// after `vis_secs` (the visibility timeout, via [`reclaim_stale`]).
 ///
-/// Ordered by `(not_before, id)` — FIFO by due time, matching the
-/// `jobs_embed_claim_order` partial index exactly, so a claim is an ordered index
-/// scan that stops at the LIMIT (no per-claim sort of the whole backlog) and
-/// no entry can starve another.
+/// FIFO by `(not_before, id)` within the entries [`prepare_claim_entries`]
+/// picks. `jobs_embed_claim_order` leads with `registry_id`, so a claim is an
+/// ordered index scan that stops at the LIMIT.
 fn claim_batch(batch: i32, vis_secs: f64) -> Vec<Claimed> {
     let registry_ids = prepare_claim_entries(batch, vis_secs);
     if registry_ids.is_empty() {
@@ -1823,6 +1845,31 @@ mod tests {
         assert_eq!(called_model, "embed-bridge");
         assert_eq!(called_route.bridge_model.as_deref(), Some("m"));
         assert_eq!(called_route.target_model.as_deref(), Some("ext"));
+    }
+
+    #[pg_test]
+    fn claims_round_robin_over_entries() {
+        enable_docs(3);
+        Spi::run(
+            "CREATE TABLE notes (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, body text)",
+        )
+        .unwrap();
+        Spi::get_one::<i64>("SELECT postvec.enable('notes','body','m', backfill => false)")
+            .unwrap();
+        Spi::run("INSERT INTO docs (body) SELECT 'd' || g FROM generate_series(1, 5) g").unwrap();
+        Spi::run("INSERT INTO notes (body) VALUES ('newer')").unwrap();
+        let entries = || -> std::collections::BTreeSet<i64> {
+            claim_batch(2, 300.0)
+                .iter()
+                .map(|c| c.registry_id)
+                .collect()
+        };
+        let (first, second) = (entries(), entries());
+        assert_eq!((first.len(), second.len()), (1, 1), "one entry per claim");
+        assert_ne!(
+            first, second,
+            "an older backlog does not hold back the next entry"
+        );
     }
 
     #[pg_test]

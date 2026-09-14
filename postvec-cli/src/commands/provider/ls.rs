@@ -76,8 +76,14 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
     let mut providers = Vec::new();
     let mut errors = Vec::new();
     let files = provider_files(&dir).map_err(|e| {
-        crate::error::CliError::precondition(e)
-            .with_fix("the serving host cannot scan this directory either; fix its permissions")
+        let denied = std::fs::read_dir(&dir)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        crate::error::CliError::precondition(e).with_fix(if denied {
+            "connector files are private to the account that serves them: rerun with sudo or \
+             as that account; `postvec provider ls --available` needs no privilege"
+        } else {
+            "the serving host cannot scan this directory either; fix its permissions"
+        })
     })?;
     for path in files {
         let stem = path

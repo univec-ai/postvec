@@ -499,7 +499,7 @@ if [[ -n "${PG_MAJOR}" ]]; then
     say "checking that PostgreSQL ${PG_MAJOR} and pgvector resolve"
     check_available "${PG_MAJOR}" || die "the repositories are configured but PostgreSQL ${PG_MAJOR}
 does not resolve. PGDG may not carry that major for this distribution."
-    printf '\n\033[1;32mready\033[0m — now install the packages you downloaded:\n\n' >&2
+    printf '\n\033[1;32mready\033[0m — nothing is installed yet. Install the packages you downloaded;\nPostgreSQL %s and pgvector come in as their dependencies:\n\n' "${PG_MAJOR}" >&2
     case "${FAMILY}" in
     deb) printf '    sudo apt install ./postvec-cli_*.deb ./postgresql-%s-postvec_*.deb\n\n' "${PG_MAJOR}" >&2 ;;
     rpm) printf '    sudo dnf install ./postvec-cli-*.rpm ./postgresql%s-postvec-*.rpm\n\n' "${PG_MAJOR}" >&2 ;;

@@ -15,7 +15,7 @@ routes. Two contracts are served:
 | `POST /api/convert` | `{"source_model", "target_model", "embeddings": [[...]]}`: resolves the converter for the pair (a local one wins over a provider) and runs it; the SQL `convert()` over HTTP. `404` when no converter serves the pair. |
 | `POST /api/{model}` | Native. The request body is keyed like the model's `executor.inputs`; the reply is the `{success, data}` envelope. Works for every model type, converters included. |
 | `POST /api/openai/embeddings` | OpenAI `/v1/embeddings`. Embed models only. |
-| `GET /api/{model}` | The model's input and output layers, native envelope. For a provider-backed model the `data` field is the fixed stub `{"inputs": [], "outputs": [], "provider": true}`. |
+| `GET /api/{model}` | The model's input and output layers, native envelope. A provider-backed model has none on the node: `success: false`, with a message naming `POST /api/{model}` and `/api/openai/embeddings`. |
 
 These routes are unauthenticated, like gRPC. Keep them on a private
 network; see [security](/docs/security).
@@ -94,8 +94,8 @@ Token IDs as `input` are refused: the node tokenizes text itself.
 ## Provider-backed models
 
 Models served through an [external provider](/docs/models/providers) answer the
-native and OpenAI routes too. `GET /api/{model}` returns the stub in the table
-above, because the layers live with the provider rather than on the node.
+native and OpenAI routes too. `GET /api/{model}` answers `success: false` for
+them, because the layers live with the provider rather than on the node.
 Provider entries have no post-processing of their own, so `dimensions` and
 `encoding_format: base64` are refused for them instead of being silently
 ignored. The native reply carries the embeddings alone; the OpenAI envelope

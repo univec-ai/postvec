@@ -225,6 +225,7 @@ async fn exercise(dsn: &str) -> Result<()> {
     for repeat in [
         "SELECT postvec.enable('pk_changes','body','fixture')",
         "SELECT postvec.enable('pk_changes','body','other',if_not_exists=>true)",
+        "SELECT postvec.enable('pk_changes','body','fixture',distance=>'l2',if_not_exists=>true)",
     ] {
         let error = db
             .execute(repeat)

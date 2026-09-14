@@ -139,9 +139,9 @@ related source row changes again.
   WARNING.
 - `enable()` on a live entry is refused. Disable the entry, then enable it
   again with the new splitter settings. `if_not_exists => true` returns the
-  existing registry id instead: the early return compares `model` and
-  `vector_column` only, so a re-run with a different `chunking`, `chunk_size`
-  or `chunk_overlap` leaves the old splitter in place.
+  existing registry id only when `chunking`, `chunk_size`, `chunk_overlap` and
+  `destination` match too; a re-run with a different splitter raises and names
+  the difference.
 
 Chunk jobs run on the same worker as column jobs: on an embedded host inside
 the PostgreSQL process, or on [postvec-server](/docs/server/) in a separate

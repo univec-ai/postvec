@@ -125,14 +125,16 @@ BEGIN
     PERFORM postvec.worker_kick(); RETURN NULL;
 END $$;
 
-CREATE OR REPLACE FUNCTION postvec._existing(relation regclass, col text, model_name text, vec text) RETURNS bigint
+DROP FUNCTION IF EXISTS postvec._existing(regclass,text,text,text);
+CREATE OR REPLACE FUNCTION postvec._existing(relation regclass, col text, want jsonb) RETURNS bigint
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE r postvec.registry;
+DECLARE r postvec.registry; drift text;
 BEGIN
     SELECT * INTO r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation AND source_column=col AND state<>'disabled';
     IF NOT FOUND THEN RETURN NULL; END IF;
-    IF r.model<>model_name OR r.vector_column<>vec THEN
-        RAISE EXCEPTION '%.% is already enabled with model % and vector column %',relation,col,r.model,r.vector_column;
+    SELECT string_agg(format('%s %s (requested %s)',k,to_jsonb(r)->k,v),', ' ORDER BY k) INTO drift FROM jsonb_each(want) e(k,v) WHERE to_jsonb(r)->k IS DISTINCT FROM v;
+    IF drift IS NOT NULL THEN
+        RAISE EXCEPTION '%.% is already enabled with %; disable() it first to change them',relation,col,drift;
     END IF;
     RETURN r.id;
 END $$;
@@ -212,7 +214,9 @@ DECLARE rid bigint;
 BEGIN
     IF trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid trigger mode'; END IF;
     IF if_not_exists THEN
-        rid:=postvec._existing(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'));
+        rid:=postvec._existing(relation::regclass,column_name,jsonb_build_object('model',model,'vector_column',coalesce(vector_column,column_name||'_semantic'),'distance',distance,'trigger_mode',trigger_mode,'index_mode',index_mode,'fts_config',fts_config::regconfig,'format',format,'chunking',chunking,
+            'chunk_size',CASE WHEN chunking='recursive' THEN coalesce(chunk_size,1000) END,'chunk_overlap',CASE WHEN chunking='recursive' THEN coalesce(chunk_overlap,200) END)
+            || CASE WHEN chunking='recursive' AND destination IS NOT NULL THEN jsonb_build_object('destination_table',(parse_ident(destination))[cardinality(parse_ident(destination))]) ELSE '{}' END);
         IF rid IS NOT NULL THEN RETURN rid; END IF;
     END IF;
     RETURN postvec._register(relation::regclass,column_name,model,coalesce(vector_column,column_name||'_semantic'),false,trigger_mode,CASE WHEN backfill THEN backfill_mode ELSE 'none' END,distance,fts_config,create_fts_index,format,index_mode,chunking,coalesce(chunk_size,1000),coalesce(chunk_overlap,200),destination);
@@ -224,7 +228,7 @@ DECLARE rid bigint;
 BEGIN
     IF backfill NOT IN ('missing','all','none') OR trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid adoption option'; END IF;
     IF if_not_exists THEN
-        rid:=postvec._existing(relation::regclass,column_name,model,vector_column);
+        rid:=postvec._existing(relation::regclass,column_name,jsonb_build_object('model',model,'vector_column',vector_column,'distance',distance,'trigger_mode',CASE WHEN sync THEN trigger_mode ELSE 'none' END,'index_mode',index_mode,'fts_config',fts_config::regconfig,'format',format));
         IF rid IS NOT NULL THEN RETURN rid; END IF;
     END IF;
     rid:=postvec._register(relation::regclass,column_name,model,vector_column,true,CASE WHEN sync THEN trigger_mode ELSE 'none' END,CASE WHEN backfill='none' THEN 'none' ELSE backfill_mode END,distance,fts_config,create_fts_index,format,index_mode,'none',NULL,NULL,NULL);
@@ -275,7 +279,7 @@ BEGIN
     IF r.trigger_mode='none' AND NOT observed_writes_quiesced THEN RAISE EXCEPTION 'observed writes must be quiesced'; END IF;
     SELECT name INTO converter FROM postvec.models WHERE model_type='convert' AND source_model=COALESCE(r.space,r.model) AND target_model=COALESCE((SELECT space FROM postvec._route(new_model)),new_model) ORDER BY (raw->'extra'->>'provider') IS NOT NULL,name LIMIT 1;
     IF strategy='convert' AND converter IS NULL THEN RAISE EXCEPTION 'no direct converter'; END IF;
-    via:=CASE WHEN strategy='reembed' OR converter IS NULL THEN jsonb_build_object('kind','reembed') ELSE jsonb_build_object('kind','convert','model',converter) END;
+    via:=CASE WHEN strategy='reembed' OR converter IS NULL THEN jsonb_build_object('kind','reembed') ELSE jsonb_build_object('kind','direct','model',converter) END;
     via:=via || jsonb_build_object('space',COALESCE((SELECT space FROM postvec._route(new_model)),new_model));
     dimension:=COALESCE((SELECT dim FROM postvec._route(new_model) WHERE dim>0),(SELECT target_dim FROM postvec.models WHERE model_type='convert' AND target_model=new_model AND target_dim>0 ORDER BY name LIMIT 1));
     IF dimension IS NULL THEN RAISE EXCEPTION 'target dimension unavailable'; END IF;

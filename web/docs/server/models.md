@@ -141,8 +141,9 @@ If two connector files claim the same public name, neither serves. A
 `[[models]]` entry whose name is already served by a local engine model is
 refused at load, because a public name has exactly one owner: the host refuses
 the whole connector file and reports the collision in the reload result, so
-the entry never mounts. `postvec doctor` lists those models as configured but
-not served. Rename the entry in the file.
+the entry never mounts. A model pulled and loaded after the last reload serves
+its name at once, and the next reload refuses the file. `postvec doctor` lists
+those models as configured but not served. Rename the entry in the file.
 
 Format, key sources and the rest: [external
 providers](/docs/models/providers), then [connector

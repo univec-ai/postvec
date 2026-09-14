@@ -142,9 +142,9 @@ CREATE UNIQUE INDEX jobs_pending_dedup
     WHERE claimed_at IS NULL;
 -- exactly the claim queries' shapes: each claimant orders by (not_before,
 -- id) over its own op only, so neither ever scans through the other's
--- backlog.
+-- backlog. Embed claims round-robin over entries, hence registry_id first.
 CREATE INDEX jobs_embed_claim_order
-    ON postvec.jobs (not_before, id)
+    ON postvec.jobs (registry_id, not_before, id)
     WHERE claimed_at IS NULL AND op = 'embed';
 CREATE INDEX jobs_refresh_claim_order
     ON postvec.jobs (not_before, id)

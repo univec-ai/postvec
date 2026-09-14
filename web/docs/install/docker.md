@@ -78,10 +78,11 @@ unsupported.
 
 ## Environment
 
-The `_FILE` secret form is available for `POSTGRES_USER`, `POSTGRES_DB`,
-`POSTVEC_DATABASES` and `POSTVEC_SHARED_PRELOAD_LIBRARIES`. The file is
-read when the plain variable is unset; setting both forms is an error.
-The other variables in the table come from the environment.
+`POSTGRES_USER`, `POSTGRES_DB` and the `POSTVEC_*` variables accept the
+`_FILE` secret form. The file is read when the plain variable is unset;
+setting both forms is an error. `POSTVEC_PROVIDERS_PATH` and
+`POSTVEC_HEALTHCHECK_*` are read by `docker exec` commands, which never see
+the entrypoint, so their `_FILE` form is refused at start.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -121,7 +122,7 @@ readable by other users, so a bind mount has to carry the right mode and
 owner. With Compose secrets, mount the secret with an explicit
 `mode: 0400` and `uid: "999"` and reference it as `api_key_file`.
 `POSTGRES_PASSWORD_FILE` and the other PostgreSQL variables use the
-official entrypoint's `_FILE` handling; postvec's own four are listed
+official entrypoint's `_FILE` handling; postvec's own are described
 above. Either way the file has to be readable by the container's
 `postgres` uid and by nobody else.
 

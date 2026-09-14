@@ -50,9 +50,10 @@ pub fn config_models(configs: &[ModelConfiguration]) -> Vec<Value> {
 }
 
 /// [`config_models`] plus the provider gateway's descriptors (already in
-/// the nested HubModel shape), appended after the engine's own models. A
-/// public name that collides with a local model is skipped: the local model
-/// wins, same rule as the gRPC dispatch.
+/// the nested HubModel shape), appended after the engine's own models. The
+/// gateway refuses a connector file naming a local model at (re)load; a model
+/// pulled and loaded since the last reload is skipped here, as the gRPC
+/// dispatch does, until the next reload refuses the file.
 pub fn merged_config_models(
     configs: &[ModelConfiguration],
     gateway: &providers::gateway::Gateway,
@@ -61,12 +62,10 @@ pub fn merged_config_models(
     for descriptor in gateway.models() {
         let name = descriptor["name"].as_str().unwrap_or_default();
         if configs.iter().any(|cfg| cfg.name == name) {
-            // Debug: `/config` is polled on every discovery refresh, and a
-            // deliberate collision is a steady state. `provider ls` and
-            // `postvec doctor` report the collision where it is actionable.
+            // Debug: `/config` is polled on every discovery refresh.
             log::debug!(
-                "provider model {name:?} collides with a local engine model; \
-                 the local model wins and the provider entry is not served"
+                "provider model {name:?} is now served by a local engine model; \
+                 reload providers to refuse its connector file"
             );
             continue;
         }

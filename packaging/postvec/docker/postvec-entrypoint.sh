@@ -52,6 +52,13 @@ file_env POSTGRES_USER postgres
 file_env POSTGRES_DB "${POSTGRES_USER}"
 file_env POSTVEC_DATABASES "${POSTGRES_DB}"
 file_env POSTVEC_SHARED_PRELOAD_LIBRARIES ""
+for file_var in $(compgen -e); do
+    case "${file_var}" in
+    POSTVEC_PROVIDERS_PATH_FILE | POSTVEC_HEALTHCHECK_*_FILE)
+        usage "${file_var} is not supported: docker exec commands read ${file_var%_FILE} directly" ;;
+    POSTVEC_*_FILE) file_env "${file_var%_FILE}" ;;
+    esac
+done
 
 # `${VAR-default}`, not `${VAR:-default}`: an empty POSTVEC_MODE is user
 # error and must say so. Compose renders an undefined interpolation as the

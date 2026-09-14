@@ -1634,6 +1634,36 @@ fn create_chunk_triggers(entry: &RegistryEntry, mode: &str) {
     }
 }
 
+/// `if_not_exists`: the entry's id when every requested option matches it;
+/// otherwise refuse, naming each difference.
+fn existing_entry_id(prior: &RegistryEntry, mut requested: serde_json::Value) -> i64 {
+    if let Some(fts) = requested["fts_config"].as_str().map(str::to_string) {
+        requested["fts_config"] =
+            Spi::get_one_with_args::<String>("SELECT $1::regconfig::text", &[fts.as_str().into()])
+                .ok()
+                .flatten()
+                .into();
+    }
+    let stored = serde_json::to_value(prior).unwrap_or_default();
+    let drift: Vec<String> = requested
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(key, want)| stored.get(key.as_str()) != Some(*want))
+        .map(|(key, want)| format!("{key} {} (requested {want})", stored[key.as_str()]))
+        .collect();
+    if drift.is_empty() {
+        return prior.id;
+    }
+    error!(
+        "postvec: {}.{}.{} is already enabled with {}; disable() it first to change them",
+        prior.table_schema,
+        prior.table_name,
+        prior.source_column,
+        drift.join(", ")
+    );
+}
+
 #[pg_extern]
 #[allow(clippy::too_many_arguments)]
 fn enable(
@@ -1688,16 +1718,24 @@ fn enable(
     if if_not_exists {
         if let Some(prior) = RegistryEntry::load_active(&rel.schema, &rel.table, column_name) {
             if prior.missing_dependency(&[]).is_none() && !prior.triggers_missing() {
-                let expected = vector_column
-                    .clone()
-                    .unwrap_or_else(|| format!("{column_name}_semantic"));
-                if prior.model == model && prior.vector_column == expected {
-                    return prior.id;
-                }
-                error!(
-                    "postvec: {}.{}.{column_name} is already enabled with model {:?} and vector \
-                     column {:?}",
-                    rel.schema, rel.table, prior.model, prior.vector_column
+                let spec = chunk_spec.as_ref();
+                return existing_entry_id(
+                    &prior,
+                    serde_json::json!({
+                        "model": model,
+                        "vector_column": vector_column
+                            .clone()
+                            .unwrap_or_else(|| format!("{column_name}_semantic")),
+                        "distance": distance,
+                        "trigger_mode": trigger_mode,
+                        "index_mode": index_mode,
+                        "fts_config": fts_config,
+                        "format": format,
+                        "chunking": if recursive { "recursive" } else { "none" },
+                        "chunk_size": spec.map(|s| s.size),
+                        "chunk_overlap": spec.map(|s| s.overlap),
+                        "destination_table": spec.map(|s| &s.destination),
+                    }),
                 );
             }
         }
@@ -1916,13 +1954,17 @@ fn adopt(
                     );
                 }
                 if if_not_exists {
-                    if prior.model == model && prior.vector_column == vector_column {
-                        return prior.id;
-                    }
-                    error!(
-                        "postvec: {}.{}.{column_name} is already enabled with model {:?} and \
-                         vector column {:?}",
-                        rel.schema, rel.table, prior.model, prior.vector_column
+                    return existing_entry_id(
+                        &prior,
+                        serde_json::json!({
+                            "model": model,
+                            "vector_column": vector_column,
+                            "distance": distance,
+                            "trigger_mode": if sync { trigger_mode.as_str() } else { "none" },
+                            "index_mode": index_mode,
+                            "fts_config": fts_config,
+                            "format": format,
+                        }),
                     );
                 }
                 error!(
@@ -5607,14 +5649,19 @@ mod tests {
         ] {
             assert_eq!(Spi::get_one::<i64>(repeat).unwrap(), id, "{repeat}");
         }
-        let r = std::panic::catch_unwind(|| {
-            Spi::get_one::<i64>(
-                "SELECT postvec.enable('docs','body','other', vector_column => 'embedding', \
-                 if_not_exists => true)",
-            )
-            .ok();
-        });
-        assert!(r.is_err(), "a different model is still refused");
+        for changed in [
+            "SELECT postvec.enable('docs','body','other', vector_column => 'embedding', \
+             if_not_exists => true)",
+            "SELECT postvec.enable('docs','body','m', vector_column => 'embedding', \
+             distance => 'l2', if_not_exists => true)",
+            "SELECT postvec.adopt('docs','body', vector_column => 'embedding', model => 'm', \
+             format => '$body', if_not_exists => true)",
+        ] {
+            let r = std::panic::catch_unwind(|| {
+                Spi::get_one::<i64>(changed).ok();
+            });
+            assert!(r.is_err(), "a changed option is refused: {changed}");
+        }
     }
 
     #[pg_test]

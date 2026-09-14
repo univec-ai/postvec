@@ -195,17 +195,24 @@ struct Job {
     oversized: bool,
 }
 
-pub(super) async fn step(conn: &mut PgConnection, client: &Client, db: &ManagedDb) -> Result<bool> {
+pub(super) async fn step(
+    conn: &mut PgConnection,
+    client: &Client,
+    db: &ManagedDb,
+    after: &mut i64,
+) -> Result<bool> {
     let mut tx = conn.begin().await?;
     guard(&mut tx).await?;
     let vis = client.visibility_secs();
     sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-make_interval(secs=>$1) AND attempts>=5 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,'worker repeatedly lost during inference',created_at FROM d").bind(vis).execute(&mut *tx).await?;
     sqlx::query("WITH old AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-make_interval(secs=>$1) RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,last_error) SELECT registry_id,pk_value,op,chunk_id,attempts,'reclaimed after worker loss' FROM old ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING").bind(vis).execute(&mut *tx).await?;
-    let id: Option<i64> = sqlx::query_scalar("SELECT j.registry_id FROM postvec.jobs j JOIN postvec.registry r ON r.id=j.registry_id WHERE j.op='embed' AND j.claimed_at IS NULL AND j.not_before<=now() AND r.state<>'disabled' ORDER BY j.not_before,j.id LIMIT 1") .fetch_optional(&mut *tx).await?;
+    // Round-robin over entries with due work, so one backlog cannot hold back the rest.
+    let id: Option<i64> = sqlx::query_scalar("SELECT r.id FROM postvec.registry r WHERE r.state<>'disabled' AND EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id AND j.op='embed' AND j.claimed_at IS NULL AND j.not_before<=now()) ORDER BY r.id<=$1,r.id LIMIT 1").bind(*after).fetch_optional(&mut *tx).await?;
     let Some(id) = id else {
         tx.commit().await?;
         return Ok(false);
     };
+    *after = id;
     let e = match entry(&mut tx, id, true).await {
         Ok(Some(e)) => e,
         Ok(None) => {

@@ -5,6 +5,14 @@
 # Read-only: no inference, no cache refresh, no writes.
 set -Eeuo pipefail
 
+# `docker exec` never sees the entrypoint's resolved _FILE secrets.
+for var in POSTGRES_USER POSTGRES_DB; do
+    file_var="${var}_FILE"
+    if [[ -z "${!var:-}" && -r "${!file_var:-}" ]]; then
+        printf -v "${var}" '%s' "$(< "${!file_var}")"
+    fi
+done
+
 user="${POSTGRES_USER:-postgres}"
 database="${POSTVEC_HEALTHCHECK_DATABASE:-${POSTGRES_DB:-${user}}}"
 # `${VAR-grpc}`, matching the entrypoint: an empty POSTVEC_MODE is user error,

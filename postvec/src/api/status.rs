@@ -10,6 +10,7 @@ use pgrx::prelude::*;
 fn status() -> TableIterator<
     'static,
     (
+        name!(worker_alive, bool),
         name!(registry_id, i64),
         name!(relation, String),
         name!(source_column, String),
@@ -55,8 +56,16 @@ fn status() -> TableIterator<
          quote_ident(COALESCE(r.destination_table, r.table_name)))",
         "r.vector_column",
     );
+    // The budget `postvec doctor` applies: one heartbeat interval, three poll
+    // ticks and 2 s of slack.
+    let alive_secs = ((crate::gucs::HEARTBEAT_INTERVAL_MS.get() as i64
+        + 3 * crate::gucs::POLL_INTERVAL_MS.get() as i64) as f64
+        / 1000.0
+        + 2.0)
+        .max(5.0);
     let q = format!(
-        "SELECT r.id,
+        "SELECT COALESCE(hb.last_beat > now() - make_interval(secs => {alive_secs}), false),
+                        r.id,
                         r.table_schema || '.' || r.table_name AS relation,
                         r.source_column, r.model, r.dim, r.state, r.distance,
                         r.backfill_mode,
@@ -127,37 +136,38 @@ fn status() -> TableIterator<
         t.into_iter()
             .map(|r| {
                 (
-                    r.get::<i64>(1).unwrap().unwrap(),
-                    r.get::<String>(2).unwrap().unwrap(),
+                    r.get::<bool>(1).unwrap().unwrap_or(false),
+                    r.get::<i64>(2).unwrap().unwrap(),
                     r.get::<String>(3).unwrap().unwrap(),
                     r.get::<String>(4).unwrap().unwrap(),
-                    r.get::<i32>(5).unwrap().unwrap(),
-                    r.get::<String>(6).unwrap().unwrap(),
+                    r.get::<String>(5).unwrap().unwrap(),
+                    r.get::<i32>(6).unwrap().unwrap(),
                     r.get::<String>(7).unwrap().unwrap(),
                     r.get::<String>(8).unwrap().unwrap(),
-                    r.get::<i64>(9).unwrap().unwrap(),
+                    r.get::<String>(9).unwrap().unwrap(),
                     r.get::<i64>(10).unwrap().unwrap(),
-                    r.get::<f64>(11).unwrap(),
-                    r.get::<bool>(12).unwrap().unwrap_or(false),
-                    r.get::<String>(13).unwrap(),
+                    r.get::<i64>(11).unwrap().unwrap(),
+                    r.get::<f64>(12).unwrap(),
+                    r.get::<bool>(13).unwrap().unwrap_or(false),
                     r.get::<String>(14).unwrap(),
-                    r.get::<i32>(15).unwrap(),
-                    r.get::<String>(16).unwrap(),
-                    r.get::<String>(17).unwrap().unwrap(),
-                    r.get::<String>(18).unwrap(),
-                    r.get::<String>(19).unwrap().unwrap(),
-                    r.get::<i32>(20).unwrap(),
+                    r.get::<String>(15).unwrap(),
+                    r.get::<i32>(16).unwrap(),
+                    r.get::<String>(17).unwrap(),
+                    r.get::<String>(18).unwrap().unwrap(),
+                    r.get::<String>(19).unwrap(),
+                    r.get::<String>(20).unwrap().unwrap(),
                     r.get::<i32>(21).unwrap(),
-                    r.get::<String>(22).unwrap(),
+                    r.get::<i32>(22).unwrap(),
                     r.get::<String>(23).unwrap(),
-                    r.get::<i64>(24).unwrap().unwrap_or(0),
+                    r.get::<String>(24).unwrap(),
                     r.get::<i64>(25).unwrap().unwrap_or(0),
                     r.get::<i64>(26).unwrap().unwrap_or(0),
-                    r.get::<f64>(27).unwrap(),
-                    r.get::<String>(28).unwrap(),
+                    r.get::<i64>(27).unwrap().unwrap_or(0),
+                    r.get::<f64>(28).unwrap(),
                     r.get::<String>(29).unwrap(),
                     r.get::<String>(30).unwrap(),
                     r.get::<String>(31).unwrap(),
+                    r.get::<String>(32).unwrap(),
                 )
             })
             .collect::<Vec<_>>()
@@ -265,6 +275,19 @@ mod tests {
         )
         .unwrap();
         Spi::get_one::<i64>("SELECT postvec.enable('docs','body','m')").unwrap();
+    }
+
+    #[pg_test]
+    fn worker_alive_reads_the_heartbeat_age() {
+        setup_docs(0);
+        let alive = || Spi::get_one::<bool>("SELECT worker_alive FROM postvec.status()").unwrap();
+        assert_eq!(alive(), Some(false), "no heartbeat");
+        Spi::run("INSERT INTO postvec.worker_heartbeat (pid, last_beat) VALUES (1, now())")
+            .unwrap();
+        assert_eq!(alive(), Some(true), "a fresh beat");
+        Spi::run("UPDATE postvec.worker_heartbeat SET last_beat = now() - interval '1 hour'")
+            .unwrap();
+        assert_eq!(alive(), Some(false), "a stale beat");
     }
 
     #[pg_test]
