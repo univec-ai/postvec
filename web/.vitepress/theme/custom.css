@@ -776,22 +776,60 @@ html:not(.dark) .dont {
   color: var(--pv-danger);
 }
 
-.Layout:has(.home-page) .VPContent {
+.Layout:has(.home-page) .VPContent,
+.Layout:has(.sp) .VPContent,
+.Layout:has(.dl-page) .VPContent {
   padding-top: var(--vp-nav-height) !important;
 }
 
 .Layout:has(.home-page) .container,
 .Layout:has(.home-page) .content-container,
-.Layout:has(.home-page) .content {
+.Layout:has(.home-page) .content,
+.Layout:has(.sp) .container,
+.Layout:has(.sp) .content-container,
+.Layout:has(.sp) .content {
   max-width: none;
 }
 
-.Layout:has(.home-page) .aside {
+.Layout:has(.home-page) .aside,
+.Layout:has(.sp) .aside {
   display: none;
 }
 
-.Layout:has(.home-page) .VPFooter {
+.Layout:has(.home-page) .VPFooter,
+.Layout:has(.sp) .VPFooter,
+.Layout:has(.dl-page) .VPFooter {
   background: var(--vp-c-bg);
+}
+
+/* Downloads uses layout: page so it shares the 72rem wrap of Home and /server. */
+.dl-page {
+  width: min(72rem, calc(100% - 3.5rem));
+  margin: 0 auto;
+  padding: 2.75rem 0 4.5rem;
+}
+
+.dl-page.vp-doc h1 {
+  margin: 0 0 0.45rem;
+  padding: 0;
+  border: 0;
+  font-family: var(--pv-font-display);
+  font-size: clamp(2.1rem, 4vw, 2.9rem);
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+}
+
+.dl-page > p:first-of-type {
+  max-width: 40em;
+  margin: 0 0 1.75rem;
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: var(--vp-c-text-2);
+}
+
+@media (max-width: 720px) {
+  .dl-page { width: min(100% - 2rem, 72rem); padding-top: 2rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

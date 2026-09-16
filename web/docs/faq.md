@@ -171,7 +171,7 @@ inference mode. `postvec-server` is source-available under the Business
 Source License 1.1: free for development, testing, personal noncommercial
 production and one 30-day production evaluation per organization,
 including its affiliates under common control. Production use by an
-organization needs a [postvec Pro](https://univec.ai) subscription, and
+organization needs a [postvec pro](/server#plans) subscription, and
 hosting or embedding the server for third parties needs a platform/OEM
 agreement. Each version becomes PostgreSQL-licensed four years after
 release. Table and Pro contents: [License](/docs/license).

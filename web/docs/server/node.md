@@ -28,7 +28,7 @@ The Docker image pairs with the remote PostgreSQL image in
 `postvec-server` is **Business Source License 1.1** (source-available).
 Personal production use, non-production environments and a 30-day
 production evaluation per organization are free. Production use by an
-organization needs [postvec Pro](https://univec.ai). The extension, CLI,
+organization needs [postvec pro](/server#plans). The extension, CLI,
 runtime, model packages and PostgreSQL images stay under the PostgreSQL
 License. [License](/docs/license).
 :::

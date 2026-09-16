@@ -226,7 +226,7 @@ function assetUrl(name: string): string | null {
       </label>
     </div>
 
-    <h3>Container image</h3>
+    <h3 id="images">Container image</h3>
     <CopyCommand :command="`docker pull ${imageTag}`" label="Pinned tag" />
     <p class="hint">
       The moving tag is <code>{{ movingTag }}</code>. Pin the versioned
@@ -240,7 +240,7 @@ function assetUrl(name: string): string | null {
       an existing volume.
     </p>
 
-    <h3>Packages</h3>
+    <h3 id="packages">Packages</h3>
     <ul class="files">
       <li v-for="name in files" :key="name">
         <a
@@ -264,7 +264,7 @@ function assetUrl(name: string): string | null {
       <a href="/docs/install/verify">verify artifacts</a>.
     </p>
 
-    <h3>Inference node (postvec-server)</h3>
+    <h3 id="server">Inference node (postvec-server)</h3>
     <p class="hint">
       <code>postvec-server</code> is the remote inference node and the
       <a href="/docs/server/managed">managed PostgreSQL</a> worker. One

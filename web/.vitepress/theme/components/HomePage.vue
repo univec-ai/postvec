@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { withBase } from "vitepress";
 import { SITE } from "../site";
 import PgSnippet from "./PgSnippet.vue";
+import OpenCoreStack from "./OpenCoreStack.vue";
 
 /* ------------------------------------------------------------------ */
 /* SQL walkthrough tabs                                                */
@@ -37,7 +38,7 @@ const tabs: Tab[] = [
     body:
       "Full-text and vector retrieval run together and the two rankings are fused. Typed metadata filters narrow the candidates. The primary key comes back as text, so it joins to any table.",
     expect:
-      "Rows that are close in meaning rank highly even with almost no keyword overlap.",
+      "Rows that are close in meaning rank highly, including when they share few keywords.",
     href: "/docs/guides/search",
     linkText: "Search guide",
   },
@@ -58,7 +59,7 @@ const tabs: Tab[] = [
     body:
       "Stored vectors convert directly into the new model's space, drawing on a catalogue of " +
       SITE.conversionPairs +
-      " conversion pairs. The source text is not re-embedded. Finalize is a deliberate second step.",
+      " conversion pairs. Finalize is a deliberate second step.",
     expect: "The old column keeps serving search until you finalize.",
     href: "/docs/guides/migrate",
     linkText: "Migrate guide",
@@ -97,7 +98,7 @@ const captions: Record<Phase, { title: string; body: string }> = {
       "Text is embedded inside PostgreSQL. Models on disk, no API key, nothing leaves the host.",
   },
   b: {
-    title: "Need more throughput? Add nodes.",
+    title: "Inference on extra nodes.",
     body:
       "Optional postvec-server nodes take inference off the database host, over gRPC. Same SQL.",
   },
@@ -190,6 +191,10 @@ onBeforeUnmount(() => {
     <header class="hero">
       <div class="wrap hero__grid">
         <div class="hero__copy">
+          <p class="hero__kicker">
+            <span class="tag">PostgreSQL License</span>
+            Open-source extension for PostgreSQL
+          </p>
           <h1>Evergreen hybrid search for PostgreSQL</h1>
           <p class="subhead">
             Full-text and semantic search in one call. Embedding and
@@ -423,6 +428,13 @@ onBeforeUnmount(() => {
           </div>
         </figure>
       </div>
+
+      <ul class="wrap facts" aria-label="postvec at a glance">
+        <li><b>16, 17, 18</b> PostgreSQL majors, pgvector 0.8+</li>
+        <li><b>One call</b> for BM25 and vector search</li>
+        <li><b>{{ SITE.conversionPairs }}</b> conversion pairs</li>
+        <li><b>7</b> hosted providers, keys on the inference host</li>
+      </ul>
     </header>
 
     <!-- ============================================================ -->
@@ -436,9 +448,8 @@ onBeforeUnmount(() => {
         <p class="story">
           A knowledge base held as vectors is tied to the model that
           produced them. Providers retire a model generation every year
-          or two, and each time that means re-embedding the corpus and
-          rebuilding the index. Semantic retrieval brings real hidden
-          costs, easy to miss initially.
+          or two, and each change means re-embedding the corpus and
+          rebuilding the index.
         </p>
 
         <dl class="defs">
@@ -466,8 +477,7 @@ onBeforeUnmount(() => {
           postvec makes a text column semantic. It keeps a shadow
           <code>pgvector</code> column in sync with the text, fuses
           full-text and semantic search in one call and converts stored
-          vectors from one model space into another directly, without
-          re-embedding the source text.
+          vectors from one model space into another directly.
         </p>
 
         <div class="pledges">
@@ -476,8 +486,8 @@ onBeforeUnmount(() => {
             <p>
               Swappable embedding models run locally, inside PostgreSQL or
               on inference nodes you operate. Raw text stays on hosts you
-              control. Hosted providers are opt-in per column, and their
-              keys never enter the database.
+              control. Hosted providers are opt-in per column, and keys stay
+              in the inference layer.
             </p>
             <a :href="withBase('/docs/models/providers')">External providers</a>
           </article>
@@ -485,9 +495,9 @@ onBeforeUnmount(() => {
             <h3>Evergreen knowledge bases</h3>
             <p>
               Convert existing vectors between embedding spaces through the
-              UniVec catalogue of {{ SITE.conversionPairs }} pairs. No
-              re-embedding, no shadow pipeline and search stays up while
-              the migration runs.
+              UniVec catalogue of {{ SITE.conversionPairs }} pairs. The
+              source text stays where it is, and search keeps answering
+              while the migration runs.
             </p>
             <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
           </article>
@@ -576,6 +586,37 @@ onBeforeUnmount(() => {
     </section>
 
     <!-- ============================================================ -->
+    <!-- Open core                                                     -->
+    <!-- ============================================================ -->
+    <section class="band band--alt" aria-labelledby="core-heading">
+      <div class="wrap core">
+        <div>
+          <p class="eyebrow">Open core</p>
+          <h2 id="core-heading">Open source, with an optional server</h2>
+          <div class="prose">
+            <p>
+              The extension, the CLI, the embedded inference engine and the
+              packages are released under the PostgreSQL License, for any use.
+              On a self-hosted cluster, the extension alone runs the complete SQL
+              surface.
+            </p>
+            <p>
+              postvec-server is a source-available companion. It moves
+              inference into a separate process or onto a CPU and GPU fleet,
+              adds a dashboard for model management and runs postvec on managed
+              databases such as Amazon RDS, Cloud SQL and Supabase.
+            </p>
+          </div>
+          <div class="core__links">
+            <a class="btn" :href="withBase('/server')">postvec-server</a>
+            <a :href="withBase('/docs/license')">License</a>
+          </div>
+        </div>
+        <OpenCoreStack compact />
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
     <!-- Documentation                                                 -->
     <!-- ============================================================ -->
     <section class="band" aria-labelledby="map-heading">
@@ -586,7 +627,7 @@ onBeforeUnmount(() => {
             <h3>Get running</h3>
             <a :href="withBase('/docs/quickstart')">
               Quick start
-              <small>one disposable container, then delete it</small>
+              <small>one container with PostgreSQL, postvec and MiniLM</small>
             </a>
             <a :href="withBase('/docs/install/docker')">
               Docker
@@ -605,7 +646,7 @@ onBeforeUnmount(() => {
           <div class="dir__card">
             <h3>Day to day</h3>
             <a :href="withBase('/docs/guides/')">
-              Which SQL call
+              SQL functions
               <small>enable, adopt, bridge or migrate</small>
             </a>
             <a :href="withBase('/docs/guides/search')">Search and filters</a>
@@ -626,6 +667,34 @@ onBeforeUnmount(() => {
             <a :href="withBase('/docs/reference/sql')">SQL reference</a>
             <a :href="withBase('/docs/reference/cli')">CLI reference</a>
             <a :href="withBase('/docs/troubleshooting')">Troubleshooting</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- UniVec                                                        -->
+    <!-- ============================================================ -->
+    <section class="band band--univec" aria-labelledby="univec-heading">
+      <div class="wrap univec">
+        <div>
+          <p class="eyebrow">UniVec</p>
+          <h2 id="univec-heading">Made by UniVec</h2>
+        </div>
+        <div>
+          <p class="univec__text">
+            UniVec builds embedding translation infrastructure in Dublin,
+            Ireland, and develops postvec. The converters behind
+            <code>adopt()</code> and <code>migrate()</code> come from the UniVec
+            catalogue. UniVec also runs a hosted embedding and conversion API,
+            which postvec can use as an external provider, and offers support
+            agreements for production deployments.
+          </p>
+          <div class="univec__links">
+            <a :href="SITE.univec" target="_blank" rel="noopener">univec.ai</a>
+            <a :href="`${SITE.univec}/pricing`" target="_blank" rel="noopener">Hosted API pricing</a>
+            <a :href="withBase('/server#plans')">postvec pro</a>
+            <a :href="`${SITE.univec}/contact`" target="_blank" rel="noopener">Contact</a>
           </div>
         </div>
       </div>
@@ -721,8 +790,144 @@ dd code {
 /* ------------------------------------------------------------------ */
 
 .hero {
+  position: relative;
   padding: 3.75rem 0 3.5rem;
   border-bottom: 1px solid var(--vp-c-divider);
+  overflow: hidden;
+}
+
+/* faint grid behind the hero, fading out from the figure side */
+.hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--vp-c-border-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--vp-c-border-soft) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(65% 85% at 72% 45%, #000 15%, transparent 72%);
+  pointer-events: none;
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  width: 36rem;
+  height: 36rem;
+  right: -8rem;
+  top: -12rem;
+  background: radial-gradient(circle, color-mix(in srgb, var(--pv-mark) 13%, transparent), transparent 65%);
+  pointer-events: none;
+}
+
+.hero__grid { position: relative; z-index: 1; }
+
+.hero__kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 1.1rem;
+  font-size: 0.86rem;
+  color: var(--vp-c-text-2);
+}
+
+.tag {
+  padding: 0.12rem 0.45rem;
+  border: 1px solid color-mix(in srgb, var(--pv-mark) 45%, var(--vp-c-border));
+  border-radius: 4px;
+  background: var(--vp-c-brand-soft);
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.72rem;
+  color: var(--pv-mark);
+}
+
+/* ------------------------------------------------------------------ */
+/* Facts strip — a quiet line under the hero, same surface             */
+/* ------------------------------------------------------------------ */
+
+.facts {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.75rem;
+  margin-top: 2.1rem;
+  padding: 0.85rem 0 0;
+  border-top: 1px solid var(--vp-c-divider);
+  list-style: none;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--vp-c-text-3);
+}
+
+.facts li { margin: 0; }
+
+.facts b {
+  font-family: var(--vp-font-family-mono);
+  font-weight: 500;
+  color: var(--vp-c-text-2);
+}
+
+/* ------------------------------------------------------------------ */
+/* Open core and UniVec                                                */
+/* ------------------------------------------------------------------ */
+
+.eyebrow {
+  margin: 0 0 0.6rem;
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--pv-mark);
+}
+
+.core {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 3rem;
+  align-items: center;
+}
+
+.core .prose { line-height: 1.65; }
+
+.core__links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1.25rem;
+  margin-top: 1.4rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.band--univec {
+  background:
+    radial-gradient(55% 100% at 0% 0%, color-mix(in srgb, var(--pv-mark) 8%, transparent), transparent 70%),
+    var(--vp-c-bg);
+}
+
+.univec {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 1rem 3rem;
+  align-items: start;
+}
+
+.univec__text {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.7;
+  color: var(--vp-c-text-2);
+}
+
+.univec__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.4rem;
+  margin-top: 1.1rem;
+  font-size: 0.92rem;
+  font-weight: 600;
 }
 
 .hero__grid {
@@ -991,7 +1196,7 @@ h1 {
 .band--story { padding: 4.25rem 0; }
 
 html:not(.dark) .band--story,
-html:not(.dark) .home-page > .band:nth-child(4) {
+html:not(.dark) .band--alt {
   background: var(--vp-c-bg-alt);
 }
 
@@ -1329,6 +1534,7 @@ html:not(.dark) .home-page > .band:nth-child(4) {
   .tabs__why { border-left: 0; border-top: 1px solid var(--vp-c-divider); }
   .pledges, .dir, .know { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
   .defs { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .core, .univec { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
 }
 
 @media (max-width: 720px) {

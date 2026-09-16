@@ -24,7 +24,7 @@ Installation stages:
 A [self-hosted cluster](/docs/install/packages) that can load `postvec.so`
 uses packages and `postvec setup` instead.
 
-Organization production use needs [postvec Pro](https://univec.ai).
+Organization production use needs [postvec pro](/server#plans).
 Personal use, non-production environments and one 30-day production
 evaluation per organization are free. See [License](/docs/license).
 

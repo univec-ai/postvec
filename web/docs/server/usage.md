@@ -53,7 +53,7 @@ bundled MiniLM model works with no configuration.
 `postvec-server` is source-available under the Business Source License 1.1
 (`BUSL-1.1`). Development, testing, personal production use and one 30-day
 production evaluation per organization are free. Production use by an
-organization needs a [postvec Pro](https://univec.ai) subscription at €30/month,
+organization needs a [postvec pro](/server#plans) subscription at €30/month,
 which includes €30 of UniVec API credit and commercial rights to the private
 catalogue. Hosting the server for third parties needs an enterprise agreement.
 Each version becomes PostgreSQL-licensed four years after release.

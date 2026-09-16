@@ -25,7 +25,7 @@ The catalogue is currently in publication preview. On a
 `POSTVEC_API_KEY`, a `postvec login` as the service account, or the
 [dashboard](/docs/server/dashboard) **Use key** box.
 
-Create a dedicated key with a **$0 spending limit**. The same `uv_` key
+Create a dedicated key with a **€0 spending limit**. The same `uv_` key
 would otherwise also authorize billable UniVec API calls.
 
 ## Commands

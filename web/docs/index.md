@@ -94,6 +94,6 @@ inference mode. `postvec-server` is source-available under the Business Source
 License 1.1: development, testing, personal noncommercial production and one
 30-day production evaluation per organization and its affiliates under common
 control are free; production use by an organization needs
-[postvec Pro](https://univec.ai) at €30/month, and hosting or embedding the
+[postvec pro](/server#plans) at €30/month, and hosting or embedding the
 server for third parties needs a platform/OEM agreement. Full table:
 [License](/docs/license).

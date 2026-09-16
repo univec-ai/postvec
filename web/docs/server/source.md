@@ -57,7 +57,7 @@ See [models](/docs/server/models) to install more models.
 `postvec-server` is **Business Source License 1.1** (source-available).
 Personal production use, non-production environments and a 30-day
 production evaluation per organization are free. Production use by an
-organization needs [postvec Pro](https://univec.ai). [License](/docs/license).
+organization needs [postvec pro](/server#plans). [License](/docs/license).
 :::
 
 Next: [connect PostgreSQL](/docs/server/connect).

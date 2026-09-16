@@ -71,8 +71,17 @@ export default defineConfig({
           { text: "Configure", link: "/docs/install/setup" },
         ],
       },
-      { text: "postvec-server", link: "/docs/server/" },
+      { text: "postvec-server", link: "/server", activeMatch: "^/(server|docs/server/)" },
       { text: "Downloads", link: "/download" },
+      {
+        text: "UniVec",
+        items: [
+          { text: "About UniVec", link: "https://univec.ai/about", target: "_blank", rel: "noopener" },
+          { text: "postvec pro", link: "/server#plans" },
+          { text: "Hosted API pricing", link: "https://univec.ai/pricing", target: "_blank", rel: "noopener" },
+          { text: "Contact", link: "https://univec.ai/contact", target: "_blank", rel: "noopener" },
+        ],
+      },
     ],
     sidebar: {
       "/docs/": [

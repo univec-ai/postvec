@@ -88,6 +88,6 @@ commands, TLS and the systemd unit.
 postvec-server is **Business Source License 1.1**. Personal production
 use, non-production environments and a 30-day production evaluation per
 organization are free. Production use by an organization needs
-[postvec Pro](https://univec.ai). [License](/docs/license).
+[postvec pro](/server#plans). [License](/docs/license).
 
 Last step is [configuring the cluster](/docs/install/setup).

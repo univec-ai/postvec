@@ -8,6 +8,8 @@ description: Companion inference server for remote mode, GPU fleets, process iso
 postvec-server is the companion inference server for a postvec-enabled database.
 The extension stays in PostgreSQL; the server loads the models, answers embed and
 convert requests, and administers them from a dashboard or an HTTP API.
+Features, plans and the open-core model are summarised on the
+[postvec-server](/server) page.
 
 It is the second inference host. The default install runs inference inside the
 PostgreSQL process (embedded mode). Point the cluster at a server
@@ -81,7 +83,7 @@ The model layout is the one embedded mode uses, so a tree that
 (`BUSL-1.1`) and each version becomes PostgreSQL-licensed four years after
 release. Development, testing, personal production use and one 30-day production
 evaluation per organization are free. Production use by an organization needs a
-[postvec Pro](https://univec.ai) subscription at €30/month, which includes €30 of
+[postvec pro](/server#plans) subscription at €30/month, which includes €30 of
 UniVec API credit and commercial rights to the private catalogue. Hosting the
 server for third parties needs an enterprise agreement.
 

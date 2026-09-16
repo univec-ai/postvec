@@ -1,26 +1,30 @@
 ---
+layout: page
+sidebar: false
 title: Downloads
-description: GitHub Release packages, GHCR images, publication status and verification.
-outline: deep
+description: PostgreSQL images, .deb and .rpm packages and postvec-server, with checksums and Sigstore attestations.
 ---
+
+<div class="dl-page vp-doc">
 
 # Downloads
 
-Packages and images for identity `0.1.0-1`. Until a tag is published,
-the names below are the local-build contract.
+PostgreSQL images, packages and postvec-server for PostgreSQL 16, 17 and 18, with checksums and Sigstore attestations.
 
-Publication channels:
+<DownloadHero />
+
+## Choose a build
+
+The selector reads `univec-ai/postvec` releases tagged `postvec-v*` and
+links each file when the release has it. Until a tag is published, the
+names below are the local-build contract. A signed apt/yum repository is
+planned.
 
 | Channel | What it holds |
 |---|---|
 | [GitHub Releases](https://github.com/univec-ai/postvec/releases) tagged `postvec-v*` | `.deb` / `.rpm` packages (including `postvec-server`), `SHA256SUMS`, Sigstore attestations, `postvec-prerequisites.sh` |
-| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | Drop-in PostgreSQL images (`-pgNN-local` / `-pgNN-remote`) |
+| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | PostgreSQL images (`-pgNN-local` / `-pgNN-remote`) |
 | [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec-server) `ghcr.io/univec-ai/postvec-server` | postvec-server (`0.1.0-1`, moving tag `latest`) |
-
-The selector reads `univec-ai/postvec` releases tagged `postvec-v*` and
-links assets only when they exist. Checksums and Sigstore attestations
-are optional: [verify artifacts](/docs/install/verify). A signed apt/yum
-repository is planned later.
 
 <DownloadPanel />
 
@@ -46,7 +50,7 @@ reaches it.
 
 ## postvec-server
 
-[postvec-server](/docs/server/) ships with every release, as a package
+[postvec-server](/server) ships with every release, as a package
 and as an image, built from the same commit as the extension and tested
 against it: the release's remote-mode images are smoke-tested through
 this exact server image, and the clean-host install test starts the
@@ -57,7 +61,8 @@ schema install, the sync worker and the optional `search(text)` proxy
 for RDS, Aurora, Cloud SQL, Azure, Supabase and Neon.
 
 **License.** `postvec-server` is **Business Source License 1.1** (`BUSL-1.1`,
-source-available; production use by organizations needs a subscription).
+source-available; production use by an organization needs
+[postvec pro](/server#plans)).
 Terms: [License](/docs/license). That identifier is in the release
 manifest's `licenses` block, the package copyright file and the image's
 `org.opencontainers.image.licenses` label. The extension, the CLI, the
@@ -71,3 +76,5 @@ above lists the file for the chosen distribution and architecture.
 [Configure the cluster](/docs/install/setup).
 [Docker](/docs/install/docker).
 [Uninstall](/docs/install/uninstall).
+
+</div>

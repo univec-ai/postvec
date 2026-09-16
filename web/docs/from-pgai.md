@@ -157,7 +157,7 @@ The extension is PostgreSQL-licensed. postvec-server is Business Source
 License 1.1. Non-production use, personal noncommercial production and
 one 30-day production evaluation per organization and its affiliates
 under common control are free. Production use by an organization needs
-[postvec Pro](https://univec.ai) at €30/month, and managed PostgreSQL
+[postvec pro](/server#plans) at €30/month, and managed PostgreSQL
 hosts are Pro from the first production deployment.
 [License](/docs/license).
 
