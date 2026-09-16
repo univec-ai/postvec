@@ -7,18 +7,28 @@ description: PostgreSQL images, .deb and .rpm packages and postvec-server, with 
 
 <div class="dl-page vp-doc">
 
-# Downloads
+<header class="dl-intro">
+<p class="dl-eyebrow">Downloads</p>
 
-PostgreSQL images, packages and postvec-server for PostgreSQL 16, 17 and 18, with checksums and Sigstore attestations.
+# Choose your postvec deployment
+
+Use a PostgreSQL image for a new instance, packages for an existing cluster or postvec-server for remote inference and managed databases.
+
+<div class="dl-platforms" aria-label="Supported platforms">
+<span>PostgreSQL 16 / 17 / 18</span>
+<span>Linux amd64 / arm64</span>
+<span>Docker / Debian / RPM</span>
+</div>
+</header>
 
 <DownloadHero />
 
 ## Choose a build
 
-The selector reads `univec-ai/postvec` releases tagged `postvec-v*` and
-links each file when the release has it. Until a tag is published, the
-names below are the local-build contract. A signed apt/yum repository is
-planned.
+Select your distribution, PostgreSQL version and architecture. Available
+release files link to GitHub; the selector shows publication status alongside
+the package names. Verify downloaded files with the release checksums and
+Sigstore attestations.
 
 | Channel | What it holds |
 |---|---|
@@ -65,9 +75,9 @@ source-available; production use by an organization needs
 [postvec pro](/server#plans)).
 Terms: [License](/docs/license). That identifier is in the release
 manifest's `licenses` block, the package copyright file and the image's
-`org.opencontainers.image.licenses` label. The extension, the CLI, the
-runtime and model packages and the PostgreSQL images stay under the
-PostgreSQL License in either inference mode.
+`org.opencontainers.image.licenses` label. The extension and CLI use the
+PostgreSQL License in either inference mode. Bundled models and third-party
+runtimes retain their own licenses.
 
 Every debug package has a `postvec-server-dbgsym` / `-debuginfo` sibling.
 [Packages](/docs/server/packages) covers installation; the selector

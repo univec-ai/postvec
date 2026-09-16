@@ -11,13 +11,14 @@ import PgSnippet from "./PgSnippet.vue";
 /* ------------------------------------------------------------------ */
 const animate = ref(true);
 const paused = ref(false);
+const userPaused = ref(false);
 const figure = ref<HTMLElement | null>(null);
 const svg = ref<SVGSVGElement | null>(null);
 let observer: IntersectionObserver | undefined;
 let inView = true;
 
 function syncRunning() {
-  const run = animate.value && inView && !document.hidden;
+  const run = animate.value && !userPaused.value && inView && !document.hidden;
   paused.value = !run;
   if (run) svg.value?.unpauseAnimations();
   else svg.value?.pauseAnimations();
@@ -150,7 +151,7 @@ const plans: Plan[] = [
       "Production use of postvec-server by the organization",
       "Unlimited nodes and environments for internal use",
       "Commercial use of the private converter catalogue",
-      "€30 of UniVec API credit every month, for hosted embed and convert calls or UniVec as a provider",
+      "€30 of direct UniVec API credit each month, expiring at renewal",
       "Best-effort support",
     ],
     cta: { text: "Subscribe on univec.ai", href: `${UNIVEC}/dashboard/postvec`, external: true },
@@ -180,27 +181,30 @@ const plans: Plan[] = [
       <div class="sp-wrap sp-hero__grid">
         <div class="sp-hero__copy">
           <p class="sp-kicker">
-            <span class="sp-tag">BUSL-1.1</span>
+            <span class="sp-tag">Source-available</span>
             Optional server for the open-source extension
           </p>
           <h1>postvec-server</h1>
           <p class="sp-sub">
             A companion inference server for postvec. It runs models in a
             separate, multi-threaded process, scales out to a fleet of CPU and
-            GPU nodes and brings postvec to managed PostgreSQL services. The
-            SQL and the sync behaviour are the same as with embedded inference.
+            GPU nodes and brings postvec to managed PostgreSQL services.
+            The open-source extension provides local inference, hybrid search
+            and model migration under the PostgreSQL License.
           </p>
           <div class="sp-cta">
             <a class="sp-btn sp-btn--go" :href="withBase('/docs/server/node')">Install the server</a>
             <a class="sp-btn" href="#plans">Plans</a>
           </div>
           <p class="sp-fine">
-            Free for development, testing, CI and personal use, with one
+            Free for development, testing, CI and personal noncommercial use, with one
             30-day production evaluation per organization.
           </p>
         </div>
 
         <figure ref="figure" class="sp-topo" :class="{ 'is-static': !animate, 'is-paused': paused }">
+          <button v-if="animate" type="button" class="sp-motion" :aria-pressed="userPaused"
+            @click="userPaused = !userPaused; syncRunning()">{{ userPaused ? 'Resume animation' : 'Pause animation' }}</button>
           <svg
             ref="svg"
             viewBox="24 24 610 310"
@@ -331,7 +335,7 @@ const plans: Plan[] = [
             </p>
             <p>
               postvec-server adds a second host for inference: process isolation,
-              throughput beyond one database host, and managed PostgreSQL. It is
+              throughput beyond one database host and managed PostgreSQL. It is
               source-available under the Business Source License 1.1, and each
               version changes to the PostgreSQL License four years after its
               release.
@@ -378,7 +382,9 @@ const plans: Plan[] = [
         <p class="sp-lead">
           The database needs pgvector 0.8 or newer and a role with
           <code>CREATE</code> on the application database. The server holds the
-          models and provider keys, runs the worker and serves search.
+          models and provider keys, runs the worker and serves search. Use a
+          direct database endpoint and give the worker ownership of the source
+          tables or membership in their owning roles.
         </p>
         <ul class="sp-hosts">
           <li v-for="h in hosts" :key="h">{{ h }}</li>
@@ -411,9 +417,10 @@ const plans: Plan[] = [
             <div class="sp-step__text">
               <h3>Enable a column and search</h3>
               <p>
-                <code>enable()</code> and <code>adopt()</code> work as on a
-                self-hosted cluster. The proxy embeds the query text and passes
-                every other byte to the database unchanged.
+                After enabling a column and waiting for its initial embeddings,
+                connect through the proxy to search with text. The proxy embeds
+                the query and forwards vector search to PostgreSQL. The managed
+                guide covers supported query forms and connection settings.
               </p>
             </div>
             <pre class="sp-code"><code>{{ searchSql }}</code></pre>
@@ -431,11 +438,10 @@ const plans: Plan[] = [
         <p class="sp-eyebrow">Plans</p>
         <h2 id="sp-plans">A subscription covers production use of the server</h2>
         <p class="sp-lead">
-          Payment applies to production use of postvec-server or of the private
-          converters by an organization. Hobby projects, study, evaluation and
-          every non-production environment are free, including inside a company.
-          Compliance is contractual. The license travels with each package and
-          image.
+          The extension is free for any use. postvec Pro covers production use
+          of the server by an organization and commercial use of private
+          converters in either inference mode. Server development, testing and
+          staging are free; each organization has one 30-day production evaluation.
         </p>
 
         <div class="sp-plans">
@@ -491,16 +497,17 @@ const plans: Plan[] = [
             <p>
               {{ SITE.conversionPairs }} conversion pairs between embedding model
               spaces. A public subset is open to everyone, and
-              verified UniVec accounts get the full catalogue.
+              private converters are available through verified UniVec accounts
+              under their model terms. Pro covers commercial use.
             </p>
             <a :href="withBase('/docs/models/login')">Login and the private catalogue</a>
           </div>
           <div>
             <h3>Hosted API</h3>
             <p>
-              Embedding and vector conversion over REST and MCP, at €0.01 per
-              million tokens and €2 per million vectors. postvec reaches it as
-              the <code>univec</code> external provider.
+              Pay-as-you-go embedding and vector conversion over REST and MCP.
+              postvec reaches these APIs through the <code>univec</code>
+              external provider. Usage is billed to your UniVec account.
             </p>
             <a :href="`${UNIVEC}/pricing`" target="_blank" rel="noopener">Pricing on univec.ai</a>
           </div>
@@ -548,6 +555,16 @@ const plans: Plan[] = [
 }
 
 .sp-wrap { width: min(72rem, calc(100% - 3.5rem)); margin: 0 auto; }
+
+.sp-motion {
+  display: block;
+  margin: 0 0 0.75rem auto;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--vp-c-text-2);
+}
 
 .sp a { color: var(--vp-c-brand-1); text-decoration: none; }
 .sp a:hover, .sp a:focus-visible { text-decoration: underline; text-underline-offset: 0.12em; }

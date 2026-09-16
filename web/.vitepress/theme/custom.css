@@ -250,6 +250,15 @@ html.dark {
   font-weight: 600;
 }
 
+/* Keep the full navigation within the viewport at tablet widths. */
+@media (min-width: 768px) and (max-width: 959px) {
+  .VPNavBarMenu .VPNavBarMenuLink,
+  .VPNavBarMenu .VPNavBarMenuGroup > .button {
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+}
+
 .VPNavBarMenuLink.active::after {
   background-color: var(--pv-success-emphasis) !important;
   height: 2px;
@@ -818,6 +827,45 @@ html:not(.dark) .dont {
   font-weight: 500;
   letter-spacing: -0.025em;
   line-height: 1.1;
+}
+
+.dl-intro {
+  padding: 2rem;
+  margin-bottom: 2rem;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 10px;
+  background:
+    radial-gradient(ellipse at top right, var(--vp-c-brand-soft), transparent 65%),
+    var(--vp-c-bg-elv);
+}
+
+.dl-intro .dl-eyebrow {
+  margin-bottom: 1rem;
+  color: var(--pv-mark);
+  font: 0.75rem var(--vp-font-family-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.dl-intro > p:not(.dl-eyebrow) {
+  max-width: 44rem;
+  margin: 1.25rem 0;
+  color: var(--vp-c-text-2);
+  font-size: 1.08rem;
+  line-height: 1.65;
+}
+
+.dl-platforms { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+.dl-platforms span {
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 4px;
+  font: 0.75rem var(--vp-font-family-mono);
+  color: var(--vp-c-text-2);
+}
+
+@media (max-width: 720px) {
+  .dl-intro { padding: 1.25rem; }
 }
 
 .dl-page > p:first-of-type {

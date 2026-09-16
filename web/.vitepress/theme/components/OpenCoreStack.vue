@@ -26,7 +26,8 @@ defineProps<{ compact?: boolean }>();
         <span class="stack__lic">PostgreSQL License · open source</span>
       </div>
       <ul class="stack__items">
-        <li>enable, search, adopt, migrate</li>
+        <li>BM25 and vector search</li>
+        <li>Model migration</li>
         <li>Sync worker</li>
         <li>Embedded inference</li>
         <li>External providers</li>

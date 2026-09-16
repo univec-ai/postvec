@@ -270,8 +270,9 @@ function assetUrl(name: string): string | null {
       <a href="/docs/server/managed">managed PostgreSQL</a> worker. One
       package per distribution and architecture, no PostgreSQL major; the same
       release, the same checksums and attestations. Licensed under
-      <strong>{{ SITE.serverLicense }}</strong>. The extension, CLI, runtime,
-      model packages and PostgreSQL images stay under the PostgreSQL License.
+      <strong>{{ SITE.serverLicense }}</strong>. The extension and CLI use the
+      PostgreSQL License. Bundled models and third-party runtimes retain their
+      own licenses.
     </p>
     <ul class="files">
       <li v-for="name in serverFiles" :key="name">

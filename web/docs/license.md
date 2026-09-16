@@ -10,16 +10,18 @@ inference mode. `postvec-server` is source-available under the **Business Source
 License 1.1** (`BUSL-1.1`), and each of its versions becomes PostgreSQL-licensed
 four years after release.
 
-Paid use follows one rule: production use by an organization. Hobby projects,
-study, evaluation, CI and every non-production environment are free, including
-inside a company. Hosting postvec-server for third parties, redistribution and
-OEM need an enterprise order.
+postvec Pro covers production use of the server by an organization and
+commercial use of private converters in either inference mode. Server
+development, testing, CI and staging are free, including inside a company.
+Private converters have separate model terms, with free noncommercial use and
+a 30-day non-production evaluation. Hosting postvec-server for third parties,
+redistribution and OEM need an enterprise order.
 
 | Component | License | Free | Paid |
 |---|---|---|---|
 | Extension, CLI, engine, packages, PostgreSQL images | PostgreSQL License | Any use, either inference mode | - |
 | **postvec-server** | Business Source License 1.1 | Development, testing, CI, staging, teaching, research; personal, noncommercial production use; one 30-day production evaluation per organization, including its affiliates under common control | Production use by an organization: [postvec pro](/server#plans). Hosting or embedding for third parties: platform/OEM agreement |
-| Public catalogue models | Each model's own license | Any use | - |
+| Public catalogue models | Each model's own license | As permitted by the model license | - |
 | Private catalogue (converters) | UniVec Model Terms | Noncommercial use and a 30-day non-production evaluation | Commercial use, either mode: postvec pro |
 | Hosted embed and convert API | Service terms | - | Pay as you go |
 | Support SLA, air-gapped catalogue, custom pairs, redistribution, OEM | Enterprise order | - | Contract |

@@ -30,7 +30,7 @@ SELECT postvec.enable(
 SELECT d.id, d.body, s.rrf_score
   FROM postvec.search(
          'public.docs', 'body',
-         'switching models without redoing the work',
+         'embedding model migration',
          filter => '{"category": "engineering"}'::jsonb
        ) AS s
   JOIN public.docs AS d
@@ -62,6 +62,7 @@ SELECT postvec.migrate(
 SELECT state, rows_done, rows_total, progress_pct
   FROM postvec.migration_status(:migration_id);
 
+-- After state reaches 'awaiting_finalize':
 SELECT postvec.migration_finalize(:migration_id);
 ```
 

@@ -4,6 +4,7 @@ import { withBase } from "vitepress";
 import { SITE } from "../site";
 import PgSnippet from "./PgSnippet.vue";
 import OpenCoreStack from "./OpenCoreStack.vue";
+import DeploymentGuide from "./DeploymentGuide.vue";
 
 /* ------------------------------------------------------------------ */
 /* SQL walkthrough tabs                                                */
@@ -47,8 +48,8 @@ const tabs: Tab[] = [
     label: "adopt()",
     title: "Take over existing vectors",
     body:
-      "A column already filled by some other pipeline, even in a retired space like ada-002, is registered as it is. Queries are embedded with a local model and converted into that space.",
-    expect: "Stored bytes untouched; search works on the next query.",
+      "Register a populated vector column with the model that produced it. Search uses a direct embedding route or a local model with a compatible converter into the stored space.",
+    expect: "Existing vectors are preserved. Search is available once the embedding route is configured.",
     href: "/docs/guides/adopt",
     linkText: "Adopt guide",
   },
@@ -59,7 +60,7 @@ const tabs: Tab[] = [
     body:
       "Stored vectors convert directly into the new model's space, drawing on a catalogue of " +
       SITE.conversionPairs +
-      " conversion pairs. Finalize is a deliberate second step.",
+      " conversion pairs. Install a compatible converter and check retrieval quality before finalizing.",
     expect: "The old column keeps serving search until you finalize.",
     href: "/docs/guides/migrate",
     linkText: "Migrate guide",
@@ -95,7 +96,7 @@ const captions: Record<Phase, { title: string; body: string }> = {
   a: {
     title: "Inference is embedded.",
     body:
-      "Text is embedded inside PostgreSQL. Models on disk, no API key, nothing leaves the host.",
+      "Local models embed text inside PostgreSQL. Text and inference stay on the database host.",
   },
   b: {
     title: "Inference on extra nodes.",
@@ -105,13 +106,14 @@ const captions: Record<Phase, { title: string; body: string }> = {
   c: {
     title: "Nodes form a cluster.",
     body:
-      "Servers find each other by gossip. Add one and the fleet grows, with no reconfiguration.",
+      "Configured peers discover each other through gossip and share the fleet's model catalogue.",
   },
 };
 
 const phase = ref<Phase>("a");
 const animate = ref(true); // false under prefers-reduced-motion
 const paused = ref(false);
+const userPaused = ref(false);
 const figure = ref<HTMLElement | null>(null);
 const svg = ref<SVGSVGElement | null>(null);
 
@@ -121,7 +123,7 @@ let inView = true;
 
 function setPhase(p: Phase, restart = true) {
   phase.value = p;
-  if (restart && animate.value) startTimer();
+  if (restart && animate.value && !userPaused.value && inView && !document.hidden) startTimer();
 }
 
 function startTimer() {
@@ -140,7 +142,7 @@ function stopTimer() {
 }
 
 function syncRunning() {
-  const shouldRun = animate.value && inView && !document.hidden;
+  const shouldRun = animate.value && !userPaused.value && inView && !document.hidden;
   paused.value = !shouldRun;
   if (shouldRun) {
     svg.value?.unpauseAnimations();
@@ -195,18 +197,18 @@ onBeforeUnmount(() => {
             <span class="tag">PostgreSQL License</span>
             Open-source extension for PostgreSQL
           </p>
-          <h1>Evergreen hybrid search for PostgreSQL</h1>
+          <h1>Hybrid search for PostgreSQL.<br />Room to change models.</h1>
           <p class="subhead">
-            Full-text and semantic search in one call. Embedding and
-            vector conversion inside the database with local models or
-            via external providers.
+            Keep vectors in sync with your text, combine BM25 and semantic
+            search in one SQL call and convert stored vectors between
+            supported embedding models.
           </p>
           <div class="hero__cta">
             <a class="btn btn--go" :href="withBase('/docs/quickstart')">Quick start</a>
             <a class="btn" :href="withBase('/docs/')">Documentation</a>
           </div>
           <p class="hero__fine">
-            Local inference by default. No API key. Compatible with
+            Local inference by default, with MiniLM included. Supports
             PostgreSQL 16, 17 and 18.
           </p>
         </div>
@@ -267,7 +269,7 @@ onBeforeUnmount(() => {
               />
               <text class="t-chip" x="170" y="203" text-anchor="middle">embedded inference</text>
               <text class="t-chip-sub" x="170" y="219" text-anchor="middle">
-                models on disk · no API key
+                local models on disk
               </text>
             </g>
 
@@ -411,6 +413,8 @@ onBeforeUnmount(() => {
           </figcaption>
 
           <div v-if="animate" class="topo__steps" role="group" aria-label="Topology phases">
+            <button type="button" class="motion-control" :aria-pressed="userPaused"
+              @click="userPaused = !userPaused; syncRunning()">{{ userPaused ? 'Resume animation' : 'Pause animation' }}</button>
             <button
               v-for="(p, i) in PHASES"
               :key="p"
@@ -447,9 +451,9 @@ onBeforeUnmount(() => {
         </h2>
         <p class="story">
           A knowledge base held as vectors is tied to the model that
-          produced them. Providers retire a model generation every year
-          or two, and each change means re-embedding the corpus and
-          rebuilding the index.
+          produced them. Changing that model usually means embedding the
+          source documents again. A compatible converter gives you another
+          path: translate the stored vectors into the target model's space.
         </p>
 
         <dl class="defs">
@@ -458,8 +462,8 @@ onBeforeUnmount(() => {
             <dd>
               The dependency between stored vectors and the model that
               produced them. postvec can translate a search query into an
-              older model's space, so a deprecated index keeps answering
-              with no migration.
+              older model's space through a compatible converter, so the
+              existing index can continue to serve search.
             </dd>
           </div>
           <div>
@@ -482,22 +486,22 @@ onBeforeUnmount(() => {
 
         <div class="pledges">
           <article class="pledge">
-            <h3>Zero API keys</h3>
+            <h3>Local inference included</h3>
             <p>
               Swappable embedding models run locally, inside PostgreSQL or
               on inference nodes you operate. Raw text stays on hosts you
-              control. Hosted providers are opt-in per column, and keys stay
-              in the inference layer.
+              control. Hosted providers are configured on the inference
+              host, where their API keys are stored.
             </p>
             <a :href="withBase('/docs/models/providers')">External providers</a>
           </article>
           <article class="pledge">
-            <h3>Evergreen knowledge bases</h3>
+            <h3>Convert stored vectors</h3>
             <p>
               Convert existing vectors between embedding spaces through the
               UniVec catalogue of {{ SITE.conversionPairs }} pairs. The
-              source text stays where it is, and search keeps answering
-              while the migration runs.
+              source text stays where it is and search continues to use the
+              original column until you finalize the migration.
             </p>
             <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
           </article>
@@ -506,7 +510,8 @@ onBeforeUnmount(() => {
             <p>
               Bridge search embeds the query with a local model, then
               converts that one vector into the stored space. An
-              <code>ada-002</code> index answers as if nothing changed.
+              <code>ada-002</code> index can serve new queries through a
+              compatible bridge. Evaluate retrieval quality on your data.
             </p>
             <a :href="withBase('/docs/guides/bridge')">Search a retired space</a>
           </article>
@@ -519,12 +524,12 @@ onBeforeUnmount(() => {
     <!-- ============================================================ -->
     <section class="band" aria-labelledby="sql-heading">
       <div class="wrap">
-        <h2 id="sql-heading">Enable, search, adopt, migrate.</h2>
-        <p class="prose">Dedicated SQL functions per usage scenario.</p>
+        <h2 id="sql-heading">From text columns to search</h2>
+        <p class="prose">Manage embedding, retrieval and model migration through SQL.</p>
 
         <div class="try">
           <div class="try__head">
-            <p class="try__label">Try it</p>
+            <p class="try__label">Local setup</p>
             <p class="try__hint">
               One container with PostgreSQL, pgvector, postvec and the
               bundled MiniLM model.
@@ -588,6 +593,14 @@ onBeforeUnmount(() => {
     <!-- ============================================================ -->
     <!-- Open core                                                     -->
     <!-- ============================================================ -->
+    <section class="band" aria-labelledby="deployment-heading">
+      <div class="wrap">
+        <p class="eyebrow">Deployment</p>
+        <h2 id="deployment-heading">Choose where inference runs</h2>
+        <DeploymentGuide />
+      </div>
+    </section>
+
     <section class="band band--alt" aria-labelledby="core-heading">
       <div class="wrap core">
         <div>
@@ -710,8 +723,9 @@ onBeforeUnmount(() => {
           <p>
             You need PostgreSQL 16, 17 or 18 on a host where you can set
             <code>shared_preload_libraries</code>. A restart is part of
-            first-time setup. Vectors fill after commit, not inside the
-            inserting transaction.
+            first-time setup. Vectors fill asynchronously after commit.
+            Managed databases use the server's
+            <a :href="withBase('/docs/server/managed')">SQL schema and external worker</a>.
           </p>
           <p>
             Inference runs embedded in PostgreSQL or on remote
@@ -744,6 +758,14 @@ onBeforeUnmount(() => {
   color: var(--vp-c-text-1);
   font-size: 1rem;
   line-height: 1.5;
+}
+
+.motion-control {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--vp-c-text-2);
 }
 
 .wrap {
@@ -1148,6 +1170,7 @@ h1 {
 /* step bars */
 .topo__steps {
   display: flex;
+  align-items: center;
   justify-content: center;
   gap: 0.6rem;
   margin-top: 0.35rem;

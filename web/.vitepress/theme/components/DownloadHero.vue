@@ -62,7 +62,8 @@ const routes = [
       </a>
     </div>
     <p class="dh__server-note">
-      postvec-server is free for development, testing and personal use.
+      postvec-server is source-available and free for development, testing and
+      personal noncommercial use. Pro covers production use by an organization.
       <a :href="withBase('/server')">Plans and features</a>
     </p>
   </div>
