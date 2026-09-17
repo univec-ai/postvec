@@ -1,0 +1,13 @@
+title = "postvec"
+
+# PGDG GPG fingerprints in versions.env and postvec-prerequisites.sh are
+# public trust pins copied into the user-facing bootstrap. They are not
+# credentials. Changing them breaks EL9 package install.
+
+[[allowlists]]
+description = "PGDG public RPM/Debian key fingerprints"
+regexes = [
+  '''PGDG_DEBIAN_KEY_FINGERPRINT=''',
+  '''PGDG_RPM_KEY_FINGERPRINT=''',
+  '''PGDG_RPM_KEY_AARCH64_FINGERPRINT=''',
+]

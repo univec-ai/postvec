@@ -71,10 +71,10 @@ carry their own terms, shown and recorded at pull time (`--accept-license`):
 - Contributions to the PostgreSQL-licensed directories are accepted under the
   [Developer Certificate of Origin](https://developercertificate.org/)
   (`git commit -s`), see [CONTRIBUTING.md](CONTRIBUTING.md).
-- Contributions to `postvec-server/` require a contributor license agreement
-  granting Univec Ltd the right to license the code commercially. Until that
-  agreement is published, external pull requests to `postvec-server/` are not
-  accepted; open an issue instead.
+- Contributions to `postvec-server/` require a signed
+  [Contributor License Agreement](CLA.md) granting Univec Ltd the right to
+  license the code commercially. Email legal@univec.ai as described in that
+  file, wait for written confirmation, then open the pull request.
 
 ## Third-party components
 

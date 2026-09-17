@@ -69,3 +69,11 @@ release manifest carry the license, and the server itself contains no check.
 
 Operative texts: [LICENSING.md](https://github.com/univec-ai/postvec/blob/main/LICENSING.md)
 in the repository.
+
+## Contributions
+
+PostgreSQL-licensed directories use the Developer Certificate of Origin
+(`git commit -s`). Changes to `postvec-server/` need a signed
+[Contributor License Agreement](https://github.com/univec-ai/postvec/blob/main/CLA.md).
+Email legal@univec.ai and wait for written confirmation before opening that
+pull request.

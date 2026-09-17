@@ -12,4 +12,4 @@ postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
     `postvec setup` to configure a cluster and `postvec doctor` to diagnose
     one; enable postvec-server yourself with systemctl.
 
- -- ${MAINTAINER}  Fri, 31 Jul 2026 00:00:00 +0000
+ -- ${MAINTAINER}  Thu, 17 Sep 2026 18:10:26 +0100

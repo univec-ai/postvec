@@ -116,5 +116,6 @@ Packaging and images: [packaging/postvec/README.md](packaging/postvec/README.md)
 
 ## Provenance
 
-postvec was developed inside UniVec's private monorepo and published as a
-squashed initial commit. Development history before v0.1.0 is private.
+postvec was developed at UniVec. This repository is the history since it was
+split from the private monorepo; postvec-server is Business Source License 1.1
+on every revision.

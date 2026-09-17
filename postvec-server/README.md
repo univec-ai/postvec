@@ -251,6 +251,6 @@ under the same licence.
 ## Contributing
 
 This directory is under the Business Source License 1.1. Univec licenses it
-commercially, so a patch here needs a contributor license agreement. Until
-that agreement is published, open an issue instead of a pull request against
-this directory. The DCO covers the PostgreSQL-licensed crates.
+commercially, so a patch here needs a signed [CLA](../CLA.md). Email
+legal@univec.ai, wait for written confirmation, then open the pull request.
+The DCO covers the PostgreSQL-licensed crates.

@@ -45,9 +45,9 @@ licenses.
   which is under the Business Source License 1.1 (see [LICENSING.md](LICENSING.md)).
   Keep new files' SPDX headers and `Cargo.toml` `license` fields consistent
   with their crate, and never copy code across that boundary in either
-  direction without carrying its license. External pull requests to
-  `postvec-server/` are not accepted until a contributor license agreement
-  is published; open an issue instead. The DCO below covers everything else.
+  direction without carrying its license. Pull requests that touch
+  `postvec-server/` need a signed [CLA](CLA.md) on file (email
+  legal@univec.ai, wait for confirmation). The DCO covers everything else.
 - **The vendored proto** (`postvec/proto/ninference.proto`) must stay
   byte-identical to `proto/ninference.proto`; it is a live wire contract
   with services outside this repository. A `#[pg_test]` pins it.
