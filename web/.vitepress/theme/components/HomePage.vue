@@ -193,23 +193,18 @@ onBeforeUnmount(() => {
     <header class="hero">
       <div class="wrap hero__grid">
         <div class="hero__copy">
-          <p class="hero__kicker">
-            <span class="tag">PostgreSQL License</span>
-            Open-source extension for PostgreSQL
-          </p>
-          <h1>Hybrid search for PostgreSQL.<br />Room to change models.</h1>
+          <h1>Hybrid search for PostgreSQL. Switch models without re-embedding text.</h1>
           <p class="subhead">
-            Keep vectors in sync with your text, combine BM25 and semantic
-            search in one SQL call and convert stored vectors between
-            supported embedding models.
+            Keep vectors in sync with your text and combine BM25 and semantic search in one SQL call. Inference runs locally <b>inside PostgreSQL</b> or through external providers  with <b>direct vector conversion</b> between supported embedding models without re-embedding of text.
           </p>
           <div class="hero__cta">
             <a class="btn btn--go" :href="withBase('/docs/quickstart')">Quick start</a>
             <a class="btn" :href="withBase('/docs/')">Documentation</a>
           </div>
           <p class="hero__fine">
-            Local inference by default, with MiniLM included. Supports
-            PostgreSQL 16, 17 and 18.
+        <span>Open source (PostgreSQL License) · PostgreSQL 16-18 · pgvector 0.8+</span>
+            <span>Local inference by default · MiniLM included · {{ SITE.conversionPairs }} conversion pairs</span>
+            <span>7 hosted providers · API keys stay on the inference host</span>
           </p>
         </div>
 
@@ -413,8 +408,6 @@ onBeforeUnmount(() => {
           </figcaption>
 
           <div v-if="animate" class="topo__steps" role="group" aria-label="Topology phases">
-            <button type="button" class="motion-control" :aria-pressed="userPaused"
-              @click="userPaused = !userPaused; syncRunning()">{{ userPaused ? 'Resume animation' : 'Pause animation' }}</button>
             <button
               v-for="(p, i) in PHASES"
               :key="p"
@@ -429,16 +422,22 @@ onBeforeUnmount(() => {
               :aria-pressed="phase === p"
               @click="setPhase(p)"
             />
+            <button
+              type="button"
+              class="motion-control"
+              :aria-label="userPaused ? 'Resume animation' : 'Pause animation'"
+              :title="userPaused ? 'Resume animation' : 'Pause animation'"
+              @click="userPaused = !userPaused; syncRunning()"
+            >
+              <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true" fill="currentColor">
+                <path v-if="userPaused" d="M4 2.5v11L13 8z" />
+                <path v-else d="M4 3h3v10H4zm5 0h3v10H9z" />
+              </svg>
+            </button>
           </div>
         </figure>
       </div>
 
-      <ul class="wrap facts" aria-label="postvec at a glance">
-        <li><b>16, 17, 18</b> PostgreSQL majors, pgvector 0.8+</li>
-        <li><b>One call</b> for BM25 and vector search</li>
-        <li><b>{{ SITE.conversionPairs }}</b> conversion pairs</li>
-        <li><b>7</b> hosted providers, keys on the inference host</li>
-      </ul>
     </header>
 
     <!-- ============================================================ -->
@@ -524,7 +523,7 @@ onBeforeUnmount(() => {
     <!-- ============================================================ -->
     <section class="band" aria-labelledby="sql-heading">
       <div class="wrap">
-        <h2 id="sql-heading">From text columns to search</h2>
+        <h2 id="sql-heading">Enable, search, adopt, migrate.</h2>
         <p class="prose">Manage embedding, retrieval and model migration through SQL.</p>
 
         <div class="try">
@@ -597,6 +596,7 @@ onBeforeUnmount(() => {
       <div class="wrap">
         <p class="eyebrow">Deployment</p>
         <h2 id="deployment-heading">Choose where inference runs</h2>
+        <p class="eyebrow"></p>
         <DeploymentGuide />
       </div>
     </section>
@@ -605,7 +605,7 @@ onBeforeUnmount(() => {
       <div class="wrap core">
         <div>
           <p class="eyebrow">Open core</p>
-          <h2 id="core-heading">Open source, with an optional server</h2>
+          <h2 id="core-heading">Open source with an optional server</h2>
           <div class="prose">
             <p>
               The extension, the CLI, the embedded inference engine and the
@@ -691,16 +691,12 @@ onBeforeUnmount(() => {
     <section class="band band--univec" aria-labelledby="univec-heading">
       <div class="wrap univec">
         <div>
-          <p class="eyebrow">UniVec</p>
           <h2 id="univec-heading">Made by UniVec</h2>
         </div>
         <div>
           <p class="univec__text">
-            UniVec builds embedding translation infrastructure in Dublin,
-            Ireland, and develops postvec. The converters behind
-            <code>adopt()</code> and <code>migrate()</code> come from the UniVec
-            catalogue. UniVec also runs a hosted embedding and conversion API,
-            which postvec can use as an external provider, and offers support
+            Postvec extension was developed by UniVec, a company building embedding inter-operability infrastructure in Dublin,
+            Ireland. UniVec also runs a hosted embedding and conversion API which postvec can use as an external provider and offers support
             agreements for production deployments.
           </p>
           <div class="univec__links">
@@ -761,11 +757,27 @@ onBeforeUnmount(() => {
 }
 
 .motion-control {
-  padding: 0.25rem 0.5rem;
-  border: 1px solid var(--vp-c-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
   border-radius: 4px;
-  font-size: 0.75rem;
-  color: var(--vp-c-text-2);
+  color: var(--vp-c-text-3);
+  background: transparent;
+  cursor: pointer;
+}
+
+.motion-control:hover {
+  color: var(--vp-c-text-1);
+  background: var(--vp-c-bg-soft);
+}
+
+.motion-control:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
 }
 
 .wrap {
@@ -843,53 +855,6 @@ dd code {
 }
 
 .hero__grid { position: relative; z-index: 1; }
-
-.hero__kicker {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.6rem;
-  margin: 0 0 1.1rem;
-  font-size: 0.86rem;
-  color: var(--vp-c-text-2);
-}
-
-.tag {
-  padding: 0.12rem 0.45rem;
-  border: 1px solid color-mix(in srgb, var(--pv-mark) 45%, var(--vp-c-border));
-  border-radius: 4px;
-  background: var(--vp-c-brand-soft);
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.72rem;
-  color: var(--pv-mark);
-}
-
-/* ------------------------------------------------------------------ */
-/* Facts strip — a quiet line under the hero, same surface             */
-/* ------------------------------------------------------------------ */
-
-.facts {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 1.75rem;
-  margin-top: 2.1rem;
-  padding: 0.85rem 0 0;
-  border-top: 1px solid var(--vp-c-divider);
-  list-style: none;
-  font-size: 0.8rem;
-  line-height: 1.45;
-  color: var(--vp-c-text-3);
-}
-
-.facts li { margin: 0; }
-
-.facts b {
-  font-family: var(--vp-font-family-mono);
-  font-weight: 500;
-  color: var(--vp-c-text-2);
-}
 
 /* ------------------------------------------------------------------ */
 /* Open core and UniVec                                                */
@@ -1017,6 +982,8 @@ h1 {
   color: var(--vp-button-brand-hover-text);
 }
 
+.hero__fine span { display: block; }
+
 .hero__fine {
   margin: 1.1rem 0 0;
   font-size: 0.82rem;
@@ -1036,7 +1003,7 @@ h1 {
   box-shadow: var(--vp-shadow-1);
 }
 
-.topo svg {
+.topo > svg {
   display: block;
   width: 100%;
   height: auto;
