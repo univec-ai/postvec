@@ -1,20 +1,21 @@
 # postvec-server web UI
 
 Dashboard for a running `postvec-server` node. It lists the models
-`GET /config` advertises and queries any live node with the native
+`GET /config` advertises and sends queries to the local node with the native
 (`/api/{model}`) or OpenAI (`/api/openai/embeddings`) contract, showing the
-route hit and the raw reply. The Registries tab is `postvec model ls` /
-`ls --available` / `pull` / `activate` / `deactivate` against this node.
-Registry reads work by default; start the public listener with `--manage` to
-enable those three mutations from the dashboard. They always remain available
-on the loopback admin listener.
+route and the raw reply.
 
-State handling follows the ninference dashboard on purpose (Zustand slices,
-the `{success, data}` envelope, a query cache per model) so both front-ends
-feel familiar to work on. Everything visible is postvec's own: plain CSS
-with system fonts (`src/styles/app.css`), a sidebar of models and a
-request/response workbench. No component library, no bundled fonts, no
-network fetches beyond the node itself.
+The Registries tab is `postvec model ls` / `ls --available` / `pull` /
+`activate` / `deactivate` against this node. Registry reads work by default.
+Start the public listener with `--manage` to run those three mutations from
+the dashboard. They remain available on the loopback admin listener in any
+case.
+
+State handling follows the ninference dashboard (Zustand slices, the
+`{success, data}` envelope, a query cache per model) so the two front-ends
+stay familiar to work on. Layout is plain CSS with system fonts
+(`src/styles/app.css`): a sidebar of models and a request/response workbench.
+Network traffic is the node itself.
 
 ## Develop
 

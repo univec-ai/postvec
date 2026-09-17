@@ -1,25 +1,23 @@
 # postvec packaging
 
-Everything needed to turn a commit of [`postvec/`](../../postvec),
+Turns a commit of [`postvec/`](../../postvec),
 [`postvec-cli/`](../../postvec-cli) and [`postvec-server/`](../../postvec-server)
 into published installation artifacts: `.deb` and `.rpm` packages per
-PostgreSQL major, PostgreSQL container images with postvec preinstalled —
-including an all-in-one image that embeds text with no external service and no
-API key — and, for remote mode, the `postvec-server` inference node as a
+PostgreSQL major, PostgreSQL container images with postvec preinstalled
+(including a local image that runs the inference engine and a bundled model
+in-process) and, for remote mode, the `postvec-server` inference node as a
 package and as an image of its own.
 
-Two licences travel in one release. Everything is under the PostgreSQL
-License except `postvec-server`, whose identifier is the reviewed
-`SERVER_LICENSE` pin in `versions.env`: the package declares it, the image
-labels it, the manifest records it under `licenses`, and `assert-versions.sh`
+Two licences travel in one release. The extension, CLI and database images
+use the PostgreSQL License. `postvec-server` uses the identifier pinned as
+`SERVER_LICENSE` in `versions.env`: the package declares it, the image labels
+it, the manifest records it under `licenses`, and `assert-versions.sh`
 refuses a release where the crate, the licence text, the `LICENSING.md` index
 and the pin disagree.
 
-This directory is deliberately separate from UniVec's internal application
-build pipeline. Public database packages have a different version, a
-different platform matrix, a different signing boundary and a different
-rollback story; folding them together would couple two release lifecycles
-that have no reason to move at the same time.
+This directory is separate from UniVec's internal application build pipeline.
+Public database packages have a different version, platform matrix, signing
+boundary and rollback story.
 
 ---
 
@@ -64,9 +62,8 @@ scripts/write-release-manifest.sh --expect-distros debian12 \
                                  --expect-majors 18 --expect-arches amd64
 ```
 
-Prerequisites: Docker, `python3`, `jq` and the usual binutils. Nothing is
-installed on the host — the compiler lives in a builder image and nfpm runs
-from a pinned container.
+Prerequisites: Docker, `python3`, `jq` and the usual binutils. The compiler
+lives in a builder image and nfpm runs from a pinned container.
 
 ### What a user needs first
 
@@ -406,7 +403,7 @@ production claim.** Package design, the tested payloads and the runtime
 packaging are production-grade; the release automation is unproven until it has
 executed end to end, and the *adoption* experience is not production-grade until
 signed repositories exist (§Repositories in
-[install.md](../../docs/install.md)) — GitHub release assets have no
+[install packages](https://postvec.dev/docs/install/packages)) — GitHub release assets have no
 `apt upgrade`, no security-update delivery, no package-manager-native signature
 verification and no key rotation.
 
@@ -1001,7 +998,7 @@ reviewed sequence — not a version bump:
    ordinary (non-recording) golden test on **every** architecture in the
    release.
 5. `scripts/release.sh --skip-images`, then a full local release.
-6. Update the model name where documentation quotes it (`docs/`).
+6. Update the model name where documentation quotes it (`web/docs/`).
 
 Renaming the package (`BUNDLED_MODEL_PKG_SUFFIX`) after a public release needs a
 transitional package; before the first public release it does not.
@@ -1098,8 +1095,8 @@ release job, not a tag.
 
 ## Where the rest lives
 
-- Operator documentation: [`docs/install.md`](../../docs/install.md)
-- From a local `release.sh` to GitHub Releases, GHCR, and apt/yum: [`docs/postvec-release.md`](../../docs/postvec-release.md)
-- Local source builds: [`docs/quick-install.md` §5](../../docs/quick-install.md#5-source-lane--local-cargo-build-and-manual-copy)
+- Operator documentation: [postvec.dev/docs/install](https://postvec.dev/docs/install/)
+- GitHub Releases / GHCR publication: this README, then [GitHub Releases](https://github.com/univec-ai/postvec/releases)
+- Local source builds: [from source](https://postvec.dev/docs/install/source)
 - The CLI's contract: [`postvec-cli/README.md`](../../postvec-cli/README.md)
-- What postvec is and how it works: [`docs/postvec-description.md`](../../docs/postvec-description.md)
+- What postvec is and how it works: [postvec.dev/docs](https://postvec.dev/docs/)

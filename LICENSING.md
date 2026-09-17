@@ -12,7 +12,7 @@ per-directory index; the license texts are where the table points.
 | `providers/` | PostgreSQL License | [LICENSE](LICENSE) |
 | `proto/` | PostgreSQL License | [LICENSE](LICENSE) |
 | `registry/schema/`, `registry/client/` | PostgreSQL License | [LICENSE](LICENSE) |
-| `docs/`, `web/` | PostgreSQL License | [LICENSE](LICENSE) |
+| `web/` | PostgreSQL License | [LICENSE](LICENSE) |
 | `postvec-server/` | Business Source License 1.1 | [postvec-server/LICENSE](postvec-server/LICENSE) |
 
 The release gate (`packaging/postvec/scripts/assert-versions.sh`) reads the
