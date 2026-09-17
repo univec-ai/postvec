@@ -91,6 +91,30 @@ pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     Ok(connection)
 }
 
+/// Serializes `install` and `uninstall` on one database for the whole run,
+/// post-commit index builds included. Polled between statements, never waited
+/// on inside one: a backend blocked in `pg_advisory_lock` holds a snapshot, and
+/// the other run's `CREATE INDEX CONCURRENTLY` waits for every older snapshot,
+/// which deadlocks. Released when the connection closes.
+async fn lock_installs(connection: &mut PgConnection, timeout: u32) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout.into());
+    let mut noted = false;
+    while !sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock(1886615158, 4)")
+        .fetch_one(&mut *connection)
+        .await?
+    {
+        if tokio::time::Instant::now() >= deadline {
+            bail!("another managed install or uninstall is still running on this database; rerun when it finishes");
+        }
+        if !noted {
+            eprintln!("Waiting for another managed install or uninstall on this database.");
+            noted = true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Ok(())
+}
+
 /// The installed managed schema version, `None` when there is no schema.
 pub(super) async fn check(connection: &mut PgConnection) -> Result<Option<i32>> {
     let extension: bool = sqlx::query_scalar(
@@ -142,6 +166,9 @@ pub async fn run(command: Command) -> Result<()> {
         );
     }
     let mut connection = connect(args).await?;
+    if !matches!(command, Command::Status(_)) {
+        lock_installs(&mut connection, args.timeout).await?;
+    }
     let mut tx = connection.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(1886615158, 1)")
         .execute(&mut *tx)
@@ -214,12 +241,9 @@ pub async fn run(command: Command) -> Result<()> {
             tx.commit().await?;
             // An interrupted CONCURRENTLY build leaves an invalid index that
             // IF NOT EXISTS would skip; drop it so this run builds it again.
-            // Session lock so overlapping installs neither race the build nor
-            // sweep each other's in-progress (invalid) index. Not key 1, which
-            // would park workers during the build, nor key 2, the worker leader.
-            // Released when the connection closes.
+            // `lock_installs` still holds, so no other run can sweep this build.
             connection
-                .execute("SET statement_timeout = 0; SET lock_timeout = 0; SELECT pg_advisory_lock(1886615158, 4)")
+                .execute("SET statement_timeout = 0; SET lock_timeout = 0")
                 .await?;
             let invalid: Vec<String> = sqlx::query_scalar(
                 "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_catalog.pg_index i

@@ -130,10 +130,21 @@ async fn exercise(dsn: &str) -> Result<()> {
     ] {
         db.execute(format!("UPDATE postvec.schema_version SET version = 1; DROP INDEX postvec.jobs_embed_claim_order; {old_index}").as_str())
             .await?;
-        let (first, second) = tokio::join!(
+        // The held ROW EXCLUSIVE keeps the first build waiting while the second
+        // install starts, whatever the machine speed.
+        let mut holder = PgConnection::connect(dsn).await?;
+        holder
+            .execute("BEGIN; LOCK TABLE postvec.jobs IN ROW EXCLUSIVE MODE")
+            .await?;
+        let (first, second, released) = tokio::join!(
             managed::run(command(dsn, "install")),
-            managed::run(command(dsn, "install"))
+            managed::run(command(dsn, "install")),
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                holder.execute("COMMIT").await
+            }
         );
+        released?;
         first.and(second).context("overlapping installs")?;
         ensure!(
             sqlx::query_scalar::<_, i32>(version_sql).fetch_one(&mut db).await? == current
