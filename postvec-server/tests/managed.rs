@@ -6,7 +6,7 @@ use sqlx::{Connection, Executor, PgConnection};
 
 /// md5 of `table_contract()` for a fresh install, per managed schema version.
 /// A mismatch means a table, constraint or index changed without a version.
-const SCHEMA_FINGERPRINTS: &[(i32, &str)] = &[(2, "d61aea48da0037d0af4a2075b049cc79")];
+const SCHEMA_FINGERPRINTS: &[(i32, &str)] = &[(2, "67a518f5b1d4d8236dc62a7ea1b089c9")];
 
 fn command(dsn: &str, action: &str) -> Command {
     let args = ConnectionArgs {
@@ -361,6 +361,7 @@ async fn exercise(dsn: &str) -> Result<()> {
 
 async fn table_contract(db: &mut PgConnection) -> Result<Vec<String>> {
     Ok(sqlx::query_scalar(r#"
+        SELECT contract FROM (
         SELECT jsonb_build_array(c.relname,a.attname,a.attnum,format_type(a.atttypid,a.atttypmod),
             a.attnotnull,a.attidentity,pg_get_expr(d.adbin,d.adrelid))::text AS contract
         FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -373,6 +374,6 @@ async fn table_contract(db: &mut PgConnection) -> Result<Vec<String>> {
         JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='postvec'
         UNION ALL
         SELECT jsonb_build_array(tablename,indexname,indexdef)::text FROM pg_indexes WHERE schemaname='postvec'
-        ORDER BY 1
+        ) t ORDER BY contract COLLATE "C"
     "#).fetch_all(db).await?)
 }
