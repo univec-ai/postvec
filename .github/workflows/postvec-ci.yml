@@ -64,6 +64,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The PG 18 cell runs the thin and embedded builds, three pgrx suites, the
+      # dump/restore smoke and a package smoke in one target directory — most of
+      # a hosted runner's free disk even on a clean build. When a lockfile
+      # changes, rust-cache restores the previous build from a fallback key and
+      # the new crate versions compile beside it, so the job outgrew the disk at
+      # its last step (ENOSPC, 2026-09-18). These preinstalled toolchains are
+      # unused here.
+      - name: Free runner disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Install build deps
         run: |
           sudo apt-get update

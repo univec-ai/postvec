@@ -417,6 +417,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { ref: "${{ env.RELEASE_REF }}" }
+      # ci.sh is the same workload as postvec-ci's PG 18 cell — thin and
+      # embedded builds, three pgrx suites, the dump/restore smoke — which ran
+      # a hosted runner out of disk once a lockfile change made rust-cache
+      # restore the previous build beside the new one (ENOSPC, 2026-09-18).
+      # These preinstalled toolchains are unused here.
+      - name: Free runner disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install build dependencies
         run: |
           sudo apt-get update
