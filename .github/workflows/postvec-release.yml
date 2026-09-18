@@ -422,6 +422,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
         with:
           toolchain: "1.96.0"
+          # ci.sh runs rustfmt then clippy. A pinned toolchain installs the
+          # minimal profile, so both components have to be asked for by name;
+          # the `stable` jobs get them from the default profile.
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with: { workspaces: postvec }
       - name: cargo-pgrx
