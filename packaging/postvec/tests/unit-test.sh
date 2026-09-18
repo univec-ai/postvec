@@ -2042,6 +2042,56 @@ EOF
         || ok "a failing gh exits non-zero"
 fi
 
+if case_ "bump-release.sh: the mechanical edits of the next release"; then
+    clone="${WORK}/bump-clone"
+    rm -rf "${clone}"
+    git clone -q --no-local "${REPO_ROOT}" "${clone}"
+    git -C "${clone}" checkout -q "$(git -C "${REPO_ROOT}" rev-parse HEAD)"
+    # The script under test is the working-tree copy, committed or not.
+    cp "${PKG_DIR}/scripts/bump-release.sh" "${PKG_DIR}/scripts/lib.sh" "${clone}/packaging/postvec/scripts/"
+    git -C "${clone}" -c user.email=t@t -c user.name=t add -A
+    git -C "${clone}" -c user.email=t@t -c user.name=t commit -qm "under test" --allow-empty
+    bump() { "${clone}/packaging/postvec/scripts/bump-release.sh" --no-lock "$@" >/dev/null 2>&1; }
+    pin() { sed -n "s/^$1=//p" "${clone}/packaging/postvec/versions.env"; }
+    old="$(pin POSTVEC_VERSION)"
+    IFS=. read -r major minor patch <<<"${old}"
+    new="${major}.${minor}.$((patch + 1))"
+
+    bump "${new}" && ok "bump to ${new} succeeds" || bad "bump to ${new} failed"
+    [[ "$(pin POSTVEC_VERSION)-$(pin PACKAGE_RELEASE)" == "${new}-1" ]] \
+        && ok "versions.env is ${new}-1" || bad "versions.env is $(pin POSTVEC_VERSION)-$(pin PACKAGE_RELEASE)"
+    for manifest in postvec postvec-cli postvec-server; do
+        grep -qx "version = \"${new}\"" "${clone}/${manifest}/Cargo.toml" \
+            && ok "${manifest}/Cargo.toml is ${new}" || bad "${manifest}/Cargo.toml was not bumped"
+    done
+    [[ -f "${clone}/postvec/sql/postvec--${old}--${new}.sql" ]] \
+        && grep -q "pg_advisory_xact_lock(hashtext('postvec_schema'))" "${clone}/postvec/sql/postvec--${old}--${new}.sql" \
+        && ok "postvec--${old}--${new}.sql takes the schema lock" || bad "no upgrade script ${old} -> ${new}"
+    changelog="${clone}/packaging/postvec/changelog.Debian"
+    # shellcheck disable=SC2016  # the templated header is literal text
+    [[ "$(head -n1 "${changelog}")" == 'postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium' ]] \
+        && grep -qx "postvec (${old}-1) unstable; urgency=medium" "${changelog}" \
+        && ok "changelog: new templated entry on top, ${old}-1 frozen below" \
+        || bad "changelog top: $(head -n1 "${changelog}")"
+    bump "${new}" && bad "a dirty tree was bumped" || ok "a dirty tree is refused"
+
+    git -C "${clone}" -c user.email=t@t -c user.name=t add -A
+    git -C "${clone}" -c user.email=t@t -c user.name=t commit -qm "${new}"
+    bump "${old}" && bad "an older version was accepted" || ok "a version that is not newer is refused"
+    bump --packaging "${new}" && bad "mixed --packaging and a version was accepted" \
+        || ok "mixed modes are refused"
+    bump --packaging && [[ "$(pin PACKAGE_RELEASE)" == 2 ]] \
+        && ok "--packaging makes ${new}-2" || bad "--packaging left PACKAGE_RELEASE=$(pin PACKAGE_RELEASE)"
+    [[ -z "$(git -C "${clone}" status --porcelain -- postvec/sql)" ]] \
+        && ok "--packaging creates no SQL" \
+        || bad "--packaging created SQL: $(git -C "${clone}" status --porcelain -- postvec/sql)"
+
+    bump --docs
+    grep -q "postvec-server:${new}-2" "${clone}/packaging/postvec/docker/compose/postvec-server.yml" \
+        && grep -q "releaseTag: \"postvec-v${new}-2\"" "${clone}/web/.vitepress/theme/site.ts" \
+        && ok "--docs points compose and site.ts at ${new}-2" || bad "--docs did not update compose/site.ts"
+fi
+
 if case_ "shipped upgrade scripts stay byte-identical"; then
     repo="${WORK}/shipped-repo"
     rm -rf "${repo}"
