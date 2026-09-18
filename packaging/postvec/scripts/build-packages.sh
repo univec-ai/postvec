@@ -41,10 +41,6 @@ done
 RELEASE_ARCH="${RELEASE_ARCH:-$(host_release_arch)}"
 
 load_versions
-# The bundled model's package name, version, licence and dimension are derived
-# from the verified registry archive, not from versions.env directly. Loading
-# them here means every description below follows the pin.
-load_model_facts
 require_pg_major "${PG_MAJOR}"
 distro_facts "${DISTRO}"
 arch_facts "${RELEASE_ARCH}"
@@ -64,6 +60,18 @@ MODEL_PAYLOAD_ROOT="${PKG_DIR}/build/payload-common"
 UI_PAYLOAD_ROOT="${PKG_DIR}/build/payload-ui"
 
 wanted() { [[ -z "${ONLY}" || " ${ONLY//,/ } " == *" $1 "* ]]; }
+
+# The bundled model's package name, version, licence and dimension are derived
+# from the verified registry archive, not from versions.env directly, so every
+# description follows the pin. Only the model package and the extras
+# metapackage read them. A cell built `--only extension` must not require the
+# model payload: the release workflow's extension-packages job does not wait for
+# model-bundle, and loading the facts unconditionally failed every one of its
+# cells on the first rehearsal. Local release.sh and packaging-ci never hit it,
+# because both build the model bundle before any package.
+if wanted model; then
+    load_model_facts
+fi
 
 # Only the packages that carry compiled output need a compiled cell. The model
 # bundle and the metapackage are architecture- and PostgreSQL-independent, and
@@ -150,7 +158,7 @@ deb)
     # The file is rendered by the bundle step from the *verified* archive's
     # licence and provenance (scripts/check-model-bundle.py), so this script
     # no longer reaches into model/ for a hand-written one.
-    MODEL_LICENSE_SRC="${MODEL_PAYLOAD_ROOT}${MODEL_DOC_DIR}/copyright"
+    MODEL_LICENSE_SRC="${MODEL_PAYLOAD_ROOT}${MODEL_DOC_DIR:-}/copyright"
     ;;
 rpm)
     PACKAGER=rpm
@@ -161,7 +169,7 @@ rpm)
     CHANGELOG_NAME=changelog.gz
     # RPM has no common-licenses directory, so /usr/share/licenses carries the
     # full text — which is also what `rpm -qL` expects to find there.
-    MODEL_LICENSE_SRC="${MODEL_PAYLOAD_ROOT}${MODEL_DOC_DIR}/LICENSE"
+    MODEL_LICENSE_SRC="${MODEL_PAYLOAD_ROOT}${MODEL_DOC_DIR:-}/LICENSE"
     ;;
 esac
 
