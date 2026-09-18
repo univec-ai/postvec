@@ -1,5 +1,16 @@
 postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
 
+  * Extension upgrades from 0.1.0: `ALTER EXTENSION postvec UPDATE` takes an
+    installed 0.1.0 to 0.2.0. Upgrade the packages, restart PostgreSQL (the
+    background worker parks until the schema matches the new library), then
+    run the ALTER EXTENSION in every database that has postvec installed.
+  * DRAFT: list the user-visible 0.2.0 changes here before release, and set
+    the date below with `date -R`.
+
+ -- ${MAINTAINER}  Fri, 18 Sep 2026 22:00:00 +0100
+
+postvec (0.1.0-1) unstable; urgency=medium
+
   * First packaged release of postvec: the extension for one PostgreSQL
     major, the `postvec` command, a pinned CPU ONNX Runtime, one reviewed
     embedding model, and the metapackage that pins those two together.

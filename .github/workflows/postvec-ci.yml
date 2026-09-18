@@ -167,10 +167,15 @@ jobs:
         run: |
           cargo pgrx package --debug --no-default-features --features "pg${PGVER}" \
             --pg-config "$(echo "$HOME"/.pgrx/"${PGVER}".*/pgrx-install/bin/pg_config)"
+          # The version comes from the crate, never a literal: a literal here
+          # breaks the first time the version is bumped.
+          version="$(sed -nE 's/^version = "([^"]+)"$/\1/p' Cargo.toml | head -1)"
           STAGE="target/debug/postvec-pg${PGVER}"
           so="$(find "$STAGE" -name postvec.so)"
           ctl="$(find "$STAGE" -name postvec.control)"
-          sql="$(find "$STAGE" -name 'postvec--*.sql')"
+          # By exact name: once upgrade scripts exist, postvec--*.sql matches
+          # several files and a joined path list is not a file.
+          sql="$(find "$STAGE" -name "postvec--${version}.sql")"
           for f in "$so" "$ctl" "$sql"; do
             # `if`, not `A && B || C`: with the latter, C runs whenever B fails
             # too, which here would be the right answer for the wrong reason.
@@ -178,4 +183,92 @@ jobs:
               echo "missing packaged asset"; exit 1
             fi
           done
-          grep -q "default_version = '0.1.0'" "$ctl"
+          grep -q "default_version = '${version}'" "$ctl"
+          # Every upgrade script ships with the install script, or
+          # `ALTER EXTENSION postvec UPDATE` has no path after a package upgrade.
+          for s in sql/postvec--*--*.sql; do
+            [ -e "$s" ] || continue
+            if [ -z "$(find "$STAGE" -name "$(basename "$s")")" ]; then
+              echo "upgrade script $(basename "$s") was not packaged"; exit 1
+            fi
+          done
+
+  # Extension upgrade from the previous release (postvec/upgrade_test.sh):
+  # catalog parity between a fresh install and an upgraded one, every row
+  # intact across ALTER EXTENSION, and the worker's version gate in the order a
+  # package upgrade produces it. Its own job, so the previous release's build
+  # never shares a runner disk with the PG 18 cell above. Until a release tag
+  # of another version exists there is nothing to upgrade from, and the job
+  # stops after its first step.
+  upgrade:
+    runs-on: ubuntu-latest
+    env:
+      PGRX_VERSION: "0.18.1"
+      PGVECTOR_TAG: "v0.8.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The previous release is found by its tag and built from its commit.
+          fetch-depth: 0
+
+      - name: Is there a release to upgrade from?
+        id: previous
+        run: |
+          current="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
+          previous="$(git tag --list 'postvec-v*' \
+            | sed -nE 's/^postvec-v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+)?$/\1/p' \
+            | grep -vx "${current}" | sort -Vr | head -1 || true)"
+          if [ -n "${previous}" ]; then
+            echo "Upgrading ${previous} -> ${current}"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No postvec-v* release of another version yet: nothing to upgrade from."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Free runner disk
+        if: steps.previous.outputs.found == 'true'
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install build deps
+        if: steps.previous.outputs.found == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libclang-dev clang \
+            pkg-config libssl-dev flex bison libreadline-dev zlib1g-dev \
+            libicu-dev protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
+        if: steps.previous.outputs.found == 'true'
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: steps.previous.outputs.found == 'true'
+        with:
+          workspaces: postvec
+          key: upgrade
+
+      - name: Install cargo-pgrx
+        if: steps.previous.outputs.found == 'true'
+        run: cargo install cargo-pgrx --version "${PGRX_VERSION}" --locked
+
+      - name: Init pgrx PG 18
+        if: steps.previous.outputs.found == 'true'
+        run: cargo pgrx init --pg18 download
+
+      - name: Build pgvector into the pgrx cluster
+        if: steps.previous.outputs.found == 'true'
+        run: |
+          PG_CONFIG="$(echo "$HOME"/.pgrx/18.*/pgrx-install/bin/pg_config)"
+          git clone --branch "${PGVECTOR_TAG}" --depth 1 \
+            https://github.com/pgvector/pgvector.git /tmp/pgvector
+          make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG"
+          make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG" install
+
+      - name: Upgrade test
+        if: steps.previous.outputs.found == 'true'
+        run: ./postvec/upgrade_test.sh

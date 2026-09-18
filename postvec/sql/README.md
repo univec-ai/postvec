@@ -36,16 +36,43 @@ From the first released version:
    old worker will read and write rows in a schema that belongs to the new
    release.
 
-5. Once a prior release exists, CI installs version X from the previous tag,
-   runs `ALTER EXTENSION postvec UPDATE`, then runs the test suite against
-   the upgraded schema. Include a concurrent case: a worker draining a real
-   backlog while the upgrade runs, so no job is processed against the wrong
-   schema.
+5. `postvec/upgrade_test.sh` proves every upgrade before it ships. It builds
+   the previous release from its tag (or any ref you name), populates it,
+   swaps in the new library, and checks that:
+   - the background worker parks across the version skew: no claims, no
+     writes, no heartbeat;
+   - `ALTER EXTENSION postvec UPDATE` keeps every row, compared inside the
+     upgrade transaction;
+   - the worker then resumes and drains a pending chunk refresh against the
+     upgraded schema;
+   - the upgraded catalog is identical to a fresh install's: members,
+     relations, columns in order, defaults, indexes, constraints, policies,
+     triggers, views, functions, types, sequences, ACLs, comments, config
+     tables. This is the check that catches a script missing a change.
 
-0.1.0 is unreleased, so this directory holds the convention and no upgrade
-scripts yet. Changes to `schema.rs` and `#[pg_extern]` signatures are still
-amended in place. After the first tag the same change needs a full
-`postvec--X--Y.sql`.
+   It runs in `postvec-ci` (job `upgrade`) and gates the release
+   (`upgrade-gate`, which `extension-packages` waits on). Both skip until a
+   release of another version exists. The release's install tests also
+   upgrade real packages from the previous published release
+   (`packaging/postvec/tests/package-upgrade-test.sh`).
+
+   Run it locally before tagging:
+
+   ```console
+   ./upgrade_test.sh                # from the newest postvec-v* tag
+   ./upgrade_test.sh <git-ref>      # from any commit
+   ```
+
+   Not covered: a worker mid-transaction at the instant the upgrade starts.
+   The exclusive schema lock serialises the two by design; the test proves
+   the before and after, not every interleaving.
+
+Changes to `schema.rs` and `#[pg_extern]` signatures were amended in place
+until 0.1.0 was tagged. From then on every such change ships with the
+matching `postvec--X--Y.sql`, and the upgrade test fails if the script and the
+fresh install disagree. A release with no schema change still needs a script
+(the schema lock alone): the release gate requires a path from every
+released version.
 
 `postvec.build_info()` and recursive chunking (the extra registry columns,
 queue key, `trg_chunk_*` functions and related indexes) landed in the 0.1.0

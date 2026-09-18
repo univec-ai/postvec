@@ -8,7 +8,7 @@
 # (`engine`, `shared`, the proto) stay under the PostgreSQL License.
 [package]
 name = "postvec-server"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.82"
 description = "Standalone inference node for postvec's remote mode: gRPC and HTTP embeddings/conversions, an OpenAI-compatible embeddings adaptor, /config discovery, and an optional dashboard."

@@ -1,6 +1,6 @@
 [package]
 name = "postvec"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Transparent auto-embedding, hybrid search and embedding-model migration for PostgreSQL, backed by UniVec inference"
 # Release metadata: `packaging/postvec/scripts/assert-versions.sh` reads

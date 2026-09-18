@@ -131,8 +131,8 @@ check_upgrade_graph() {
         # postvec--<old>--<new>.sql and a native upgrade test; that is not
         # something to discover from users.
         printf '  skip  upgrade graph               no previous release tags (first release)\n'
-        printf '        the second release needs postvec--<old>--<new>.sql *and* a native\n'
-        printf '        upgrade test: install old, populate, upgrade, restart, ALTER EXTENSION.\n'
+        printf '        from the second release on, every released version needs a path of\n'
+        printf '        postvec--<old>--<new>.sql scripts, proven by postvec/upgrade_test.sh.\n'
         return
     fi
 
