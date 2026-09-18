@@ -17,3 +17,38 @@
 #   review_by = "2026-12-31"
 
 accepted = []
+
+# DRAFT — decided_by and review_by are unfilled, so audit.sh rejects this file
+# as written ("an exception is missing: decided_by, review_by"). Read each
+# reason, correct anything you disagree with, fill both fields, or delete the
+# entry and fix the dependency instead. Nothing here is a decision already made.
+
+[[accepted]]
+id = "RUSTSEC-2026-0118"
+reason = "hickory-proto reaches the lockfile only through memberlist's optional agnostic-dns; postvec-server depends on memberlist with default-features = false, features = [\"tokio\", \"tcp\"], so the DNS stack is never compiled. `cargo tree -i hickory-proto --target all` prints nothing: the crate is a lockfile entry, not a linked dependency. No fixed version exists upstream."
+decided_by = ""
+review_by = ""
+
+[[accepted]]
+id = "RUSTSEC-2026-0119"
+reason = "Same hickory-proto entry as RUSTSEC-2026-0118: present in the lockfile through memberlist's disabled DNS feature, never compiled into any shipped artifact. The fix (>= 0.26.1) is a semver-major bump of a crate postvec does not build."
+decided_by = ""
+review_by = ""
+
+[[accepted]]
+id = "RUSTSEC-2025-0119"
+reason = "number_prefix is unmaintained, not vulnerable. Path: number_prefix <- indicatif <- tokenizers <- engine <- postvec-server. It formats byte counts for a progress bar; no untrusted input reaches it and no fixed release exists because there is no defect to fix."
+decided_by = ""
+review_by = ""
+
+[[accepted]]
+id = "RUSTSEC-2024-0436"
+reason = "paste is unmaintained, not vulnerable, and is a compile-time proc-macro that contributes no runtime code. Paths: paste <- agnostic-lite <- memberlist <- postvec-server (workspace lockfile), and paste <- tokenizers / macro_rules_attribute (extension lockfile)."
+decided_by = ""
+review_by = ""
+
+[[accepted]]
+id = "RUSTSEC-2021-0127"
+reason = "serde_cbor is unmaintained, not vulnerable. Path: serde_cbor <- pgrx <- postvec. It is pgrx's own internal serialization dependency; replacing it means waiting for pgrx upstream, and the extension does not deserialize untrusted CBOR."
+decided_by = ""
+review_by = ""

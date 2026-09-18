@@ -396,7 +396,11 @@ jobs:
       # accepted, and an expired exception fails just as the advisory would.
       - name: Advisory check
         run: |
-          cargo install cargo-audit --version 0.21.1 --locked
+          # 0.22 is the first line whose advisory parser understands CVSS v4.
+          # 0.21.1 rejects the *whole* RustSec database — not one advisory —
+          # the moment any entry carries a `CVSS:4.0/...` vector, which reads
+          # as "found advisories" and blocks a release for an upstream reason.
+          cargo install cargo-audit --version 0.22.2 --locked
           packaging/postvec/scripts/audit.sh
 
       - name: Entrypoint tests
