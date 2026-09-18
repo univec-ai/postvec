@@ -95,9 +95,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Release version consistency
-        run: packaging/postvec/scripts/assert-versions.sh
+        run: |
+          git fetch --tags --force origin
+          packaging/postvec/scripts/assert-versions.sh
 
       - name: Shell syntax
         run: |
@@ -373,6 +378,22 @@ jobs:
         timeout-minutes: 25
         run: |
           packaging/postvec/tests/package-install-test.sh \
+            --distro debian12 --pg 18 --arch amd64
+
+      # The package-level upgrade: previous published CLI + extension, then
+      # these packages in place. Skips until a GitHub Release of an older
+      # product version exists. A gh failure fails the step.
+      - name: Upgrade from the previous release
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous="$(packaging/postvec/scripts/previous-release.sh --published)"
+          if [ -z "${previous}" ]; then
+            echo "::notice::No published release of an older version yet: nothing to upgrade from."
+            exit 0
+          fi
+          packaging/postvec/tests/package-upgrade-test.sh --from-tag "${previous}" \
             --distro debian12 --pg 18 --arch amd64
 
       # An inference host with no PostgreSQL: the node bundle from local

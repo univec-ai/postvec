@@ -6,11 +6,11 @@
 #   tests/package-upgrade-test.sh --distro el9 --pg 17 --from-dir ~/prev-release/dist
 #
 # postvec/upgrade_test.sh proves the SQL side from source: catalog parity,
-# data survival, the worker's version gate. This proves what only the packages
-# can: that the previous release's packages install, that `apt`/`dnf` replace
-# them in place, that the upgrade script ships in the distribution's own
-# extension directory, that the new library loads against the old catalog, and
-# that ALTER EXTENSION postvec UPDATE works on that distribution's PostgreSQL.
+# data survival, the worker's version gate. This proves the package path:
+# the previous release's packages install, `apt`/`dnf` replace them in place,
+# the upgrade script ships in the distribution's own extension directory,
+# the new library loads against the old catalog, and ALTER EXTENSION postvec
+# UPDATE works on that distribution's PostgreSQL.
 #
 # The previous release comes either from a GitHub Release (--from-tag, needs
 # `gh` and read access to the repository) or from a directory of its packages

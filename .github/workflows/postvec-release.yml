@@ -171,6 +171,7 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
           fetch-depth: 0
+          fetch-tags: true
 
       # `git describe --exact-match` proves *some* tag points at HEAD, which is
       # not the question. The question is whether refs/tags/$RELEASE_REF exists
@@ -189,10 +190,14 @@ jobs:
       # pins, and refuses placeholder publication metadata. The tag is passed
       # only when publishing; on a rehearsal of a branch there is no tag to
       # agree with, and the script says so rather than inventing one.
+      # The upgrade-graph half lists postvec-v* tags. checkout's fetch-tags
+      # misses them when RELEASE_REF is a SHA, so fetch them here.
       - name: Release version consistency
         env:
           POSTVEC_RELEASE_TAG: ${{ steps.gate.outputs.publish == 'true' && inputs.ref || '' }}
-        run: packaging/postvec/scripts/assert-versions.sh
+        run: |
+          git fetch --tags --force origin
+          packaging/postvec/scripts/assert-versions.sh
 
       # The closure checks, against fixtures. Everything after this job proves
       # that packages build and work; this is the only thing that proves a bad
@@ -462,67 +467,81 @@ jobs:
   # it, swaps in this release's library, and proves: the worker parks across
   # the version skew; ALTER EXTENSION postvec UPDATE keeps every row; the
   # worker then resumes; and the upgraded catalog equals a fresh install's.
-  # extension-packages waits on it. Until a release of another version exists
-  # there is nothing to upgrade from, and the job stops after its first step.
+  # extension-packages waits on it. Until a strictly older postvec-v* tag
+  # exists the job stops after its first step. A publish (or disposable
+  # publication) of a version that has upgrade scripts and no such tag fails.
   upgrade-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: "${{ env.RELEASE_REF }}"
           # The previous release is found by its tag and built from its commit.
           fetch-depth: 0
+          fetch-tags: true
       - name: Is there a release to upgrade from?
         id: previous
+        env:
+          POSTVEC_MODE: ${{ inputs.mode }}
         run: |
-          current="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
-          previous="$(git tag --list 'postvec-v*' \
-            | sed -nE 's/^postvec-v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+)?$/\1/p' \
-            | grep -vx "${current}" | sort -Vr | head -1 || true)"
-          if [ -n "${previous}" ]; then
-            echo "Upgrading ${previous} -> ${current}"
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::No postvec-v* release of another version yet: nothing to upgrade from."
-            echo "found=false" >> "$GITHUB_OUTPUT"
+          git fetch --tags --force origin
+          tag="$(packaging/postvec/scripts/previous-release.sh)"
+          if [ -n "${tag}" ]; then
+            echo "Upgrading from ${tag}"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          echo "tag=" >> "$GITHUB_OUTPUT"
+          shopt -s nullglob
+          scripts=(postvec/sql/postvec--*--*.sql)
+          shopt -u nullglob
+          if (( ${#scripts[@]} )); then
+            echo "::warning::upgrade scripts exist and no older postvec-v* tag is visible"
+            case "${POSTVEC_MODE}" in
+            publish|disposable-publication)
+              echo "::error::${POSTVEC_MODE} of a version that has upgrade scripts needs a previous release tag to test against"
+              exit 1
+              ;;
+            esac
+          fi
+          echo "::notice::No older postvec-v* tag: nothing to upgrade from."
       - name: Free runner disk
-        if: steps.previous.outputs.found == 'true'
+        if: steps.previous.outputs.tag != ''
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
       - name: Install build dependencies
-        if: steps.previous.outputs.found == 'true'
+        if: steps.previous.outputs.tag != ''
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libclang-dev clang pkg-config \
             libssl-dev flex bison libreadline-dev zlib1g-dev libicu-dev \
             protobuf-compiler
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-16
-        if: steps.previous.outputs.found == 'true'
+        if: steps.previous.outputs.tag != ''
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        if: steps.previous.outputs.found == 'true'
+        if: steps.previous.outputs.tag != ''
         with: { workspaces: postvec, key: upgrade }
       - name: cargo-pgrx
-        if: steps.previous.outputs.found == 'true'
+        if: steps.previous.outputs.tag != ''
         run: |
           version="$(sed -n 's/^PGRX_VERSION=//p' packaging/postvec/versions.env)"
           cargo install cargo-pgrx --version "$version" --locked
           cargo pgrx init --pg18 download
       - name: pgvector into the test cluster
-        if: steps.previous.outputs.found == 'true'
+        if: steps.previous.outputs.tag != ''
         run: |
           PG_CONFIG="$(echo "$HOME"/.pgrx/18.*/pgrx-install/bin/pg_config)"
           git clone --branch v0.8.2 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
           make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG"
           make -C /tmp/pgvector PG_CONFIG="$PG_CONFIG" install
       - name: Upgrade test
-        if: steps.previous.outputs.found == 'true'
-        run: ./postvec/upgrade_test.sh
+        if: steps.previous.outputs.tag != ''
+        run: ./postvec/upgrade_test.sh "${{ steps.previous.outputs.tag }}"
 
   # Architecture- and PG-independent inputs, built exactly once. The model
   # bundle is one portable FP32 graph; rebuilding it per cell would create
@@ -833,13 +852,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          current="$(sed -n 's/^POSTVEC_VERSION=//p' packaging/postvec/versions.env)"
-          previous="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-drafts --limit 100 \
-              --json tagName --jq '.[].tagName' \
-            | grep -E '^postvec-v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' \
-            | grep -vF "postvec-v${current}-" | sort -Vr | head -1 || true)"
+          previous="$(packaging/postvec/scripts/previous-release.sh --published)"
           if [ -z "${previous}" ]; then
-            echo "::notice::No published release of another version yet: nothing to upgrade from."
+            echo "::notice::No published release of an older version yet: nothing to upgrade from."
             exit 0
           fi
           packaging/postvec/tests/package-upgrade-test.sh --from-tag "${previous}" \
@@ -1823,10 +1838,26 @@ jobs:
                           | @tsv' postvec-release.json)
           test "${fail}" = 0
 
+      # A 0.1.1 hotfix published after 0.2.0 is a maintenance release: it
+      # ships under its own versioned tags. GitHub's "Latest release" badge
+      # and the moving image tags stay on the newer line. A gh failure fails
+      # this step.
+      - name: Newest release line, or maintenance of an older one?
+        id: line
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          line="$(packaging/postvec/scripts/release-line.sh)"
+          echo "line=${line%% *}" >> "$GITHUB_OUTPUT"
+          if [ "${line%% *}" = maintenance ]; then
+            echo "::notice::${line#* } is already published: this is a maintenance release. It keeps its versioned tags and does not become Latest or move the moving tags."
+          fi
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "${RELEASE_REF}" --repo "${{ github.repository }}" --draft=false
+          LATEST: ${{ steps.line.outputs.line == 'maintenance' && 'false' || 'true' }}
+        run: gh release edit "${RELEASE_REF}" --repo "${{ github.repository }}" --draft=false --latest="${LATEST}"
 
       # Moving tags last. Until this point `pg18-local` and `pg18-remote` still
       # point at the previous release — which is the correct thing for them to
@@ -1844,6 +1875,7 @@ jobs:
       # Seven: `pg16-remote`...`pg18-local` on the database images, `latest`
       # on the node's image. The same jq the recovery workflow uses.
       - name: Advance the moving tags
+        if: steps.line.outputs.line != 'maintenance'
         run: |
           jq -r '.images[]
                  | [ (if .variant == "server" then .name + ":latest"

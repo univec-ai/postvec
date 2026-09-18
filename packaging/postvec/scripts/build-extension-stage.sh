@@ -150,11 +150,10 @@ EXTENSION_DIR="$(dirname "${CONTROL}")"
 [[ -f "${EXTENSION_DIR}/postvec--${POSTVEC_VERSION}.sql" ]] \
     || die "no install script postvec--${POSTVEC_VERSION}.sql in ${EXTENSION_DIR}"
 
-# Every upgrade script in the tree must ship. Without the one that starts at a
-# user's installed version, `ALTER EXTENSION postvec UPDATE` has no path after
-# `apt upgrade`, and the background worker parks forever on its version gate.
-# cargo-pgrx copies postvec/sql/postvec--*--*.sql into the staging tree; this
-# is where a builder that stopped doing so would otherwise go unnoticed.
+# Every upgrade script in the tree must ship. cargo-pgrx copies
+# postvec/sql/postvec--*--*.sql into the staging tree; this is the check that
+# the copy happened. After `apt upgrade`, ALTER EXTENSION postvec UPDATE
+# walks those files, and the worker parks until they have been applied.
 shopt -s nullglob
 for upgrade in "${REPO_ROOT}"/postvec/sql/postvec--*--*.sql; do
     [[ -f "${EXTENSION_DIR}/$(basename "${upgrade}")" ]] \

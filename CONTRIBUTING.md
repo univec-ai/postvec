@@ -13,6 +13,7 @@ cargo test -p postvec-cli --all-targets
 cargo test -p postvec-providers --features wire,test-util --all-targets
 cargo test -p postvec-server --all-targets
 cargo test -p registry-schema --features archive
+# After 0.1.0 is tagged, also: ./postvec/upgrade_test.sh
 ```
 
 The extension suites need a `cargo pgrx` PG 18 dev cluster (`cargo pgrx init`);

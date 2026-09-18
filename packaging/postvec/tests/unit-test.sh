@@ -1855,6 +1855,231 @@ if case_ "reviewed policy files are present and committed"; then
     done
 fi
 
+if case_ "upgrade graph: scripts reach every older released version"; then
+    sql="${WORK}/upgrade-sql"
+    mkdir -p "${sql}"
+    # Direct hop.
+    : > "${sql}/postvec--0.1.0--0.2.0.sql"
+    got="$(upgrade_graph_unreachable 0.2.0 "${sql}" 0.1.0)"
+    [[ -z "${got}" ]] && ok "0.1.0 reaches 0.2.0 through a direct script" \
+        || bad "direct hop reported unreachable: ${got}"
+    # Chain: 0.1.0 -> 0.2.0 -> 0.3.0.
+    : > "${sql}/postvec--0.2.0--0.3.0.sql"
+    got="$(upgrade_graph_unreachable 0.3.0 "${sql}" 0.1.0 0.2.0)"
+    [[ -z "${got}" ]] && ok "0.1.0 reaches 0.3.0 through 0.2.0" \
+        || bad "chain reported unreachable: ${got}"
+    # A hole: no 0.1.1 -- 0.2.0.
+    got="$(upgrade_graph_unreachable 0.2.0 "${sql}" 0.1.0 0.1.1)"
+    [[ "${got}" == "0.1.1" ]] && ok "a missing hop is named (0.1.1)" \
+        || bad "expected only 0.1.1 missing, got: '${got}'"
+    # No scripts at all.
+    empty="${WORK}/upgrade-sql-empty"
+    mkdir -p "${empty}"
+    got="$(upgrade_graph_unreachable 0.2.0 "${empty}" 0.1.0)"
+    [[ "${got}" == "0.1.0" ]] && ok "no scripts means every released version is missing" \
+        || bad "empty sql dir reported: '${got}'"
+fi
+
+if case_ "version_less: lower MAJOR.MINOR.PATCH"; then
+    version_less 0.1.0 0.2.0 && ok "0.1.0 < 0.2.0" || bad "0.1.0 should be less than 0.2.0"
+    version_less 0.1.1 0.2.0 && ok "0.1.1 < 0.2.0" || bad "0.1.1 should be less than 0.2.0"
+    version_less 0.1.0 0.1.1 && ok "0.1.0 < 0.1.1" || bad "0.1.0 should be less than 0.1.1"
+    version_less 0.2.0 0.1.1 && bad "0.2.0 should not be less than 0.1.1" \
+        || ok "0.2.0 is not less than 0.1.1"
+    version_less 0.1.0 0.1.0 && bad "0.1.0 is not less than itself" \
+        || ok "equal versions are not less-than"
+    version_less 0.9.0 0.10.0 && ok "0.9.0 < 0.10.0 (version sort, not lexicographic)" \
+        || bad "0.9.0 should be less than 0.10.0"
+fi
+
+if case_ "previous-release.sh: older product version"; then
+    repo="${WORK}/tag-repo"
+    rm -rf "${repo}"
+    mkdir -p "${repo}"
+    git -C "${repo}" init -q
+    git -C "${repo}" config user.email test@example
+    git -C "${repo}" config user.name test
+    git -C "${repo}" commit --allow-empty -qm init
+    git -C "${repo}" tag -a postvec-v0.1.0-1 -m '0.1.0-1'
+    git -C "${repo}" tag -a postvec-v0.1.0-2 -m '0.1.0-2'
+    git -C "${repo}" tag -a postvec-rehearsal-v0.1.0-9001 -m rehearsal
+    git -C "${repo}" tag -a postvec-v0.2.0-1 -m '0.2.0-1'
+    git -C "${repo}" tag -a leftover -m leftover
+
+    run_prev() {
+        local current="$1"
+        shift
+        POSTVEC_CURRENT_VERSION="${current}" POSTVEC_TAG_REPO="${repo}" \
+            "${PKG_DIR}/scripts/previous-release.sh" "$@"
+    }
+
+    got="$(run_prev 0.2.0)"
+    [[ "${got}" == "postvec-v0.1.0-2" ]] \
+        && ok "0.2.0 picks the newest 0.1.0 packaging revision" \
+        || bad "0.2.0 previous tag was '${got}', expected postvec-v0.1.0-2"
+
+    got="$(run_prev 0.1.1)"
+    [[ "${got}" == "postvec-v0.1.0-2" ]] \
+        && ok "0.1.1 hotfix upgrades from 0.1.0 when 0.2.0 is already tagged" \
+        || bad "0.1.1 previous tag was '${got}', expected postvec-v0.1.0-2"
+
+    got="$(run_prev 0.1.0)"
+    [[ -z "${got}" ]] \
+        && ok "packaging-only 0.1.0 has no older product version" \
+        || bad "0.1.0 previous tag was '${got}', expected empty"
+
+    got="$(run_prev 0.2.0 --versions)"
+    [[ "${got}" == "0.1.0" ]] \
+        && ok "--versions collapses packaging revisions to one product version" \
+        || bad "--versions for 0.2.0 was '${got}', expected 0.1.0"
+
+    got="$(run_prev 0.3.0 --versions)"
+    [[ "${got}" == $'0.1.0\n0.2.0' ]] \
+        && ok "--versions lists every older product version, oldest first" \
+        || bad "--versions for 0.3.0 was '${got}', expected 0.1.0 then 0.2.0"
+
+    empty="${WORK}/empty-tag-repo"
+    rm -rf "${empty}"
+    mkdir -p "${empty}"
+    git -C "${empty}" init -q
+    git -C "${empty}" config user.email test@example
+    git -C "${empty}" config user.name test
+    git -C "${empty}" commit --allow-empty -qm init
+    got="$(POSTVEC_CURRENT_VERSION=0.2.0 POSTVEC_TAG_REPO="${empty}" \
+        "${PKG_DIR}/scripts/previous-release.sh")"
+    [[ -z "${got}" ]] && ok "a repo with no tags prints nothing" \
+        || bad "empty repo printed '${got}'"
+
+    POSTVEC_CURRENT_VERSION=0.2.0 POSTVEC_TAG_REPO="${WORK}/not-a-repo" \
+        "${PKG_DIR}/scripts/previous-release.sh" >/dev/null 2>&1 \
+        && bad "a failed git tag listing exited 0" \
+        || ok "a failed git tag listing exits non-zero"
+
+    got="$(POSTVEC_CURRENT_VERSION=0.2.0 POSTVEC_CURRENT_RELEASE=2 \
+        POSTVEC_TAG_REPO="${repo}" "${PKG_DIR}/scripts/previous-release.sh" --identity)"
+    [[ "${got}" == "postvec-v0.2.0-1" ]] \
+        && ok "--identity on 0.2.0-2 picks the same-version packaging predecessor" \
+        || bad "--identity for 0.2.0-2 was '${got}', expected postvec-v0.2.0-1"
+
+    got="$(POSTVEC_CURRENT_VERSION=0.3.0 POSTVEC_CURRENT_RELEASE=1 \
+        POSTVEC_TAG_REPO="${repo}" "${PKG_DIR}/scripts/previous-release.sh" --identity)"
+    [[ "${got}" == "postvec-v0.2.0-1" ]] \
+        && ok "--identity on 0.3.0-1 picks the newest older product tag" \
+        || bad "--identity for 0.3.0-1 was '${got}', expected postvec-v0.2.0-1"
+
+    got="$(POSTVEC_CURRENT_VERSION=0.1.1 POSTVEC_CURRENT_RELEASE=1 \
+        POSTVEC_TAG_REPO="${repo}" "${PKG_DIR}/scripts/previous-release.sh" --identity)"
+    [[ "${got}" == "postvec-v0.1.0-2" ]] \
+        && ok "--identity on a 0.1.1 hotfix picks 0.1.0 when 0.2.0 is already tagged" \
+        || bad "--identity for 0.1.1 was '${got}', expected postvec-v0.1.0-2"
+fi
+
+if case_ "previous-release.sh --published: GitHub Releases, through gh"; then
+    fakebin="${WORK}/fake-gh"
+    mkdir -p "${fakebin}"
+    # Echoes its arguments (to check the repo it was pointed at) and prints a
+    # release list the way `gh release list --json tagName --jq` does.
+    cat > "${fakebin}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" > "${FAKE_GH_ARGS}"
+[[ -n "${FAKE_GH_FAIL:-}" ]] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
+printf '%s\n' postvec-v0.2.0-1 postvec-v0.1.0-2 postvec-v0.1.0-1 postvec-rehearsal-v0.1.0-9001
+EOF
+    chmod +x "${fakebin}/gh"
+    published() {
+        PATH="${fakebin}:${PATH}" FAKE_GH_ARGS="${WORK}/gh-args" \
+            POSTVEC_CURRENT_VERSION="$1" POSTVEC_GH_REPO=test/override \
+            GITHUB_REPOSITORY=actions/repo \
+            "${PKG_DIR}/scripts/previous-release.sh" --published
+    }
+
+    got="$(published 0.2.0)"
+    [[ "${got}" == "postvec-v0.1.0-2" ]] \
+        && ok "picks the newest older published release" \
+        || bad "--published for 0.2.0 was '${got}', expected postvec-v0.1.0-2"
+    grep -q -- '--repo test/override' "${WORK}/gh-args" \
+        && ok "an explicit POSTVEC_GH_REPO wins over GITHUB_REPOSITORY" \
+        || bad "gh was pointed at: $(cat "${WORK}/gh-args")"
+    got="$(published 0.1.0)"
+    [[ -z "${got}" ]] && ok "no older published release prints nothing" \
+        || bad "--published for 0.1.0 was '${got}', expected empty"
+    FAKE_GH_FAIL=1 published 0.2.0 >/dev/null 2>&1 \
+        && bad "a failing gh exited 0" \
+        || ok "a failing gh exits non-zero"
+fi
+
+if case_ "release-line.sh: a hotfix after a newer release is maintenance"; then
+    fakebin="${WORK}/fake-gh-line"
+    mkdir -p "${fakebin}"
+    cat > "${fakebin}/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ -n "${FAKE_GH_FAIL:-}" ]] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
+printf '%s\n' ${FAKE_RELEASES}
+EOF
+    chmod +x "${fakebin}/gh"
+    line() {  # <current> <published tags...>
+        local current="$1"
+        shift
+        PATH="${fakebin}:${PATH}" FAKE_RELEASES="$*" POSTVEC_CURRENT_VERSION="${current}" \
+            POSTVEC_GH_REPO=test/repo "${PKG_DIR}/scripts/release-line.sh"
+    }
+    got="$(line 0.1.1 postvec-v0.2.0-1 postvec-v0.1.0-1)"
+    [[ "${got}" == "maintenance postvec-v0.2.0-1" ]] \
+        && ok "0.1.1 after 0.2.0 is a maintenance release" || bad "got '${got}'"
+    got="$(line 0.2.1 postvec-v0.2.0-1 postvec-v0.1.0-1)"
+    [[ "${got}" == "newest" ]] && ok "0.2.1 over older releases is the newest line" || bad "got '${got}'"
+    got="$(line 0.2.0 postvec-v0.2.0-1)"
+    [[ "${got}" == "newest" ]] && ok "a re-run after its own publish is still newest" || bad "got '${got}'"
+    got="$(line 0.1.0)"
+    [[ "${got}" == "newest" ]] && ok "the first release is the newest line" || bad "got '${got}'"
+    got="$(line 0.1.1 postvec-rehearsal-v0.9.0-9001)"
+    [[ "${got}" == "newest" ]] && ok "rehearsal tags do not count" || bad "got '${got}'"
+    got="$(line 0.9.0 postvec-v0.10.0-1)"
+    [[ "${got}" == "maintenance postvec-v0.10.0-1" ]] \
+        && ok "0.10.0 is newer than 0.9.0 (version order)" || bad "got '${got}'"
+    FAKE_GH_FAIL=1 line 0.1.1 >/dev/null 2>&1 \
+        && bad "a failing gh exited 0" \
+        || ok "a failing gh exits non-zero"
+fi
+
+if case_ "shipped upgrade scripts stay byte-identical"; then
+    repo="${WORK}/shipped-repo"
+    rm -rf "${repo}"
+    mkdir -p "${repo}/postvec/sql"
+    git -C "${repo}" init -q
+    git -C "${repo}" config user.email test@example
+    git -C "${repo}" config user.name test
+    echo "SELECT 1;" > "${repo}/postvec/sql/postvec--0.1.0--0.2.0.sql"
+    echo "# notes" > "${repo}/postvec/sql/README.md"
+    git -C "${repo}" add -A
+    git -C "${repo}" commit -qm "0.2.0"
+    git -C "${repo}" tag postvec-v0.2.0-1
+
+    got="$(shipped_upgrade_scripts_changed "${repo}" postvec-v0.2.0-1 postvec/sql)"
+    [[ -z "${got}" ]] && ok "untouched scripts pass" || bad "untouched scripts reported: ${got}"
+
+    echo "SELECT 2;" > "${repo}/postvec/sql/postvec--0.2.0--0.3.0.sql"
+    echo "# more notes" >> "${repo}/postvec/sql/README.md"
+    got="$(shipped_upgrade_scripts_changed "${repo}" postvec-v0.2.0-1 postvec/sql)"
+    [[ -z "${got}" ]] && ok "a new script and a README edit leave shipped scripts intact" \
+        || bad "reported: ${got}"
+
+    echo "-- tweak" >> "${repo}/postvec/sql/postvec--0.1.0--0.2.0.sql"
+    got="$(shipped_upgrade_scripts_changed "${repo}" postvec-v0.2.0-1 postvec/sql)"
+    [[ "${got}" == "changed postvec--0.1.0--0.2.0.sql" ]] \
+        && ok "an uncommitted edit to a released script is caught" || bad "edit reported as: '${got}'"
+
+    rm "${repo}/postvec/sql/postvec--0.1.0--0.2.0.sql"
+    got="$(shipped_upgrade_scripts_changed "${repo}" postvec-v0.2.0-1 postvec/sql)"
+    [[ "${got}" == "deleted postvec--0.1.0--0.2.0.sql" ]] \
+        && ok "a deleted released script is caught" || bad "deletion reported as: '${got}'"
+
+    rc=0
+    shipped_upgrade_scripts_changed "${repo}" postvec-v9.9.9-1 postvec/sql >/dev/null 2>&1 || rc=$?
+    (( rc == 2 )) && ok "an unknown tag is an error (2), not a clean result" \
+        || bad "unknown tag returned ${rc}, expected 2"
+fi
+
 # ---------------------------------------------------------------------- summary
 
 rm -rf "${PKG_DIR}/build/.unit-test-release"

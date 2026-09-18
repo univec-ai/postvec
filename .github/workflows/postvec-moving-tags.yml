@@ -119,6 +119,23 @@ jobs:
           echo "RELEASE_ID=${TAG##*-v}" >> "$GITHUB_ENV"
         shell: bash
 
+      # A maintenance release (a 0.1.1 hotfix published after 0.2.0) leaves
+      # the moving tags on the newer line. Recovery has to do the same, or
+      # everyone following pg18-local or latest lands on the hotfix. Rehearsal
+      # tags have their own image repositories and are skipped. A gh failure
+      # fails this step.
+      - name: Refuse to move the tags backwards
+        if: ${{ !startsWith(inputs.release_tag, 'postvec-rehearsal-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          line="$(POSTVEC_CURRENT_VERSION="${RELEASE_ID%-*}" packaging/postvec/scripts/release-line.sh)"
+          if [ "${line%% *}" = maintenance ]; then
+            echo "::error::${line#* } is published and newer than ${RELEASE_TAG}: the moving tags stay on that line."
+            exit 1
+          fi
+          echo "${RELEASE_TAG} is the newest release line; the moving tags may follow it."
+
       # What the moving tags follow is the *published release*, not this
       # workflow's checkout. The checkout is the default branch — a versions.env
       # edited since the release would silently point these tags at a different

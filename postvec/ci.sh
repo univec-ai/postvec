@@ -17,6 +17,8 @@
 #
 # Prerequisites: cargo-pgrx 0.18.1, a
 # pgrx-managed PG 18 (`cargo pgrx init --pg18`), and pgvector built into it.
+# Extension upgrades from a previous release are a separate gate:
+# ./upgrade_test.sh, and at package level package-upgrade-test.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
 

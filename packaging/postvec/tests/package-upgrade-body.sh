@@ -83,10 +83,18 @@ step "upgrade the packages to postvec ${NEW_VERSION}"
 PKG_INSTALL /packages-new/*."${PKG_EXT}" 2>/tmp/install-new.err \
     && ok "upgraded to $(cd /packages-new && ls)" \
     || die "upgrading the packages failed: $(tail -5 /tmp/install-new.err)"
-for f in "postvec--${NEW_VERSION}.sql" "postvec--${OLD_VERSION}--${NEW_VERSION}.sql"; do
-    [[ -f "${PG_EXT}/${f}" ]] && ok "${f} shipped in ${PG_EXT}" \
-        || die "${f} is missing from ${PG_EXT}: ALTER EXTENSION would have no path"
-done
+[[ -f "${PG_EXT}/postvec--${NEW_VERSION}.sql" ]] \
+    && ok "install script postvec--${NEW_VERSION}.sql in ${PG_EXT}" \
+    || die "no postvec--${NEW_VERSION}.sql in ${PG_EXT}"
+# A path from this install: a direct OLD--NEW script, or a chain
+# (0.1.0 -> 0.3.0 is 0.1.0--0.2.0.sql then 0.2.0--0.3.0.sql). ALTER
+# EXTENSION walks whatever starts at OLD.
+shopt -s nullglob
+starters=("${PG_EXT}/postvec--${OLD_VERSION}--"*.sql)
+shopt -u nullglob
+(( ${#starters[@]} )) && [[ -f "${starters[0]}" ]] \
+    && ok "upgrade path from ${OLD_VERSION} on disk ($(basename "${starters[0]}")${starters[1]:+, …})" \
+    || die "no postvec--${OLD_VERSION}--*.sql in ${PG_EXT}: ALTER EXTENSION has no path from ${OLD_VERSION}"
 grep -q "default_version = '${NEW_VERSION}'" "${PG_EXT}/postvec.control" \
     && ok "control file default_version = ${NEW_VERSION}" \
     || die "control file: $(grep default_version "${PG_EXT}/postvec.control")"

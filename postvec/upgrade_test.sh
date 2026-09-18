@@ -1,38 +1,29 @@
 #!/usr/bin/env bash
-# Extension upgrade test: the previous release -> this tree.
-#
-# What sql/README.md requires of every release after the first, proven against
-# a real cluster built from the pgrx-managed PostgreSQL:
+# Extension upgrade test: the previous release -> this tree, on the
+# pgrx-managed PostgreSQL that ci.sh uses.
 #
 #   1. Catalog parity. A database created at the previous version and taken
-#      forward with ALTER EXTENSION postvec UPDATE must be catalog-identical to
-#      one created fresh at this version: extension members, relations,
-#      columns (in order), defaults, indexes, constraints, policies, triggers,
-#      views, functions, types, sequences, ACLs, comments and the dumpable
-#      config tables. An upgrade script that misses a change fails here, which
-#      is the mistake a hand-written script is most likely to make.
-#   2. Data survives. A populated previous-version database — a plain entry
-#      and a chunked entry, queued jobs, a dead-lettered job, user rows — comes
-#      through the upgrade with every row intact, checked inside the
-#      ALTER EXTENSION transaction so nothing else can touch it first. The
-#      generated triggers still enqueue work afterwards.
-#   3. The worker's version gate, in the order a package upgrade produces it:
-#      new library loaded, schema still old. The worker must log that it is
-#      parked, claim nothing, write nothing (not even its heartbeat), and after
-#      ALTER EXTENSION resume and drain a real backlog item (a chunk refresh,
-#      which needs no inference engine) against the upgraded schema.
+#      forward with ALTER EXTENSION postvec UPDATE is catalog-identical to a
+#      fresh install of this version (members, relations, columns in order,
+#      defaults, indexes, constraints, policies, triggers, views, functions,
+#      types, sequences, ACLs, comments, dumpable config tables). A
+#      hand-written script that misses a change fails here.
+#   2. Data. A populated previous-version database (plain entry, chunked
+#      entry, queued jobs, a dead-lettered job, user rows) keeps every row
+#      through the upgrade. The comparison runs inside the ALTER EXTENSION
+#      transaction. Generated triggers still enqueue afterwards.
+#   3. Version gate, in the order a package upgrade produces it: new library
+#      loaded, schema still old. The worker logs that it is parked, claims
+#      nothing, writes nothing (heartbeat included), then after ALTER
+#      EXTENSION resumes and drains a pending chunk refresh against the
+#      upgraded schema. Chunk refresh needs no inference engine.
 #
-#   upgrade_test.sh             # previous = newest postvec-v* tag of another version
-#   upgrade_test.sh <git-ref>   # previous = any commit, e.g. before its tag exists
+#   upgrade_test.sh             # previous = newest older postvec-v* tag
+#   upgrade_test.sh <git-ref>   # previous = any commit
 #
-# With no argument and no earlier release tag it skips, the way
-# assert-versions.sh's upgrade-graph check does: a first release has nothing
-# to upgrade from.
-#
-# Side effect: builds and installs the previous version, then this one, into
-# the pgrx-managed PostgreSQL (the same install ci.sh uses). It finishes with
-# this tree installed; the previous release's install script stays behind in
-# share/extension, where it is harmless.
+# With no argument and no older release tag it skips (first release). It
+# finishes with this tree installed; the previous release's install script
+# stays in share/extension.
 set -euo pipefail
 cd "$(dirname "$0")"
 REPO="$(git rev-parse --show-toplevel)"
@@ -50,10 +41,9 @@ NEW_VERSION="$(version_of < Cargo.toml)"
 # ------------------------------------------------------------ the previous ref
 PREV_REF="${1:-}"
 if [ -z "$PREV_REF" ]; then
-    while read -r tag; do
-        v="$(sed -nE 's/^postvec-v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+)?$/\1/p' <<<"$tag")"
-        if [ -n "$v" ] && [ "$v" != "$NEW_VERSION" ]; then PREV_REF="$tag"; break; fi
-    done < <(git tag --list 'postvec-v*' --sort=-v:refname)
+    # Newest tag of an older product version. A 0.1.1 hotfix in a repo that
+    # already has 0.2.0 tagged upgrades from 0.1.0.
+    PREV_REF="$("$REPO/packaging/postvec/scripts/previous-release.sh")"
     if [ -z "$PREV_REF" ]; then
         echo "skip  upgrade test: no earlier postvec-v* release tag (first release)."
         echo "      Before the first tag exists, name the previous commit: upgrade_test.sh <ref>"
@@ -69,7 +59,7 @@ if [ "$PREV_VERSION" = "$NEW_VERSION" ]; then
 fi
 
 # cargo-pgrx must match each tree's pgrx dependency. One binary can build both
-# only while the pin is unchanged; say so plainly rather than fail mid-build.
+# only while the pin is unchanged; fail here if it has moved.
 pin() { sed -nE "s/^PGRX_VERSION=//p"; }
 NEW_PGRX="$(pin < "$REPO/packaging/postvec/versions.env")"
 PREV_PGRX="$(git show "${PREV_REF}:packaging/postvec/versions.env" | pin)"
@@ -178,8 +168,8 @@ SELECT 0, r.id, '2', 'embed', 'seeded dead job'
   FROM postvec.registry r WHERE r.table_name = 'notes';
 SQL
 
-# What must not change across the upgrade: every row of the user tables, the
-# identities of queued and dead jobs, and the registry.
+# What has to stay identical across the upgrade: every row of the user tables,
+# the identities of queued and dead jobs, and the registry.
 DIGEST_SQL="SELECT concat_ws(' ',
   (SELECT count(*) FROM postvec.registry),
   (SELECT md5(coalesce(string_agg(id::text, ',' ORDER BY id), '')) FROM postvec.registry),

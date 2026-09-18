@@ -109,67 +109,36 @@ else
     printf '  skip  release tag                 <not a tag build>\n'
 fi
 
-# Upgrade scripts. It is not enough that *some* script ends at this version:
-# every version this project has released must be able to reach it, or an
-# operator upgrading from an older release lands on a cluster whose worker
-# parks forever on the version gate.
+# Upgrade scripts. Every older product version this project has released
+# needs a path of postvec--FROM--TO.sql files to the version being built.
+# Without one, an operator on that release parks the worker forever after
+# `apt upgrade`. Newer tags (a 0.2.0 already in the repo while cutting a
+# 0.1.1 hotfix) are ignored.
 #
-# The set of released versions is the set of postvec-v* tags, which is the only
-# record of what was actually published.
+# The set of released versions is the set of postvec-v* tags. Packaging
+# revisions collapse: 0.1.0-1 and 0.1.0-2 ship the same SQL.
 check_upgrade_graph() {
-    local released=() reachable=() version
-    # Tags are postvec-v<semver>-<packaging revision>. The *product* version is
-    # what an upgrade script names, so the revision is stripped and duplicates
-    # collapse: 0.1.0-1 and 0.1.0-2 ship the same SQL.
-    mapfile -t released < <(
-        git -C "${REPO_ROOT}" tag --list 'postvec-v*' 2>/dev/null \
-            | sed -nE 's/^postvec-v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9]+)?$/\1/p' \
-            | grep -vx "${POSTVEC_VERSION}" | sort -Vu
-    )
+    local released=() missing=() line versions unreachable
+    # Command substitution so a git failure fails the gate.
+    versions="$("${PKG_DIR}/scripts/previous-release.sh" --versions)"
+    while IFS= read -r line; do
+        [[ -n "${line}" ]] && released+=("${line}")
+    done <<<"${versions}"
     if (( ${#released[@]} == 0 )); then
         # First release has no upgrade graph. The second one needs
         # postvec--<old>--<new>.sql and a native upgrade test; that is not
         # something to discover from users.
         printf '  skip  upgrade graph               no previous release tags (first release)\n'
-        printf '        from the second release on, every released version needs a path of\n'
+        printf '        from the second release on, every older released version needs a path of\n'
         printf '        postvec--<old>--<new>.sql scripts, proven by postvec/upgrade_test.sh.\n'
         return
     fi
 
-    # Which versions can reach this one, following the scripts transitively:
-    # postvec--A--B.sql plus postvec--B--C.sql makes A reachable.
-    local -A edges=()
-    shopt -s nullglob
-    local script from to
-    for script in "${REPO_ROOT}"/postvec/sql/postvec--*--*.sql; do
-        script="$(basename "${script}" .sql)"
-        script="${script#postvec--}"
-        from="${script%%--*}"
-        to="${script##*--}"
-        edges["${from}"]+="${to} "
-    done
-    shopt -u nullglob
-
-    reachable=("${POSTVEC_VERSION}")
-    local changed=1
-    while (( changed )); do
-        changed=0
-        for from in "${!edges[@]}"; do
-            [[ " ${reachable[*]} " == *" ${from} "* ]] && continue
-            for to in ${edges[${from}]}; do
-                if [[ " ${reachable[*]} " == *" ${to} "* ]]; then
-                    reachable+=("${from}")
-                    changed=1
-                    break
-                fi
-            done
-        done
-    done
-
-    local missing=()
-    for version in "${released[@]}"; do
-        [[ " ${reachable[*]} " == *" ${version} "* ]] || missing+=("${version}")
-    done
+    unreachable="$(upgrade_graph_unreachable "${POSTVEC_VERSION}" \
+        "${REPO_ROOT}/postvec/sql" "${released[@]}")"
+    while IFS= read -r line; do
+        [[ -n "${line}" ]] && missing+=("${line}")
+    done <<<"${unreachable}"
     if (( ${#missing[@]} )); then
         printf '  FAIL  upgrade graph               no path to %s from: %s\n' \
             "${POSTVEC_VERSION}" "${missing[*]}"
@@ -178,6 +147,26 @@ check_upgrade_graph() {
     else
         printf '  ok    upgrade graph               all %d released version(s) reach %s\n' \
             "${#released[@]}" "${POSTVEC_VERSION}"
+    fi
+
+    # Freeze every upgrade script the previous release identity already
+    # shipped. --identity includes a same-version packaging predecessor
+    # (0.2.0-1 when building 0.2.0-2), which the product-version query skips.
+    local previous changes rc=0
+    previous="$("${PKG_DIR}/scripts/previous-release.sh" --identity)"
+    [[ -n "${previous}" ]] || return 0
+    changes="$(shipped_upgrade_scripts_changed "${REPO_ROOT}" "${previous}" postvec/sql)" || rc=$?
+    if (( rc )); then
+        printf '  FAIL  shipped upgrade scripts     git could not compare against %s\n' "${previous}"
+        fail=1
+    elif [[ -n "${changes}" ]]; then
+        printf '  FAIL  shipped upgrade scripts     released in %s, altered since:\n' "${previous}"
+        while IFS= read -r line; do printf '          %s\n' "${line}"; done <<<"${changes}"
+        printf '        restore them (git checkout %s -- postvec/sql/); a fix to a\n' "${previous}"
+        printf '        released upgrade belongs in a new postvec--<old>--<new>.sql\n'
+        fail=1
+    else
+        printf '  ok    shipped upgrade scripts     unchanged since %s\n' "${previous}"
     fi
 }
 check_upgrade_graph

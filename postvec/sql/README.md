@@ -52,27 +52,43 @@ From the first released version:
 
    It runs in `postvec-ci` (job `upgrade`) and gates the release
    (`upgrade-gate`, which `extension-packages` waits on). Both skip until a
-   release of another version exists. The release's install tests also
-   upgrade real packages from the previous published release
-   (`packaging/postvec/tests/package-upgrade-test.sh`).
+   strictly older `postvec-v*` tag exists. A publish of a version that has
+   upgrade scripts and no such tag fails the gate. The release's install
+   tests and packaging CI also upgrade real packages from the previous
+   published GitHub Release (`packaging/postvec/tests/package-upgrade-test.sh`).
 
    Run it locally before tagging:
 
    ```console
-   ./upgrade_test.sh                # from the newest postvec-v* tag
+   ./upgrade_test.sh                # from the newest older postvec-v* tag
    ./upgrade_test.sh <git-ref>      # from any commit
    ```
 
-   Not covered: a worker mid-transaction at the instant the upgrade starts.
-   The exclusive schema lock serialises the two by design; the test proves
-   the before and after, not every interleaving.
+   The exclusive schema lock serialises a worker that is mid-transaction when
+   the upgrade starts; the test proves the before and after of that lock.
+   The source test covers previous→current. A 0.1.0 user reaching 0.3.0
+   applies 0.1.0→0.2.0 then 0.2.0→0.3.0, and catalog parity of each hop is
+   the argument that the chain lands on a fresh 0.3.0.
+
+6. **A released upgrade script is frozen.** A 0.3.0 package still ships
+   `postvec--0.1.0--0.2.0.sql` so a 0.1.0 install can chain. PostgreSQL
+   records that a user already applied a given script, so a later edit of
+   the same file is ignored on those databases and run on new ones: the
+   two schemas diverge. A fix belongs in the *next* script.
+   `assert-versions.sh` fails a release that has no path from an older
+   tagged product version, and one whose tree has changed or removed any
+   upgrade script the previous release identity shipped (including a
+   same-version packaging predecessor). Newer tags (a 0.2.0 already in the
+   repo while cutting a 0.1.1 hotfix) are ignored.
 
 Changes to `schema.rs` and `#[pg_extern]` signatures were amended in place
 until 0.1.0 was tagged. From then on every such change ships with the
 matching `postvec--X--Y.sql`, and the upgrade test fails if the script and the
 fresh install disagree. A release with no schema change still needs a script
 (the schema lock alone): the release gate requires a path from every
-released version.
+older released version. A patch (`0.1.1`) needs `postvec--0.1.0--0.1.1.sql`;
+the next minor then needs `postvec--0.1.1--0.2.0.sql` (and keeps the 0.1.0
+script so 0.1.0 users can still chain).
 
 `postvec.build_info()` and recursive chunking (the extra registry columns,
 queue key, `trg_chunk_*` functions and related indexes) landed in the 0.1.0

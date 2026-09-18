@@ -278,6 +278,95 @@ next_breaking_version() {
     fi
 }
 
+# True if $1 is a lower MAJOR.MINOR.PATCH than $2. previous-release.sh uses
+# this to pick the newest tag older than the version being built, so a 0.1.1
+# hotfix in a repo that already has 0.2.0 tagged upgrades from 0.1.0.
+# `head` closing the pipe can SIGPIPE `sort` under `pipefail`; `|| true`
+# keeps that from failing the comparison.
+version_less() {
+    [[ "$1" != "$2" ]] || return 1
+    local first
+    first="$(printf '%s\n' "$1" "$2" | sort -V | head -n1 || true)"
+    [[ "${first}" == "$1" ]]
+}
+
+# Released versions that cannot reach ${1} by following postvec--FROM--TO.sql
+# scripts in ${2}. Empty output means the graph is complete. Remaining
+# arguments are the released versions (typically every tagged product version
+# strictly older than ${1}).
+#
+#   upgrade_graph_unreachable 0.3.0 postvec/sql 0.1.0 0.2.0
+upgrade_graph_unreachable() {
+    local target="$1" sql_dir="$2"
+    shift 2
+    local -A edges=()
+    local script stem from to
+    shopt -s nullglob
+    for script in "${sql_dir}"/postvec--*--*.sql; do
+        stem="$(basename "${script}" .sql)"
+        stem="${stem#postvec--}"
+        from="${stem%%--*}"
+        to="${stem##*--}"
+        edges["${from}"]+="${to} "
+    done
+    shopt -u nullglob
+
+    local -a reachable=("${target}") keys=()
+    (( ${#edges[@]} )) && keys=("${!edges[@]}")
+    local changed=1
+    while (( changed )); do
+        changed=0
+        for from in "${keys[@]}"; do
+            [[ " ${reachable[*]} " == *" ${from} "* ]] && continue
+            for to in ${edges[${from}]}; do
+                if [[ " ${reachable[*]} " == *" ${to} "* ]]; then
+                    reachable+=("${from}")
+                    changed=1
+                    break
+                fi
+            done
+        done
+    done
+
+    local version
+    for version in "$@"; do
+        [[ " ${reachable[*]} " == *" ${version} "* ]] || printf '%s\n' "${version}"
+    done
+}
+
+# Upgrade scripts that tag ${2} shipped and the working tree of ${1} has
+# since changed or removed. One `deleted NAME` or `changed NAME` line each.
+# Empty output: every shipped script is still byte-identical. Returns 2 when
+# git cannot answer, so a failed lookup fails the gate.
+#
+# A shipped script is frozen. PostgreSQL records that a user already applied
+# it, and will not run a later edit of the same file. Compare against the
+# previous release identity (previous-release.sh --identity), which is the
+# newest tag this tree is allowed to inherit scripts from: a packaging
+# predecessor of the same product, or the newest older product. Each earlier
+# release was held to this rule, so that tag already carries every script
+# shipped before it.
+#
+#   shipped_upgrade_scripts_changed "${REPO_ROOT}" postvec-v0.1.0-1 postvec/sql
+shipped_upgrade_scripts_changed() {
+    local repo="$1" tag="$2" rel="$3" listing path rc
+    listing="$(git -C "${repo}" ls-tree -r --name-only "${tag}" -- "${rel}")" || return 2
+    while IFS= read -r path; do
+        [[ "$(basename "${path}")" =~ ^postvec--[^/]+--[^/]+\.sql$ ]] || continue
+        if [[ ! -f "${repo}/${path}" ]]; then
+            printf 'deleted %s\n' "$(basename "${path}")"
+            continue
+        fi
+        rc=0
+        git -C "${repo}" diff --quiet "${tag}" -- "${path}" || rc=$?
+        case "${rc}" in
+        0) ;;
+        1) printf 'changed %s\n' "$(basename "${path}")" ;;
+        *) return 2 ;;
+        esac
+    done <<<"${listing}"
+}
+
 # ---------------------------------------------------------- the bundled model
 
 # Facts derived from the *verified* registry archive by
