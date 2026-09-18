@@ -18,37 +18,40 @@
 
 accepted = []
 
-# DRAFT — decided_by and review_by are unfilled, so audit.sh rejects this file
-# as written ("an exception is missing: decided_by, review_by"). Read each
-# reason, correct anything you disagree with, fill both fields, or delete the
-# entry and fix the dependency instead. Nothing here is a decision already made.
+# Accepted by amorroxic on 2026-09-18, before the 0.1.0-1 release.
+#
+# The hickory-proto pair expires first (2026-12-31): those are real DoS
+# advisories, accepted only because the vulnerable code is never compiled into
+# any shipped artifact, and they become fixable as soon as memberlist bumps
+# agnostic. The three unmaintained crates are informational rather than
+# vulnerabilities, and expire 2027-06-30.
 
 [[accepted]]
 id = "RUSTSEC-2026-0118"
-reason = "hickory-proto reaches the lockfile only through memberlist's optional agnostic-dns; postvec-server depends on memberlist with default-features = false, features = [\"tokio\", \"tcp\"], so the DNS stack is never compiled. `cargo tree -i hickory-proto --target all` prints nothing: the crate is a lockfile entry, not a linked dependency. No fixed version exists upstream."
-decided_by = ""
-review_by = ""
+reason = "hickory-proto reaches the lockfile only through agnostic-dns, an optional dependency of agnostic that memberlist does not activate: postvec-server takes memberlist with default-features = false, features = [\"tokio\", \"tcp\"], and agnostic resolves with features [default, net, std, tokio] — no dns. Verified against the build, not just the manifest: after `cargo check --workspace --all-targets`, target/debug/deps contains agnostic, agnostic_io, agnostic_lite and agnostic_net, and no agnostic_dns or hickory artifact. The built binary has zero hickory symbols (`nm -C target/debug/postvec-server | grep -c hickory` = 0, against 2515 for memberlist, which is linked); the only hickory strings in it are reqwest's builder names for its own hickory-dns feature, which is likewise off. No fixed version exists upstream for this advisory. Re-check if anyone enables a dns feature on memberlist or hickory-dns on reqwest, or if a new dependency pulls hickory-proto in directly."
+decided_by = "amorroxic"
+review_by = "2026-12-31"
 
 [[accepted]]
 id = "RUSTSEC-2026-0119"
-reason = "Same hickory-proto entry as RUSTSEC-2026-0118: present in the lockfile through memberlist's disabled DNS feature, never compiled into any shipped artifact. The fix (>= 0.26.1) is a semver-major bump of a crate postvec does not build."
-decided_by = ""
-review_by = ""
+reason = "Same never-compiled hickory-proto entry as RUSTSEC-2026-0118. The fix (>= 0.26.1) is unreachable from here: agnostic-dns 0.4.0 requires hickory-proto ^0.25, and memberlist 0.8.5 — the newest release — pins agnostic ^0.9 which pins agnostic-dns ^0.4. agnostic-dns 0.6.0 exists but no upstream release consumes it. Revisit when memberlist bumps agnostic."
+decided_by = "amorroxic"
+review_by = "2026-12-31"
 
 [[accepted]]
 id = "RUSTSEC-2025-0119"
 reason = "number_prefix is unmaintained, not vulnerable. Path: number_prefix <- indicatif <- tokenizers <- engine <- postvec-server. It formats byte counts for a progress bar; no untrusted input reaches it and no fixed release exists because there is no defect to fix."
-decided_by = ""
-review_by = ""
+decided_by = "amorroxic"
+review_by = "2027-06-30"
 
 [[accepted]]
 id = "RUSTSEC-2024-0436"
 reason = "paste is unmaintained, not vulnerable, and is a compile-time proc-macro that contributes no runtime code. Paths: paste <- agnostic-lite <- memberlist <- postvec-server (workspace lockfile), and paste <- tokenizers / macro_rules_attribute (extension lockfile)."
-decided_by = ""
-review_by = ""
+decided_by = "amorroxic"
+review_by = "2027-06-30"
 
 [[accepted]]
 id = "RUSTSEC-2021-0127"
 reason = "serde_cbor is unmaintained, not vulnerable. Path: serde_cbor <- pgrx <- postvec. It is pgrx's own internal serialization dependency; replacing it means waiting for pgrx upstream, and the extension does not deserialize untrusted CBOR."
-decided_by = ""
-review_by = ""
+decided_by = "amorroxic"
+review_by = "2027-06-30"

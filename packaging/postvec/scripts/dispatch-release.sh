@@ -45,10 +45,28 @@ SLUG="${SLUG%.git}"
 # What each mode releases, and where its images go. The disposable namespaces
 # are derived from the pinned one so they are obviously related and obviously
 # not it; `release-mode.sh` refuses them if they ever collide.
+#
+# DISPATCH_REF is what `--ref` gets and must be a *name* — GitHub resolves it to
+# pick the workflow file, and answers `422 No ref found` for a commit SHA. REF is
+# what `-f ref=` gets and is what the run checks out and builds; a rehearsal may
+# pin an exact commit there. For the publishing modes the two are the same tag,
+# which `release-mode.sh` re-checks inside the run.
 ARGS=()
+DISPATCH_REF=""
 case "${MODE}" in
 rehearse)
     [[ -n "${REF}" ]] || REF="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)"
+    # A branch or tag name is its own dispatch ref. Anything else — a SHA, or
+    # `HEAD` — is built from the workflow file on the branch that contains it.
+    if git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/${REF}" \
+        || git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/tags/${REF}"; then
+        DISPATCH_REF="${REF}"
+    else
+        DISPATCH_REF="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)"
+        [[ "${DISPATCH_REF}" != HEAD ]] || die "detached HEAD: name the branch \
+whose workflow file should run, e.g. 'dispatch-release.sh rehearse main'"
+        log "dispatching the workflow file from '${DISPATCH_REF}', building '${REF}'"
+    fi
     ;;
 publish)
     REF="${RELEASE_TAG}"
@@ -59,11 +77,14 @@ disposable-publication)
     ARGS+=(-f "image_staging_repository=${STAGING_OVERRIDE:-${IMAGE_REPOSITORY}-rehearsal-staging}")
     ;;
 esac
+# Publishing modes attest the workflow file against the artifacts, so the two
+# refs must be the same tag.
+[[ -n "${DISPATCH_REF}" ]] || DISPATCH_REF="${REF}"
 
 print_command() {
     printf '\n  gh workflow run postvec-release.yml \\\n'
     printf '    --repo %s \\\n' "${SLUG}"
-    printf '    --ref %s \\\n' "${REF}"
+    printf '    --ref %s \\\n' "${DISPATCH_REF}"
     printf '    -f ref=%s \\\n' "${REF}"
     printf '    -f mode=%s' "${MODE}"
     local i
@@ -104,7 +125,7 @@ fi
 
 gh workflow run postvec-release.yml \
     --repo "${SLUG}" \
-    --ref "${REF}" \
+    --ref "${DISPATCH_REF}" \
     -f "ref=${REF}" \
     -f "mode=${MODE}" \
     "${ARGS[@]}"

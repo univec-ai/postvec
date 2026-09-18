@@ -81,10 +81,30 @@ for advisory in "${IGNORES[@]}"; do
 done
 
 fail=0
+unreadable=0
 for manifest in "${REPO_ROOT}/Cargo.lock" "${REPO_ROOT}/postvec/Cargo.lock"; do
     log "cargo audit: ${manifest#"${REPO_ROOT}/"}"
-    cargo audit "${ARGS[@]}" --file "${manifest}" || fail=1
+    # Tee, so the report still reaches the log while the outcome is inspected:
+    # "the database would not load" and "the database says you are vulnerable"
+    # both exit non-zero, and reporting the first as the second sends someone
+    # hunting for a vulnerability that was never reported. This is the same
+    # distinction the `cargo audit --version` probe above makes for a missing
+    # binary — an unprovisioned tool is not a finding.
+    output="$(cargo audit "${ARGS[@]}" --file "${manifest}" 2>&1)" || fail=1
+    printf '%s\n' "${output}"
+    if grep -qE 'error loading advisory database|error fetching advisory database' <<<"${output}"; then
+        unreadable=1
+    fi
 done
+
+if (( unreadable )); then
+    die "the advisory database could not be loaded, so nothing was audited.
+This is not a finding about postvec's dependencies.
+A parse error usually means the pinned cargo-audit predates a schema the
+database now uses — for example a CVSS v4 vector, which every release before
+cargo-audit 0.22 rejects. Raise the pin in .github/workflows/postvec-release.yml
+(and locally), then run this again."
+fi
 
 if (( fail )); then
     die "cargo audit found advisories.
