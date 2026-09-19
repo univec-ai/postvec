@@ -63,7 +63,7 @@ journalctl -u postvec-server -f
 ## Boot log
 
 ```text
-postvec-server 0.1.0 (onnx)
+postvec-server <version> (onnx)
 engine root: /opt/postvec
 configuration file: /etc/postvec-server/config.json
 advertising 10.0.0.10

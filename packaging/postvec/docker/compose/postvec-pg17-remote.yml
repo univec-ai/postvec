@@ -4,7 +4,7 @@
 #
 # The nodes are `postvec-server`, which this repository ships as a package
 # (`postvec-server` .deb/.rpm) and as an image
-# (ghcr.io/univec-ai/postvec-server:0.1.0-1). This file points at hosts you
+# (ghcr.io/univec-ai/postvec-server:0.2.0-2). This file points at hosts you
 # operate; postvec-server.yml beside it runs one node as a container.
 #
 # Volume path: PostgreSQL 16 and 17 images store data in
@@ -16,7 +16,7 @@
 
 services:
   db:
-    image: ghcr.io/univec-ai/postvec:0.1.0-1-pg17-remote
+    image: ghcr.io/univec-ai/postvec:0.2.0-2-pg17-remote
     environment:
       POSTGRES_DB: app
       POSTGRES_USER: app

@@ -17,7 +17,7 @@
 
 services:
   inference:
-    image: ghcr.io/univec-ai/postvec-server:0.1.0-1
+    image: ghcr.io/univec-ai/postvec-server:0.2.0-2
     # The container generates a self-signed certificate for the discovery
     # listener at start, per container, into /etc/postvec-server (where the
     # packaged configuration looks). To supply your own pair instead, mount

@@ -29,12 +29,12 @@ licenses.
 
 ## Rules that are easy to trip over
 
-- **Generated SQL / upgrade scripts.** Once 0.1.0 is published, any change to
+- **Generated SQL / upgrade scripts.** Any change to
   `postvec/src/schema.rs` or a `#[pg_extern]` signature needs a matching
   `postvec--<old>--<new>.sql` upgrade script following
   `postvec/sql/README.md` — exact generated DDL, obsolete overloads dropped,
-  per-entry triggers regenerated. Before the first release the convention was
-  amend-in-place; that ends at the tag.
+  per-entry triggers regenerated. An upgrade script that has shipped in a
+  release is never edited; a fix goes in a new script.
 - **The engine fork (`engine/`, `shared/`).** A trimmed fork of UniVec's
   internal inference engine, changed by *deletion only*: a diff against
   upstream must show absences, not differences (see `engine/FORK.md`). If

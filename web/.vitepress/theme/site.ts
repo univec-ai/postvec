@@ -6,7 +6,7 @@ export const SITE = {
   url: "https://postvec.dev",
   github: "https://github.com/univec-ai/postvec",
   githubRepo: "univec-ai/postvec",
-  releaseTag: "postvec-v0.1.0-1",
+  releaseTag: "postvec-v0.2.0-2",
   ghcr: "ghcr.io/univec-ai/postvec",
   // The inference node's image: its own repository, tagged with the bare
   // release id and a `latest` moving tag (no PostgreSQL major to hide).
@@ -15,9 +15,9 @@ export const SITE = {
   // PostgreSQL License.
   serverLicense: "BUSL-1.1",
   univec: "https://univec.ai",
-  version: "0.1.0",
-  release: "0.1.0-1",
-  packageRelease: "1",
+  version: "0.2.0",
+  release: "0.2.0-2",
+  packageRelease: "2",
   onnxRuntimeVersion: "1.22.0",
   // Packaging pin: registry revision 2 + bundle 1 → 2.1.0
   bundledModelVersion: "2.1.0",

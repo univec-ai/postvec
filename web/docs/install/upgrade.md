@@ -17,7 +17,8 @@ Model bytes are separate: `postvec model upgrade NAME...` replaces them in
 place, preserves each model's activation state, and `--all` skips
 withdrawn roots. `model pull` never replaces an installed name.
 
-Replace `NEWVERSION` with the version being installed.
+The filenames are for the current release. Download them from
+[Release artifacts](/download) first.
 
 <PgSnippet id="upgrade-packages" />
 

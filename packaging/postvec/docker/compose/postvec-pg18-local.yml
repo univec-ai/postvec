@@ -14,8 +14,8 @@ services:
   db:
     # Pin a digest in production. A tag identifies the extension *and* the
     # bundled model manifest, and neither should move under a running system:
-    #   ghcr.io/univec-ai/postvec:0.1.0-1-pg18-local@sha256:<digest>
-    image: ghcr.io/univec-ai/postvec:0.1.0-1-pg18-local
+    #   ghcr.io/univec-ai/postvec:0.2.0-2-pg18-local@sha256:<digest>
+    image: ghcr.io/univec-ai/postvec:0.2.0-2-pg18-local
     environment:
       POSTGRES_DB: app
       POSTGRES_USER: app

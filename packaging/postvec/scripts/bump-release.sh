@@ -3,7 +3,7 @@
 #
 #   bump-release.sh 0.2.1          # code release: version, lockfiles, upgrade script, changelog
 #   bump-release.sh --packaging    # packaging-only: PACKAGE_RELEASE + 1, changelog
-#   bump-release.sh --docs         # after publishing: compose examples and site.ts
+#   bump-release.sh --docs         # re-sync compose examples and site.ts (the bumps do it too)
 #
 # A code release sets POSTVEC_VERSION and the three crate versions, resets
 # PACKAGE_RELEASE to 1, updates both lockfiles, creates
@@ -67,6 +67,21 @@ bump_changelog() {  # <released identity> <new identity, for the DRAFT text>
     mv "${CHANGELOG}.new" "${CHANGELOG}"
 }
 
+# Point the compose examples and the website at a release. The site is only
+# deployed after the publish (handbook step 10), so main may name it early.
+point_docs() {  # <version> <packaging revision>
+    local id="$1-$2" file site="${REPO_ROOT}/web/.vitepress/theme/site.ts"
+    for file in "${PKG_DIR}"/docker/compose/*.yml; do
+        sed -i -E "s#(ghcr\.io/univec-ai/postvec(-server)?:)[0-9]+\.[0-9]+\.[0-9]+-[0-9]+#\1${id}#g" "${file}"
+    done
+    sed -i -E \
+        -e "s#^(\s+releaseTag: )\"[^\"]*\"#\1\"postvec-v${id}\"#" \
+        -e "s#^(\s+version: )\"[^\"]*\"#\1\"$1\"#" \
+        -e "s#^(\s+release: )\"[^\"]*\"#\1\"${id}\"#" \
+        -e "s#^(\s+packageRelease: )\"[^\"]*\"#\1\"$2\"#" "${site}"
+    log "compose examples and site.ts now point at ${id}"
+}
+
 case "${MODE}" in
 code)
     [[ "${NEW}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "not MAJOR.MINOR.PATCH: ${NEW}"
@@ -100,26 +115,18 @@ postvec--*--${OLD}.sql to end at ${NEW} instead of keeping an extra hop (or git 
         (cd "${REPO_ROOT}" && cargo update --workspace --quiet)
         (cd "${REPO_ROOT}/postvec" && cargo update -p postvec --quiet)
     fi
+    point_docs "${NEW}" 1
     log "bumped ${OLD}-${OLD_REL} -> ${NEW}-1"
     ;;
 packaging)
     new_rel=$((OLD_REL + 1))
     set_env PACKAGE_RELEASE "${OLD_REL}" "${new_rel}"
     bump_changelog "${OLD}-${OLD_REL}" "${OLD}-${new_rel}"
+    point_docs "${OLD}" "${new_rel}"
     log "bumped ${OLD}-${OLD_REL} -> ${OLD}-${new_rel} (packaging only)"
     ;;
 docs)
-    id="${OLD}-${OLD_REL}"
-    for file in "${PKG_DIR}"/docker/compose/*.yml; do
-        sed -i -E "s#(ghcr\.io/univec-ai/postvec(-server)?:)[0-9]+\.[0-9]+\.[0-9]+-[0-9]+#\1${id}#g" "${file}"
-    done
-    site="${REPO_ROOT}/web/.vitepress/theme/site.ts"
-    sed -i -E \
-        -e "s#^(\s+releaseTag: )\"[^\"]*\"#\1\"postvec-v${id}\"#" \
-        -e "s#^(\s+version: )\"[^\"]*\"#\1\"${OLD}\"#" \
-        -e "s#^(\s+release: )\"[^\"]*\"#\1\"${id}\"#" \
-        -e "s#^(\s+packageRelease: )\"[^\"]*\"#\1\"${OLD_REL}\"#" "${site}"
-    log "compose examples and site.ts now point at ${id}"
+    point_docs "${OLD}" "${OLD_REL}"
     git -C "${REPO_ROOT}" --no-pager diff --stat -- packaging/postvec/docker/compose web/.vitepress/theme/site.ts
     exit 0
     ;;

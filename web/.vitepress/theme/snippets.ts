@@ -557,7 +557,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         label: "Debian / Ubuntu",
         render: (t) =>
           [
-            `sudo apt install ./${t.pkgdeb}_NEWVERSION-1+deb12_amd64.deb`,
+            `sudo apt install ./${t.pkgdeb}_${SITE.release}+deb12_amd64.deb`,
             `sudo systemctl restart ${t.svcdeb}`,
             "psql -d app -c 'ALTER EXTENSION postvec UPDATE'",
             `sudo postvec --cluster ${t.cluster} doctor --database app --deep`,
@@ -568,7 +568,7 @@ export const SNIPPETS: Record<string, SnippetDef> = {
         label: "EL9",
         render: (t) =>
           [
-            `sudo dnf install ./${t.pkgel}-NEWVERSION-1.el9.x86_64.rpm`,
+            `sudo dnf install ./${t.pkgel}-${SITE.release}.el9.x86_64.rpm`,
             `sudo systemctl restart ${t.svcel}.service`,
             "psql -d app -c 'ALTER EXTENSION postvec UPDATE'",
             `sudo -u postgres postvec doctor --pg-config ${t.pgconfigel} --database app --deep`,

@@ -2073,6 +2073,9 @@ if case_ "bump-release.sh: the mechanical edits of the next release"; then
         && grep -qx "postvec (${old}-${old_rel}) unstable; urgency=medium" "${changelog}" \
         && ok "changelog: new templated entry on top, ${old}-${old_rel} frozen below" \
         || bad "changelog top: $(head -n1 "${changelog}")"
+    grep -q "releaseTag: \"postvec-v${new}-1\"" "${clone}/web/.vitepress/theme/site.ts" \
+        && grep -q "postvec-server:${new}-1" "${clone}/packaging/postvec/docker/compose/postvec-server.yml" \
+        && ok "site.ts and compose point at ${new}-1" || bad "the bump left site.ts/compose behind"
     bump "${new}" && bad "a dirty tree was bumped" || ok "a dirty tree is refused"
 
     git -C "${clone}" -c user.email=t@t -c user.name=t add -A
@@ -2086,6 +2089,10 @@ if case_ "bump-release.sh: the mechanical edits of the next release"; then
         && ok "--packaging creates no SQL" \
         || bad "--packaging created SQL: $(git -C "${clone}" status --porcelain -- postvec/sql)"
 
+    grep -q "packageRelease: \"2\"" "${clone}/web/.vitepress/theme/site.ts" \
+        && ok "--packaging points site.ts at ${new}-2" || bad "--packaging left site.ts behind"
+
+    git -C "${clone}" checkout -q -- web packaging/postvec/docker/compose
     bump --docs
     grep -q "postvec-server:${new}-2" "${clone}/packaging/postvec/docker/compose/postvec-server.yml" \
         && grep -q "releaseTag: \"postvec-v${new}-2\"" "${clone}/web/.vitepress/theme/site.ts" \
