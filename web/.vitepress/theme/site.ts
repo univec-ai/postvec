@@ -21,7 +21,7 @@ export const SITE = {
   onnxRuntimeVersion: "1.22.0",
   // Packaging pin: registry revision 2 + bundle 1 → 2.1.0
   bundledModelVersion: "2.1.0",
-  releaseStage: "preview",
+  releaseStage: "public beta",
   registryStage: "preview",
   signerWorkflow: "univec-ai/postvec/.github/workflows/postvec-release.yml",
   conversionPairs: "nearly 100",
