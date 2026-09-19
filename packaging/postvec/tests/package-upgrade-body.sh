@@ -53,6 +53,9 @@ as_pg() { su postgres -s /bin/bash -c "$*"; }
 as_pg "${PG_BIN}/initdb -D ${DATA} -A trust --username=postgres" >/tmp/initdb.log 2>&1 \
     || die "initdb failed: $(tail -3 /tmp/initdb.log)"
 echo "unix_socket_directories = '${SOCKET_DIR}'" >> "${DATA}/postgresql.conf"
+# PGDG's el9 initdb turns the logging collector on, which sends the server log
+# to ${DATA}/log instead of pg_ctl's -l file the checks below read.
+echo "logging_collector = off" >> "${DATA}/postgresql.conf"
 start() { as_pg "${PG_BIN}/pg_ctl -D ${DATA} -l /tmp/pg.log -w -t 60 -o \"$*\" start" >/tmp/pgctl.log 2>&1 \
               || die "the cluster did not start: $(tail -5 /tmp/pg.log)"; }
 stop()  { as_pg "${PG_BIN}/pg_ctl -D ${DATA} -m fast -w -t 60 stop" >/dev/null 2>&1 || true; }
