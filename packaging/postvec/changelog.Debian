@@ -1,5 +1,11 @@
 postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
 
+  * Packaging revision
+
+ -- ${MAINTAINER}  Sat, 19 Sep 2026 16:37:15 +0100
+
+postvec (0.2.0-1) unstable; urgency=medium
+
   * Extension upgrades from 0.1.0: `ALTER EXTENSION postvec UPDATE` takes an
     installed 0.1.0 to 0.2.0. Upgrade the packages, restart PostgreSQL (the
     background worker parks until the schema matches the new library), then
