@@ -982,9 +982,9 @@ if case_ "release identity: the tag states which kind of release this is"; then
     assert_tag "the release tag is accepted"   "postvec-v${RELEASE_ID}" accept
     assert_tag "the rehearsal tag is accepted" "postvec-rehearsal-v${RELEASE_ID}" accept
     assert_tag "a release tag for another revision is refused" \
-        "postvec-v${POSTVEC_VERSION}-9001" refuse
+        "postvec-v${POSTVEC_VERSION}-$((PACKAGE_RELEASE + 1))" refuse
     assert_tag "a rehearsal tag for another revision is refused" \
-        "postvec-rehearsal-v${POSTVEC_VERSION}-9001" refuse
+        "postvec-rehearsal-v${POSTVEC_VERSION}-$((PACKAGE_RELEASE + 1))" refuse
 
     # `workflow_dispatch` sets GITHUB_REF_NAME to the ref the *workflow file*
     # came from, which need not be what is being released. The explicit tag has
@@ -2053,7 +2053,7 @@ if case_ "bump-release.sh: the mechanical edits of the next release"; then
     git -C "${clone}" -c user.email=t@t -c user.name=t commit -qm "under test" --allow-empty
     bump() { "${clone}/packaging/postvec/scripts/bump-release.sh" --no-lock "$@" >/dev/null 2>&1; }
     pin() { sed -n "s/^$1=//p" "${clone}/packaging/postvec/versions.env"; }
-    old="$(pin POSTVEC_VERSION)"
+    old="$(pin POSTVEC_VERSION)" old_rel="$(pin PACKAGE_RELEASE)"
     IFS=. read -r major minor patch <<<"${old}"
     new="${major}.${minor}.$((patch + 1))"
 
@@ -2070,8 +2070,8 @@ if case_ "bump-release.sh: the mechanical edits of the next release"; then
     changelog="${clone}/packaging/postvec/changelog.Debian"
     # shellcheck disable=SC2016  # the templated header is literal text
     [[ "$(head -n1 "${changelog}")" == 'postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium' ]] \
-        && grep -qx "postvec (${old}-1) unstable; urgency=medium" "${changelog}" \
-        && ok "changelog: new templated entry on top, ${old}-1 frozen below" \
+        && grep -qx "postvec (${old}-${old_rel}) unstable; urgency=medium" "${changelog}" \
+        && ok "changelog: new templated entry on top, ${old}-${old_rel} frozen below" \
         || bad "changelog top: $(head -n1 "${changelog}")"
     bump "${new}" && bad "a dirty tree was bumped" || ok "a dirty tree is refused"
 
