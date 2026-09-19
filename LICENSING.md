@@ -25,16 +25,13 @@ in the form `` | `postvec-server/` | <SPDX id> | ... `` .
 The PostgreSQL License covers everything published as a postvec release
 artifact: the extension, the `postvec` command, their packaging, the inference
 engine embedded mode links into the database process, the provider gateway,
-the wire contract and the registry crates. The grant is unconditional. It does
-not depend on which mode you run postvec in, on how much traffic you serve,
-or on whether you charge for what you build with it. The extension has no
-license check, no telemetry and no phone-home.
+the wire contract and the registry crates. The grant covers both inference modes.
 
 ## Business Source License 1.1: postvec-server
 
 `postvec-server/` is a separate program, the standalone inference node for
 remote mode. It is **source-available** under the Business Source License 1.1
-(BSL), not open source. The parameters are in
+(BSL). The parameters are in
 [postvec-server/LICENSE](postvec-server/LICENSE); in short:
 
 | Use | Terms |
@@ -50,15 +47,14 @@ Each released version converts to the **PostgreSQL License** four years after
 it is published (the BSL change date), and the same conversion happens
 automatically on the fourth anniversary of a version's first public release.
 
-The server links the PostgreSQL-licensed crates above and does not change
-their terms. A compatible node written against the public `proto/` contract
-owes nothing to this license. The server contains no license check and no
-phone-home; compliance is contractual.
+The server links the PostgreSQL-licensed crates above; those crates keep the
+PostgreSQL License. A compatible node written against the public `proto/`
+contract is independent of this license. Compliance is contractual.
 
 ## Models
 
-Models fetched by `postvec model pull` are not part of this repository and
-carry their own terms, shown and recorded at pull time (`--accept-license`):
+Models fetched by `postvec model pull` carry their own terms, shown and
+recorded at pull time (`--accept-license`):
 
 - The public catalogue: open-weight models under their upstream licenses.
 - The private catalogue (Univec conversion models): the Univec Private

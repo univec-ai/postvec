@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-postvec is in **public beta**. Only the most recent 0.1.x release receives
-security fixes; there are no backports to earlier betas.
+postvec is in **public beta**. Only the latest release receives security
+fixes.
 
 | Version | Supported |
 |---|---|
-| latest 0.1.x | yes |
-| anything older | no — upgrade first |
+| latest release | yes |
+| earlier betas | upgrade first |
 
 ## Reporting a vulnerability
 

@@ -5,23 +5,17 @@ description: postvec container images for PostgreSQL 16, 17 and 18. Volume layou
 
 # Install with Docker
 
-This image includes PostgreSQL, pgvector, postvec and the CLI.
-The `-local` tag also includes [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases)
+The image includes PostgreSQL, pgvector, postvec and the CLI. The `-local`
+tag also includes [ONNX Runtime](https://github.com/microsoft/onnxruntime/releases)
 and [MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
-The data-directory mount follows the official `postgres` image for the
-selected major.
+The volume path follows the official `postgres` image for that major.
 
-Inference in the `-local` tag runs in a thread inside the PostgreSQL
-process. The `-remote` tag sends inference to
-[postvec-server](/docs/server/), a separate process that serves a CPU or
-GPU fleet and keeps a model fault out of the database.
+`-local`: inference in a thread inside PostgreSQL. `-remote`: inference on
+[postvec-server](/docs/server/).
 
-- For an existing self-hosted cluster use [packages](/docs/install/packages).
-- RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
-  [managed PostgreSQL](/docs/server/managed).
-
-Commands use the current release tag (see the [release artifacts page](/download)
-for every published release).
+Existing self-hosted cluster: [packages](/docs/install/packages). RDS,
+Aurora, Cloud SQL, Azure, Supabase, Neon: [managed PostgreSQL](/docs/server/managed).
+Tags: [downloads](/download).
 
 ## Local (all-in-one)
 
@@ -42,14 +36,9 @@ The extension exists in `POSTGRES_DB` **only on first initialization** of
 an empty volume. First SQL steps: [quick start local](/docs/quickstart).
 
 :::: info Optional
-`docker exec postvec postvec-healthcheck` exits 0 when six properties
-hold: the extension is installed once, the loaded library version equals
-the installed SQL version, the running `postvec.mode` equals
-`POSTVEC_MODE`, the build supports embedded mode, the last worker
-heartbeat is inside the budget and, in embedded mode, the first name in
-`POSTVEC_EMBEDDED_MODELS` is installed. It exits 1 and names the failing
-property otherwise. Image attestations:
-[verify artifacts](/docs/install/verify).
+`docker exec postvec postvec-healthcheck` exits 0 when the worker and
+engine are ready, and names the failing check otherwise. Image
+attestations: [verify artifacts](/docs/install/verify).
 ::::
 
 ## Remote image
@@ -80,10 +69,9 @@ unsupported.
 
 `POSTGRES_USER`, `POSTGRES_DB`, `POSTVEC_DATABASES`,
 `POSTVEC_SHARED_PRELOAD_LIBRARIES`, `POSTVEC_GRPC_ENDPOINTS` and
-`POSTVEC_HTTP_ENDPOINTS` accept the `_FILE` secret form. The file is read when
-the plain variable is unset; setting both forms is an error. Any other
-`POSTVEC_*_FILE` is refused at start: those variables are pinned by the image
-or read by `docker exec` commands, which never see the entrypoint.
+`POSTVEC_HTTP_ENDPOINTS` accept the `_FILE` secret form. The file is used
+when the plain variable is unset. Image-pinned variables and those read by
+`docker exec` have no `_FILE` form.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -98,11 +86,6 @@ or read by `docker exec` commands, which never see the entrypoint.
 | `POSTVEC_CREATE_EXTENSION` | `1` | `0` skips first-run `CREATE EXTENSION` |
 | `POSTVEC_HEALTHCHECK_DATABASE` | `POSTGRES_DB` | Database `postvec-healthcheck` connects to |
 | `POSTVEC_HEALTHCHECK_BEAT_AGE` | unset; heartbeat interval + three poll ticks + 2 s | Worker heartbeat budget in seconds |
-
-Each image sets `POSTVEC_MODE`:
-
-- `-remote` sets `mode=grpc` and contains no engine assets
-- `-local` sets `mode=embedded` and includes ONNX Runtime and MiniLM
 
 ## External providers
 

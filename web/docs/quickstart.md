@@ -9,9 +9,6 @@ A container with PostgreSQL, postvec and one local model
 ([MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)).
 Inference runs inside that container.
 
-Run the image, enable a column, wait for `pending_jobs = 0`, then index and
-search.
-
 The same SQL against [postvec-server](/docs/server/) is
 [quick start remote](/docs/quickstart-remote).
 
@@ -19,8 +16,7 @@ The same SQL against [postvec-server](/docs/server/) is
 
 <PgSnippet id="docker-quickstart" />
 
-Wait until container status is `healthy` (PostgreSQL is up and MiniLM is
-loaded):
+Wait until status is `healthy` (PostgreSQL is up and MiniLM is loaded):
 
 <div v-pre>
 
@@ -133,16 +129,7 @@ An existing cluster uses [packages](/docs/install/packages) then
 [configure](/docs/install/setup). RDS, Aurora, Cloud SQL, Azure,
 Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
 
-A populated vector column uses [`adopt()`](/docs/guides/adopt). For a
-retired or provider-only space, [search that space](/docs/guides/bridge)
-first; [`migrate()`](/docs/guides/migrate) is optional afterwards.
-
 - [SQL functions](/docs/guides/)
 - [BM25](/docs/guides/bm25)
 - [Eventual consistency](/docs/concepts/consistency)
 - [postvec-server](/docs/server/)
-
-:::: info Release status
-Commands use the current release. Every published release and its
-artifacts are listed on the [release artifacts](/download) page.
-::::

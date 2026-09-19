@@ -10,9 +10,9 @@ description: PostgreSQL images, .deb and .rpm packages and postvec-server, with 
 <header class="dl-intro">
 <p class="dl-eyebrow">Downloads</p>
 
-# Choose your postvec deployment
+# Downloads
 
-Use a PostgreSQL image for a new instance, packages for an existing cluster or postvec-server for remote inference and managed databases.
+PostgreSQL images for a new instance, packages for an existing cluster, postvec-server for remote inference and managed databases.
 
 <div class="dl-platforms" aria-label="Supported platforms">
 <span>PostgreSQL 16 / 17 / 18</span>
@@ -23,12 +23,10 @@ Use a PostgreSQL image for a new instance, packages for an existing cluster or p
 
 <DownloadHero />
 
-## Choose a build
+## Builds
 
-Select your distribution, PostgreSQL version and architecture. Available
-release files link to GitHub; the selector shows publication status alongside
-the package names. Verify downloaded files with the release checksums and
-Sigstore attestations.
+Pick distribution, PostgreSQL major and architecture. Files link to GitHub.
+Checksums and Sigstore attestations: [verify artifacts](/docs/install/verify).
 
 | Channel | What it holds |
 |---|---|
@@ -60,11 +58,8 @@ reaches it.
 
 ## postvec-server
 
-[postvec-server](/server) ships with every release, as a package
-and as an image, built from the same commit as the extension and tested
-against it: the release's remote-mode images are smoke-tested through
-this exact server image, and the clean-host install test starts the
-packaged server against the packaged model on every distribution.
+[postvec-server](/server) ships with every release as a package and
+as an image, built from the same commit as the extension.
 
 The same binary includes [managed PostgreSQL](/docs/server/managed):
 schema install, the sync worker and the optional `search(text)` proxy

@@ -5,24 +5,20 @@ description: Docker, packages, managed PostgreSQL or source, then configuration.
 
 # Installation
 
-Installation has two stages: put the files on the host (Docker, packages
-or source), then run `postvec setup` to configure the cluster.
+Installation stages:
 
-[postvec-server](/docs/server/) is a separate install: the companion
-inference process for remote mode, GPU hosts and managed cloud
-databases, where a model fault stays inside that process.
-[When to use it](/docs/server/usage).
+- Local install: Docker image, packages or a [source](/docs/install/source) copy
+- Cluster configuration: [`postvec setup`](/docs/install/setup)
+
+[postvec-server](/docs/server/) is the companion inference process for remote mode, GPU hosts and managed cloud databases. [When to use it](/docs/server/usage).
 
 | Host | Path |
 |---|---|
 | Try it locally | [Quick start local](/docs/quickstart) or [quick start remote](/docs/quickstart-remote) |
 | Self-hosted PostgreSQL 16, 17 or 18 | [Packages](/docs/install/packages), then [configure](/docs/install/setup) |
 | Inference off the database (GPU, isolation, fleet) | [postvec-server](/docs/server/) ([Docker](/docs/server/docker) or [packages](/docs/server/packages)), then [connect PostgreSQL](/docs/server/connect) |
-| RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase and Neon | [Managed PostgreSQL](/docs/server/managed) |
+| RDS, Aurora, Cloud SQL, Azure Flexible Server, Supabase, Neon | [Managed PostgreSQL](/docs/server/managed) |
 | Development tree | [From source](/docs/install/source) |
 | pgai or pg_vectorize pipeline | [Coming from pgai](/docs/from-pgai) |
 
-Self-hosted needs pgvector >= 0.8, superuser and a host that can set
-`shared_preload_libraries = 'postvec'` and restart. If preload is still
-pending, `SELECT postvec.start_worker()` runs the worker until the next
-server restart.
+Self-hosted needs pgvector >= 0.8, superuser and a host that can set `shared_preload_libraries = 'postvec'` and restart. If preload is still pending, `SELECT postvec.start_worker()` runs the worker until the next server restart.

@@ -1611,119 +1611,48 @@ jobs:
           body: |
             postvec ${{ needs.validate.outputs.release_id }}
 
-            ### 1. Download, then verify — before running anything
+            Postvec is an extension for fused hybrid search: it combines BM25 and semantic search in one SQL call and keeps vectors in sync with your text automatically. You can also use it to migrate vectors without re-embedding of text with direct conversion between embedding formats.
 
-            Download `SHA256SUMS`, `postvec-prerequisites.sh` and the packages
-            for your platform, then:
+            Inference runs locally inside PostgreSQL or remote on postvec-server or through hosted embedding APIs.
 
-            Verification needs the **GitHub CLI 2.49 or newer** — `gh
-            attestation` does not exist before that, and a distribution-packaged
-            `gh` is usually older. Check with `gh --version`; if it is missing or
-            old, install it from
-            [GitHub's repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md).
+            Docs: https://postvec.dev/docs/ | Downloads: https://postvec.dev/download
+
+            ### Try it
 
             ```bash
-            # --signer-workflow narrows "signed by something in this repository"
-            # to "signed by this repository's release workflow".
-            SIGNER=${{ github.repository }}/.github/workflows/postvec-release.yml
-
-            # The bootstrap is the one asset these instructions ask you to
-            # *execute*, so verify it first and on its own.
-            gh attestation verify postvec-prerequisites.sh \
-               --repo ${{ github.repository }} --signer-workflow "$SIGNER"
-            gh attestation verify SHA256SUMS \
-               --repo ${{ github.repository }} --signer-workflow "$SIGNER"
-
-            # --ignore-missing, because SHA256SUMS lists every asset in the
-            # release and you downloaded a few. Drop it if you fetched the whole
-            # release and want to verify it *is* the whole release.
-            sha256sum --ignore-missing --check SHA256SUMS
-
-            gh attestation verify postgresql-18-postvec_*.deb \
-               --repo ${{ github.repository }} --signer-workflow "$SIGNER"
-            ```
-
-            ### 2. Read it, then run it (once per host)
-
-            Runs on Debian 12, Ubuntu 22.04/24.04, AlmaLinux 9 and Rocky 9. On
-            CentOS Stream 9 and subscribed RHEL 9 it prints the correct commands
-            for those systems and stops, because postvec has not rehearsed them.
-
-            These packages need an exact PostgreSQL major and pgvector 0.8,
-            which no supported distribution ships in its own archives — so the
-            PostgreSQL project's own repository has to be configured first,
-            exactly as [its instructions](https://www.postgresql.org/download/linux/)
-            say. `postvec-prerequisites.sh` does that and nothing else: no
-            postvec package, no cluster, no PostgreSQL configuration.
-
-            ```bash
-            less postvec-prerequisites.sh          # reads it; runs nothing
-
-            # `bash ./…`, not `./…`: a GitHub release asset does not keep its
-            # executable bit, so `./postvec-prerequisites.sh` is "permission
-            # denied" on a fresh download.
-            sudo bash ./postvec-prerequisites.sh --pg 18
-            ```
-
-            ### 3. Install
-
-            ```bash
-            # Debian / Ubuntu
-            sudo apt install ./postvec-cli_*.deb ./postgresql-18-postvec_*.deb
-            sudo postvec setup --database app --grpc <host>:33333 --http https://<host>:22222
-
-            # RHEL family
-            sudo dnf install ./postvec-cli-*.rpm ./postgresql18-postvec-*.rpm
-
-            # Or one container, with no external service and no API key —
-            # nothing above applies, the image carries everything:
-            docker run -e POSTGRES_PASSWORD=… -p 127.0.0.1:5432:5432 \
+            docker run -d --name postvec -p 5432:5432 -e POSTGRES_PASSWORD=postvec \
               ${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-local
             ```
 
+            Wait until the container is healthy, then [quick start](https://postvec.dev/docs/quickstart).
+
+            ### Packages (existing cluster)
+
+            Download `SHA256SUMS`, `postvec-prerequisites.sh` and the packages for your OS. `gh` 2.49+ for attestations.
+
             ```bash
-            gh attestation verify oci://${{ needs.validate.outputs.repository }}:${{ needs.validate.outputs.release_id }}-pg18-local \
-              --repo ${{ github.repository }} \
-              --signer-workflow ${{ github.repository }}/.github/workflows/postvec-release.yml
+            SIGNER=${{ github.repository }}/.github/workflows/postvec-release.yml
+            gh attestation verify postvec-prerequisites.sh --repo ${{ github.repository }} --signer-workflow "$SIGNER"
+            gh attestation verify SHA256SUMS --repo ${{ github.repository }} --signer-workflow "$SIGNER"
+            sha256sum --ignore-missing --check SHA256SUMS
+
+            sudo bash ./postvec-prerequisites.sh --pg 18
+            sudo apt install ./postvec-cli_*.deb ./postgresql-18-postvec_*.deb
+            sudo postvec setup --database app --embedded
             ```
 
-            ### 4. Remote mode: the inference node
+            EL9: `sudo dnf install ./postvec-cli-*.rpm ./postgresql18-postvec-*.rpm`. Remote mode: [packages](https://postvec.dev/docs/install/packages) then [setup](https://postvec.dev/docs/install/setup).
 
-            `postvec-server` is the node `postvec.mode = 'grpc'` dials. It is
-            published as a package (`postvec-server_*.deb` / `postvec-server-*.rpm`,
-            with `-dbgsym` / `-debuginfo` symbols) and as an image, both from
-            this release's packages. **Its licence differs from the rest of
-            postvec** — see the `licenses` block of `postvec-release.json` and
-            `/usr/share/doc/postvec-server/copyright` in the package.
+            ### postvec-server
 
             ```bash
-            # A node host: the node, the CLI, the runtime and the bundled
-            # model. The unit reads /opt/postvec, where postvec-extras
-            # installs; the certificate pair goes beside the configuration.
-            sudo apt install ./postvec-server_*.deb ./postvec-cli_*.deb \
-              ./postvec-onnxruntime_*.deb ./postvec-model-*.deb ./postvec-extras_*.deb
-            sudo install -o root -g postvec-server -m 0644 server.crt /etc/postvec-server/server.crt
-            sudo install -o root -g postvec-server -m 0640 server.key /etc/postvec-server/server.key
-            sudo systemctl enable --now postvec-server
-
-            # Or the image — same packages, same model:
             docker run -d -p 22222:22222 -p 33333:33333 \
               ${{ needs.validate.outputs.server_repository }}:${{ needs.validate.outputs.release_id }}
-            gh attestation verify oci://${{ needs.validate.outputs.server_repository }}:${{ needs.validate.outputs.release_id }} \
-              --repo ${{ github.repository }} \
-              --signer-workflow ${{ github.repository }}/.github/workflows/postvec-release.yml
             ```
 
-            The gRPC and discovery ports carry no authentication; keep them on
-            a private network. The moving tag is `latest`.
+            Or the `.deb` / `.rpm`. License: Business Source License 1.1. Bind gRPC (`33333`) to a private network.
 
-            ---
-
-            `postvec-release.json` records every artifact and image with its
-            digest, the bootstrap under `release_assets`, every pinned input,
-            and what each builder actually resolved. Image SBOMs are attested
-            per architecture, against the index's child manifests — see the
-            `platforms` array.
+            Artifact list and digests: `postvec-release.json` in this release.
 
       # Verify by downloading the release's own assets rather than trusting the
       # workflow's artifacts: what a user gets is what must be correct.

@@ -5,25 +5,19 @@ description: Package installation for Debian, Ubuntu and EL9, with copy-paste sn
 
 # Install packages
 
-Use packages on an existing PostgreSQL 16, 17 or 18 host with
-pgvector >= 0.8. Superuser and a restart are required. The
-[release artifacts](/download) page lists filenames and publication
-status.
-
-Install the packages below, then run
-[postvec setup](/docs/install/setup) to configure the cluster.
+Packages for an existing PostgreSQL 16, 17 or 18 host with pgvector >= 0.8.
+Superuser and a restart are required. Then run
+[postvec setup](/docs/install/setup).
 
 RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
 [managed PostgreSQL](/docs/server/managed).
 
-Debian examples use the `+deb12` filename tag. Ubuntu files use
+Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies resolve.
+The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`) is
+the target OS. Debian examples use `+deb12`; Ubuntu files use
 `+ubuntu22.04` or `+ubuntu24.04` (the rest of the command is identical).
 
-Use `apt` / `dnf` so PostgreSQL, pgvector and ELF dependencies resolve.
-The filename tag (`+deb12`, `+ubuntu22.04`, `+ubuntu24.04`, `.el9`)
-identifies the **target OS**. Pick the tag that matches the host.
-
-Checksums, Sigstore attestations and file checks:
+Filenames: [downloads](/download). Checksums and attestations:
 [verify artifacts](/docs/install/verify).
 
 ## Modes
@@ -34,11 +28,9 @@ Checksums, Sigstore attestations and file checks:
 | **Remote** (`grpc`) | [postvec-server](/docs/server/) on this host or another | Extension and CLI only |
 | **Managed PostgreSQL** | postvec-server, including the worker | None; see [managed](/docs/server/managed) |
 
-Use [postvec-server](/docs/server/) for process isolation from
-PostgreSQL, multi-threaded inference on the same VM, a CPU or GPU fleet
-and model management from the dashboard or HTTP API. Managed cloud
-databases use it too. [When to use it](/docs/server/usage). SQL is
-unchanged.
+Use [postvec-server](/docs/server/) for process isolation, a GPU or
+fleet, or a managed cloud database. [When to use it](/docs/server/usage).
+SQL is unchanged.
 
 ## 1. Prerequisites (PGDG)
 
@@ -51,13 +43,10 @@ PostgreSQL major and pgvector resolve.
 `--pg` is required (`16`, `17` or `18`). `--print` / `--dry-run` shows
 the commands. `--yes` skips the prompt.
 
-The script is idempotent. It adds the PGDG repository and its trust
-root, then confirms that the selected PostgreSQL major and pgvector
-resolve, so the install lines below can run. On EL9 it also enables
-CodeReady Builder and EPEL and disables the distribution's `postgresql`
-module, which would otherwise shadow the PGDG packages. On CentOS
-Stream 9 or subscribed RHEL 9 it prints the commands and requires
-`--force-untested`.
+The script is idempotent. On EL9 it also enables CodeReady Builder and
+EPEL and disables the distribution's `postgresql` module, which would
+otherwise shadow the PGDG packages. On CentOS Stream 9 or subscribed
+RHEL 9 it prints the commands and requires `--force-untested`.
 
 ## 2. Local (embedded mode)
 

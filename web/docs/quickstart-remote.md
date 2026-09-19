@@ -21,10 +21,9 @@ a SAN on that certificate.
 
 <PgSnippet id="docker-quickstart-remote" />
 
-Wait until both are `healthy`. Start with the server: PostgreSQL
-discovers models at boot, and a server that is still loading MiniLM
-leaves `postvec.models` empty until the worker's next refresh
-(`postvec.model_refresh_interval_ms`, 60 s by default).
+Wait until both are `healthy`. Start the server first: PostgreSQL
+reads models at boot, and MiniLM still loading leaves `postvec.models`
+empty until the next refresh (`postvec.model_refresh_interval_ms`, 60 s).
 
 <div v-pre>
 
@@ -147,9 +146,3 @@ Azure, Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
 - [SQL functions](/docs/guides/)
 - [Dashboard](/docs/server/dashboard)
 - [When to use postvec-server](/docs/server/usage)
-- [Eventual consistency](/docs/concepts/consistency)
-
-:::: info Release status
-Commands use the current release. Every published release and its
-artifacts are listed on the [release artifacts](/download) page.
-::::

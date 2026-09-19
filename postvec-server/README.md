@@ -1,11 +1,8 @@
 # postvec-server
 
-Inference node for postvec's **remote** mode (`postvec.mode = 'grpc'`).
-
-Embedded mode, the default, hosts the engine inside the PostgreSQL launcher
-process. Remote mode moves that engine to a separate process so inference has
-its own crash domain, CPU budget or GPU, and so several databases can share
-one fleet. `postvec-server` is that process.
+Inference node for postvec remote mode (`postvec.mode = 'grpc'`). The engine
+runs in this process: GPU, process isolation, a fleet, or a managed
+PostgreSQL host. SQL on the database is unchanged.
 
 Docs: [postvec.dev/docs/server](https://postvec.dev/docs/server/).
 
@@ -48,7 +45,7 @@ side alone would break `postvec setup --grpc`. Bind `--bind <private-ip>` or
 place both ports behind a firewall.
 
 Every node is identical: same ports, same command. Gossip answers who else is
-alive. It replicates no models and no configuration.
+alive. Each node keeps its own models and configuration.
 
 ## Ports
 
@@ -224,7 +221,7 @@ postvec-server status
 ```console
 # The same packages as an image, serving the bundled model.
 docker run -d --name postvec-server -p 22222:22222 -p 33333:33333 \
-  ghcr.io/univec-ai/postvec-server:0.1.0-1
+  ghcr.io/univec-ai/postvec-server:latest
 ```
 
 The package installs files and creates the `postvec-server` account. Start

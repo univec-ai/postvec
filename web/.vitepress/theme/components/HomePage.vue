@@ -26,7 +26,7 @@ const tabs: Tab[] = [
     label: "enable()",
     title: "Declare a column semantic",
     body:
-      "Creates the shadow vector column and registers the sync. Inserts and updates queue embedding work, and a background worker fills vectors after each commit.",
+      "Creates the shadow vector column and registers the sync. Inserts and updates queue embedding work. A background worker fills vectors after each commit.",
     expect:
       "The column appears at once; vectors fill in the background. Watch postvec.status() until pending_jobs reaches 0.",
     href: "/docs/guides/enable",
@@ -193,16 +193,19 @@ onBeforeUnmount(() => {
     <header class="hero">
       <div class="wrap hero__grid">
         <div class="hero__copy">
-          <h1>Hybrid search for PostgreSQL. Switch models without re-embedding text.</h1>
+          <h1>Hybrid search for PostgreSQL. Convert stored vectors in place.</h1>
           <p class="subhead">
-            Keep vectors in sync with your text and combine BM25 and semantic search in one SQL call. Inference runs locally <b>inside PostgreSQL</b> or through external providers  with <b>direct vector conversion</b> between supported embedding models without re-embedding of text.
+            <ul>
+            <li style="margin-bottom: 10px;">Postvec is a PostgreSQL extension for fused hybrid search: it combines <b>BM25 and semantic search</b> in one SQL call and keeps vectors in sync with your text automatically. You can also use it to <b>migrate vectors without re-embedding of text</b> with direct conversion between embedding formats. </li>
+            <li style="margin-bottom: 10px;">Inference runs <b>locally inside PostgreSQL</b> or remote on <b>postvec-server</b> or through hosted embedding APIs.</li>
+            </ul>
           </p>
           <div class="hero__cta">
             <a class="btn btn--go" :href="withBase('/docs/quickstart')">Quick start</a>
             <a class="btn" :href="withBase('/docs/')">Documentation</a>
           </div>
           <p class="hero__fine">
-        <span>Open source (PostgreSQL License) · PostgreSQL 16-18 · pgvector 0.8+</span>
+        <span>PostgreSQL License (extension) · BSL 1.1 (postvec-server) · PostgreSQL 16-18 · pgvector 0.8+</span>
             <span>Local inference by default · MiniLM included · {{ SITE.conversionPairs }} conversion pairs</span>
             <span>7 hosted providers · API keys stay on the inference host</span>
           </p>

@@ -10,13 +10,13 @@ starts the worker. Run it after [packages](/docs/install/packages),
 [Docker](/docs/install/docker) or a [source](/docs/install/source) copy.
 
 RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
-[managed PostgreSQL](/docs/server/managed) instead: the worker runs
-inside [postvec-server](/docs/server/).
+[managed PostgreSQL](/docs/server/managed): the worker runs inside
+[postvec-server](/docs/server/).
 
-The command creates missing databases, installs the extension, merges
-`shared_preload_libraries`, writes `conf.d/99-postvec.conf`, validates
-it, restarts or reloads if a setting changed, refreshes models and
-checks that the worker heartbeat **advances**.
+`setup` creates missing databases, installs the extension, merges
+`shared_preload_libraries`, writes `conf.d/99-postvec.conf`, restarts or
+reloads if a setting changed, refreshes models and checks that the
+worker heartbeat advances.
 
 Before the cluster preloads postvec, `setup` starts the worker in each
 database immediately with `postvec.start_worker()`, so the database is served
@@ -61,12 +61,10 @@ absent.
 
 ## Remote gRPC (postvec-server)
 
-Remote mode uses [postvec-server](/docs/server/) on the local network.
-Reasons to move inference out: a GPU, isolation from the PostgreSQL
-process, multi-threaded inference on the same VM, one engine shared by
-several databases, and model management from the dashboard. SQL is
-unchanged. See [when to use postvec-server](/docs/server/usage),
-[embedded vs remote](/docs/concepts/modes) and
+Remote mode uses [postvec-server](/docs/server/) on the local network
+(GPU, process isolation, a fleet, dashboard). SQL is unchanged.
+[When to use postvec-server](/docs/server/usage),
+[embedded vs remote](/docs/concepts/modes),
 [connect PostgreSQL](/docs/server/connect).
 
 Every node must carry the same enabled models: postvec round-robins the
