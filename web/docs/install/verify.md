@@ -5,7 +5,7 @@ description: Optional checksums, Sigstore attestations, file checks and doctor f
 
 # Verify artifacts
 
-Use these checks to prove a published `0.1.0-1` artifact came from the
+Use these checks to prove a published release artifact came from the
 postvec release workflow, or that a cluster is healthy after setup.
 
 Needs GitHub CLI 2.49 or newer for attestations. Checksums need

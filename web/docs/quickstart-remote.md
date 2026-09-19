@@ -150,7 +150,6 @@ Azure, Supabase and Neon use [managed PostgreSQL](/docs/server/managed).
 - [Eventual consistency](/docs/concepts/consistency)
 
 :::: info Release status
-Commands use the planned `0.1.0-1` images. Publication status is listed
-with the [release artifacts](/download). An unpublished tag requires a
-local image build or an existing development package.
+Commands use the current release. Every published release and its
+artifacts are listed on the [release artifacts](/download) page.
 ::::

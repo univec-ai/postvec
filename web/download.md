@@ -34,7 +34,7 @@ Sigstore attestations.
 |---|---|
 | [GitHub Releases](https://github.com/univec-ai/postvec/releases) tagged `postvec-v*` | `.deb` / `.rpm` packages (including `postvec-server`), `SHA256SUMS`, Sigstore attestations, `postvec-prerequisites.sh` |
 | [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec) `ghcr.io/univec-ai/postvec` | PostgreSQL images (`-pgNN-local` / `-pgNN-remote`) |
-| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec-server) `ghcr.io/univec-ai/postvec-server` | postvec-server (`0.1.0-1`, moving tag `latest`) |
+| [GHCR](https://github.com/univec-ai/postvec/pkgs/container/postvec-server) `ghcr.io/univec-ai/postvec-server` | postvec-server (versioned tags, moving tag `latest`) |
 
 <DownloadPanel />
 

@@ -20,8 +20,8 @@ GPU fleet and keeps a model fault out of the database.
 - RDS, Aurora, Cloud SQL, Azure, Supabase and Neon use
   [managed PostgreSQL](/docs/server/managed).
 
-Commands use the `0.1.0-1` tag (check the [release artifacts page](/download)
-for published updates).
+Commands use the current release tag (see the [release artifacts page](/download)
+for every published release).
 
 ## Local (all-in-one)
 
