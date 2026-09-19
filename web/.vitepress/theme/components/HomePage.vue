@@ -194,12 +194,12 @@ onBeforeUnmount(() => {
       <div class="wrap hero__grid">
         <div class="hero__copy">
           <h1>Hybrid search for PostgreSQL. Convert stored vectors in place.</h1>
-          <p class="subhead">
+          <div class="subhead">
             <ul>
             <li style="margin-bottom: 10px;">Postvec is a PostgreSQL extension for fused hybrid search: it combines <b>BM25 and semantic search</b> in one SQL call and keeps vectors in sync with your text automatically. You can also use it to <b>migrate vectors without re-embedding of text</b> with direct conversion between embedding formats. </li>
             <li style="margin-bottom: 10px;">Inference runs <b>locally inside PostgreSQL</b> or remote on <b>postvec-server</b> or through hosted embedding APIs.</li>
             </ul>
-          </p>
+          </div>
           <div class="hero__cta">
             <a class="btn btn--go" :href="withBase('/docs/quickstart')">Quick start</a>
             <a class="btn" :href="withBase('/docs/')">Documentation</a>
@@ -943,6 +943,12 @@ h1 {
   font-size: 1.08rem;
   line-height: 1.55;
   color: var(--vp-c-text-2);
+}
+
+.subhead ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .hero__cta {
