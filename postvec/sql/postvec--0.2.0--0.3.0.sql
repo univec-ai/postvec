@@ -35,11 +35,14 @@ END $$;
 -- vectors, migrations rows whose new column is still NULL). A queued or
 -- dead-lettered key is rewritten only when it reads the same under every
 -- DateStyle field order, time zone and IntervalStyle a writer could have
--- used. An ambiguous one (a DMY/MDY date) cannot be trusted: queued ones move
--- to jobs_dead as evidence, and the entry is queued again in full (NULL
--- sources too, so the worker clears their vectors), which re-embeds stale
--- vectors and rebuilds chunk sets; chunks of deleted rows are purged.
-CREATE FUNCTION postvec._format_sensitive(t text) RETURNS boolean LANGUAGE sql AS $f$
+-- used. A zone abbreviation (SQL, Postgres and German styles) is never
+-- trusted: IST is Irish in Dublin and Israeli in UTC. An ambiguous key cannot
+-- be trusted: queued ones move to jobs_dead as evidence (which retry_dead
+-- refuses), and a synced entry is queued again in full (NULL sources too, so
+-- the worker clears their vectors), which re-embeds stale vectors and
+-- rebuilds chunk sets; chunks of deleted rows are purged. An observed entry
+-- (trigger_mode none) is not: that would overwrite the vectors it adopted.
+CREATE FUNCTION postvec._types(t text) RETURNS SETOF oid LANGUAGE sql AS $f$
     WITH RECURSIVE b(oid) AS (
         SELECT to_regtype(t)::oid
         UNION
@@ -50,8 +53,11 @@ CREATE FUNCTION postvec._format_sensitive(t text) RETURNS boolean LANGUAGE sql A
                 UNION ALL SELECT atttypid FROM pg_catalog.pg_attribute
                            WHERE attrelid = p.typrelid AND attnum > 0 AND NOT attisdropped) n(oid)
          WHERE n.oid IS NOT NULL)
-    SELECT coalesce(bool_or(p.typcategory IN ('D', 'T')), false)
-      FROM b JOIN pg_catalog.pg_type p ON p.oid = b.oid
+    SELECT oid FROM b
+$f$;
+CREATE FUNCTION postvec._format_sensitive(t text) RETURNS boolean LANGUAGE sql AS $f$
+    SELECT EXISTS (SELECT FROM postvec._types(t) x JOIN pg_catalog.pg_type p ON p.oid = x
+                    WHERE p.typcategory IN ('D', 'T'))
 $f$;
 CREATE FUNCTION postvec._canonical_key(v anyelement) RETURNS text LANGUAGE sql
     SET DateStyle = 'ISO, MDY' SET TimeZone = 'UTC' SET IntervalStyle = 'postgres'
@@ -62,6 +68,10 @@ CREATE FUNCTION postvec._legacy_key(k text, t text, zone text) RETURNS text LANG
     SET DateStyle = 'ISO, MDY' SET TimeZone = 'UTC' SET IntervalStyle = 'postgres' AS $f$
 DECLARE o text; z text; i text; v text; seen text;
 BEGIN
+    IF regexp_replace(k, '\m(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun|bc|infinity)\M', '', 'gi') ~ '[[:alpha:]]'
+       AND EXISTS (SELECT FROM postvec._types(t) x WHERE x IN ('timestamptz'::regtype, 'timetz'::regtype)) THEN
+        RETURN NULL;  -- perhaps a zone abbreviation, or text beside one
+    END IF;
     FOREACH o IN ARRAY ARRAY['DMY', 'MDY', 'YMD'] LOOP
         FOREACH z IN ARRAY ARRAY[zone, 'UTC'] LOOP
             FOREACH i IN ARRAY ARRAY['postgres', 'sql_standard'] LOOP
@@ -80,7 +90,7 @@ BEGIN
     RETURN seen;
 END $f$;
 DO $$
-DECLARE r record; t text; zone text; ambiguous bigint; queued bigint;
+DECLARE r record; t text; zone text; note text; ambiguous bigint; queued bigint;
 BEGIN
     -- The old worker read keys with the session defaults.
     SET LOCAL DateStyle TO DEFAULT; SET LOCAL TimeZone TO DEFAULT; SET LOCAL IntervalStyle TO DEFAULT;
@@ -90,6 +100,10 @@ BEGIN
         UPDATE postvec.registry SET backfill_watermark = NULL WHERE id = r.id;
         UPDATE postvec.migrations SET last_pk = NULL WHERE registry_id = r.id AND r.chunking = 'none';
         t := r.pk_types[1];
+        note := 'queued before postvec 0.3.0 in an ambiguous key format; '
+            || CASE WHEN r.trigger_mode = 'none' THEN 'the entry is observed, so nothing was queued again'
+                    ELSE 'the entry was queued again in full' END
+            || '. retry_dead refuses it: set pk_value to the row''s key in ISO form and last_error to NULL first';
         IF cardinality(r.pk_columns) > 1 THEN
             t := format('postvec._rekey_%s', r.id);
             EXECUTE format('CREATE TYPE %s AS (%s)', t, (SELECT string_agg(format('%I %s', c, y), ', ' ORDER BY o)
@@ -104,15 +118,19 @@ BEGIN
                  ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING),
         dead AS (INSERT INTO postvec.jobs_dead (job_id, registry_id, pk_value, op, chunk_id, attempts, not_before, claimed_at, last_error, created_at)
                  SELECT id, registry_id, pk_value, op, chunk_id, attempts, not_before, claimed_at,
-                        'queued before postvec 0.3.0 in an ambiguous key format; the entry was queued again in full', created_at
+                        note, created_at
                    FROM moved WHERE c IS NULL RETURNING 1)
         SELECT count(*) INTO ambiguous FROM dead;
         WITH k AS (SELECT dead_id, postvec._legacy_key(pk_value, t, zone) AS c FROM postvec.jobs_dead
                     WHERE registry_id = r.id AND coalesce(last_error, '') NOT LIKE 'queued before postvec 0.3.0%'),
-        rekeyed AS (UPDATE postvec.jobs_dead d SET pk_value = k.c FROM k
-                     WHERE d.dead_id = k.dead_id AND k.c <> d.pk_value RETURNING 1)
+        rekeyed AS (UPDATE postvec.jobs_dead d SET pk_value = coalesce(k.c, d.pk_value),
+                           last_error = CASE WHEN k.c IS NULL THEN note || coalesce('; earlier error: ' || d.last_error, '') ELSE d.last_error END
+                      FROM k WHERE d.dead_id = k.dead_id AND k.c IS DISTINCT FROM d.pk_value RETURNING 1)
         SELECT ambiguous + count(*) FILTER (WHERE c IS NULL) INTO ambiguous FROM k;
-        IF ambiguous > 0 AND r.trigger_mode <> 'none' THEN
+        IF ambiguous > 0 AND r.trigger_mode = 'none' THEN
+            RAISE NOTICE 'postvec: %.%.% had % keys in an ambiguous legacy format (see jobs_dead); nothing was queued again, as the entry is observed: re-embed those rows yourself',
+                r.table_schema, r.table_name, r.source_column, ambiguous;
+        ELSIF ambiguous > 0 THEN
             PERFORM set_config('DateStyle', 'ISO, MDY', true), set_config('TimeZone', 'UTC', true),
                     set_config('IntervalStyle', 'postgres', true);
             EXECUTE format('INSERT INTO postvec.jobs (registry_id, pk_value, op) SELECT $1, (%s)::text, $2 FROM %I.%I
@@ -133,7 +151,8 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
-DROP FUNCTION postvec._legacy_key(text, text, text), postvec._canonical_key(anyelement), postvec._format_sensitive(text);
+DROP FUNCTION postvec._legacy_key(text, text, text), postvec._canonical_key(anyelement), postvec._format_sensitive(text),
+    postvec._types(text);
 -- After the functions, whose cached plans may still name them.
 DO $$
 DECLARE t regtype;

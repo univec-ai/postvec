@@ -182,7 +182,7 @@ converter, then the first hosted one by name.
 SELECT postvec.migration_abort(:migration_id);
 ```
 
-`migration_abort()` is available **before** the swap. The original column remains unchanged.
+`migration_abort()` is available **before** the swap. It drops the new column and keeps the original one. Writes made during the migration reached only the new column, so the rows it holds a vector for (and chunks re-chunked meanwhile) are queued again for the original model; their stored vectors stay until the new ones land.
 
 ## Observed entries
 

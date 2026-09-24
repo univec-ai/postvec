@@ -300,7 +300,8 @@ BEGIN
     PERFORM postvec.worker_kick();RETURN rid;
 END $$;
 
-CREATE OR REPLACE FUNCTION postvec.migration_abort(migration_id bigint) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+CREATE OR REPLACE FUNCTION postvec.migration_abort(migration_id bigint) RETURNS void LANGUAGE plpgsql SET search_path=pg_catalog
+SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $$
 DECLARE m postvec.migrations; r postvec.registry;
 BEGIN
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id;
@@ -309,16 +310,24 @@ BEGIN
     SELECT * INTO STRICT r FROM postvec.registry WHERE id=r.id FOR UPDATE;
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
     IF m.state NOT IN ('running','awaiting_finalize','failed') THEN RAISE EXCEPTION 'migration % is %; only running, awaiting_finalize or failed migrations can abort',m.id,m.state; END IF;
+    -- Writes during the migration reached only the new column: queue what it
+    -- holds a vector for (rows, or chunks re-chunked meanwhile, which have no
+    -- old vector) for the original model. Stored vectors stay until replaced.
+    IF r.trigger_mode<>'none' AND r.chunking='recursive' THEN
+        EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id) SELECT $1,postvec_source_pk::text,''embed'',postvec_chunk_id FROM %I.%I WHERE %I IS NULL
+                        ON CONFLICT (registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING',r.destination_schema,r.destination_table,r.vector_column) USING r.id;
+    ELSIF r.trigger_mode<>'none' THEN
+        -- A new column dropped by hand no longer says which rows it holds.
+        EXECUTE format('INSERT INTO postvec.jobs(registry_id,pk_value) SELECT $1,(%s)::text FROM %I.%I WHERE %I IS NOT NULL%s
+                        ON CONFLICT (registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING',
+            CASE WHEN cardinality(r.pk_columns)>1 THEN 'ROW('||(SELECT string_agg(quote_ident(c),',') FROM unnest(r.pk_columns) c)||')' ELSE quote_ident(r.pk_columns[1]) END,
+            r.table_schema,r.table_name,r.source_column,
+            CASE WHEN EXISTS(SELECT FROM pg_attribute WHERE attrelid=format('%I.%I',r.table_schema,r.table_name)::regclass AND attname=m.new_column AND NOT attisdropped)
+                 THEN format(' AND %I IS NOT NULL',m.new_column) ELSE '' END) USING r.id;
+    END IF;
     EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I RESTRICT',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name),m.new_column);
     UPDATE postvec.migrations SET state='aborted',finished_at=now() WHERE id=m.id;
     UPDATE postvec.registry SET state='active' WHERE id=r.id;
-    -- Writes during the migration reached only the new column. Re-embed every
-    -- row with the original model; stored vectors stay until replaced, so an
-    -- adopted column from a retired model loses nothing.
-    IF r.trigger_mode<>'none' THEN
-        UPDATE postvec.registry SET backfill_mode='cursor',backfill_watermark=NULL WHERE id=r.id;
-        INSERT INTO postvec.settings(key,value) VALUES('backfill_all:'||r.id,'true') ON CONFLICT (key) DO NOTHING;
-    END IF;
     PERFORM postvec.worker_kick();
 END $$;
 

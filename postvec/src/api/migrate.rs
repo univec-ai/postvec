@@ -17,8 +17,8 @@
 //!    vector index inline; `'manual'` (default) leaves state
 //!    `awaiting_index` and `migration_status()` carries the exact
 //!    `CREATE INDEX CONCURRENTLY`.
-//! 4. `migration_abort()` drops the new column and reverts. The old
-//!    column is never touched before the swap.
+//! 4. `migration_abort()` drops the new column and reverts, queueing what
+//!    the new column held a vector for again under the original model.
 
 use crate::api::embed::resolve_convert;
 use crate::api::registry::{
@@ -802,6 +802,12 @@ fn migration_finalize(migration_id: i64) {
     }
     Spi::run(&format!("LOCK TABLE {qtable} IN ACCESS EXCLUSIVE MODE"))
         .unwrap_or_else(|e| error!("postvec: locking {qtable} for finalize failed: {e}"));
+    // An abort or finalize that committed while this waited stands.
+    lock_rows(entry.id, migration_id);
+    let current = Migration::load(migration_id).map(|m| m.state);
+    if current.as_deref() != Some("awaiting_finalize") {
+        error!("postvec: migration {migration_id} is now {current:?}; nothing to finalize");
+    }
     let target_rel = resolve_relation(&entry.qualified_vector_table());
     let hazards = inspect_column_swap(target_rel.oid, &entry.vector_column);
     if !hazards.is_clean_for_finalize() {
@@ -906,8 +912,10 @@ fn migration_finalize(migration_id: i64) {
     }
 }
 
-/// Abort a migration cleanly: the old column was never touched, so this just
-/// drops the new column and reverts the registry.
+/// Abort a migration: drop the new column and revert the registry. Writes
+/// during the migration reached only the new column, so what it holds a
+/// vector for (rows, or chunks without an old vector) is queued again for the
+/// original model; stored vectors stay until replaced.
 #[pg_extern]
 fn migration_abort(migration_id: i64) {
     crate::api::registry::apply_ddl_lock_timeout();
@@ -917,18 +925,77 @@ fn migration_abort(migration_id: i64) {
         .unwrap_or_else(|| error!("postvec: registry entry {} is gone", m.registry_id));
     let rel = resolve_relation(&entry.qualified_table());
     assert_owner(&rel);
+    let abortable = |m: &Migration| {
+        if !matches!(m.state.as_str(), "running" | "awaiting_finalize" | "failed") {
+            error!(
+                "postvec: migration {migration_id} is {:?}; only running/awaiting_finalize/failed \
+                 migrations can abort (the column swap already happened)",
+                m.state
+            );
+        }
+    };
+    abortable(&m);
 
-    if !matches!(m.state.as_str(), "running" | "awaiting_finalize" | "failed") {
-        error!(
-            "postvec: migration {migration_id} is {:?}; only running/awaiting_finalize/failed \
-             migrations can abort (the column swap already happened)",
-            m.state
-        );
+    // Lock order source -> destination -> rows, as finalize takes them; then
+    // read again: a finalize that committed meanwhile has swapped already.
+    let qtable = entry.qualified_vector_table();
+    if entry.is_recursive() {
+        Spi::run(&format!(
+            "LOCK TABLE {} IN ACCESS EXCLUSIVE MODE",
+            entry.qualified_table()
+        ))
+        .unwrap_or_else(|e| error!("postvec: locking the source for abort failed: {e}"));
     }
+    Spi::run(&format!("LOCK TABLE {qtable} IN ACCESS EXCLUSIVE MODE"))
+        .unwrap_or_else(|e| error!("postvec: locking {qtable} for abort failed: {e}"));
+    lock_rows(entry.id, migration_id);
+    let m = Migration::load(migration_id).unwrap();
+    abortable(&m);
+    let entry = RegistryEntry::load(m.registry_id).unwrap();
 
+    if entry.trigger_mode != "none" {
+        let new_col = quote_ident(&m.new_column);
+        let q = if entry.is_recursive() {
+            format!(
+                "INSERT INTO postvec.jobs (registry_id, pk_value, op, chunk_id)
+                 SELECT {id}, postvec_source_pk::text, 'embed', postvec_chunk_id FROM {qtable}
+                  WHERE {old} IS NULL",
+                id = entry.id,
+                old = quote_ident(&entry.vector_column),
+            )
+        } else {
+            // A new column dropped by hand no longer says which rows it
+            // holds: every row is queued then.
+            let kept = Spi::get_one_with_args::<bool>(
+                "SELECT EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass($1)
+                    AND attname = $2 AND NOT attisdropped)",
+                &[qtable.as_str().into(), m.new_column.as_str().into()],
+            )
+            .unwrap()
+            .unwrap_or(false);
+            format!(
+                "INSERT INTO postvec.jobs (registry_id, pk_value)
+                 SELECT {id}, {pk} FROM {qtable} WHERE {src} IS NOT NULL{written}",
+                id = entry.id,
+                pk = entry.pk_text_expr(""),
+                src = quote_ident(&entry.source_column),
+                written = if kept {
+                    format!(" AND {new_col} IS NOT NULL")
+                } else {
+                    String::new()
+                },
+            )
+        };
+        crate::api::registry::with_key_format(|| {
+            Spi::run(&format!(
+                "{q} ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL \
+                 DO NOTHING"
+            ))
+        })
+        .unwrap_or_else(|e| error!("postvec: queueing the original model again failed: {e}"));
+    }
     Spi::run(&format!(
-        "ALTER TABLE {tbl} DROP COLUMN IF EXISTS {col}",
-        tbl = entry.qualified_vector_table(),
+        "ALTER TABLE {qtable} DROP COLUMN IF EXISTS {col}",
         col = quote_ident(&m.new_column),
     ))
     .unwrap_or_else(|e| error!("postvec: dropping the migration column failed: {e}"));
@@ -942,11 +1009,27 @@ fn migration_abort(migration_id: i64) {
         &[migration_id.into()],
     )
     .unwrap();
+    crate::worker::worker_kick();
     log!(
-        "postvec: migration {migration_id} aborted ({}.{} untouched)",
+        "postvec: migration {migration_id} aborted on {}.{}",
         entry.table_schema,
         entry.table_name
     );
+}
+
+/// Row locks on an entry and its migration, registry first, after the table
+/// locks: statements that follow read what a concurrent verb committed.
+fn lock_rows(registry_id: i64, migration_id: i64) {
+    Spi::run_with_args(
+        "SELECT FROM postvec.registry WHERE id = $1 FOR UPDATE",
+        &[registry_id.into()],
+    )
+    .unwrap();
+    Spi::run_with_args(
+        "SELECT FROM postvec.migrations WHERE id = $1 FOR UPDATE",
+        &[migration_id.into()],
+    )
+    .unwrap();
 }
 
 #[pg_extern]
@@ -1269,6 +1352,32 @@ mod tests {
             Spi::run("SELECT postvec.disable('docs','body')").ok();
         });
         assert!(r.is_err(), "disable must refuse during a migration");
+    }
+
+    /// A row the migration gave a new vector (a write routed there) is queued
+    /// again for the original model; its old vector stays until replaced.
+    #[pg_test]
+    fn abort_requeues_rows_written_during_the_migration() {
+        docs_enabled();
+        Spi::run("DELETE FROM postvec.jobs").unwrap();
+        let mid = Spi::get_one::<i64>("SELECT postvec.migrate('docs','body','m2')")
+            .unwrap()
+            .unwrap();
+        Spi::run("UPDATE docs SET body_semantic_new = '[9,9,9,9]' WHERE id = 2").unwrap();
+        Spi::run(&format!("SELECT postvec.migration_abort({mid})")).unwrap();
+        assert_eq!(
+            Spi::get_one::<String>("SELECT string_agg(pk_value, ',') FROM postvec.jobs")
+                .unwrap()
+                .as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            Spi::get_one::<String>("SELECT body_semantic::text FROM docs WHERE id = 2")
+                .unwrap()
+                .as_deref(),
+            Some("[2,2,2]"),
+            "the old vector is kept until the new one lands"
+        );
     }
 
     #[pg_test]

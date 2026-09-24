@@ -36,6 +36,19 @@ BEGIN
     IF left(v, 1) = '!' THEN RAISE EXCEPTION '%', substr(v, 2) USING ERRCODE = 'feature_not_supported'; END IF;
     RETURN v::real[];
 END $$;
+-- A `$n` call's vector, `<sha256 of the text embedded> {..}`: used only if
+-- PostgreSQL's text value of that parameter is the text the proxy embedded
+-- (a character(n) or another type reads differently from the bytes sent).
+CREATE OR REPLACE FUNCTION postvec._proxy_vector(v text, input text) RETURNS real[]
+LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+    IF left(v, 1) = '!' THEN RAISE EXCEPTION '%', substr(v, 2) USING ERRCODE = 'feature_not_supported'; END IF;
+    IF left(v, 64) IS DISTINCT FROM encode(sha256(convert_to(input, 'UTF8')), 'hex') THEN
+        RAISE EXCEPTION 'postvec: PostgreSQL reads this query text parameter differently from the text sent'
+            USING ERRCODE = 'feature_not_supported', HINT = 'Declare the parameter as text.';
+    END IF;
+    RETURN substr(v, 66)::real[];
+END $$;
 CREATE OR REPLACE FUNCTION postvec._proxy_error(message text) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN RAISE EXCEPTION '%', message USING ERRCODE = 'feature_not_supported'; END $$;
@@ -75,13 +88,16 @@ BEGIN
         END IF;
         SELECT array_agg(DISTINCT x) INTO picked FROM unnest(dead_ids) x;
         IF cardinality(picked) > 100000 OR (SELECT count(*) FROM postvec.jobs_dead
-            WHERE registry_id = r.id AND dead_id = ANY(picked)) <> cardinality(picked) THEN
-            RAISE EXCEPTION 'postvec: dead ids missing, belong to another entry, or exceed 100000';
+            WHERE registry_id = r.id AND dead_id = ANY(picked) AND NOT coalesce(last_error LIKE 'queued before postvec 0.3.0 in an ambiguous%', false))
+            <> cardinality(picked) THEN
+            RAISE EXCEPTION 'postvec: dead ids missing, belong to another entry, hold an ambiguous key from before 0.3.0, or exceed 100000';
         END IF;
     END IF;
     q := 'WITH pick AS (
         SELECT dead_id FROM postvec.jobs_dead WHERE registry_id = $1
-          AND ($2::bigint[] IS NULL OR dead_id = ANY($2)) ORDER BY dead_id LIMIT 100000
+          AND ($2::bigint[] IS NULL OR dead_id = ANY($2))
+          AND NOT coalesce(last_error LIKE ''queued before postvec 0.3.0 in an ambiguous%'', false)
+          ORDER BY dead_id LIMIT 100000
     ), del AS (
         DELETE FROM postvec.jobs_dead d USING pick p WHERE d.dead_id = p.dead_id
         RETURNING d.pk_value, d.op, d.chunk_id
@@ -257,16 +273,24 @@ BEGIN
     RETURN QUERY EXECUTE sql USING '[' || array_to_string(query_vector, ',') || ']', query_text, values_json;
 END $$;
 
+-- An ANN index search() can use: the entry's distance and dimension opclass,
+-- not partial, on the column itself (or, above 2000 dimensions, on exactly
+-- the col::halfvec(dim) expression search() orders by).
 CREATE OR REPLACE FUNCTION postvec._has_vector_index(target regclass, col text) RETURNS boolean
 LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
     SELECT EXISTS (
-        SELECT FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam
-         WHERE i.indrelid = target AND am.amname IN ('hnsw', 'ivfflat')
-           AND i.indisvalid AND i.indisready AND i.indislive
-           AND (EXISTS (SELECT FROM pg_attribute a WHERE a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) AND a.attname = col)
-                OR EXISTS (SELECT FROM pg_depend d JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = d.refobjsubid
-                            WHERE d.classid = 'pg_class'::regclass AND d.objid = i.indexrelid
-                              AND d.refclassid = 'pg_class'::regclass AND d.refobjid = i.indrelid AND a.attname = col)))
+        SELECT FROM postvec.registry r, pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_am am ON am.oid = ic.relam
+          JOIN pg_opclass oc ON oc.oid = i.indclass[0]
+         WHERE to_regclass(format('%I.%I', coalesce(r.destination_schema, r.table_schema), coalesce(r.destination_table, r.table_name))) = target
+           AND r.vector_column = col AND i.indrelid = target AND am.amname IN ('hnsw', 'ivfflat')
+           AND i.indisvalid AND i.indisready AND i.indislive AND i.indnatts = 1 AND i.indpred IS NULL
+           AND oc.opcname = CASE WHEN r.dim > 2000 THEN 'halfvec_' ELSE 'vector_' END
+                            || CASE r.distance WHEN 'l2' THEN 'l2' WHEN 'ip' THEN 'ip' ELSE 'cosine' END || '_ops'
+           AND CASE WHEN r.dim > 2000
+                    THEN i.indkey[0] = 0 AND pg_get_expr(i.indexprs, i.indrelid) = format('(%s)::%s', quote_ident(col),
+                         format_type((SELECT t.oid FROM pg_type t JOIN pg_extension e ON e.extnamespace = t.typnamespace
+                                       WHERE e.extname = 'vector' AND t.typname = 'halfvec'), r.dim))
+                    ELSE EXISTS (SELECT FROM pg_attribute a WHERE a.attrelid = i.indrelid AND a.attnum = i.indkey[0] AND a.attname = col) END)
 $$;
 
 CREATE OR REPLACE FUNCTION postvec.convert(embedding real[], source_model text, target_model text) RETURNS real[]

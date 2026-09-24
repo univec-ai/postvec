@@ -10,7 +10,7 @@ use postvec_core::{
     chunking,
     registry::{
         distance_opclass, parse_vector, quote_ident as qi, quote_literal_estring as ql,
-        serialize_vector, vector_index_probe_sql,
+        serialize_vector,
     },
 };
 use sqlx::{Connection, Executor, PgConnection, Row};
@@ -31,18 +31,14 @@ pub(super) async fn step(
     conn.execute("UPDATE postvec.migrations m SET state='done',finished_at=now() FROM postvec.registry r WHERE m.registry_id=r.id AND m.state='awaiting_index' AND postvec._has_vector_index(to_regclass(format('%I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name))),r.vector_column)").await?;
     let plan: Vec<(i64, bool, bool, bool)> = sqlx::query_as(&format!(
         "SELECT r.id,
-            (r.backfill_mode='cursor' AND r.state='active' AND NOT EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id))
+            (r.backfill_mode='cursor' AND r.state='active' AND (SELECT count(*) FROM (SELECT FROM postvec.jobs j WHERE j.registry_id=r.id LIMIT {batch}) q)<{batch})
             OR EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id AND j.op='refresh' AND j.claimed_at IS NULL AND j.not_before<=now()),
             EXISTS(SELECT FROM postvec.migrations m WHERE m.registry_id=r.id AND m.state='running' AND m.not_before<=now()),
             r.index_mode='auto' AND r.state='active' AND r.index_error IS NULL AND r.backfill_mode<>'cursor'
             AND NOT EXISTS(SELECT FROM postvec.jobs j WHERE j.registry_id=r.id)
-            AND NOT EXISTS(SELECT FROM postvec.jobs_dead d WHERE d.registry_id=r.id)
-            AND NOT {}
+            AND NOT postvec._has_vector_index(to_regclass(format('%I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name))),r.vector_column)
          FROM postvec.registry r WHERE r.state<>'disabled' ORDER BY r.id",
-        vector_index_probe_sql(
-            "to_regclass(format('%I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name)))",
-            "r.vector_column"
-        )
+        batch = db.batch_size,
     ))
     .fetch_all(&mut *conn)
     .await?;
@@ -105,12 +101,15 @@ async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool>
     };
     let mut progress = false;
     if e.backfill_mode == "cursor" && e.state == "active" {
-        let queued: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.jobs WHERE registry_id=$1)")
-                .bind(id)
-                .fetch_one(&mut *tx)
-                .await?;
-        if !queued {
+        // Below a batch of pending work, so trigger traffic cannot starve it.
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM (SELECT FROM postvec.jobs WHERE registry_id=$1 LIMIT $2) q",
+        )
+        .bind(id)
+        .bind(db.batch_size)
+        .fetch_one(&mut *tx)
+        .await?;
+        if queued < i64::from(db.batch_size) {
             let watermark = e
                 .backfill_watermark
                 .as_ref()
@@ -404,11 +403,18 @@ async fn migrate(
     }
 }
 
-/// Builds run on their own connection so draining continues meanwhile.
+/// Builds run on their own connection so draining continues meanwhile. A
+/// build that lost a lock conflict is logged and holds the build slot for a
+/// minute before the next poll retries it; other failures park the entry.
 async fn index(db: &ManagedDb, id: i64) -> Result<()> {
     let mut conn = super::install::connect(&db.args()).await?;
     if let Err(error) = build_index(&mut conn, id, db).await {
-        if super::transient(&error) {
+        if super::transient(&error) || super::sqlstate(&error).as_deref() == Some("55P03") {
+            log::warn!(
+                "managed {} index build {id}: {error}; retrying in 60 s",
+                db.name
+            );
+            tokio::time::sleep(Duration::from_secs(60)).await;
             return Ok(());
         }
         let mut tx = conn.begin().await?;
@@ -430,7 +436,12 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
         tx.commit().await?;
         return Ok(());
     };
-    let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.jobs WHERE registry_id=$1) OR EXISTS(SELECT FROM postvec.jobs_dead WHERE registry_id=$1)").bind(id).fetch_one(&mut *tx).await?;
+    // Dead letters are history, not pending work: they never hold the index back.
+    let busy: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.jobs WHERE registry_id=$1)")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
     if e.index_mode != "auto"
         || e.state != "active"
         || e.index_error.is_some()
@@ -441,11 +452,12 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
         return Ok(());
     }
     let table = e.qualified_vector_table();
-    let probe = format!(
-        "SELECT {}",
-        vector_index_probe_sql(&format!("{}::regclass", ql(&table)), &ql(&e.vector_column))
-    );
-    if sqlx::query_scalar(&probe).fetch_one(&mut *tx).await? {
+    if sqlx::query_scalar("SELECT postvec._has_vector_index($1::regclass,$2)")
+        .bind(&table)
+        .bind(&e.vector_column)
+        .fetch_one(&mut *tx)
+        .await?
+    {
         tx.commit().await?;
         return Ok(());
     }
@@ -508,13 +520,7 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
             .as_str(),
         )
         .await;
-    if let Err(error) = result {
-        let retry = error
-            .as_database_error()
-            .and_then(|e| e.code())
-            .is_some_and(|c| matches!(c.as_ref(), "40P01" | "55P03"));
-        return if retry { Ok(()) } else { Err(error.into()) };
-    }
+    result?;
     conn.execute(
         format!(
             "COMMENT ON INDEX {qualified} IS {}",

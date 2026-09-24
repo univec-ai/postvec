@@ -3107,31 +3107,42 @@ pub(crate) fn assert_index_mode_dimension(
     }
 }
 
-/// Thin readiness predicate, composing two catalog facts:
-/// [`crate::registry::expected_ann_opclass`] (what `search()` will actually
-/// use for this distance/dimension) and [`ann_index_opclasses`] (the
-/// opclasses of every valid, ready, live ANN index covering the vector
-/// column, through direct-key or expression dependency edges). True iff
-/// one usable index carries the expected opclass. Says nothing about
-/// ownership: a valid operator-built index satisfies readiness without
-/// ever being stamped or claimed.
+/// Readiness: one valid, ready, live, non-partial single-column ANN index
+/// that `search()` will use: the expected opclass
+/// ([`crate::registry::expected_ann_opclass`]) on the vector column itself,
+/// or above 2000 dimensions on exactly the `col::halfvec(dim)` expression it
+/// orders by. Says nothing about ownership: a valid operator-built index
+/// satisfies readiness without ever being stamped or claimed.
 pub(crate) fn ann_index_ready(entry: &RegistryEntry) -> bool {
     // The ANN index lives on the entry's vector target: the destination
     // for a recursive entry.
-    let rel_oid = Spi::get_one_with_args::<pg_sys::Oid>(
-        "SELECT to_regclass($1)::oid",
-        &[entry.qualified_vector_table().as_str().into()],
+    Spi::get_one_with_args::<bool>(
+        "SELECT EXISTS (
+             SELECT FROM pg_catalog.pg_index i
+               JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+               JOIN pg_catalog.pg_am am ON am.oid = ic.relam
+               JOIN pg_catalog.pg_opclass oc ON oc.oid = i.indclass[0]
+              WHERE i.indrelid = to_regclass($1) AND am.amname IN ('hnsw', 'ivfflat')
+                AND i.indisvalid AND i.indisready AND i.indislive
+                AND i.indnatts = 1 AND i.indpred IS NULL AND oc.opcname = $3
+                AND CASE WHEN $4 > 2000
+                         THEN i.indkey[0] = 0 AND pg_catalog.pg_get_expr(i.indexprs, i.indrelid) =
+                              pg_catalog.format('(%s)::%s', pg_catalog.quote_ident($2), pg_catalog.format_type(
+                                  (SELECT t.oid FROM pg_catalog.pg_type t JOIN pg_catalog.pg_extension e
+                                      ON e.extnamespace = t.typnamespace
+                                    WHERE e.extname = 'vector' AND t.typname = 'halfvec'), $4))
+                         ELSE EXISTS (SELECT FROM pg_catalog.pg_attribute a WHERE a.attrelid = i.indrelid
+                                         AND a.attnum = i.indkey[0] AND a.attname = $2) END)",
+        &[
+            entry.qualified_vector_table().as_str().into(),
+            entry.vector_column.as_str().into(),
+            crate::registry::expected_ann_opclass(&entry.distance, entry.dim).into(),
+            entry.dim.into(),
+        ],
     )
     .ok()
     .flatten()
-    .unwrap_or(pg_sys::Oid::INVALID);
-    if rel_oid == pg_sys::Oid::INVALID {
-        return false;
-    }
-    let expected = crate::registry::expected_ann_opclass(&entry.distance, entry.dim);
-    ann_index_opclasses(rel_oid, &entry.vector_column)
-        .iter()
-        .any(|oc| oc == expected)
+    .unwrap_or(false)
 }
 
 /// The readiness-first wrapper shared by `index_mode => 'immediate'`, the
@@ -3603,6 +3614,8 @@ fn uninstall(drop_columns: default!(bool, false), drop_destinations: default!(bo
 /// `'docs'` to an OID under *its* search path before the definer context (and
 /// its pinned path) is entered, so unqualified calls keep working and an
 /// attacker-controlled search path cannot redirect any object reference.
+const AMBIGUOUS_LEGACY: &str = "queued before postvec 0.3.0 in an ambiguous key format%";
+
 #[pg_extern(security_definer)]
 #[search_path(pg_catalog, pg_temp)]
 fn retry_dead(
@@ -3701,9 +3714,9 @@ fn retry_dead(
                 let t = c
                     .select(
                         "SELECT dead_id FROM postvec.jobs_dead
-                          WHERE dead_id = ANY($1) AND registry_id = $2",
+                          WHERE dead_id = ANY($1) AND registry_id = $2 AND NOT coalesce(last_error LIKE $3, false)",
                         None,
-                        &[ids.clone().into(), entry.id.into()],
+                        &[ids.clone().into(), entry.id.into(), AMBIGUOUS_LEGACY.into()],
                     )
                     .unwrap();
                 t.into_iter()
@@ -3713,8 +3726,9 @@ fn retry_dead(
             if owned.len() != ids.len() {
                 let bad: Vec<i64> = ids.iter().filter(|i| !owned.contains(i)).copied().collect();
                 error!(
-                    "postvec: dead id(s) {bad:?} do not exist or belong to another entry; \
-                     nothing was re-driven (see postvec.jobs_dead)"
+                    "postvec: dead id(s) {bad:?} do not exist, belong to another entry, or \
+                     hold an ambiguous key from before 0.3.0; nothing was re-driven (see \
+                     postvec.jobs_dead)"
                 );
             }
             Some(ids)
@@ -3742,6 +3756,8 @@ fn retry_dead(
     // dead row on a chunked entry (a malformed direct queue insert
     // dead-lettered at claim time) can never succeed and is consumed too.
     const RETRY_DEAD_MAX_ROWS: i64 = 100_000;
+    // The 0.3.0 upgrade's dead letters whose key text has no single reading
+    // are evidence, not work: re-driving would guess the row.
     let (consumed, obsolete) = with_key_format(|| {
         if entry.is_recursive() {
             let qdest = entry.qualified_vector_table();
@@ -3750,6 +3766,7 @@ fn retry_dead(
                 "WITH pick AS (
                  SELECT dead_id FROM postvec.jobs_dead
                   WHERE registry_id = $1 AND ($2::int8[] IS NULL OR dead_id = ANY($2))
+                    AND NOT coalesce(last_error LIKE $4, false)
                   ORDER BY dead_id
                   LIMIT $3
              ), del AS (
@@ -3790,6 +3807,7 @@ fn retry_dead(
                             entry.id.into(),
                             picked_ids.clone().into(),
                             RETRY_DEAD_MAX_ROWS.into(),
+                            AMBIGUOUS_LEGACY.into(),
                         ],
                     )
                     .unwrap_or_else(|e| error!("postvec: re-driving dead jobs failed: {e}"));
@@ -3808,6 +3826,7 @@ fn retry_dead(
                          SELECT dead_id FROM postvec.jobs_dead
                           WHERE registry_id = $1
                             AND ($2::int8[] IS NULL OR dead_id = ANY($2))
+                            AND NOT coalesce(last_error LIKE $4, false)
                           ORDER BY dead_id
                           LIMIT $3
                      ), del AS (
@@ -3826,6 +3845,7 @@ fn retry_dead(
                             entry.id.into(),
                             picked_ids.clone().into(),
                             RETRY_DEAD_MAX_ROWS.into(),
+                            AMBIGUOUS_LEGACY.into(),
                         ],
                     )
                     .unwrap_or_else(|e| error!("postvec: re-driving dead jobs failed: {e}"));
@@ -6151,6 +6171,32 @@ mod tests {
         );
     }
 
+    /// Above 2000 dimensions only an index on exactly `col::halfvec(dim)`,
+    /// not partial, is one search() uses.
+    #[pg_test]
+    fn ann_index_ready_requires_the_search_expression() {
+        seed_model("m", 2001);
+        make_docs();
+        let id = Spi::get_one::<i64>("SELECT postvec.enable('docs','body','m', backfill => false)")
+            .unwrap()
+            .unwrap();
+        let ready = || super::ann_index_ready(&crate::registry::RegistryEntry::load(id).unwrap());
+        Spi::run(
+            "CREATE INDEX other_expr ON docs USING hnsw
+                 ((l2_normalize(body_semantic)::halfvec(2001)) halfvec_cosine_ops);
+             CREATE INDEX partial ON docs USING hnsw
+                 ((body_semantic::halfvec(2001)) halfvec_cosine_ops) WHERE id > 0",
+        )
+        .unwrap();
+        assert!(
+            !ready(),
+            "another expression or a partial index is not usable"
+        );
+        Spi::run("CREATE INDEX exact ON docs USING hnsw ((body_semantic::halfvec(2001)) halfvec_cosine_ops)")
+            .unwrap();
+        assert!(ready());
+    }
+
     /// search() on an observed entry whose sentinel is gone (table recreated)
     /// errors cleanly instead of querying the replacement table.
     #[pg_test]
@@ -6769,6 +6815,37 @@ mod tests {
 
     /// Unknown ids, another entry's ids, an empty array, and a NULL element
     /// all refuse without moving a single row.
+    /// A pre-0.3.0 key the upgrade could not read unambiguously is evidence:
+    /// retry_dead neither guesses its row nor consumes it.
+    #[pg_test]
+    fn retry_dead_skips_ambiguous_legacy_keys() {
+        seed_model("m", 4);
+        make_docs();
+        let rid =
+            Spi::get_one::<i64>("SELECT postvec.enable('docs','body','m', backfill => false)")
+                .unwrap()
+                .unwrap();
+        let d = dead_row(rid, "03/02/2026");
+        Spi::run_with_args(
+            "UPDATE postvec.jobs_dead SET last_error = 'queued before postvec 0.3.0 in an ambiguous key format; x'
+              WHERE dead_id = $1",
+            &[d.into()],
+        )
+        .unwrap();
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT postvec.retry_dead('docs','body')").unwrap(),
+            Some(0)
+        );
+        let explicit = std::panic::catch_unwind(|| {
+            Spi::run(&format!(
+                "SELECT postvec.retry_dead('docs','body', ARRAY[{d}]::bigint[])"
+            ))
+            .ok();
+        });
+        assert!(explicit.is_err(), "an explicit id is refused");
+        assert_eq!(dead_count(), 1);
+    }
+
     #[pg_test]
     fn retry_dead_input_refusals_move_nothing() {
         seed_model("m", 4);

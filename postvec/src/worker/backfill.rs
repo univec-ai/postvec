@@ -2,8 +2,9 @@
 //!
 //! `enable(backfill_mode => 'cursor')` skips the one-shot enqueue (which
 //! bloats `postvec.jobs` on 10M+ row tables). Instead the worker enqueues
-//! watermark-ordered chunks whenever the entry's queue is empty, so the queue
-//! never holds more than one chunk of backfill work at a time. The enqueued
+//! watermark-ordered chunks whenever the entry's queue holds less than a
+//! chunk, so steady trigger traffic cannot starve it and the queue stays
+//! bounded. The enqueued
 //! jobs flow through the normal pipeline (retries, dead-lettering,
 //! coalescing with trigger-enqueued jobs via the dedup index).
 //!
@@ -16,16 +17,16 @@ use crate::registry::RegistryEntryDb as _;
 use crate::registry::{quote_ident, RegistryEntry};
 use pgrx::prelude::*;
 
-/// Enqueue the next chunk for every cursor-backfilling entry whose queue is
-/// empty. Must run inside a transaction. Returns the number of jobs enqueued.
+/// Enqueue the next chunk for every cursor-backfilling entry whose queue
+/// holds less than a chunk. Must run inside a transaction. Returns the number of jobs enqueued.
 ///
 /// A recursive entry's cursor feeds `refresh` jobs whose eligibility
 /// predicate is simply source-non-NULL — the watermark, not absence of
 /// chunks, prevents revisiting successfully materialized empty documents
-/// The feeder rule stays "no live job of either op": a feed produces a
-/// batch of documents, each of which can expand to 10,000 children, so the
-/// coarser rule composes with the refresh phase's finer CHUNK_INFLIGHT_MAX
-/// bound [R2-2]. `recursive_only` restricts a pass to recursive entries —
+/// The feeder counts live jobs of either op: a feed produces a batch of
+/// documents, each of which can expand to 10,000 children, so the coarser
+/// rule composes with the refresh phase's finer CHUNK_INFLIGHT_MAX bound
+/// [R2-2]. `recursive_only` restricts a pass to recursive entries —
 /// the closed-inference-gate loop uses it so column-mode cursors do not start
 /// advancing while inference is down [R2-5].
 pub fn enqueue_chunks(chunk: i32, recursive_only: bool) -> i64 {
@@ -62,17 +63,17 @@ pub fn enqueue_chunks(chunk: i32, recursive_only: bool) -> i64 {
             crate::api::registry::quarantine_entry(&entry, &reason);
             continue;
         }
-        // Only feed an empty queue: one in-flight chunk per entry bounds the
-        // queue size, and trigger traffic keeps its priority. EXISTS on the
-        // jobs_registry_pk index — a count(*) here matched no index and paid a
-        // full seq scan of the jobs table per entry per drain cycle.
-        let has_pending = Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS (SELECT 1 FROM postvec.jobs WHERE registry_id = $1)",
-            &[id.into()],
+        // Feed below one chunk of pending work: that bounds the queue, and a
+        // steady trickle of trigger jobs no longer starves the cursor. The
+        // LIMIT keeps the count on the jobs_registry_pk index, never a scan
+        // of a long queue.
+        let pending = Spi::get_one_with_args::<i64>(
+            "SELECT count(*) FROM (SELECT FROM postvec.jobs WHERE registry_id = $1 LIMIT $2) q",
+            &[id.into(), i64::from(chunk).into()],
         )
         .unwrap()
-        .unwrap_or(false);
-        if has_pending {
+        .unwrap_or(0);
+        if pending >= i64::from(chunk) {
             continue;
         }
 
@@ -258,6 +259,18 @@ mod tests {
         assert_eq!(mode.as_deref(), Some("done"));
         // A further pass is a no-op.
         assert_eq!(enqueue_chunks(4, false), 0);
+    }
+
+    /// Trigger traffic below a chunk does not stop the cursor.
+    #[pg_test]
+    fn cursor_backfill_feeds_beside_trigger_jobs() {
+        let id = seed_docs(6);
+        Spi::run_with_args(
+            "INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ($1, '6')",
+            &[id.into()],
+        )
+        .unwrap();
+        assert_eq!(enqueue_chunks(4, false), 4);
     }
 
     /// Rows that already have vectors (e.g. filled by triggers while the

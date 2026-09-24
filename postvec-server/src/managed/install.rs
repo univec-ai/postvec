@@ -328,7 +328,10 @@ async fn execute(connection: &mut PgConnection, command: Command, timeout: u32) 
             .bind(&platform)
             .execute(&mut *tx)
             .await?;
-            let grants: String = sqlx::query_scalar(GRANTS).fetch_one(&mut *tx).await?;
+            let (grants, worker): (String, String) =
+                sqlx::query_as(&format!("SELECT ({GRANTS}), current_user::text"))
+                    .fetch_one(&mut *tx)
+                    .await?;
             tx.commit().await?;
             // An interrupted CONCURRENTLY build leaves an invalid index that
             // IF NOT EXISTS would skip; drop it so this run builds it again.
@@ -361,6 +364,10 @@ async fn execute(connection: &mut PgConnection, command: Command, timeout: u32) 
                 );
             } else {
                 println!("Tables owned by other roles cannot be enabled until the database administrator runs one of these:\n{grants}");
+                println!("-- The hand-over is shared trust: each owner stays a member of {me}, so it can reach every table {me} owns.
+-- To isolate an owner afterwards: REVOKE {me} FROM <owner>, as the role that granted it; then, as {me},
+-- GRANT <owner> the table privileges it needs, and USAGE on its tables' sequences (they moved with the tables).
+-- The owner can then no longer ALTER those tables, and row-level security applies to it.", me = quote_ident(&worker));
             }
             println!(
                 "Organization production use requires postvec Pro; personal noncommercial use, non-production use and one 30-day production evaluation per organization are free. https://github.com/univec-ai/postvec/blob/main/LICENSING.md"

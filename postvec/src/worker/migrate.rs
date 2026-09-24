@@ -2608,7 +2608,25 @@ mod tests {
         let mid = Spi::get_one::<i64>("SELECT postvec.migrate('docs','body','m2')")
             .unwrap()
             .unwrap();
+        // A chunk re-chunked during the migration has no old vector: it is
+        // embedded again in place; the other chunks keep theirs.
+        let rechunked = Spi::get_one::<i64>(
+            "UPDATE docs_chunks SET body_semantic = NULL
+              WHERE postvec_chunk_id = (SELECT min(postvec_chunk_id) FROM docs_chunks)
+             RETURNING postvec_chunk_id",
+        )
+        .unwrap()
+        .unwrap();
+        Spi::run("DELETE FROM postvec.jobs").unwrap();
         Spi::run(&format!("SELECT postvec.migration_abort({mid})")).unwrap();
+        assert_eq!(
+            Spi::get_one::<String>(
+                "SELECT string_agg(op || ':' || chunk_id, ',') FROM postvec.jobs"
+            )
+            .unwrap(),
+            Some(format!("embed:{rechunked}"))
+        );
+        let n = n - 1;
         assert_eq!(
             Spi::get_one::<i64>(
                 "SELECT count(*) FROM pg_attribute

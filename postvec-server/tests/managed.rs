@@ -187,6 +187,43 @@ async fn exercise(dsn: &str) -> Result<()> {
             IF (SELECT count(*) FROM postvec.jobs) <> 1 THEN RAISE EXCEPTION 'dedup'; END IF;
         END $$;
     "#).await.context("status/retry assertions")?;
+    // Only an index search() can use counts: not another distance, not partial.
+    db.execute(
+        "CREATE INDEX docs_v_l2 ON docs USING hnsw (v vectors.vector_l2_ops);
+        CREATE INDEX docs_v_part ON docs USING hnsw (v vectors.vector_cosine_ops) WHERE id > 0",
+    )
+    .await?;
+    ensure!(
+        !sqlx::query_scalar::<_, bool>("SELECT postvec._has_vector_index('docs','v')")
+            .fetch_one(&mut db)
+            .await?,
+        "a wrong-opclass or partial index counted as the vector index"
+    );
+    db.execute("DROP INDEX docs_v_l2, docs_v_part").await?;
+    // Above 2000 dimensions, only the exact expression search() orders by.
+    db.execute(
+        "CREATE TABLE wide (id bigint PRIMARY KEY, body text, v vectors.vector(2001));
+        INSERT INTO postvec.registry (id,table_schema,table_name,source_column,vector_column,pk_columns,pk_types,model,dim)
+        OVERRIDING SYSTEM VALUE VALUES (1000,'public','wide','body','v',ARRAY['id'],ARRAY['bigint'],'fixture',2001);
+        CREATE INDEX wide_other ON wide USING hnsw ((vectors.l2_normalize(v)::vectors.halfvec(2001)) vectors.halfvec_cosine_ops)",
+    )
+    .await?;
+    let wide = "SELECT postvec._has_vector_index('wide','v')";
+    ensure!(
+        !sqlx::query_scalar::<_, bool>(wide)
+            .fetch_one(&mut db)
+            .await?,
+        "another halfvec expression counted as the vector index"
+    );
+    db.execute("CREATE INDEX wide_exact ON wide USING hnsw ((v::vectors.halfvec(2001)) vectors.halfvec_cosine_ops)")
+        .await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>(wide)
+            .fetch_one(&mut db)
+            .await?
+    );
+    db.execute("DELETE FROM postvec.registry WHERE table_name='wide'; DROP TABLE wide")
+        .await?;
     // A second migration_finalize() while the index is built CONCURRENTLY
     // (held back by an older snapshot) must not wait for, or deadlock with, it.
     let migration: i64 = sqlx::query_scalar("INSERT INTO postvec.migrations (registry_id,old_model,new_model,old_dim,new_dim,strategy,new_column,rows_total,state)
@@ -564,6 +601,9 @@ async fn legacy_keys_are_rekeyed() -> Result<()> {
         .await?;
     root.execute(format!("CREATE DATABASE {name} OWNER {name}").as_str())
         .await?;
+    // The database zone is UTC, where Dublin's IST reads as Israel's.
+    root.execute(format!("ALTER DATABASE {name} SET TimeZone = 'UTC'").as_str())
+        .await?;
     let mut url = reqwest::Url::parse(&dsn)?;
     url.set_path(&format!("/{name}"));
     PgConnection::connect(url.as_str())
@@ -598,12 +638,19 @@ async fn legacy_keys_are_rekeyed() -> Result<()> {
             SELECT postvec.enable('ek', 'body', 'm', backfill => false);
             INSERT INTO postvec.jobs (registry_id, pk_value) SELECT 3, ROW('2026-06-01 00:30+00'::timestamptz, 1)::event_key::text;
             UPDATE postvec.registry SET backfill_mode = 'cursor', backfill_watermark = ROW('2026-06-01 01:00+01'::timestamptz, 1)::event_key::text WHERE id = 3;
+            CREATE TABLE stamp (id timestamptz PRIMARY KEY, body text);
+            INSERT INTO stamp VALUES ('2026-06-15 00:30+00', 'june');
+            SELECT postvec.enable('stamp', 'body', 'm', backfill => false);
+            CREATE TABLE observed (id date PRIMARY KEY, body text);
+            SELECT postvec.enable('observed', 'body', 'm', backfill => false);
+            UPDATE postvec.registry SET trigger_mode = 'none' WHERE id = 5;
             SET DateStyle = 'SQL, DMY';
-            INSERT INTO postvec.jobs (registry_id, pk_value) VALUES (2, '2026-02-03'::date::text);
+            INSERT INTO postvec.jobs (registry_id, pk_value) VALUES (2, '2026-02-03'::date::text),
+                (4, '2026-06-15 00:30+00'::timestamptz::text), (5, '2026-02-03'::date::text);
             UPDATE postvec.schema_version SET version = 2;
         "#).await?;
         let old: Vec<String> = sqlx::query_scalar("SELECT pk_value FROM postvec.jobs ORDER BY id").fetch_all(&mut db).await?;
-        ensure!(old == [r#"(1,"2026-06-01 01:30:00+01")"#, r#"("2026-06-01 01:30:00+01",1)"#, "03/02/2026"], "fixture not in the old format: {old:?}");
+        ensure!(old == [r#"(1,"2026-06-01 01:30:00+01")"#, r#"("2026-06-01 01:30:00+01",1)"#, "03/02/2026", "15/06/2026 01:30:00 IST", "03/02/2026"], "fixture not in the old format: {old:?}");
         managed::run(command(dsn, "install")).await?;
         let state: (String, String, Option<String>, Option<String>) = sqlx::query_as(
             "SELECT (SELECT pk_value FROM postvec.jobs WHERE registry_id = 1), (SELECT pk_value FROM postvec.jobs_dead WHERE registry_id = 1),
@@ -636,6 +683,35 @@ async fn legacy_keys_are_rekeyed() -> Result<()> {
         ensure!(
             composite == (r#"("2026-06-01 00:30:00+00",1)"#.into(), None),
             "a composite-valued key escaped the upgrade: {composite:?}"
+        );
+        // A zone abbreviation is not read under the database's zone: the
+        // entry is queued again in full.
+        let zoned: (String, String) = sqlx::query_as(
+            "SELECT (SELECT string_agg(pk_value, ',') FROM postvec.jobs WHERE registry_id = 4),
+                    (SELECT pk_value FROM postvec.jobs_dead WHERE registry_id = 4)",
+        )
+        .fetch_one(&mut db)
+        .await?;
+        ensure!(
+            zoned == ("2026-06-15 00:30:00+00".into(), "15/06/2026 01:30:00 IST".into()),
+            "a zone abbreviation was read in the database's zone: {zoned:?}"
+        );
+        // An observed entry keeps its evidence, is not queued again, and its
+        // ambiguous dead letter is not retried as a guess.
+        let observed: (i64, i64, String) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM postvec.jobs WHERE registry_id = 5), dead_id, last_error
+               FROM postvec.jobs_dead WHERE registry_id = 5",
+        )
+        .fetch_one(&mut db)
+        .await?;
+        ensure!(
+            observed.0 == 0 && observed.2.contains("nothing was queued again"),
+            "observed entry after the upgrade: {observed:?}"
+        );
+        ensure!(sqlx::query_scalar::<_, i64>("SELECT postvec.retry_dead('observed', 'body')").fetch_one(&mut db).await? == 0);
+        ensure!(
+            db.execute(format!("SELECT postvec.retry_dead('observed', 'body', ARRAY[{}])", observed.1).as_str()).await.is_err(),
+            "retried an ambiguous legacy key"
         );
         db.close().await?;
         Ok(())

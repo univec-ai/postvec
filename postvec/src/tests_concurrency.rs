@@ -460,6 +460,59 @@ mod tests {
         fx.cleanup();
     }
 
+    /// An abort waiting behind a finalize re-reads the migration after the
+    /// locks: the committed swap stands and the abort refuses.
+    #[pg_test]
+    fn abort_waiting_behind_finalize_refuses() {
+        let fx = Fixture::new("cc_abort_race");
+        let mut b1 = fx.session();
+        let rid = setup_entry(&mut b1, "cc_abort_race", "", "");
+        b1.batch_execute(
+            "INSERT INTO postvec.models (name, model_type, target_model, target_dim, raw)
+             VALUES ('n','embed','n',3,'{}'::jsonb) ON CONFLICT (name) DO NOTHING",
+        )
+        .unwrap();
+        let mid: i64 = b1
+            .query_one(
+                "SELECT postvec.migrate('cc_abort_race','body','n', strategy => 'reembed')",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        b1.batch_execute(&format!(
+            "UPDATE postvec.migrations SET state = 'awaiting_finalize' WHERE id = {mid}"
+        ))
+        .unwrap();
+        let mut b2 = fx.session();
+        let b2_pid = backend_pid(&mut b2);
+        b1.batch_execute(&format!("BEGIN; SELECT postvec.migration_finalize({mid})"))
+            .unwrap();
+        let waiter = std::thread::spawn(move || {
+            b2.batch_execute(&format!("SELECT postvec.migration_abort({mid})"))
+                .map_err(err_text)
+        });
+        wait_until_blocked(b2_pid);
+        b1.batch_execute("COMMIT").unwrap();
+        let err = waiter
+            .join()
+            .unwrap()
+            .expect_err("abort after a committed finalize");
+        assert!(err.contains("only running"), "{err}");
+        let row = b1
+            .query_one(
+                "SELECT r.model, m.state FROM postvec.registry r JOIN postvec.migrations m
+                    ON m.registry_id = r.id WHERE r.id = $1",
+                &[&rid],
+            )
+            .unwrap();
+        assert_eq!(
+            (row.get::<_, String>(0), row.get::<_, String>(1)),
+            ("n".to_string(), "done".to_string())
+        );
+        drop(b1);
+        fx.cleanup();
+    }
+
     /// A source UPDATE waits behind an in-flight refresh's source-row
     /// `FOR SHARE` lock, and its trigger then removes the refresh's freshly
     /// committed output, so no chunks of the older row version survive the

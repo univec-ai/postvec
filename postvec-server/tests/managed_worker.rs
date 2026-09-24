@@ -282,9 +282,12 @@ async fn exercise(dsn: &str) -> Result<()> {
             .await?
             == "next"
     );
-    db.execute("UPDATE postvec.registry SET index_mode='auto' WHERE id=1")
+    // A dead letter is history: it does not hold the automatic index back.
+    db.execute("INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,last_error) VALUES(0,1,'999','old');UPDATE postvec.registry SET index_mode='auto' WHERE id=1")
         .await?;
     wait(&mut db,"SELECT EXISTS(SELECT FROM pg_index WHERE indrelid='docs'::regclass AND indexrelid<>'docs_pkey'::regclass AND indisvalid)").await?;
+    db.execute("DELETE FROM postvec.jobs_dead WHERE pk_value='999'")
+        .await?;
     db.execute("CREATE TABLE converted(id uuid PRIMARY KEY,body text,v vectors.vector(3));INSERT INTO converted VALUES('00000000-0000-0000-0000-000000000001','no embedding required','[1,2,3]');SELECT postvec.adopt('converted','body','v','origin',sync=>false,backfill=>'none');SELECT postvec.migrate('converted','body','next',observed_writes_quiesced=>true)").await?;
     wait(
         &mut db,
@@ -340,6 +343,17 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT body_semantic::text='[9,1,2]' FROM composite",
     )
     .await?;
+    // A cursor keeps feeding while trigger jobs stay pending.
+    db.execute("CREATE TABLE busy(id int PRIMARY KEY,body text);INSERT INTO busy SELECT g,'row '||g FROM generate_series(1,3) g;
+        SELECT postvec.enable('busy','body','fixture',backfill_mode=>'cursor');
+        INSERT INTO postvec.jobs(registry_id,pk_value,not_before) SELECT id,'999',now()+interval '1 hour' FROM postvec.registry WHERE table_name='busy'").await?;
+    wait(
+        &mut db,
+        "SELECT bool_and(body_semantic IS NOT NULL) FROM busy",
+    )
+    .await?;
+    db.execute("DELETE FROM postvec.jobs WHERE pk_value='999'")
+        .await?;
     // A key written under another DateStyle still names its own row.
     db.execute("CREATE TABLE dated(id date PRIMARY KEY,body text);INSERT INTO dated VALUES('2026-02-03','feb'),('2026-03-02','mar');SELECT postvec.enable('dated','body','fixture')").await?;
     wait(
@@ -360,31 +374,42 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT NOT EXISTS(SELECT FROM postvec.settings WHERE key LIKE 'backfill_all:%')",
     )
     .await?;
-    // Aborting keeps the stored vectors of an adopted column and re-embeds
-    // them with the original model; a migration waits for a running backfill.
+    // Aborting keeps the stored vectors of an adopted column and re-embeds,
+    // with the original model, the rows the migration wrote.
     paused.store(true, Ordering::SeqCst);
-    db.execute("CREATE TABLE kept(id int PRIMARY KEY,body text,v vectors.vector(3));INSERT INTO kept VALUES(1,'kept row','[7,7,7]');SELECT postvec.adopt('kept','body','v','fixture',backfill=>'none');SELECT postvec.migration_abort(postvec.migrate('kept','body','next',strategy=>'reembed'))").await?;
+    db.execute("CREATE TABLE kept(id int PRIMARY KEY,body text,v vectors.vector(3));INSERT INTO kept VALUES(1,'kept row','[7,7,7]'),(2,'untouched','[6,6,6]');SELECT postvec.adopt('kept','body','v','fixture',backfill=>'none');
+        DO $$DECLARE m postvec.migrations; mid bigint; BEGIN
+            mid:=postvec.migrate('kept','body','next',strategy=>'reembed');
+            SELECT * INTO m FROM postvec.migrations WHERE id=mid;
+            EXECUTE format('UPDATE kept SET %I=''[5,5,5]'' WHERE id=1',m.new_column);
+            PERFORM postvec.migration_abort(m.id);
+        END$$").await?;
     ensure!(
-        sqlx::query_scalar::<_, bool>("SELECT v::text='[7,7,7]' FROM kept")
+        sqlx::query_scalar::<_, String>("SELECT string_agg(v::text,',' ORDER BY id) FROM kept")
             .fetch_one(&mut db)
-            .await?,
+            .await?
+            == "[7,7,7],[6,6,6]",
         "abort discarded the adopted vectors"
     );
-    ensure!(
-        db.execute("SELECT postvec.migrate('kept','body','next',strategy=>'reembed')")
-            .await
-            .is_err(),
-        "migration started during the re-embedding backfill"
-    );
     paused.store(false, Ordering::SeqCst);
-    wait(&mut db, "SELECT v::text='[8,1,2]' FROM kept").await?;
+    wait(&mut db, "SELECT v::text='[8,1,2]' FROM kept WHERE id=1").await?;
+    ensure!(
+        sqlx::query_scalar::<_, String>("SELECT v::text FROM kept WHERE id=2")
+            .fetch_one(&mut db)
+            .await?
+            == "[6,6,6]",
+        "abort re-embedded a row the migration never wrote"
+    );
+    // A model no inference node serves fails the migration instead of
+    // retrying the same batch forever.
+    db.execute("INSERT INTO postvec.models(name,model_type,target_dim,raw) VALUES('ghost','embed',3,'{}') ON CONFLICT DO NOTHING;
+        CREATE TABLE ghostly(id int PRIMARY KEY,body text);INSERT INTO ghostly VALUES(1,'boo');SELECT postvec.enable('ghostly','body','fixture')").await?;
+    wait(&mut db, "SELECT body_semantic IS NOT NULL FROM ghostly").await?;
+    db.execute("SELECT postvec.migrate('ghostly','body','ghost',strategy=>'reembed')")
+        .await?;
+    wait(&mut db, "SELECT m.state='failed' FROM postvec.migrations m JOIN postvec.registry r ON r.id=m.registry_id WHERE r.table_name='ghostly'").await?;
     // A migration batch the table rejects backs off with the error and
     // resumes once the table accepts writes again.
-    wait(
-        &mut db,
-        "SELECT backfill_mode='done' FROM postvec.registry WHERE table_name='kept'",
-    )
-    .await?;
     db.execute("CREATE FUNCTION frozen() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'frozen table'; END$$;
         CREATE TRIGGER frozen BEFORE UPDATE ON kept FOR EACH ROW EXECUTE FUNCTION frozen();
         SELECT postvec.migrate('kept','body','next',strategy=>'reembed')").await?;
@@ -801,6 +826,118 @@ async fn exercise(dsn: &str) -> Result<()> {
         let cycle = wire.cycle().await?;
         ensure!(cycle.value == "{4,1,2}", "{sql}: {}", cycle.error);
     }
+    // Parentheses, spelled-out casts and an undeclared `$n::text` are
+    // rewritten; a `$n` another use types as integer is not.
+    for sql in [
+        "SELECT postvec.embed(($1)::text, 'fixture')::text",
+        "SELECT postvec.embed($1::character varying, 'fixture')::text",
+        "SELECT postvec.embed($1::text, 'fixture')::text",
+        "SELECT postvec.embed(($1), 'fixture')::text",
+    ] {
+        wire.send(&[
+            parse("", sql, &[]),
+            bind("", "", &["abcd"]),
+            execute(""),
+            sync(),
+        ])
+        .await?;
+        let cycle = wire.cycle().await?;
+        ensure!(cycle.value == "{4,1,2}", "{sql}: {}", cycle.error);
+    }
+    wire.send(&[
+        parse(
+            "",
+            "SELECT postvec.embed($1::text, 'fixture')::text, $1::integer",
+            &[],
+        ),
+        bind("", "", &["00042"]),
+        execute(""),
+        sync(),
+    ])
+    .await?;
+    ensure!(
+        wire.cycle()
+            .await?
+            .error
+            .contains("served only by the postvec-server proxy"),
+        "embedded a parameter PostgreSQL types as integer"
+    );
+    // A hex escape elsewhere in the query leaves the call rewritten.
+    wire.send(&[query(
+        "SELECT postvec.embed('abcd', 'fixture')::text, E'\\x41'",
+    )])
+    .await?;
+    ensure!(wire.cycle().await?.value == "{4,1,2}");
+    // An unnamed Parse an earlier error skipped leaves the old one in place.
+    wire.send(&[parse("", orig, &[]), sync()]).await?;
+    wire.cycle().await?;
+    wire.send(&[
+        bind("", "no_such_statement", &[]),
+        parse("", "SELECT 2", &[]),
+        sync(),
+    ])
+    .await?;
+    ensure!(!wire.cycle().await?.error.is_empty());
+    wire.send(&[bind("", "", &[]), execute(""), sync()]).await?;
+    let kept = wire.cycle().await?;
+    ensure!(
+        kept.value == "{4,1,2}",
+        "skipped unnamed Parse: {}",
+        kept.error
+    );
+    // Deep nesting is PostgreSQL's to refuse; the proxy keeps serving.
+    let deep = format!(
+        "SELECT postvec.embed({}'abcd'{}, 'fixture')",
+        "(".repeat(20_000),
+        ")".repeat(20_000)
+    );
+    wire.send(&[query(&deep)]).await?;
+    wire.cycle().await?;
+    wire.send(&[query(orig)]).await?;
+    ensure!(
+        wire.cycle().await?.value == "{4,1,2}",
+        "the proxy stopped serving after deep nesting"
+    );
+    // A rewritten Bind counts toward locating the failed message: here the
+    // duplicate Parse failed, and the unnamed Parse after it was skipped.
+    wire.send(&[parse("", orig, &[]), parse("taken", orig, &[]), sync()])
+        .await?;
+    wire.cycle().await?;
+    wire.send(&[
+        bind("", "", &[]),
+        parse("taken", orig, &[]),
+        parse("", "SELECT 2", &[]),
+        sync(),
+    ])
+    .await?;
+    ensure!(wire.cycle().await?.error.contains("already exists"));
+    wire.send(&[bind("", "", &[]), execute(""), sync()]).await?;
+    let kept = wire.cycle().await?;
+    ensure!(
+        kept.value == "{4,1,2}",
+        "after a rewritten Bind: {}",
+        kept.error
+    );
+    // PostgreSQL types `$1` as character(4) from its first use, so embed()
+    // reads 'ab', not the bytes sent: the call raises instead of using them.
+    for format in [0, 1] {
+        wire.send(&[
+            parse(
+                "",
+                "SELECT $1::character(4), postvec.embed($1, 'fixture')::text",
+                &[],
+            ),
+            bind_format("", "", &["ab  "], format),
+            execute(""),
+            sync(),
+        ])
+        .await?;
+        let error = wire.cycle().await?.error;
+        ensure!(
+            error.contains("differently from the text sent"),
+            "format {format}: {error}"
+        );
+    }
     let reader = format!("{}_reader", via_db(&proxied));
     db.execute(format!("CREATE ROLE {reader} LOGIN; REVOKE EXECUTE ON FUNCTION postvec.embed(text,text,real[]) FROM PUBLIC").as_str())
         .await?;
@@ -976,8 +1113,13 @@ fn parse(name: &str, sql: &str, oids: &[u32]) -> Vec<u8> {
     message(b'P', &body)
 }
 fn bind(portal: &str, statement: &str, params: &[&str]) -> Vec<u8> {
+    bind_format(portal, statement, params, 0)
+}
+/// A Bind whose parameters all use `format` (0 text, 1 binary).
+fn bind_format(portal: &str, statement: &str, params: &[&str], format: u16) -> Vec<u8> {
     let mut body = [cstring(portal), cstring(statement)].concat();
-    body.extend(0u16.to_be_bytes());
+    body.extend(1u16.to_be_bytes());
+    body.extend(format.to_be_bytes());
     body.extend((params.len() as u16).to_be_bytes());
     for p in params {
         body.extend((p.len() as i32).to_be_bytes());

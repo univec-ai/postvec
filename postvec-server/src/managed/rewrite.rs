@@ -24,8 +24,9 @@ pub(super) struct Call {
     pub relation: String,
     pub column: String,
     pub text: Arg,
-    /// The text argument carries a `::text`/`::varchar` cast.
-    pub text_cast: bool,
+    /// An undeclared `$n` text reads as sent: bare (the function's argument
+    /// makes it text), or cast to text here and wherever else it appears.
+    pub untyped: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -69,14 +70,15 @@ fn lex(sql: &str, standard_strings: bool) -> Result<Vec<(Tok<'_>, usize, usize)>
         } else if c == b'\'' || ((c == b'E' || c == b'e') && b.get(i + 1) == Some(&b'\'')) {
             let escapes = c != b'\'' || !standard_strings;
             i += if c == b'\'' { 1 } else { 2 };
-            let mut s = String::new();
+            // Bytes: octal and hex escapes may spell UTF-8 byte by byte.
+            let mut s = Vec::new();
             loop {
                 let Some(&ch) = b.get(i) else {
                     return Err("unterminated string".into());
                 };
                 if ch == b'\'' {
                     if b.get(i + 1) == Some(&b'\'') {
-                        s.push('\'');
+                        s.push(b'\'');
                         i += 2;
                     } else {
                         i += 1;
@@ -85,21 +87,55 @@ fn lex(sql: &str, standard_strings: bool) -> Result<Vec<(Tok<'_>, usize, usize)>
                 } else if ch == b'\\' && escapes {
                     let e = *b.get(i + 1).ok_or("unterminated string")?;
                     i += 2;
-                    s.push(match e {
-                        b'n' => '\n',
-                        b't' => '\t',
-                        b'r' => '\r',
-                        b'b' => '\u{8}',
-                        b'f' => '\u{c}',
-                        b'\\' | b'\'' | b'"' => e as char,
-                        _ => return Err("unsupported escape in E'' string".into()),
-                    });
+                    let digits = |i: usize, max: usize, radix: u32| {
+                        b[i..]
+                            .iter()
+                            .take(max)
+                            .take_while(|d| (**d as char).is_digit(radix))
+                            .count()
+                    };
+                    let number = |from: usize, n: usize, radix: u32| {
+                        u32::from_str_radix(&sql[from..from + n], radix).unwrap()
+                    };
+                    match e {
+                        b'n' => s.push(b'\n'),
+                        b't' => s.push(b'\t'),
+                        b'r' => s.push(b'\r'),
+                        b'b' => s.push(8),
+                        b'f' => s.push(12),
+                        b'0'..=b'7' => {
+                            let n = 1 + digits(i, 2, 8);
+                            s.push(number(i - 1, n, 8) as u8);
+                            i += n - 1;
+                        }
+                        b'x' if digits(i, 2, 16) > 0 => {
+                            let n = digits(i, 2, 16);
+                            s.push(number(i, n, 16) as u8);
+                            i += n;
+                        }
+                        b'u' | b'U' => {
+                            let n = if e == b'u' { 4 } else { 8 };
+                            if digits(i, n, 16) != n {
+                                return Err("invalid Unicode escape".into());
+                            }
+                            let c =
+                                char::from_u32(number(i, n, 16)).ok_or("invalid Unicode escape")?;
+                            s.extend(c.to_string().bytes());
+                            i += n;
+                        }
+                        // Any other character stands for itself.
+                        _ => {
+                            let c = sql[i - 1..].chars().next().unwrap();
+                            s.extend(c.to_string().bytes());
+                            i += c.len_utf8() - 1;
+                        }
+                    }
                 } else {
-                    let ch = sql[i..].chars().next().unwrap();
                     s.push(ch);
-                    i += ch.len_utf8();
+                    i += 1;
                 }
             }
+            let s = String::from_utf8(s).map_err(|_| "string is not valid UTF-8")?;
             out.push((Tok::Str(s), start, i));
         } else if c == b'"' {
             i += 1;
@@ -165,25 +201,49 @@ fn lex(sql: &str, standard_strings: bool) -> Result<Vec<(Tok<'_>, usize, usize)>
     Ok(out)
 }
 
-/// One argument: a single string literal or `$n`, optionally cast to text,
-/// so the value the proxy reads is the value the database evaluates.
-fn arg(toks: &[(Tok<'_>, usize, usize)]) -> Option<Arg> {
-    let value = match toks.first()?.0 {
-        Tok::Str(ref s) => Arg::Literal(s.clone()),
-        Tok::Param(n) => Arg::Param(n),
+type Toks<'a, 'b> = &'b [(Tok<'a>, usize, usize)];
+
+/// One argument: a string literal or `$n`, in redundant parentheses or cast
+/// to text (`text`, `varchar`, `character varying`, never a length that
+/// truncates), so the value the proxy reads is the value the database
+/// evaluates. Also whether it carries a cast.
+fn arg(toks: Toks) -> Option<(Arg, bool)> {
+    // Iterative: nesting depth is the client's to choose.
+    let open = toks.iter().take_while(|t| t.0 == Tok::Punct("(")).count();
+    let value = match &toks.get(open)?.0 {
+        Tok::Str(s) => Arg::Literal(s.clone()),
+        Tok::Param(n) => Arg::Param(*n),
         _ => return None,
     };
-    match toks {
-        [_] => Some(value),
-        [_, (Tok::Punct("::"), ..), (Tok::Ident(t), ..)] if t == "text" || t == "varchar" => {
-            Some(value)
+    let (mut rest, mut depth, mut cast) = (&toks[open + 1..], open, false);
+    while let Some(t) = rest.first() {
+        if t.0 == Tok::Punct(")") && depth > 0 {
+            depth -= 1;
+            rest = &rest[1..];
+        } else {
+            rest = &rest[text_cast(rest)?..];
+            cast = true;
         }
-        _ => None,
     }
+    (depth == 0).then_some((value, cast))
 }
 
-fn literal(toks: &[(Tok<'_>, usize, usize)]) -> Option<String> {
-    match arg(toks)? {
+/// The length of a leading `::text`-like cast.
+fn text_cast(toks: Toks) -> Option<usize> {
+    let n = match toks {
+        [(Tok::Punct("::"), ..), (Tok::Ident(a), ..), (Tok::Ident(b), ..), ..]
+            if a == "character" && b == "varying" =>
+        {
+            3
+        }
+        [(Tok::Punct("::"), ..), (Tok::Ident(t), ..), ..] if t == "text" || t == "varchar" => 2,
+        _ => return None,
+    };
+    (toks.get(n).map(|t| &t.0) != Some(&Tok::Punct("("))).then_some(n)
+}
+
+fn literal(toks: Toks) -> Option<String> {
+    match arg(toks)?.0 {
         Arg::Literal(s) => Some(s),
         Arg::Param(_) => None,
     }
@@ -216,16 +276,16 @@ pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Vec<Call> 
         let mut args: Vec<&[(Tok<'_>, usize, usize)]> = Vec::new();
         let mut from = open + 1;
         let mut j = open + 1;
-        let close = loop {
+        let Some(close) = (loop {
             let Some(t) = toks.get(j) else {
-                return calls;
+                break None;
             };
             match t.0 {
                 Tok::Punct("(") | Tok::Punct("[") => depth += 1,
                 Tok::Punct(")") | Tok::Punct("]") if depth > 0 => depth -= 1,
                 Tok::Punct(")") => {
                     args.push(&toks[from..j]);
-                    break j;
+                    break Some(j);
                 }
                 Tok::Punct(",") if depth == 0 => {
                     args.push(&toks[from..j]);
@@ -234,42 +294,61 @@ pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Vec<Call> 
                 _ => {}
             }
             j += 1;
+        }) else {
+            break;
         };
         let call = || {
-            Some(if embed {
+            let (relation, column, text) = if embed {
                 let [text, model] = args[..] else {
                     return None;
                 };
-                Call {
-                    start: toks[i].1,
-                    end: toks[close].2,
-                    close: toks[close].1,
-                    embed,
-                    relation: literal(model)?,
-                    column: String::new(),
-                    text: arg(text)?,
-                    text_cast: text.len() == 3,
-                }
+                (literal(model)?, String::new(), text)
             } else {
                 let [rel, col, text, ..] = args[..] else {
                     return None;
                 };
+                (literal(rel)?, literal(col)?, text)
+            };
+            let (value, cast) = arg(text)?;
+            let span = (text.first()?.1, text.last()?.2);
+            Some((
                 Call {
                     start: toks[i].1,
                     end: toks[close].2,
                     close: toks[close].1,
                     embed,
-                    relation: literal(rel)?,
-                    column: literal(col)?,
-                    text: arg(text)?,
-                    text_cast: text.len() == 3,
-                }
-            })
+                    relation,
+                    column,
+                    text: value,
+                    untyped: !cast,
+                },
+                span,
+            ))
         };
         calls.extend(call());
         i = close + 1;
     }
+    // PostgreSQL types an undeclared `$n` from its first use, so a cast in
+    // the call proves text only if every use is a call's text or a cast to text.
+    let spans: Vec<_> = calls
+        .iter()
+        .map(|(c, span)| (c.text.clone(), *span))
+        .collect();
     calls
+        .into_iter()
+        .map(|(mut call, _)| {
+            if let (false, Arg::Param(n)) = (call.untyped, &call.text) {
+                call.untyped = toks.iter().enumerate().all(|(j, t)| {
+                    t.0 != Tok::Param(*n)
+                        || text_cast(&toks[j + 1..]).is_some()
+                        || spans
+                            .iter()
+                            .any(|(a, s)| *a == call.text && s.0 <= t.1 && t.2 <= s.1)
+                });
+            }
+            call
+        })
+        .collect()
 }
 
 /// A vector as a SQL literal, or a typed NULL.
@@ -398,7 +477,9 @@ mod tests {
             "SELECT postvec.embed('abcd'::char, 'm')",
             "SELECT postvec.search('d', 'body', $1::integer)",
             "SELECT postvec.search('d', 'body', 'x'",
-            "SELECT E'\\x41', postvec.search('d', 'body', 'x')",
+            "SELECT postvec.embed('abcd'::varchar(2), 'm')",
+            "SELECT postvec.embed(('abcd')::character varying(2), 'm')",
+            "SELECT postvec.embed(E'\\u12', 'm')",
             "GRANT EXECUTE ON FUNCTION postvec.embed(text, text) TO app",
             "SELECT app.postvec.embed('x', 'm')",
             "SELECT 1",
@@ -409,6 +490,50 @@ mod tests {
         assert_eq!(scan("SELECT 1 -- x\rFROM postvec.embed('x', 'm')").len(), 1);
         let calls = scan("SELECT \"postvec\".SEARCH('d'::text, 'body', $2::text)");
         assert_eq!(calls[0].text, Arg::Param(2));
+        // Any nesting depth is scanned without recursion.
+        let deep = format!(
+            "SELECT postvec.embed({}$1{}, 'm')",
+            "(".repeat(100_000),
+            ")".repeat(100_000)
+        );
+        assert_eq!(scan(&deep)[0].text, Arg::Param(1));
+        let unbalanced = format!(
+            "SELECT postvec.embed({}$1{}, 'm')",
+            "(".repeat(3),
+            ")".repeat(2)
+        );
+        assert!(scan(&unbalanced).is_empty());
+        // Redundant parentheses, spelled-out casts, escapes elsewhere.
+        for (sql, text) in [
+            ("SELECT postvec.search('d', 'body', ($1))", Arg::Param(1)),
+            ("SELECT postvec.embed(($1)::text, 'm')", Arg::Param(1)),
+            (
+                "SELECT postvec.embed($1::character varying, 'm')",
+                Arg::Param(1),
+            ),
+            (
+                "SELECT E'\\x41', postvec.search('d', 'body', 'x')",
+                Arg::Literal("x".into()),
+            ),
+            (
+                "SELECT postvec.embed(E'\\303\\xa9\\q\\u00e9', 'm')",
+                Arg::Literal("éqé".into()),
+            ),
+        ] {
+            assert_eq!(
+                scan(sql).first().map(|c| c.text.clone()),
+                Some(text),
+                "{sql}"
+            );
+        }
+        // An undeclared `$n` cast to text is text only if no other use types it.
+        let untyped = |sql: &str| scan(sql)[0].untyped;
+        assert!(untyped("SELECT postvec.embed($1, 'm') WHERE $1 <> ''"));
+        assert!(untyped("SELECT postvec.embed($1::text, 'm'), $1::varchar"));
+        assert!(!untyped("SELECT $1::integer, postvec.embed($1::text, 'm')"));
+        assert!(!untyped(
+            "SELECT postvec.embed($1::text, 'm') WHERE id = $1"
+        ));
         assert_eq!(
             lifecycle(
                 "DEALLOCATE a; deallocate prepare \"B\"; PREPARE c(text) AS SELECT $1; DEALLOCATE ALL; PREPARE TRANSACTION 'x'; SELECT 'prepare d'",

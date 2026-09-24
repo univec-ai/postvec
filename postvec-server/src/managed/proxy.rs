@@ -540,18 +540,26 @@ struct Shared {
 /// client statements the reply creates (`Some` rewrite) or removes (`None`),
 /// applied only when it arrives: a Parse the server rejects replaces nothing.
 /// `extra` is how many proxy parameters a ParameterDescription must hide.
+/// `seq` numbers a Parse among the extended messages; a Sync or Query holds
+/// how many were sent before it.
 struct Reply {
     kind: u8,
     extra: usize,
     statements: Vec<(String, Option<Prepared>)>,
+    seq: u64,
 }
 
 /// The server ignores Syncs sent during COPY FROM STDIN, so those are dropped.
+/// `sent` and `done` count extended messages and their final replies, so an
+/// error names the message that failed: `failed`, until ReadyForQuery.
 #[derive(Default)]
 struct Replies {
     queue: VecDeque<Reply>,
     copy_in: bool,
     statements: HashMap<String, Prepared>,
+    sent: u64,
+    done: u64,
+    failed: Option<u64>,
 }
 
 impl Replies {
@@ -574,11 +582,17 @@ impl Shared {
         lifecycle: Vec<String>,
     ) {
         let mut r = self.replies.lock().unwrap();
+        let seq = r.sent;
+        // 0: a portal Describe, which owes no ParameterDescription.
+        if matches!(kind, b'P' | b'B' | b'E' | b'D' | b'C' | b'F' | 0) {
+            r.sent += 1;
+        }
         // The SQL's statements are the server's, never rewritten ones.
         r.queue.extend(lifecycle.into_iter().map(|name| Reply {
             kind: b'x',
             extra: 0,
             statements: vec![(name, None)],
+            seq,
         }));
         let kind = match kind {
             b'P' => b'1',
@@ -593,6 +607,7 @@ impl Shared {
             kind,
             extra,
             statements,
+            seq,
         });
     }
     /// Book one backend message; for a ParameterDescription, how many trailing
@@ -600,6 +615,11 @@ impl Shared {
     fn settle(&self, kind: u8) -> usize {
         let extra = {
             let mut r = self.replies.lock().unwrap();
+            match kind {
+                b'1' | b'2' | b'3' | b'C' | b'I' | b's' | b'n' | b'T' | b'V' => r.done += 1,
+                b'E' if r.failed.is_none() => r.failed = Some(r.done),
+                _ => {}
+            }
             match kind {
                 // Past any lifecycle statement that ended without its tag.
                 b'1' | b'3' | b't' => match std::iter::from_fn(|| r.queue.pop_front())
@@ -612,20 +632,24 @@ impl Shared {
                     None => 0,
                 },
                 // Replies still queued before the marker were skipped after an
-                // error. A failed unnamed Parse still ended the old unnamed
-                // statement.
+                // error. An unnamed Parse that failed, rather than was skipped,
+                // still ended the old unnamed statement.
                 b'Z' => {
                     r.copy_in = false;
                     while let Some(reply) = r.queue.pop_front() {
                         if matches!(reply.kind, b'S' | b'Q') {
                             r.apply(reply.statements);
+                            r.done = reply.seq;
                             break;
                         }
-                        if reply.kind == b'1' && reply.statements.iter().any(|(n, _)| n.is_empty())
+                        if reply.kind == b'1'
+                            && r.failed == Some(reply.seq)
+                            && reply.statements.iter().any(|(n, _)| n.is_empty())
                         {
                             r.apply(vec![(String::new(), None)]);
                         }
                     }
+                    r.failed = None;
                     0
                 }
                 b'G' => {
@@ -774,8 +798,13 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     "standard_conforming_strings" => {
                         shared.legacy_strings.store(value == "off", Relaxed)
                     }
+                    // A new session role is checked again.
                     "session_authorization" => {
-                        *shared.session_user.lock().unwrap() = Some(value.into())
+                        *shared.session_user.lock().unwrap() = Some(value.into());
+                        shared
+                            .permitted
+                            .iter()
+                            .for_each(|p| p.store(false, Relaxed));
                     }
                     "client_encoding" => shared
                         .non_utf8
@@ -787,10 +816,13 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             b'R' if body.len() > 4 && body[..4] == 10i32.to_be_bytes() => {
                 body = strip_sasl_plus(&body);
             }
-            b'1' | b'3' | b'Z' | b'G' => {
+            b'1' | b'2' | b'3' | b'Z' | b'G' | b'I' | b's' | b'n' | b'T' | b'V' | b'E' => {
                 shared.settle(kind);
             }
-            b'C' => shared.completed(&body),
+            b'C' => {
+                shared.settle(kind);
+                shared.completed(&body);
+            }
             // The server counts the proxy's vector parameters; the client must not.
             b't' => {
                 let extra = shared.settle(kind);
@@ -906,13 +938,13 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     Cow::Owned(_) => Vec::new(),
                 };
                 // A `$n` text is embedded as sent only if PostgreSQL reads it as
-                // text too: declared text/varchar, or undeclared and bare (then
-                // the function's argument makes it text).
+                // text too: declared text/varchar, or undeclared and provably
+                // text (see `Call::untyped`).
                 let oids = param_types(types);
                 calls.retain(|c| match c.text {
                     Arg::Param(n) => match oids.get(usize::from(n).wrapping_sub(1)) {
                         Some(25 | 1043) => true,
-                        Some(0) | None => !c.text_cast,
+                        Some(0) | None => c.untyped,
                         Some(_) => false,
                     },
                     Arg::Literal(_) => true,
@@ -928,8 +960,18 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     (body, 0, vec![(name, prepared)], Vec::new())
                 } else {
                     let params = oids.len().max(rewrite::max_param(&sql, standard).into());
+                    // A `$n` call also passes PostgreSQL's text of `$n`, checked
+                    // against the text embedded.
                     let vectors: Vec<String> = (1..=calls.len())
-                        .map(|i| format!("postvec._proxy_vector(${}::text)", params + i))
+                        .zip(&calls)
+                        .map(|(i, c)| match c.text {
+                            Arg::Param(n) => {
+                                format!("postvec._proxy_vector(${}::text, ${n}::text)", params + i)
+                            }
+                            Arg::Literal(_) => {
+                                format!("postvec._proxy_vector(${}::text)", params + i)
+                            }
+                        })
                         .collect();
                     let parse = parse_body(&name, &rewrite::render(&sql, &calls, &vectors), types);
                     let prepared = Prepared {
@@ -947,6 +989,7 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             }
             // A portal Describe answers with a RowDescription, not tracked.
             b'D' => {
+                shared.sent(0, 0, Vec::new(), Vec::new());
                 w.write_all(&frame(kind, &body)).await?;
                 continue;
             }
@@ -962,13 +1005,10 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     Some(prepared) => rebind(proxy, &shared, &prepared, rest).await?,
                     None => None,
                 };
-                if let Some(bind) = bind {
-                    let mut body = cstring(&portal);
-                    body.extend(cstring(&name));
-                    body.extend(bind);
-                    w.write_all(&frame(kind, &body)).await?;
-                    continue;
-                }
+                let body = match bind {
+                    Some(bind) => [cstring(&portal), cstring(&name), bind].concat(),
+                    None => body,
+                };
                 (body, 0, Vec::new(), Vec::new())
             }
             b'E' => {
@@ -993,7 +1033,9 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
 /// A Bind of a rewritten statement with the vectors appended as text
 /// parameters: an array literal each, or `!message` when inference failed,
-/// which `postvec._proxy_vector()` raises. `None` leaves a Bind that does not
+/// which `postvec._proxy_vector()` raises. A `$n` call's vector is prefixed
+/// with the SHA-256 of the text embedded, which `_proxy_vector` compares
+/// with PostgreSQL's own text of `$n`. `None` leaves a Bind that does not
 /// match the statement to the server, which rejects it.
 async fn rebind(
     proxy: &Proxy,
@@ -1012,7 +1054,16 @@ async fn rebind(
         extra.push(match proxy.embed_one(call, &params, shared).await {
             Ok(v) => v.map(|v| {
                 let v = postvec_core::registry::serialize_vector(&v);
-                format!("{{{}}}", &v[1..v.len() - 1])
+                let v = format!("{{{}}}", &v[1..v.len() - 1]);
+                match call.text {
+                    Arg::Param(n) => {
+                        let sent = params[usize::from(n) - 1].unwrap_or_default();
+                        let digest = openssl::sha::sha256(sent);
+                        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                        format!("{hex} {v}")
+                    }
+                    Arg::Literal(_) => v,
+                }
             }),
             Err(e) => Some(format!("!{e:#}")),
         });
@@ -1188,6 +1239,7 @@ mod tests {
         );
         shared.sent(b'C', 0, vec![("s".into(), None)], Vec::new());
         assert_eq!(known(&shared, "s"), Some(None));
+        shared.settle(b'3');
         shared.sent(
             b'P',
             0,
@@ -1197,8 +1249,19 @@ mod tests {
         shared.sent(b'S', 0, Vec::new(), Vec::new());
         shared.settle(b'1');
         shared.settle(b'Z');
+        shared.sent(b'B', 0, Vec::new(), Vec::new());
         shared.sent(b'P', 0, vec![(String::new(), None)], Vec::new());
         shared.sent(b'S', 0, Vec::new(), Vec::new());
+        shared.settle(b'E');
+        shared.settle(b'Z');
+        assert_eq!(
+            known(&shared, ""),
+            Some(Some(0)),
+            "an unnamed Parse skipped after an error leaves the old one"
+        );
+        shared.sent(b'P', 0, vec![(String::new(), None)], Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
+        shared.settle(b'E');
         shared.settle(b'Z');
         assert_eq!(
             known(&shared, ""),

@@ -480,9 +480,18 @@ pub(super) async fn infer(
     } else {
         client.route(model, space, postvec_core::client::EmbedPurpose::Document)
     };
+    // As in the extension: a permanent error (an unknown model) fails a
+    // migration and dead-letters jobs; a wrong dimension skips the row.
     let (model, route) = match route {
         Ok(r) => r,
-        Err(e) => return (0..n).map(|_| Outcome::Retry(e.to_string())).collect(),
+        Err(e) => {
+            return (0..n)
+                .map(|_| match e.class() {
+                    ErrorClass::Permanent => Outcome::Failed(e.to_string()),
+                    _ => Outcome::Retry(e.to_string()),
+                })
+                .collect()
+        }
     };
     let mut out: Vec<_> = (0..n)
         .map(|_| Outcome::Retry("inference incomplete".into()))
@@ -509,7 +518,10 @@ pub(super) async fn infer(
             Ok(rows) if rows.len() == hi - lo => {
                 for (index, row) in (lo..hi).zip(rows) {
                     out[index] = if row.len() != dim as usize {
-                        Outcome::Retry("inference dimension mismatch".into())
+                        Outcome::Dead(format!(
+                            "model returned {} dims, column is vector({dim})",
+                            row.len()
+                        ))
                     } else if row.iter().any(|v| !v.is_finite()) {
                         Outcome::Dead("non-finite inference output".into())
                     } else {
