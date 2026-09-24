@@ -294,6 +294,35 @@ pub(super) fn max_param(sql: &str, standard_strings: bool) -> u16 {
         .unwrap_or(0)
 }
 
+/// Prepared statements the SQL creates or deallocates by name, in statement
+/// order: `PREPARE name`, `DEALLOCATE [PREPARE] name`. `ALL` forms are left
+/// to their command tags.
+pub(super) fn lifecycle(sql: &str, standard_strings: bool) -> Vec<String> {
+    let Ok(toks) = lex(sql, standard_strings) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for (i, (tok, ..)) in toks.iter().enumerate() {
+        let Tok::Ident(word) = tok else { continue };
+        let first = i == 0 || toks[i - 1].0 == Tok::Punct(";");
+        if !first || !(word == "prepare" || word == "deallocate") {
+            continue;
+        }
+        let mut next = toks[i + 1..].iter().map(|t| &t.0);
+        let name = match next.next() {
+            Some(Tok::Ident(p)) if word == "deallocate" && p == "prepare" => next.next(),
+            other => other,
+        };
+        match name {
+            Some(Tok::Ident(n)) if n != "all" && !(word == "prepare" && n == "transaction") => {
+                names.push(n.clone())
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 /// Where the statement holding the first call begins: just after the last
 /// top-level `;` before it.
 pub(super) fn statement_start(sql: &str, calls: &[Call], standard_strings: bool) -> usize {
@@ -380,6 +409,13 @@ mod tests {
         assert_eq!(scan("SELECT 1 -- x\rFROM postvec.embed('x', 'm')").len(), 1);
         let calls = scan("SELECT \"postvec\".SEARCH('d'::text, 'body', $2::text)");
         assert_eq!(calls[0].text, Arg::Param(2));
+        assert_eq!(
+            lifecycle(
+                "DEALLOCATE a; deallocate prepare \"B\"; PREPARE c(text) AS SELECT $1; DEALLOCATE ALL; PREPARE TRANSACTION 'x'; SELECT 'prepare d'",
+                true
+            ),
+            ["a", "B", "c"]
+        );
         let sql =
             "BEGIN; UPDATE t SET a = ';'; SELECT * FROM postvec.search('d', 'body', 'x'); SELECT 2";
         let at = statement_start(sql, &scan(sql), true);

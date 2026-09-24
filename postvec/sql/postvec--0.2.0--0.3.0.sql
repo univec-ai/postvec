@@ -29,23 +29,27 @@ BEGIN
 END $$;
 
 -- State written before the pin: entries whose key includes a date, time or
--- interval (domains, arrays and ranges resolved to their base type).
+-- interval (through domains, arrays, ranges and composite attributes).
 -- Checkpoints are reset rather than converted, since the key order changed
 -- with the format; a reset only rescans (backfills revisit rows without
 -- vectors, migrations rows whose new column is still NULL). A queued or
 -- dead-lettered key is rewritten only when it reads the same under every
 -- DateStyle field order, time zone and IntervalStyle a writer could have
 -- used. An ambiguous one (a DMY/MDY date) cannot be trusted: queued ones move
--- to jobs_dead as evidence, and the entry is queued again in full, which
--- re-embeds stale vectors and rebuilds chunk sets.
+-- to jobs_dead as evidence, and the entry is queued again in full (NULL
+-- sources too, so the worker clears their vectors), which re-embeds stale
+-- vectors and rebuilds chunk sets; chunks of deleted rows are purged.
 CREATE FUNCTION postvec._format_sensitive(t text) RETURNS boolean LANGUAGE sql AS $f$
     WITH RECURSIVE b(oid) AS (
         SELECT to_regtype(t)::oid
-        UNION ALL
-        SELECT coalesce(nullif(p.typbasetype, 0), nullif(p.typelem, 0),
-                        (SELECT rngsubtype FROM pg_catalog.pg_range WHERE rngtypid = p.oid),
-                        (SELECT rngsubtype FROM pg_catalog.pg_range WHERE rngmultitypid = p.oid))
-          FROM b JOIN pg_catalog.pg_type p ON p.oid = b.oid)
+        UNION
+        SELECT n.oid FROM b JOIN pg_catalog.pg_type p ON p.oid = b.oid
+         CROSS JOIN LATERAL (SELECT nullif(p.typbasetype, 0) UNION ALL SELECT nullif(p.typelem, 0)
+                UNION ALL SELECT rngsubtype FROM pg_catalog.pg_range WHERE rngtypid = p.oid
+                UNION ALL SELECT rngsubtype FROM pg_catalog.pg_range WHERE rngmultitypid = p.oid
+                UNION ALL SELECT atttypid FROM pg_catalog.pg_attribute
+                           WHERE attrelid = p.typrelid AND attnum > 0 AND NOT attisdropped) n(oid)
+         WHERE n.oid IS NOT NULL)
     SELECT coalesce(bool_or(p.typcategory IN ('D', 'T')), false)
       FROM b JOIN pg_catalog.pg_type p ON p.oid = b.oid
 $f$;
@@ -63,8 +67,11 @@ BEGIN
             FOREACH i IN ARRAY ARRAY['postgres', 'sql_standard'] LOOP
                 PERFORM set_config('DateStyle', 'ISO, ' || o, true), set_config('TimeZone', z, true),
                         set_config('IntervalStyle', i, true);
-                CONTINUE WHEN NOT pg_input_is_valid(k, t);
-                EXECUTE format('SELECT postvec._canonical_key($1::%s)', t) INTO v USING k;
+                BEGIN
+                    EXECUTE format('SELECT postvec._canonical_key($1::%s)', t) INTO v USING k;
+                EXCEPTION WHEN data_exception THEN
+                    CONTINUE;  -- not a value under this reading
+                END;
                 IF seen IS NOT NULL AND v <> seen THEN RETURN NULL; END IF;
                 seen := v;
             END LOOP;
@@ -108,14 +115,18 @@ BEGIN
         IF ambiguous > 0 AND r.trigger_mode <> 'none' THEN
             PERFORM set_config('DateStyle', 'ISO, MDY', true), set_config('TimeZone', 'UTC', true),
                     set_config('IntervalStyle', 'postgres', true);
-            EXECUTE format('INSERT INTO postvec.jobs (registry_id, pk_value, op) SELECT $1, (%s)::text, $2 FROM %I.%I WHERE %I IS NOT NULL
+            EXECUTE format('INSERT INTO postvec.jobs (registry_id, pk_value, op) SELECT $1, (%s)::text, $2 FROM %I.%I
                             ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING',
                            CASE WHEN cardinality(r.pk_columns) > 1
                                 THEN 'ROW(' || (SELECT string_agg(quote_ident(c), ',') FROM unnest(r.pk_columns) c) || ')'
                                 ELSE quote_ident(r.pk_columns[1]) END,
-                           r.table_schema, r.table_name, r.source_column)
+                           r.table_schema, r.table_name)
                 USING r.id, CASE WHEN r.chunking = 'recursive' THEN 'refresh' ELSE 'embed' END;
             GET DIAGNOSTICS queued = ROW_COUNT;
+            IF r.chunking = 'recursive' THEN
+                EXECUTE format('DELETE FROM %I.%I c WHERE NOT EXISTS (SELECT FROM %I.%I s WHERE s.%I = c.postvec_source_pk)',
+                               r.destination_schema, r.destination_table, r.table_schema, r.table_name, r.pk_columns[1]);
+            END IF;
             SET LOCAL DateStyle TO DEFAULT; SET LOCAL TimeZone TO DEFAULT; SET LOCAL IntervalStyle TO DEFAULT;
             RAISE NOTICE 'postvec: %.%.% had % keys in an ambiguous legacy format (see jobs_dead); % rows queued again',
                 r.table_schema, r.table_name, r.source_column, ambiguous, queued;

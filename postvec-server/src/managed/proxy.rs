@@ -534,7 +534,8 @@ struct Shared {
 }
 
 /// A reply the backend owes, in order: ParseComplete (`1`), CloseComplete
-/// (`3`), the ParameterDescription (`t`) of a statement Describe, and the
+/// (`3`), the ParameterDescription (`t`) of a statement Describe, the
+/// PREPARE or DEALLOCATE command tag of SQL naming a statement (`x`), and the
 /// Sync (`S`) or Query (`Q`) a ReadyForQuery answers. `statements` names the
 /// client statements the reply creates (`Some` rewrite) or removes (`None`),
 /// applied only when it arrives: a Parse the server rejects replaces nothing.
@@ -565,8 +566,20 @@ impl Replies {
 }
 
 impl Shared {
-    fn sent(&self, kind: u8, extra: usize, statements: Vec<(String, Option<Prepared>)>) {
+    fn sent(
+        &self,
+        kind: u8,
+        extra: usize,
+        statements: Vec<(String, Option<Prepared>)>,
+        lifecycle: Vec<String>,
+    ) {
         let mut r = self.replies.lock().unwrap();
+        // The SQL's statements are the server's, never rewritten ones.
+        r.queue.extend(lifecycle.into_iter().map(|name| Reply {
+            kind: b'x',
+            extra: 0,
+            statements: vec![(name, None)],
+        }));
         let kind = match kind {
             b'P' => b'1',
             b'C' => b'3',
@@ -588,7 +601,10 @@ impl Shared {
         let extra = {
             let mut r = self.replies.lock().unwrap();
             match kind {
-                b'1' | b'3' | b't' => match r.queue.pop_front() {
+                // Past any lifecycle statement that ended without its tag.
+                b'1' | b'3' | b't' => match std::iter::from_fn(|| r.queue.pop_front())
+                    .find(|reply| reply.kind != b'x')
+                {
                     Some(reply) => {
                         r.apply(reply.statements);
                         reply.extra
@@ -622,6 +638,28 @@ impl Shared {
         };
         self.resolved.notify_waiters();
         extra
+    }
+    /// A CommandComplete: SQL PREPARE and DEALLOCATE settle the cycle's next
+    /// lifecycle name; their ALL forms drop every statement.
+    fn completed(&self, tag: &[u8]) {
+        {
+            let mut r = self.replies.lock().unwrap();
+            match tag {
+                b"PREPARE\0" | b"DEALLOCATE\0" => {
+                    let at = r
+                        .queue
+                        .iter()
+                        .take_while(|reply| !matches!(reply.kind, b'S' | b'Q'))
+                        .position(|reply| reply.kind == b'x');
+                    if let Some(reply) = at.and_then(|at| r.queue.remove(at)) {
+                        r.apply(reply.statements);
+                    }
+                }
+                b"DEALLOCATE ALL\0" | b"DISCARD ALL\0" => r.statements.clear(),
+                _ => return,
+            }
+        }
+        self.resolved.notify_waiters();
     }
     /// The rewrite of statement `name`: a Parse or Close of that name pending
     /// in the current Sync cycle (if it fails, the server skips what follows
@@ -752,6 +790,7 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             b'1' | b'3' | b'Z' | b'G' => {
                 shared.settle(kind);
             }
+            b'C' => shared.completed(&body),
             // The server counts the proxy's vector parameters; the client must not.
             b't' => {
                 let extra = shared.settle(kind);
@@ -770,10 +809,12 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
 /// A client statement the proxy rewrote: the calls to embed, and how many
 /// parameters the client binds; each call's vector is one more after those.
+/// Or SQL that creates or drops the statements in `lifecycle` when executed.
 #[derive(Clone)]
 struct Prepared {
     calls: Vec<Call>,
     params: usize,
+    lifecycle: Vec<String>,
 }
 
 /// Statements the proxy cannot rewrite are forwarded untouched: the managed
@@ -794,6 +835,8 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             MAX_AUTH
         }
     };
+    // Portals of lifecycle SQL, by name.
+    let mut portals: HashMap<String, Vec<String>> = HashMap::new();
     while let Some((kind, body)) = read_message(&mut r, limit).await? {
         if !shared.authenticated.load(Relaxed) {
             ensure!(matches!(kind, b'p' | b'X'), "authentication required");
@@ -809,9 +852,11 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             continue;
         }
         let standard = !shared.legacy_strings.load(Relaxed);
-        let (body, extra, statements) = match kind {
-            // A simple query also ends the unnamed statement.
+        let (body, extra, statements, lifecycle) = match kind {
+            // A simple query also ends the unnamed statement and portal.
             b'Q' => {
+                portals.remove("");
+                let lifecycle = rewrite::lifecycle(&cstr(&body)?.0, standard);
                 let rewritten = match cstr(&body)?.0 {
                     Cow::Borrowed(sql) => {
                         let calls = rewrite::scan_with_strings(sql, standard);
@@ -846,7 +891,12 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     }
                     Cow::Owned(_) => None,
                 };
-                (rewritten.unwrap_or(body), 0, vec![(String::new(), None)])
+                (
+                    rewritten.unwrap_or(body),
+                    0,
+                    vec![(String::new(), None)],
+                    lifecycle,
+                )
             }
             b'P' => {
                 let (name, rest) = cstr(&body)?;
@@ -868,26 +918,47 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     Arg::Literal(_) => true,
                 });
                 let name = name.into_owned();
+                let lifecycle = rewrite::lifecycle(&sql, standard);
                 if calls.is_empty() {
-                    (body, 0, vec![(name, None)])
+                    let prepared = (!lifecycle.is_empty()).then_some(Prepared {
+                        calls,
+                        params: 0,
+                        lifecycle,
+                    });
+                    (body, 0, vec![(name, prepared)], Vec::new())
                 } else {
                     let params = oids.len().max(rewrite::max_param(&sql, standard).into());
                     let vectors: Vec<String> = (1..=calls.len())
                         .map(|i| format!("postvec._proxy_vector(${}::text)", params + i))
                         .collect();
                     let parse = parse_body(&name, &rewrite::render(&sql, &calls, &vectors), types);
-                    (parse, 0, vec![(name, Some(Prepared { calls, params }))])
+                    let prepared = Prepared {
+                        calls,
+                        params,
+                        lifecycle,
+                    };
+                    (parse, 0, vec![(name, Some(prepared))], Vec::new())
                 }
             }
             b'D' if body.first() == Some(&b'S') => {
                 let name = cstr(&body[1..])?.0.into_owned();
                 let extra = shared.statement(&name).await.map_or(0, |p| p.calls.len());
-                (body, extra, Vec::new())
+                (body, extra, Vec::new(), Vec::new())
+            }
+            // A portal Describe answers with a RowDescription, not tracked.
+            b'D' => {
+                w.write_all(&frame(kind, &body)).await?;
+                continue;
             }
             b'B' => {
                 let (portal, rest) = cstr(&body)?;
                 let (name, rest) = cstr(rest)?;
-                let bind = match shared.statement(&name).await {
+                let prepared = shared.statement(&name).await;
+                match prepared.as_ref().filter(|p| !p.lifecycle.is_empty()) {
+                    Some(p) => portals.insert(portal.to_string(), p.lifecycle.clone()),
+                    None => portals.remove(portal.as_ref()),
+                };
+                let bind = match prepared.filter(|p| !p.calls.is_empty()) {
                     Some(prepared) => rebind(proxy, &shared, &prepared, rest).await?,
                     None => None,
                 };
@@ -898,15 +969,23 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     w.write_all(&frame(kind, &body)).await?;
                     continue;
                 }
-                (body, 0, Vec::new())
+                (body, 0, Vec::new(), Vec::new())
+            }
+            b'E' => {
+                let lifecycle = portals.get(cstr(&body)?.0.as_ref()).cloned();
+                (body, 0, Vec::new(), lifecycle.unwrap_or_default())
             }
             b'C' if body.first() == Some(&b'S') => {
                 let name = cstr(&body[1..])?.0.into_owned();
-                (body, 0, vec![(name, None)])
+                (body, 0, vec![(name, None)], Vec::new())
             }
-            _ => (body, 0, Vec::new()),
+            b'C' => {
+                portals.remove(cstr(&body[1..])?.0.as_ref());
+                (body, 0, Vec::new(), Vec::new())
+            }
+            _ => (body, 0, Vec::new(), Vec::new()),
         };
-        shared.sent(kind, extra, statements);
+        shared.sent(kind, extra, statements, lifecycle);
         w.write_all(&frame(kind, &body)).await?;
     }
     Ok(())
@@ -926,18 +1005,18 @@ async fn rebind(
     if params.len() != prepared.params || !(formats.len() <= 1 || formats.len() == params.len()) {
         return Ok(None);
     }
-    let extra: Vec<Option<String>> = match proxy.embed_all(&prepared.calls, &params, shared).await {
-        Ok(vectors) => vectors
-            .iter()
-            .map(|v| {
-                v.as_deref().map(|v| {
-                    let v = postvec_core::registry::serialize_vector(v);
-                    format!("{{{}}}", &v[1..v.len() - 1])
-                })
-            })
-            .collect(),
-        Err((_, e)) => vec![Some(format!("!{e:#}")); prepared.calls.len()],
-    };
+    // Each call's failure is its own: it raises only if the database
+    // evaluates that call.
+    let mut extra = Vec::with_capacity(prepared.calls.len());
+    for call in &prepared.calls {
+        extra.push(match proxy.embed_one(call, &params, shared).await {
+            Ok(v) => v.map(|v| {
+                let v = postvec_core::registry::serialize_vector(&v);
+                format!("{{{}}}", &v[1..v.len() - 1])
+            }),
+            Err(e) => Some(format!("!{e:#}")),
+        });
+    }
     // Explicit format codes gain a text code per proxy parameter.
     let formats: Vec<u16> = match formats[..] {
         [] | [0] => formats,
@@ -1046,11 +1125,11 @@ mod tests {
     #[test]
     fn parameter_descriptions_hide_the_proxy_parameters_in_order() {
         let shared = Shared::default();
-        shared.sent(b'P', 0, Vec::new());
-        shared.sent(b'D', 2, Vec::new());
-        shared.sent(b'S', 0, Vec::new());
-        shared.sent(b'D', 0, Vec::new());
-        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'P', 0, Vec::new(), Vec::new());
+        shared.sent(b'D', 2, Vec::new(), Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
+        shared.sent(b'D', 0, Vec::new(), Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
         assert_eq!(shared.settle(b'1'), 0);
         assert_eq!(shared.settle(b't'), 2);
         shared.settle(b'Z');
@@ -1060,13 +1139,13 @@ mod tests {
     #[test]
     fn syncs_during_copy_in_are_not_awaited() {
         let shared = Shared::default();
-        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
         shared.settle(b'G');
-        shared.sent(b'S', 0, Vec::new());
-        shared.sent(b'c', 0, Vec::new());
-        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
+        shared.sent(b'c', 0, Vec::new(), Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
         shared.settle(b'Z');
-        shared.sent(b'D', 1, Vec::new());
+        shared.sent(b'D', 1, Vec::new(), Vec::new());
         assert_eq!(
             shared.settle(b't'),
             1,
@@ -1079,17 +1158,18 @@ mod tests {
         let prepared = |params| Prepared {
             calls: Vec::new(),
             params,
+            lifecycle: Vec::new(),
         };
         let known =
             |shared: &Shared, name: &str| shared.prepared(name).map(|p| p.map(|p| p.params));
         let shared = Shared::default();
-        shared.sent(b'P', 0, vec![("s".into(), Some(prepared(1)))]);
+        shared.sent(b'P', 0, vec![("s".into(), Some(prepared(1)))], Vec::new());
         assert_eq!(
             known(&shared, "s"),
             Some(Some(1)),
             "a Bind in the Parse's own cycle"
         );
-        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
         assert_eq!(
             known(&shared, "s"),
             None,
@@ -1098,28 +1178,63 @@ mod tests {
         shared.settle(b'1');
         shared.settle(b'Z');
         assert_eq!(known(&shared, "s"), Some(Some(1)));
-        shared.sent(b'P', 0, vec![("s".into(), Some(prepared(2)))]);
-        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'P', 0, vec![("s".into(), Some(prepared(2)))], Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
         shared.settle(b'Z');
         assert_eq!(
             known(&shared, "s"),
             Some(Some(1)),
             "a rejected Parse replaces nothing"
         );
-        shared.sent(b'C', 0, vec![("s".into(), None)]);
+        shared.sent(b'C', 0, vec![("s".into(), None)], Vec::new());
         assert_eq!(known(&shared, "s"), Some(None));
-        shared.sent(b'P', 0, vec![(String::new(), Some(prepared(0)))]);
-        shared.sent(b'S', 0, Vec::new());
+        shared.sent(
+            b'P',
+            0,
+            vec![(String::new(), Some(prepared(0)))],
+            Vec::new(),
+        );
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
         shared.settle(b'1');
         shared.settle(b'Z');
-        shared.sent(b'P', 0, vec![(String::new(), None)]);
-        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'P', 0, vec![(String::new(), None)], Vec::new());
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
         shared.settle(b'Z');
         assert_eq!(
             known(&shared, ""),
             Some(None),
             "a failed unnamed Parse ends the old one"
         );
+    }
+
+    #[test]
+    fn sql_lifecycle_follows_its_command_tags() {
+        let shared = Shared::default();
+        let rewritten = Prepared {
+            calls: Vec::new(),
+            params: 0,
+            lifecycle: Vec::new(),
+        };
+        for name in ["a", "b", "c"] {
+            shared.sent(
+                b'P',
+                0,
+                vec![(name.into(), Some(rewritten.clone()))],
+                Vec::new(),
+            );
+        }
+        shared.sent(b'S', 0, Vec::new(), Vec::new());
+        (0..3).for_each(|_| _ = shared.settle(b'1'));
+        shared.settle(b'Z');
+        let known = |name| shared.prepared(name).map(|p| p.is_some());
+        shared.sent(b'Q', 0, Vec::new(), vec!["a".into(), "b".into()]);
+        assert_eq!(known("a"), None, "a later cycle waits for the tags");
+        shared.completed(b"DEALLOCATE\0");
+        shared.settle(b'Z');
+        assert_eq!(known("a"), Some(false));
+        assert_eq!(known("b"), Some(true), "a statement that did not run");
+        shared.completed(b"DISCARD ALL\0");
+        assert_eq!(known("c"), Some(false));
     }
 
     #[test]

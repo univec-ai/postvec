@@ -718,6 +718,89 @@ async fn exercise(dsn: &str) -> Result<()> {
     wire.send(&[bind("", "text", &["00042"]), execute(""), sync()])
         .await?;
     ensure!(wire.cycle().await?.value == "{5,1,2}");
+    // A portal Describe owes no ParameterDescription; the next statement's
+    // Describe still hides the proxy's parameter.
+    wire.send(&[
+        parse("described", orig, &[]),
+        bind("", "described", &[]),
+        describe(b'P', ""),
+        execute(""),
+        parse("after", orig, &[]),
+        sync(),
+    ])
+    .await?;
+    ensure!(wire.cycle().await?.value == "{4,1,2}");
+    wire.send(&[
+        describe(b'S', "after"),
+        bind("", "after", &[]),
+        execute(""),
+        sync(),
+    ])
+    .await?;
+    let after = wire.cycle().await?;
+    ensure!(
+        after.params == Some(0) && after.value == "{4,1,2}",
+        "statement after a portal Describe: {:?} {}",
+        after.params,
+        after.error
+    );
+    // SQL that replaces a rewritten statement gets only the client's own
+    // parameters, by simple query or extended protocol.
+    db.execute("CREATE TABLE replaced_probe (v text)").await?;
+    wire.send(&[
+        parse("replaced", orig, &[]),
+        parse("replaced2", orig, &[]),
+        sync(),
+    ])
+    .await?;
+    wire.cycle().await?;
+    wire.send(&[
+        query(
+            "DEALLOCATE replaced; PREPARE replaced(text) AS INSERT INTO replaced_probe VALUES ($1)",
+        ),
+        parse("", "DEALLOCATE PREPARE replaced2", &[]),
+        bind("", "", &[]),
+        execute(""),
+        parse(
+            "",
+            "PREPARE replaced2(text) AS INSERT INTO replaced_probe VALUES ($1)",
+            &[],
+        ),
+        bind("", "", &[]),
+        execute(""),
+        sync(),
+    ])
+    .await?;
+    for _ in 0..2 {
+        ensure!(wire.cycle().await?.error.is_empty());
+    }
+    for name in ["replaced", "replaced2"] {
+        wire.send(&[bind("", name, &[]), execute(""), sync()])
+            .await?;
+        let error = wire.cycle().await?.error;
+        ensure!(error.contains("requires 1"), "{name}: {error}");
+    }
+    ensure!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM replaced_probe")
+            .fetch_one(&mut db)
+            .await?
+            == 0,
+        "a replacement statement received the proxy's vector"
+    );
+    // A call's inference error raises only where that call is evaluated.
+    let (ok, skipped) = (
+        "postvec.embed('abcd', 'fixture')::text",
+        "CASE WHEN false THEN postvec.embed('x', 'no-such-model')::text END",
+    );
+    for sql in [
+        format!("SELECT coalesce({skipped}, {ok})"),
+        format!("SELECT coalesce({ok}, {skipped})"),
+    ] {
+        wire.send(&[parse("", &sql, &[]), bind("", "", &[]), execute(""), sync()])
+            .await?;
+        let cycle = wire.cycle().await?;
+        ensure!(cycle.value == "{4,1,2}", "{sql}: {}", cycle.error);
+    }
     let reader = format!("{}_reader", via_db(&proxied));
     db.execute(format!("CREATE ROLE {reader} LOGIN; REVOKE EXECUTE ON FUNCTION postvec.embed(text,text,real[]) FROM PUBLIC").as_str())
         .await?;
@@ -870,6 +953,7 @@ struct Wire(tokio::net::TcpStream);
 struct Cycle {
     value: String,
     error: String,
+    params: Option<u16>,
 }
 fn message(kind: u8, body: &[u8]) -> Vec<u8> {
     let mut m = vec![kind];
@@ -904,6 +988,9 @@ fn bind(portal: &str, statement: &str, params: &[&str]) -> Vec<u8> {
 }
 fn execute(portal: &str) -> Vec<u8> {
     message(b'E', &[cstring(portal), vec![0, 0, 0, 0]].concat())
+}
+fn describe(kind: u8, name: &str) -> Vec<u8> {
+    message(b'D', &[vec![kind], cstring(name)].concat())
 }
 fn close(statement: &str) -> Vec<u8> {
     message(b'C', &[vec![b'S'], cstring(statement)].concat())
@@ -963,6 +1050,7 @@ impl Wire {
                         .unwrap_or_default()
                         .into();
                 }
+                b't' => cycle.params = Some(u16::from_be_bytes([body[0], body[1]])),
                 b'Z' => return Ok(cycle),
                 _ => {}
             }

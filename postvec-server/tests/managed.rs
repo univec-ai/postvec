@@ -590,14 +590,20 @@ async fn legacy_keys_are_rekeyed() -> Result<()> {
             INSERT INTO postvec.migrations (registry_id, old_model, new_model, old_dim, new_dim, strategy, new_column, rows_total, last_pk)
             SELECT 1, 'm', 'n', 3, 3, 'reembed', 'unused', 2, backfill_watermark FROM postvec.registry;
             CREATE TABLE dated (id date PRIMARY KEY, body text);
-            INSERT INTO dated VALUES ('2026-02-03', 'february'), ('2026-03-02', 'march');
+            INSERT INTO dated VALUES ('2026-02-03', NULL), ('2026-03-02', 'march');
             SELECT postvec.enable('dated', 'body', 'm', backfill => false);
+            UPDATE dated SET body_semantic = '[4,1,2]';
+            CREATE TYPE event_key AS (at timestamptz, tenant int);
+            CREATE TABLE ek (id event_key PRIMARY KEY, body text);
+            SELECT postvec.enable('ek', 'body', 'm', backfill => false);
+            INSERT INTO postvec.jobs (registry_id, pk_value) SELECT 3, ROW('2026-06-01 00:30+00'::timestamptz, 1)::event_key::text;
+            UPDATE postvec.registry SET backfill_mode = 'cursor', backfill_watermark = ROW('2026-06-01 01:00+01'::timestamptz, 1)::event_key::text WHERE id = 3;
             SET DateStyle = 'SQL, DMY';
             INSERT INTO postvec.jobs (registry_id, pk_value) VALUES (2, '2026-02-03'::date::text);
             UPDATE postvec.schema_version SET version = 2;
         "#).await?;
         let old: Vec<String> = sqlx::query_scalar("SELECT pk_value FROM postvec.jobs ORDER BY id").fetch_all(&mut db).await?;
-        ensure!(old == [r#"(1,"2026-06-01 01:30:00+01")"#, "03/02/2026"], "fixture not in the old format: {old:?}");
+        ensure!(old == [r#"(1,"2026-06-01 01:30:00+01")"#, r#"("2026-06-01 01:30:00+01",1)"#, "03/02/2026"], "fixture not in the old format: {old:?}");
         managed::run(command(dsn, "install")).await?;
         let state: (String, String, Option<String>, Option<String>) = sqlx::query_as(
             "SELECT (SELECT pk_value FROM postvec.jobs WHERE registry_id = 1), (SELECT pk_value FROM postvec.jobs_dead WHERE registry_id = 1),
@@ -616,9 +622,20 @@ async fn legacy_keys_are_rekeyed() -> Result<()> {
         )
         .fetch_one(&mut db)
         .await?;
+        // Both rows are queued again, the NULL-source one too, so its stale
+        // vector is cleared.
         ensure!(
             dated.0 == "2026-02-03,2026-03-02" && dated.1.starts_with("03/02/2026: queued before postvec 0.3.0"),
             "an ambiguous legacy date was guessed: {dated:?}"
+        );
+        let composite: (String, Option<String>) = sqlx::query_as(
+            "SELECT (SELECT pk_value FROM postvec.jobs WHERE registry_id = 3), (SELECT backfill_watermark FROM postvec.registry WHERE id = 3)",
+        )
+        .fetch_one(&mut db)
+        .await?;
+        ensure!(
+            composite == (r#"("2026-06-01 00:30:00+00",1)"#.into(), None),
+            "a composite-valued key escaped the upgrade: {composite:?}"
         );
         db.close().await?;
         Ok(())
