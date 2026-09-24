@@ -1452,6 +1452,44 @@ pub fn release_failed_group(ids: &[i64], max_retries: i32, backoff_ms: i64, err:
     applied
 }
 
+/// After a batch write-back aborted wholesale: apply each job on its own
+/// through `apply` (its own transaction in the worker), and `release` only
+/// the jobs whose single write still fails, so one rejected row does not use
+/// up its neighbours' retries.
+pub fn apply_rows(
+    null_jobs: &[NullJob],
+    embed_jobs: &[EmbedJob],
+    outcomes: &[ItemOutcome],
+    mut apply: impl FnMut(&[NullJob], &[EmbedJob], &[ItemOutcome]) -> Result<Applied, String>,
+    mut release: impl FnMut(i64, &str) -> Applied,
+) -> Applied {
+    let nulls = null_jobs.iter().map(|j| {
+        (
+            j.0,
+            std::slice::from_ref(j),
+            &[] as &[EmbedJob],
+            &[] as &[ItemOutcome],
+        )
+    });
+    let embeds = embed_jobs.iter().zip(outcomes).map(|(j, o)| {
+        (
+            j.0,
+            &[] as &[NullJob],
+            std::slice::from_ref(j),
+            std::slice::from_ref(o),
+        )
+    });
+    let mut total = Applied::default();
+    for (id, n, e, o) in nulls.chain(embeds) {
+        let applied = apply(n, e, o).unwrap_or_else(|err| release(id, &err));
+        total.done += applied.done;
+        total.nulled += applied.nulled;
+        total.retried += applied.retried;
+        total.dead += applied.dead;
+    }
+    total
+}
+
 pub(crate) fn move_to_dead(ids: &[i64], err: &str) {
     if ids.is_empty() {
         return;
@@ -2872,6 +2910,59 @@ mod tests {
         assert_eq!(
             Spi::get_one::<i64>("SELECT count(*) FROM postvec.jobs_dead").unwrap(),
             Some(2)
+        );
+    }
+
+    /// After a batch write-back aborted, the rows are applied one by one:
+    /// only the row the table rejects is released, its neighbour lands.
+    #[pg_test]
+    fn apply_rows_releases_only_the_rejected_row() {
+        enable_docs(3);
+        Spi::run("INSERT INTO docs (body) VALUES ('rejected'), ('fine')").unwrap();
+        let group = claim_and_read(64, 300.0).into_iter().next().unwrap();
+        let (nj, ej) = split_items(group.items);
+        let texts: Vec<String> = ej.iter().map(|(_, _, _, _, t)| t.clone()).collect();
+        let outcomes = embed_with_bisection(
+            &super::mock::MockClient::new(3),
+            "m",
+            &Default::default(),
+            1000,
+            &texts,
+        );
+        let rejected = ej.iter().find(|j| j.4 == "rejected").unwrap().0;
+        let applied = apply_rows(
+            &nj,
+            &ej,
+            &outcomes,
+            |n, j, o| match j.first() {
+                Some(job) if job.0 == rejected => Err("rejected by trigger".into()),
+                _ => Ok(apply_group(
+                    group.entry.id,
+                    &group.routing,
+                    n,
+                    j,
+                    o,
+                    5,
+                    5000,
+                )),
+            },
+            |id, e| release_failed_group(&[id], 5, 5000, e),
+        );
+        assert_eq!((applied.done, applied.retried), (1, 1));
+        assert_eq!(
+            Spi::get_one::<String>(
+                "SELECT string_agg(body || ':' || (body_semantic IS NOT NULL), ',' ORDER BY id) FROM docs"
+            )
+            .unwrap()
+            .as_deref(),
+            Some("rejected:false,fine:true")
+        );
+        assert_eq!(
+            Spi::get_one::<i64>(
+                "SELECT count(*) FROM postvec.jobs WHERE last_error LIKE 'write-back failed: rejected%'"
+            )
+            .unwrap(),
+            Some(1)
         );
     }
 

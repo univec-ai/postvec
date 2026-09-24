@@ -57,7 +57,8 @@ BEGIN
     IF NOT (CASE WHEN chunked THEN 'chunk' ELSE source_column END)=ANY(refs) THEN RAISE EXCEPTION 'format must reference %',CASE WHEN chunked THEN '$chunk' ELSE source_column END; END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION postvec._enqueue() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+CREATE OR REPLACE FUNCTION postvec._enqueue() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $$
 DECLARE r postvec.registry; refs text[]; pk text; oldpk text; expr text; pred text; changed boolean; item record;
     nkey text; okey text; jpred text; job_op text;
 BEGIN
@@ -141,7 +142,7 @@ END $$;
 
 DROP FUNCTION IF EXISTS postvec._register(regclass, text, text, text, boolean, boolean, text, text, text, boolean, text, text, text, integer, integer, text);
 CREATE OR REPLACE FUNCTION postvec._register(relation regclass, col text, model_name text, vec text, adopted boolean, trig_mode text, backfill text, distance text, fts text, fts_index boolean, template text, index_mode text, chunking text, chunk_size integer, chunk_overlap integer, destination text)
-RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $$
 DECLARE r postvec.registry; ns text; tbl text; vt text; dimension integer; keys text[]; types text[]; expr text; owner_oid oid; pkdef text; dest text[]; pkwhen text;
 BEGIN
     PERFORM postvec._owner(relation);
@@ -228,7 +229,7 @@ BEGIN
 END $$;
 DROP FUNCTION IF EXISTS postvec.adopt(regclass,text,text,text,boolean,text,text,text,text,text,boolean,text,text);
 CREATE OR REPLACE FUNCTION postvec.adopt(relation regclass,column_name text,vector_column text,model text,sync boolean DEFAULT true,backfill text DEFAULT 'missing',backfill_mode text DEFAULT 'queue',distance text DEFAULT 'cosine',trigger_mode text DEFAULT 'statement',fts_config text DEFAULT 'pg_catalog.english',create_fts_index boolean DEFAULT false,format text DEFAULT NULL,index_mode text DEFAULT 'manual',if_not_exists boolean DEFAULT false)
-RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+RETURNS bigint LANGUAGE plpgsql SET search_path=pg_catalog SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $$
 DECLARE rid bigint;
 BEGIN
     IF backfill NOT IN ('missing','all','none') OR trigger_mode NOT IN ('statement','row') THEN RAISE EXCEPTION 'invalid adoption option'; END IF;
@@ -282,6 +283,7 @@ BEGIN
     SELECT * INTO STRICT r FROM postvec.registry WHERE to_regclass(format('%I.%I',table_schema,table_name))=relation::regclass AND source_column=column_name FOR UPDATE;
     IF r.state<>'active' OR r.model=new_model OR strategy NOT IN ('convert','reembed','auto') OR reindex NOT IN ('manual','blocking') THEN RAISE EXCEPTION 'invalid migration state or options'; END IF;
     IF r.trigger_mode='none' AND NOT observed_writes_quiesced THEN RAISE EXCEPTION 'observed writes must be quiesced'; END IF;
+    IF r.backfill_mode='cursor' THEN RAISE EXCEPTION 'backfill still running; migrate once status() shows backfill_mode done'; END IF;
     SELECT name INTO converter FROM postvec.models WHERE model_type='convert' AND source_model=COALESCE(r.space,r.model) AND target_model=COALESCE((SELECT space FROM postvec._route(new_model)),new_model) ORDER BY (raw->'extra'->>'provider') IS NOT NULL,name LIMIT 1;
     IF strategy='convert' AND converter IS NULL THEN RAISE EXCEPTION 'no direct converter'; END IF;
     via:=CASE WHEN strategy='reembed' OR converter IS NULL THEN jsonb_build_object('kind','reembed') ELSE jsonb_build_object('kind','direct','model',converter) END;
@@ -309,8 +311,14 @@ BEGIN
     IF m.state NOT IN ('running','awaiting_finalize','failed') THEN RAISE EXCEPTION 'migration % is %; only running, awaiting_finalize or failed migrations can abort',m.id,m.state; END IF;
     EXECUTE format('ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I RESTRICT',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name),m.new_column);
     UPDATE postvec.migrations SET state='aborted',finished_at=now() WHERE id=m.id;
-    UPDATE postvec.registry SET state='active',backfill_mode='cursor',backfill_watermark=NULL WHERE id=r.id;
-    IF r.chunking='none' THEN EXECUTE format('UPDATE %I.%I SET %I=NULL',r.table_schema,r.table_name,r.vector_column); END IF;
+    UPDATE postvec.registry SET state='active' WHERE id=r.id;
+    -- Writes during the migration reached only the new column. Re-embed every
+    -- row with the original model; stored vectors stay until replaced, so an
+    -- adopted column from a retired model loses nothing.
+    IF r.trigger_mode<>'none' THEN
+        UPDATE postvec.registry SET backfill_mode='cursor',backfill_watermark=NULL WHERE id=r.id;
+        INSERT INTO postvec.settings(key,value) VALUES('backfill_all:'||r.id,'true') ON CONFLICT (key) DO NOTHING;
+    END IF;
     PERFORM postvec.worker_kick();
 END $$;
 
@@ -319,8 +327,23 @@ DECLARE m postvec.migrations; r postvec.registry; target regclass; a record; had
 BEGIN
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id;
     SELECT * INTO STRICT r FROM postvec.registry WHERE id=m.registry_id;
-    PERFORM postvec._owner(to_regclass(format('%I.%I',r.table_schema,r.table_name)));
     target:=to_regclass(format('%I.%I',coalesce(r.destination_schema,r.table_schema),coalesce(r.destination_table,r.table_name)));
+    -- After the swap only the index is awaited, maybe being built CONCURRENTLY
+    -- by the worker right now: an ACCESS EXCLUSIVE lock would deadlock with it.
+    IF m.state='awaiting_index' THEN
+        PERFORM pg_advisory_xact_lock_shared(1886615158,1);
+        IF NOT EXISTS(SELECT FROM pg_class WHERE oid=to_regclass(format('%I.%I',r.table_schema,r.table_name)) AND pg_has_role(current_user,relowner,'USAGE')) THEN
+            RAISE EXCEPTION 'table ownership is required';
+        END IF;
+        SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
+        IF m.state='done' THEN RETURN; END IF;
+        IF m.state<>'awaiting_index' OR NOT postvec._has_vector_index(target,r.vector_column) THEN
+            RAISE EXCEPTION 'migration % awaits its vector index; see migration_status(%).suggested_index_sql',m.id,m.id;
+        END IF;
+        UPDATE postvec.migrations SET state='done',finished_at=now() WHERE id=m.id;
+        RETURN;
+    END IF;
+    PERFORM postvec._owner(to_regclass(format('%I.%I',r.table_schema,r.table_name)));
     EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE',target);
     SELECT * INTO STRICT r FROM postvec.registry WHERE id=r.id FOR UPDATE;
     SELECT * INTO STRICT m FROM postvec.migrations WHERE id=migration_id FOR UPDATE;
@@ -367,8 +390,11 @@ BEGIN
     DELETE FROM postvec.settings WHERE key IN ('backfill_all:'||r.id,'index:'||r.id);
 END $$;
 
+-- The extension's enqueue triggers insert as the writing role; the managed
+-- ones are SECURITY DEFINER, so PUBLIC needs no way into the queue.
+REVOKE INSERT ON postvec.jobs FROM PUBLIC;
 DO $$ DECLARE f record; BEGIN
-    FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_refs','_format','_existing','_register','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
+    FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='postvec'::regnamespace AND proname IN ('_owner','_refs','_format','_existing','_register','_enqueue','enable','adopt','set_format','create_vector_index','migrate','migration_abort','migration_finalize','disable') LOOP
         EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f.signature);
     END LOOP;
 END $$;

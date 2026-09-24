@@ -218,6 +218,25 @@ impl RegistryEntry {
 /// Always-quote an identifier (equivalent to `quote_ident`, but unconditional):
 /// wrap in double quotes and double any embedded quote. Safe to apply to
 /// identifiers that would not otherwise need quoting.
+/// Settings under which primary keys are rendered to text and parsed back.
+/// Keys are queued by the writing session and matched by the worker, so
+/// both sides pin these; a date queued under `DateStyle = 'SQL, DMY'` would
+/// otherwise name another day.
+pub const KEY_SETTINGS: [(&str, &str); 3] = [
+    ("DateStyle", "ISO, MDY"),
+    ("TimeZone", "UTC"),
+    ("IntervalStyle", "postgres"),
+];
+
+/// `KEY_SETTINGS` as function `SET` clauses.
+pub fn key_settings_clause() -> String {
+    KEY_SETTINGS
+        .iter()
+        .map(|(name, value)| format!("SET {name} TO {}", quote_literal(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn quote_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }

@@ -6,7 +6,10 @@ use sqlx::{Connection, Executor, PgConnection};
 
 /// md5 of `table_contract()` for a fresh install, per managed schema version.
 /// A mismatch means a table, constraint or index changed without a version.
-const SCHEMA_FINGERPRINTS: &[(i32, &str)] = &[(2, "67a518f5b1d4d8236dc62a7ea1b089c9")];
+const SCHEMA_FINGERPRINTS: &[(i32, &str)] = &[
+    (2, "67a518f5b1d4d8236dc62a7ea1b089c9"),
+    (3, "67a518f5b1d4d8236dc62a7ea1b089c9"),
+];
 
 fn command(dsn: &str, action: &str) -> Command {
     let args = ConnectionArgs {
@@ -103,6 +106,21 @@ async fn exercise(dsn: &str) -> Result<()> {
             == truncate,
         "truncate function was not refreshed"
     );
+    // Reinstalling keeps application views over postvec functions and the
+    // EXECUTE grants an administrator narrowed.
+    db.execute("CREATE VIEW app_status AS SELECT * FROM postvec.status();
+        CREATE VIEW app_search AS SELECT * FROM postvec.search_with_vector('d', 'body', ARRAY[1]::real[]);
+        REVOKE EXECUTE ON FUNCTION postvec.search(text,text,text,integer,real,integer,integer,jsonb,real[]) FROM PUBLIC").await?;
+    managed::run(command(dsn, "install"))
+        .await
+        .context("reinstall with dependent views")?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT NOT has_function_privilege('public', 'postvec.search(text,text,text,integer,real,integer,integer,jsonb,real[])', 'EXECUTE')")
+            .fetch_one(&mut db)
+            .await?,
+        "reinstall reset a revoked EXECUTE"
+    );
+    db.execute("DROP VIEW app_status, app_search").await?;
     managed::run(command(dsn, "status")).await?;
     let version_sql = "SELECT version FROM postvec.schema_version";
     let current: i32 = sqlx::query_scalar(version_sql).fetch_one(&mut db).await?;
@@ -169,6 +187,36 @@ async fn exercise(dsn: &str) -> Result<()> {
             IF (SELECT count(*) FROM postvec.jobs) <> 1 THEN RAISE EXCEPTION 'dedup'; END IF;
         END $$;
     "#).await.context("status/retry assertions")?;
+    // A second migration_finalize() while the index is built CONCURRENTLY
+    // (held back by an older snapshot) must not wait for, or deadlock with, it.
+    let migration: i64 = sqlx::query_scalar("INSERT INTO postvec.migrations (registry_id,old_model,new_model,old_dim,new_dim,strategy,new_column,rows_total,state)
+        VALUES (1,'fixture','next',3,3,'reembed','unused',0,'awaiting_index') RETURNING id").fetch_one(&mut db).await?;
+    let mut snapshot = PgConnection::connect(dsn).await?;
+    snapshot
+        .execute("BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 1")
+        .await?;
+    let mut builder = PgConnection::connect(dsn).await?;
+    let build = tokio::spawn(async move {
+        builder.execute("CREATE INDEX CONCURRENTLY docs_v_hnsw ON docs USING hnsw (v vectors.vector_cosine_ops)").await?;
+        anyhow::Ok(builder)
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let early = db
+        .execute(
+            format!("SET statement_timeout = '5s'; SELECT postvec.migration_finalize({migration})")
+                .as_str(),
+        )
+        .await
+        .err()
+        .context("finalize accepted an unbuilt index")?;
+    ensure!(
+        early.to_string().contains("awaits its vector index"),
+        "finalize during a concurrent build: {early}"
+    );
+    snapshot.execute("COMMIT").await?;
+    build.await??.close().await?;
+    db.execute(format!("RESET statement_timeout; SELECT postvec.migration_finalize({migration}); DROP INDEX docs_v_hnsw; DELETE FROM postvec.migrations").as_str())
+        .await?;
     for filter in [
         r#"{"category":"account"}"#,
         r#"{"category":{"neq":"billing"}}"#,
@@ -387,4 +435,197 @@ async fn table_contract(db: &mut PgConnection) -> Result<Vec<String>> {
         SELECT jsonb_build_array(tablename,indexname,indexdef)::text FROM pg_indexes WHERE schemaname='postvec'
         ) t ORDER BY contract COLLATE "C"
     "#).fetch_all(db).await?)
+}
+
+/// The managed-provider role layout: a non-superuser administrator with
+/// CREATEROLE owns the database and the application tables, and creates the
+/// worker role. The ownership hand-over the installer prints must let the
+/// worker enable those tables while the administrator keeps writing to them.
+#[tokio::test]
+#[ignore = "POSTVEC_MANAGED_TEST_DSN must name a disposable PostgreSQL 18 admin database with pgvector installed on disk"]
+async fn provider_roles() -> Result<()> {
+    let dsn = std::env::var("POSTVEC_MANAGED_TEST_DSN").context("set POSTVEC_MANAGED_TEST_DSN")?;
+    let mut root = PgConnection::connect(&dsn).await?;
+    let name = format!("provider_{}", uuid::Uuid::new_v4().simple());
+    let worker = format!("{name}_worker");
+    for sql in [
+        format!("CREATE ROLE {name} LOGIN CREATEROLE PASSWORD '{name}'"),
+        format!("CREATE ROLE {name}_intruder LOGIN PASSWORD '{name}_intruder'"),
+        format!("CREATE ROLE {name}_app LOGIN PASSWORD '{name}_app'"),
+        format!("CREATE DATABASE {name} OWNER {name}"),
+    ] {
+        root.execute(sql.as_str()).await?;
+    }
+    let mut base = reqwest::Url::parse(&dsn)?;
+    base.set_path(&format!("/{name}"));
+    let url = |user: &str| -> Result<String> {
+        let mut url = base.clone();
+        url.set_username(user).unwrap();
+        url.set_password(Some(user)).unwrap();
+        Ok(url.into())
+    };
+    let result = async {
+        PgConnection::connect(base.as_str()).await?
+            .execute(format!("CREATE SCHEMA extensions AUTHORIZATION {name}; CREATE EXTENSION vector SCHEMA extensions").as_str())
+            .await?;
+        let mut admin = PgConnection::connect(&url(&name)?).await?;
+        admin.execute(format!("CREATE ROLE {worker} LOGIN PASSWORD '{worker}';
+            GRANT CREATE ON DATABASE {name} TO {worker}; GRANT CREATE ON SCHEMA public TO {worker};
+            CREATE TABLE legacy (id int PRIMARY KEY, body text)").as_str()).await?;
+        let refused = managed::run(command(&url(&worker)?, "install")).await;
+        ensure!(
+            refused.is_err_and(|e| e.to_string().contains("GRANT USAGE ON SCHEMA \"extensions\"")),
+            "installed without USAGE on the pgvector schema"
+        );
+        admin.execute(format!("GRANT USAGE ON SCHEMA extensions TO {worker}").as_str()).await?;
+        managed::run(command(&url(&worker)?, "install")).await?;
+        let mut db = PgConnection::connect(&url(&worker)?).await?;
+        db.execute("INSERT INTO postvec.models (name, model_type, target_dim, raw) VALUES ('m', 'embed', 3, '{}')")
+            .await?;
+        let enable = "SELECT postvec.enable('public.legacy', 'body', 'm')";
+        ensure!(db.execute(enable).await.is_err(), "enabled a table the worker cannot alter");
+        ensure!(
+            admin.execute(format!("GRANT {name} TO {worker}").as_str()).await.is_err(),
+            "PostgreSQL 16+ lets a CREATEROLE owner grant its own role"
+        );
+        admin.execute(format!("GRANT {worker} TO {name}; ALTER TABLE legacy OWNER TO {worker}").as_str())
+            .await?;
+        db.execute(enable).await?;
+        // An owner that did not create the worker: the administrator grants
+        // the membership, the owner hands the table over.
+        let app = format!("{name}_app");
+        PgConnection::connect(base.as_str()).await?
+            .execute(format!("CREATE SCHEMA sales AUTHORIZATION {app}; GRANT USAGE ON SCHEMA sales TO {worker}").as_str())
+            .await?;
+        let mut owner = PgConnection::connect(&url(&app)?).await?;
+        owner.execute("CREATE TABLE sales.orders (id int PRIMARY KEY, body text)").await?;
+        ensure!(
+            owner.execute(format!("GRANT {worker} TO {app}").as_str()).await.is_err(),
+            "a table owner granted itself the worker role"
+        );
+        admin.execute(format!("GRANT {worker} TO {app}").as_str()).await?;
+        owner
+            .execute(format!("GRANT CREATE ON SCHEMA sales TO {worker}; ALTER TABLE sales.orders OWNER TO {worker}").as_str())
+            .await?;
+        owner.close().await?;
+        db.execute("SELECT postvec.enable('sales.orders', 'body', 'm')").await?;
+        admin.execute("INSERT INTO legacy VALUES (1, 'written by the administrator'); ALTER TABLE legacy ADD COLUMN note text")
+            .await?;
+        // A temporary type must not run code as the worker inside its
+        // SECURITY DEFINER triggers.
+        let mut intruder = PgConnection::connect(&url(&format!("{name}_intruder"))?).await?;
+        intruder.execute(r#"
+            CREATE FUNCTION pg_temp.pwn(v pg_catalog.text) RETURNS bool LANGUAGE sql
+              AS $$ INSERT INTO postvec.settings VALUES ('pwned', '1'); SELECT true $$;
+            CREATE DOMAIN pg_temp.text AS pg_catalog.text CHECK (pg_temp.pwn(VALUE));
+            CREATE TEMP TABLE t (x int);
+            CREATE TRIGGER t AFTER TRUNCATE ON pg_temp.t FOR EACH STATEMENT
+              EXECUTE FUNCTION postvec.trg_truncate('1');
+            TRUNCATE pg_temp.t"#).await?;
+        ensure!(
+            intruder.execute("CREATE TRIGGER e AFTER INSERT ON pg_temp.t FOR EACH ROW EXECUTE FUNCTION postvec._enqueue('1')").await.is_err(),
+            "PUBLIC can attach the enqueue trigger"
+        );
+        intruder.close().await?;
+        ensure!(
+            sqlx::query_scalar::<_, bool>("SELECT NOT EXISTS(SELECT FROM postvec.settings WHERE key = 'pwned')")
+                .fetch_one(&mut db).await?,
+            "a pg_temp type ran as the worker"
+        );
+        let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM postvec.jobs").fetch_one(&mut db).await?;
+        ensure!(queued == 1, "administrator write not enqueued");
+        db.execute("SELECT postvec.disable('public.legacy', 'body', drop_column => true)").await?;
+        db.close().await?;
+        admin.close().await?;
+        managed::run(command(&url(&worker)?, "uninstall")).await
+    }
+    .await;
+    let cleanup = async {
+        root.execute(format!("DROP DATABASE {name} WITH (FORCE)").as_str())
+            .await?;
+        root.execute(format!("DROP ROLE {worker}, {name}, {name}_intruder, {name}_app").as_str())
+            .await?;
+        Ok(())
+    }
+    .await;
+    result.and(cleanup)
+}
+
+/// State written before the key-format pin (here by a Europe/Dublin writer)
+/// is rekeyed by the upgrade to schema v3, and cursor checkpoints restart
+/// instead of skipping rows in the new key order.
+#[tokio::test]
+#[ignore = "POSTVEC_MANAGED_TEST_DSN must name a disposable PostgreSQL 18 admin database with pgvector installed on disk"]
+async fn legacy_keys_are_rekeyed() -> Result<()> {
+    let dsn = std::env::var("POSTVEC_MANAGED_TEST_DSN").context("set POSTVEC_MANAGED_TEST_DSN")?;
+    let mut root = PgConnection::connect(&dsn).await?;
+    let name = format!("legacy_{}", uuid::Uuid::new_v4().simple());
+    root.execute(format!("CREATE ROLE {name} LOGIN PASSWORD '{name}'").as_str())
+        .await?;
+    root.execute(format!("CREATE DATABASE {name} OWNER {name}").as_str())
+        .await?;
+    let mut url = reqwest::Url::parse(&dsn)?;
+    url.set_path(&format!("/{name}"));
+    PgConnection::connect(url.as_str())
+        .await?
+        .execute("CREATE EXTENSION vector")
+        .await?;
+    url.set_username(&name).unwrap();
+    url.set_password(Some(&name)).unwrap();
+    let dsn = url.as_str();
+    let result = async {
+        managed::run(command(dsn, "install")).await?;
+        let mut db = PgConnection::connect(dsn).await?;
+        // A composite key over a domain of timestamptz, written from Dublin,
+        // and a date key written under DMY, whose legacy text is ambiguous.
+        db.execute(r#"
+            SET TimeZone = 'Europe/Dublin';
+            INSERT INTO postvec.models (name, model_type, target_dim, raw) VALUES ('m', 'embed', 3, '{}');
+            CREATE DOMAIN event_time AS timestamptz;
+            CREATE TABLE ev (tenant int, at event_time, body text, PRIMARY KEY (tenant, at));
+            SELECT postvec.enable('ev', 'body', 'm', backfill => false);
+            INSERT INTO postvec.jobs (registry_id, pk_value) SELECT 1, ROW(1, '2026-06-01 00:30+00'::timestamptz)::text;
+            INSERT INTO postvec.jobs_dead (job_id, registry_id, pk_value) SELECT 9, 1, ROW(1, '2026-06-01 00:30+00'::timestamptz)::text;
+            UPDATE postvec.registry SET backfill_mode = 'cursor', backfill_watermark = ROW(1, '2026-06-01 01:00+01'::timestamptz)::text;
+            INSERT INTO postvec.migrations (registry_id, old_model, new_model, old_dim, new_dim, strategy, new_column, rows_total, last_pk)
+            SELECT 1, 'm', 'n', 3, 3, 'reembed', 'unused', 2, backfill_watermark FROM postvec.registry;
+            CREATE TABLE dated (id date PRIMARY KEY, body text);
+            INSERT INTO dated VALUES ('2026-02-03', 'february'), ('2026-03-02', 'march');
+            SELECT postvec.enable('dated', 'body', 'm', backfill => false);
+            SET DateStyle = 'SQL, DMY';
+            INSERT INTO postvec.jobs (registry_id, pk_value) VALUES (2, '2026-02-03'::date::text);
+            UPDATE postvec.schema_version SET version = 2;
+        "#).await?;
+        let old: Vec<String> = sqlx::query_scalar("SELECT pk_value FROM postvec.jobs ORDER BY id").fetch_all(&mut db).await?;
+        ensure!(old == [r#"(1,"2026-06-01 01:30:00+01")"#, "03/02/2026"], "fixture not in the old format: {old:?}");
+        managed::run(command(dsn, "install")).await?;
+        let state: (String, String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT (SELECT pk_value FROM postvec.jobs WHERE registry_id = 1), (SELECT pk_value FROM postvec.jobs_dead WHERE registry_id = 1),
+                    (SELECT backfill_watermark FROM postvec.registry WHERE id = 1), (SELECT last_pk FROM postvec.migrations)",
+        )
+        .fetch_one(&mut db)
+        .await?;
+        let canonical = r#"(1,"2026-06-01 00:30:00+00")"#.to_string();
+        ensure!(
+            state == (canonical.clone(), canonical, None, None),
+            "legacy state after the upgrade: {state:?}"
+        );
+        let dated: (String, String) = sqlx::query_as(
+            "SELECT (SELECT string_agg(pk_value, ',' ORDER BY pk_value) FROM postvec.jobs WHERE registry_id = 2),
+                    (SELECT pk_value || ': ' || last_error FROM postvec.jobs_dead WHERE registry_id = 2)",
+        )
+        .fetch_one(&mut db)
+        .await?;
+        ensure!(
+            dated.0 == "2026-02-03,2026-03-02" && dated.1.starts_with("03/02/2026: queued before postvec 0.3.0"),
+            "an ambiguous legacy date was guessed: {dated:?}"
+        );
+        db.close().await?;
+        Ok(())
+    }
+    .await;
+    root.execute(format!("DROP DATABASE {name} WITH (FORCE)").as_str())
+        .await?;
+    root.execute(format!("DROP ROLE {name}").as_str()).await?;
+    result
 }

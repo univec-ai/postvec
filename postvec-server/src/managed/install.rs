@@ -8,13 +8,24 @@ use std::{io::Read, str::FromStr, time::Duration};
 
 /// `UPGRADES[i]` takes an installed schema from version `i + 1` to `i + 2`,
 /// inside the install transaction. A change to a table or index in
-/// `models.sql`/`control.sql` appends one; the function files are re-applied
-/// on every install anyway. A step must tolerate its own starting state
-/// (`IF EXISTS`) and never builds an index: it renames the old one aside and
-/// `INDEXES` builds the replacement.
+/// `models.sql`/`control.sql` appends one, and so does a function whose
+/// arguments or result change: the function files are re-applied with
+/// `CREATE OR REPLACE` on every install, which keeps dependent views and
+/// grants, so only a step may drop one. A step must tolerate its own starting
+/// state (`IF EXISTS`) and never builds an index: it renames the old one aside
+/// and `INDEXES` builds the replacement.
 const UPGRADES: &[&str] = &[
     "ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text;
-    ALTER INDEX IF EXISTS postvec.jobs_embed_claim_order RENAME TO jobs_embed_claim_order_v1;",
+    ALTER INDEX IF EXISTS postvec.jobs_embed_claim_order RENAME TO jobs_embed_claim_order_v1;
+    DROP FUNCTION IF EXISTS postvec.search_with_vector(text,text,real[],text,integer,real,integer,integer,jsonb),
+        postvec.status(), postvec._refresh_lexical_stats(bigint);",
+    // search() and embed() take the proxy's vector; the key-format pin and the
+    // rekeying of queued state are the extension's 0.3.0 upgrade, verbatim.
+    concat!(
+        "DROP FUNCTION IF EXISTS postvec.search(text,text,text,integer,real,integer,integer,jsonb),
+            postvec.embed(text,text);",
+        include_str!("../../../postvec/sql/postvec--0.2.0--0.3.0.sql")
+    ),
 ];
 /// Run after the install commits, one statement at a time, on every install:
 /// `CONCURRENTLY`, so writers enqueueing jobs never wait on a build. Each is a
@@ -32,6 +43,55 @@ const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql")
 const LEXICAL: &str = include_str!("../../../postvec/sql/managed/lexical.sql");
 const FUNCTIONS: &str = include_str!("../../../postvec/sql/managed/functions.sql");
 
+/// Advice for source tables, in schemas this role can use, whose owner it is
+/// not a member of: per owner, the grant a superuser can run, or the
+/// hand-over any managed platform allows (PostgreSQL 16+ lets only a
+/// superuser grant membership in another role's owner). The hand-over's
+/// GRANT needs ADMIN OPTION on this role, which its creator holds.
+pub(super) const GRANTS: &str = "WITH t AS (
+    SELECT r.rolname::text AS o, n.nspname::text AS nsp, c.relname::text AS rel,
+           has_schema_privilege(n.oid, 'CREATE') AS can_create
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_roles r ON r.oid = c.relowner
+     WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('postvec','information_schema')
+       AND n.nspname NOT LIKE 'pg_%' AND NOT pg_has_role(current_user, c.relowner, 'USAGE')
+       AND has_schema_privilege(n.oid, 'USAGE')
+       AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d WHERE d.classid = 'pg_class'::regclass
+                        AND d.objid = c.oid AND d.deptype = 'e')
+), admins AS (
+    SELECT coalesce(string_agg(m.member::regrole::text, ' or ' ORDER BY m.member::regrole::text), 'a superuser') AS a
+      FROM pg_catalog.pg_auth_members m
+     WHERE m.roleid = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) AND m.admin_option
+)
+SELECT coalesce(string_agg(block, E'\\n' ORDER BY o), '') FROM (
+    SELECT o, format(E'-- as a superuser:\\nGRANT %1$I TO %2$I;\\n-- or hand the tables over, as %3$s:\\nGRANT %2$I TO %1$I;\\n%4$s-- then as %1$I:\\n%5$s',
+        o, current_user, (SELECT a FROM admins),
+        coalesce(E'-- as the schema owner:\\n' || string_agg(DISTINCT format(E'GRANT CREATE ON SCHEMA %I TO %I;\\n', nsp, current_user), '')
+                 FILTER (WHERE NOT can_create), ''),
+        string_agg(format('ALTER TABLE %I.%I OWNER TO %I;', nsp, rel, current_user), E'\\n' ORDER BY nsp, rel)) AS block
+      FROM t GROUP BY o) blocks";
+
+/// Endpoints known to pool per transaction, where the worker's session
+/// advisory lock and LISTEN cannot work.
+pub(super) fn transaction_pooler(options: &PgConnectOptions) -> bool {
+    let host = options.get_host();
+    ((host.ends_with(".supabase.com") || host.ends_with(".supabase.co"))
+        && options.get_port() == 6543)
+        || (host.ends_with(".neon.tech") && host.contains("-pooler."))
+}
+pub(super) const POOLER: &str = "this endpoint pools per transaction; the worker needs a direct or session-mode endpoint (Supabase: port 5432, Neon: the host without -pooler)";
+
+/// A session advisory lock taken on this connection is visible from its next
+/// statement, unless a transaction pooler moved the connection to another backend.
+pub(super) async fn ensure_held(connection: &mut PgConnection, key: i32) -> Result<()> {
+    let held: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM pg_catalog.pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND classid=1886615158 AND objid=$1 AND objsubid=2 AND granted)")
+        .bind(key)
+        .fetch_one(connection)
+        .await?;
+    anyhow::ensure!(held, "{POOLER}");
+    Ok(())
+}
+
 pub(super) fn dsn_has_password(dsn: &str) -> bool {
     dsn.to_ascii_lowercase().contains("password=")
         || reqwest::Url::parse(dsn)
@@ -42,6 +102,9 @@ pub(super) fn dsn_has_password(dsn: &str) -> bool {
 pub(super) fn options(args: &ConnectionArgs) -> Result<PgConnectOptions> {
     let mut options = PgConnectOptions::from_str(&args.dsn)
         .map_err(|_| anyhow::anyhow!("invalid PostgreSQL DSN"))?;
+    if options.get_application_name().is_none() {
+        options = options.application_name("postvec-server");
+    }
     if let Some(path) = &args.password_file {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let mut file = std::fs::OpenOptions::new()
@@ -73,6 +136,25 @@ pub(super) fn options(args: &ConnectionArgs) -> Result<PgConnectOptions> {
     Ok(options)
 }
 
+/// Settings every managed database session shares. Keepalives let the
+/// database end a vanished client's session, and with it the leader lock, in
+/// about a minute instead of the OS default hours.
+/// The key format (`KEY_SETTINGS`) is the one the triggers queue keys in.
+pub(super) async fn tune(connection: &mut PgConnection) -> Result<(), sqlx::Error> {
+    let keys: String = postvec_core::registry::KEY_SETTINGS
+        .iter()
+        .map(|(name, value)| format!(", set_config('{name}', '{value}', false)"))
+        .collect();
+    connection
+        .execute(
+            format!("SELECT set_config('tcp_keepalives_idle', '30', false), set_config('tcp_keepalives_interval', '10', false),
+                set_config('tcp_keepalives_count', '3', false), set_config('client_connection_check_interval', '10s', false){keys}")
+            .as_str(),
+        )
+        .await?;
+    Ok(())
+}
+
 pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     let options = options(args)?;
     let mut connection = tokio::time::timeout(
@@ -82,6 +164,7 @@ pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     .await
     .context("database connection timed out")?
     .context("database connection failed")?;
+    tune(&mut connection).await?;
     sqlx::query(
         "SELECT set_config('statement_timeout', $1, false), set_config('lock_timeout', $1, false)",
     )
@@ -112,7 +195,7 @@ async fn lock_installs(connection: &mut PgConnection, timeout: u32) -> Result<()
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    Ok(())
+    ensure_held(connection, 4).await
 }
 
 /// The installed managed schema version, `None` when there is no schema.
@@ -165,9 +248,21 @@ pub async fn run(command: Command) -> Result<()> {
             "Database password in DSN; prefer --password-file to keep it out of process arguments."
         );
     }
+    if transaction_pooler(&options(args)?) {
+        bail!("{POOLER}");
+    }
     let mut connection = connect(args).await?;
+    let timeout = args.timeout;
+    let result = execute(&mut connection, command, timeout).await;
+    // Behind a transaction pooler the install lock would outlive this client
+    // on a pooled backend; a direct session drops it on disconnect anyway.
+    let _ = connection.execute("SELECT pg_advisory_unlock_all()").await;
+    result
+}
+
+async fn execute(connection: &mut PgConnection, command: Command, timeout: u32) -> Result<()> {
     if !matches!(command, Command::Status(_)) {
-        lock_installs(&mut connection, args.timeout).await?;
+        lock_installs(connection, timeout).await?;
     }
     let mut tx = connection.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(1886615158, 1)")
@@ -176,17 +271,23 @@ pub async fn run(command: Command) -> Result<()> {
     let installed = check(&mut tx).await?;
     match command {
         Command::Install(_) => {
-            let vector: Option<(String, String, bool)> = sqlx::query_as(
-                "SELECT n.nspname::text, e.extversion::text, string_to_array(e.extversion, '.')::int[] >= '{0,8}'
+            let vector: Option<(String, String, bool, bool, String)> = sqlx::query_as(
+                "SELECT n.nspname::text, e.extversion::text, string_to_array(e.extversion, '.')::int[] >= '{0,8}',
+                        has_schema_privilege(n.oid, 'USAGE'), current_user::text
                  FROM pg_catalog.pg_extension e JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'",
             ).fetch_optional(&mut *tx).await?;
             let schema = match vector {
                 None => bail!(
                     "pgvector is required; have the database administrator run CREATE EXTENSION vector first"
                 ),
-                Some((_, version, false)) => {
+                Some((_, version, false, ..)) => {
                     bail!("pgvector {version} is installed; postvec needs pgvector 0.8 or newer")
                 }
+                Some((schema, .., false, role)) => bail!(
+                    "pgvector is in schema {schema}, which this role cannot use; have the database administrator run GRANT USAGE ON SCHEMA {} TO {};",
+                    quote_ident(&schema),
+                    quote_ident(&role)
+                ),
                 Some((schema, ..)) => quote_ident(&schema),
             };
             // Loads pgvector into this backend; the SET hnsw.* clauses below are
@@ -227,17 +328,7 @@ pub async fn run(command: Command) -> Result<()> {
             .bind(&platform)
             .execute(&mut *tx)
             .await?;
-            let role: String = sqlx::query_scalar("SELECT current_user::text")
-                .fetch_one(&mut *tx)
-                .await?;
-            let owners: Vec<String> = sqlx::query_scalar("SELECT DISTINCT r.rolname::text
-                FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
-                JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
-                WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('postvec','information_schema')
-                  AND n.nspname NOT LIKE 'pg_%' AND NOT pg_has_role(current_user,c.relowner,'USAGE')
-                  AND NOT EXISTS (SELECT FROM pg_catalog.pg_depend d WHERE d.classid='pg_class'::regclass
-                    AND d.objid=c.oid AND d.deptype='e') ORDER BY r.rolname::text")
-                .fetch_all(&mut *tx).await?;
+            let grants: String = sqlx::query_scalar(GRANTS).fetch_one(&mut *tx).await?;
             tx.commit().await?;
             // An interrupted CONCURRENTLY build leaves an invalid index that
             // IF NOT EXISTS would skip; drop it so this run builds it again.
@@ -251,7 +342,7 @@ pub async fn run(command: Command) -> Result<()> {
                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                  WHERE n.nspname = 'postvec' AND NOT i.indisvalid",
             )
-            .fetch_all(&mut connection)
+            .fetch_all(&mut *connection)
             .await?;
             for index in invalid {
                 connection
@@ -264,17 +355,12 @@ pub async fn run(command: Command) -> Result<()> {
             println!(
                 "Managed schema v{VERSION} ready ({platform}). Configure managed[] or serve --sync to start the worker."
             );
-            if owners.is_empty() {
+            if grants.is_empty() {
                 println!(
                     "The worker role already owns, or inherits ownership of, the existing source tables."
                 );
             } else {
-                println!(
-                    "A superuser (or a role with ADMIN OPTION on the table owner) must run the grant below so this worker can ALTER those tables:"
-                );
-                for owner in owners {
-                    println!("GRANT {} TO {};", quote_ident(&owner), quote_ident(&role));
-                }
+                println!("Tables owned by other roles cannot be enabled until the database administrator runs one of these:\n{grants}");
             }
             println!(
                 "Organization production use requires postvec Pro; personal noncommercial use, non-production use and one 30-day production evaluation per organization are free. https://github.com/univec-ai/postvec/blob/main/LICENSING.md"
@@ -384,6 +470,24 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("cannot open password file"));
+    }
+
+    #[test]
+    fn known_transaction_poolers_are_refused() {
+        let pooled = |dsn: &str| transaction_pooler(&dsn.parse().unwrap());
+        assert!(pooled(
+            "postgresql://w.ref@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
+        ));
+        assert!(pooled("postgresql://w@db.ref.supabase.co:6543/postgres"));
+        assert!(pooled(
+            "postgresql://w@ep-cool-name-a1b2-pooler.eu-west-2.aws.neon.tech/neondb"
+        ));
+        assert!(!pooled(
+            "postgresql://w.ref@aws-1-eu-west-1.pooler.supabase.com:5432/postgres"
+        ));
+        assert!(!pooled(
+            "postgresql://w@ep-cool-name-a1b2.eu-west-2.aws.neon.tech/neondb"
+        ));
     }
 
     #[test]

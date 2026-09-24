@@ -10,7 +10,7 @@ use postvec_server::{
     state::{NodeIdentity, ServerState},
 };
 use serde_json::{json, Value};
-use sqlx::{Connection, Executor, PgConnection, Row};
+use sqlx::{Column, Connection, Executor, PgConnection, Row};
 use std::{
     os::unix::fs::PermissionsExt,
     path::PathBuf,
@@ -197,6 +197,30 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT NOT EXISTS(SELECT FROM postvec.jobs WHERE pk_value='invalid-integer')",
     )
     .await?;
+    // A write-back the table rejects comes back with its error and backoff,
+    // without restarting the leader session.
+    let leader_pid = "SELECT pid FROM postvec.worker_heartbeat";
+    let leader: i32 = sqlx::query_scalar(leader_pid).fetch_one(&mut db).await?;
+    db.execute("CREATE FUNCTION reject() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'rejected by trigger'; END$$;
+        CREATE TRIGGER reject BEFORE UPDATE OF body_semantic ON docs FOR EACH ROW WHEN (NEW.body='reject') EXECUTE FUNCTION reject();
+        INSERT INTO docs VALUES(90,'reject','ninety'),(91,'neighbour','ninety-one')").await?;
+    wait(&mut db, "SELECT claimed_at IS NULL AND last_error LIKE 'write-back failed%rejected by trigger%' FROM postvec.jobs WHERE pk_value='90'").await?;
+    ensure!(
+        sqlx::query_scalar::<_, i32>(leader_pid)
+            .fetch_one(&mut db)
+            .await?
+            == leader,
+        "a rejected write-back restarted the leader session"
+    );
+    wait(
+        &mut db,
+        "SELECT body_semantic IS NOT NULL FROM docs WHERE id=91",
+    )
+    .await?;
+    db.execute(
+        "DROP TRIGGER reject ON docs; DROP FUNCTION reject(); DELETE FROM docs WHERE id IN (90,91)",
+    )
+    .await?;
     paused.store(true, Ordering::SeqCst);
     entered.store(false, Ordering::SeqCst);
     db.execute("UPDATE docs SET body='old' WHERE id=1").await?;
@@ -316,6 +340,19 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT body_semantic::text='[9,1,2]' FROM composite",
     )
     .await?;
+    // A key written under another DateStyle still names its own row.
+    db.execute("CREATE TABLE dated(id date PRIMARY KEY,body text);INSERT INTO dated VALUES('2026-02-03','feb'),('2026-03-02','mar');SELECT postvec.enable('dated','body','fixture')").await?;
+    wait(
+        &mut db,
+        "SELECT bool_and(body_semantic IS NOT NULL) FROM dated",
+    )
+    .await?;
+    db.execute("SET DateStyle='SQL, DMY';UPDATE dated SET body='february changed' WHERE id='2026-02-03';RESET DateStyle").await?;
+    wait(
+        &mut db,
+        "SELECT body_semantic::text='[16,1,2]' FROM dated WHERE id='2026-02-03'",
+    )
+    .await?;
     db.execute("CREATE TABLE refill(id int PRIMARY KEY,body text,v vectors.vector(3));INSERT INTO refill VALUES(1,'refilled','[99,99,99]');SELECT postvec.adopt('refill','body','v','fixture',backfill=>'all',backfill_mode=>'cursor')").await?;
     wait(&mut db, "SELECT v::text='[8,1,2]' FROM refill").await?;
     wait(
@@ -323,6 +360,39 @@ async fn exercise(dsn: &str) -> Result<()> {
         "SELECT NOT EXISTS(SELECT FROM postvec.settings WHERE key LIKE 'backfill_all:%')",
     )
     .await?;
+    // Aborting keeps the stored vectors of an adopted column and re-embeds
+    // them with the original model; a migration waits for a running backfill.
+    paused.store(true, Ordering::SeqCst);
+    db.execute("CREATE TABLE kept(id int PRIMARY KEY,body text,v vectors.vector(3));INSERT INTO kept VALUES(1,'kept row','[7,7,7]');SELECT postvec.adopt('kept','body','v','fixture',backfill=>'none');SELECT postvec.migration_abort(postvec.migrate('kept','body','next',strategy=>'reembed'))").await?;
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT v::text='[7,7,7]' FROM kept")
+            .fetch_one(&mut db)
+            .await?,
+        "abort discarded the adopted vectors"
+    );
+    ensure!(
+        db.execute("SELECT postvec.migrate('kept','body','next',strategy=>'reembed')")
+            .await
+            .is_err(),
+        "migration started during the re-embedding backfill"
+    );
+    paused.store(false, Ordering::SeqCst);
+    wait(&mut db, "SELECT v::text='[8,1,2]' FROM kept").await?;
+    // A migration batch the table rejects backs off with the error and
+    // resumes once the table accepts writes again.
+    wait(
+        &mut db,
+        "SELECT backfill_mode='done' FROM postvec.registry WHERE table_name='kept'",
+    )
+    .await?;
+    db.execute("CREATE FUNCTION frozen() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'frozen table'; END$$;
+        CREATE TRIGGER frozen BEFORE UPDATE ON kept FOR EACH ROW EXECUTE FUNCTION frozen();
+        SELECT postvec.migrate('kept','body','next',strategy=>'reembed')").await?;
+    wait(&mut db, "SELECT m.state='running' AND m.retry_failures>0 AND m.error LIKE 'write failed%frozen table%' FROM postvec.migrations m JOIN postvec.registry r ON r.id=m.registry_id WHERE r.table_name='kept' AND m.state<>'aborted'").await?;
+    db.execute("DROP TRIGGER frozen ON kept; DROP FUNCTION frozen()")
+        .await?;
+    wait(&mut db, "SELECT m.state='awaiting_finalize' FROM postvec.migrations m JOIN postvec.registry r ON r.id=m.registry_id WHERE r.table_name='kept' AND m.state<>'aborted'").await?;
+    db.execute("SELECT postvec.migration_abort(m.id) FROM postvec.migrations m JOIN postvec.registry r ON r.id=m.registry_id WHERE r.table_name='kept' AND m.state='awaiting_finalize'").await?;
     paused.store(true, Ordering::SeqCst);
     entered.store(false, Ordering::SeqCst);
     db.execute("UPDATE docs SET body='in flight at failover' WHERE id=4")
@@ -465,7 +535,7 @@ async fn exercise(dsn: &str) -> Result<()> {
         .context("unsupported arguments accepted")?
         .to_string();
     ensure!(
-        unsupported.contains("not supported by the proxy"),
+        unsupported.contains("served only by the postvec-server proxy"),
         "unsupported arguments: {unsupported}"
     );
     for bad in [
@@ -495,6 +565,190 @@ async fn exercise(dsn: &str) -> Result<()> {
         .fetch_one(&mut via)
         .await?;
     ensure!(still == 7, "connection unusable after proxy errors");
+    // The rewritten call is the client's own function: its result name, its
+    // EXECUTE privilege, and the server's prepared statements all stay real.
+    let named = sqlx::raw_sql("SELECT postvec.embed('hello', 'fixture')")
+        .fetch_one(&mut via)
+        .await?;
+    ensure!(named.columns()[0].name() == "embed", "embed result renamed");
+    ensure!(
+        via.execute("SELECT postvec.embed('hello'::char, 'fixture')")
+            .await
+            .is_err(),
+        "a non-text cast was dropped before inference"
+    );
+    let dealloc = "SELECT postvec.embed($1, 'fixture')::text AS deallocated";
+    sqlx::query(dealloc).bind("x").fetch_one(&mut via).await?;
+    via.execute(sqlx::raw_sql("DEALLOCATE ALL")).await?;
+    ensure!(
+        sqlx::query(dealloc)
+            .bind("x")
+            .fetch_one(&mut via)
+            .await
+            .is_err(),
+        "a deallocated statement ran from the proxy's copy"
+    );
+    ensure!(
+        via.execute(sqlx::raw_sql("SELECT postvec.embed('ok', 'fixture'); BEGIN; CREATE TEMP TABLE committed_before(x int); COMMIT; SELECT postvec.embed('x', 'no-such-model')"))
+            .await
+            .is_err()
+    );
+    ensure!(
+        sqlx::query_scalar::<_, bool>("SELECT to_regclass('pg_temp.committed_before') IS NOT NULL")
+            .fetch_one(&mut via)
+            .await?,
+        "statements before a failing embed were dropped"
+    );
+    // Raw pipelines: a Bind follows the server's verdict on earlier cycles,
+    // never runs SQL the server rejected or deallocated, and embeds a typed
+    // parameter only when PostgreSQL reads it as the same text.
+    let mut wire = Wire::connect(&proxied).await?;
+    let orig = "SELECT postvec.embed('abcd', 'fixture')::text";
+    wire.send(&[parse("orig", orig, &[]), sync()]).await?;
+    wire.cycle().await?;
+    wire.send(&[
+        parse("", "SELECT pg_sleep(0.5)", &[]),
+        bind("", "", &[]),
+        execute(""),
+        parse(
+            "orig",
+            "SELECT postvec.embed('longerwrong', 'fixture')::text",
+            &[],
+        ),
+        sync(),
+        bind("", "orig", &[]),
+        execute(""),
+        sync(),
+    ])
+    .await?;
+    ensure!(wire.cycle().await?.error.contains("already exists"));
+    ensure!(
+        wire.cycle().await?.value == "{4,1,2}",
+        "ran the rejected Parse"
+    );
+    wire.send(&[query("SELECT 1/0; DEALLOCATE orig")]).await?;
+    wire.cycle().await?;
+    wire.send(&[bind("", "orig", &[]), execute(""), sync()])
+        .await?;
+    ensure!(
+        wire.cycle().await?.value == "{4,1,2}",
+        "a DEALLOCATE that never ran"
+    );
+    wire.send(&[
+        parse("", "DEALLOCATE orig", &[]),
+        bind("", "", &[]),
+        execute(""),
+        sync(),
+    ])
+    .await?;
+    wire.cycle().await?;
+    wire.send(&[bind("", "orig", &[]), execute(""), sync()])
+        .await?;
+    ensure!(
+        wire.cycle().await?.error.contains("does not exist"),
+        "ran a deallocated statement"
+    );
+    // A Bind of a statement the server no longer has fails before anything
+    // runs, even where the vector would never be evaluated.
+    db.execute("CREATE TABLE guard_probe (x int)").await?;
+    wire.send(&[
+        parse("gone", "WITH ins AS (INSERT INTO guard_probe VALUES (1)) SELECT postvec.embed('abcd', 'fixture') WHERE false", &[]),
+        sync(),
+    ])
+    .await?;
+    wire.cycle().await?;
+    wire.send(&[query("DEALLOCATE gone")]).await?;
+    wire.cycle().await?;
+    wire.send(&[bind("", "gone", &[]), execute(""), sync()])
+        .await?;
+    ensure!(wire.cycle().await?.error.contains("does not exist"));
+    ensure!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM guard_probe")
+            .fetch_one(&mut db)
+            .await?
+            == 0,
+        "a deallocated statement ran"
+    );
+    // A portal outlives the statement it was bound from.
+    wire.send(&[
+        query("BEGIN"),
+        parse("held_stmt", orig, &[]),
+        bind("held", "held_stmt", &[]),
+        close("held_stmt"),
+        execute("held"),
+        sync(),
+    ])
+    .await?;
+    wire.cycle().await?;
+    ensure!(
+        wire.cycle().await?.value == "{4,1,2}",
+        "a surviving portal was refused"
+    );
+    wire.send(&[query("COMMIT")]).await?;
+    wire.cycle().await?;
+    // A failed unnamed Parse leaves no unnamed statement behind.
+    wire.send(&[
+        parse("", orig, &[]),
+        sync(),
+        parse("", "SELECT syntax error !!!", &[]),
+        sync(),
+    ])
+    .await?;
+    wire.cycle().await?;
+    wire.cycle().await?;
+    wire.send(&[bind("", "", &[]), execute(""), sync()]).await?;
+    ensure!(
+        wire.cycle().await?.error.contains("does not exist"),
+        "a failed unnamed Parse left the old statement executable"
+    );
+    let typed = "SELECT postvec.embed($1::text, 'fixture')::text";
+    wire.send(&[
+        parse("int4", typed, &[23]),
+        parse("text", typed, &[25]),
+        sync(),
+    ])
+    .await?;
+    wire.cycle().await?;
+    wire.send(&[bind("", "int4", &["00042"]), execute(""), sync()])
+        .await?;
+    ensure!(
+        !wire.cycle().await?.error.is_empty(),
+        "embedded an int4 parameter as its wire text"
+    );
+    wire.send(&[bind("", "text", &["00042"]), execute(""), sync()])
+        .await?;
+    ensure!(wire.cycle().await?.value == "{5,1,2}");
+    let reader = format!("{}_reader", via_db(&proxied));
+    db.execute(format!("CREATE ROLE {reader} LOGIN; REVOKE EXECUTE ON FUNCTION postvec.embed(text,text,real[]) FROM PUBLIC").as_str())
+        .await?;
+    let mut as_reader = proxied.clone();
+    as_reader.set_username(&reader).unwrap();
+    let mut reader_conn = PgConnection::connect(as_reader.as_str()).await?;
+    let denied = reader_conn
+        .execute("SELECT postvec.embed('hello', 'fixture')")
+        .await
+        .err()
+        .context("embed without EXECUTE accepted through the proxy")?;
+    ensure!(
+        denied
+            .to_string()
+            .contains("permission denied for function embed"),
+        "unexpected refusal: {denied}"
+    );
+    // EXECUTE reached through SET ROLE, not inherited, is still EXECUTE.
+    let executor = format!("{reader}_exec");
+    db.execute(format!("CREATE ROLE {executor}; GRANT EXECUTE ON FUNCTION postvec.embed(text,text,real[]) TO {executor};
+        GRANT {executor} TO {reader} WITH INHERIT FALSE, SET TRUE").as_str()).await?;
+    reader_conn
+        .execute(format!("SET ROLE {executor}").as_str())
+        .await?;
+    reader_conn
+        .execute("SELECT postvec.embed('hello', 'fixture')")
+        .await
+        .context("embed after SET ROLE to a role with EXECUTE")?;
+    reader_conn.close().await?;
+    db.execute(format!("GRANT EXECUTE ON FUNCTION postvec.embed(text,text,real[]) TO PUBLIC; DROP OWNED BY {executor}; DROP ROLE {executor}, {reader}").as_str())
+        .await?;
     ensure!(
         db.execute("SELECT postvec.search('docs', 'body', 'x')")
             .await
@@ -604,4 +858,114 @@ async fn exercise(dsn: &str) -> Result<()> {
     drop(tasks);
     tokio::time::sleep(Duration::from_millis(100)).await;
     Ok(())
+}
+
+fn via_db(url: &reqwest::Url) -> String {
+    url.path().trim_start_matches('/').to_string()
+}
+
+/// A bare pgwire client, for pipelines no driver sends.
+struct Wire(tokio::net::TcpStream);
+#[derive(Default)]
+struct Cycle {
+    value: String,
+    error: String,
+}
+fn message(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut m = vec![kind];
+    m.extend((body.len() as i32 + 4).to_be_bytes());
+    m.extend(body);
+    m
+}
+fn cstring(s: &str) -> Vec<u8> {
+    let mut v = s.as_bytes().to_vec();
+    v.push(0);
+    v
+}
+fn query(sql: &str) -> Vec<u8> {
+    message(b'Q', &cstring(sql))
+}
+fn parse(name: &str, sql: &str, oids: &[u32]) -> Vec<u8> {
+    let mut body = [cstring(name), cstring(sql)].concat();
+    body.extend((oids.len() as u16).to_be_bytes());
+    oids.iter().for_each(|o| body.extend(o.to_be_bytes()));
+    message(b'P', &body)
+}
+fn bind(portal: &str, statement: &str, params: &[&str]) -> Vec<u8> {
+    let mut body = [cstring(portal), cstring(statement)].concat();
+    body.extend(0u16.to_be_bytes());
+    body.extend((params.len() as u16).to_be_bytes());
+    for p in params {
+        body.extend((p.len() as i32).to_be_bytes());
+        body.extend(p.as_bytes());
+    }
+    body.extend(0u16.to_be_bytes());
+    message(b'B', &body)
+}
+fn execute(portal: &str) -> Vec<u8> {
+    message(b'E', &[cstring(portal), vec![0, 0, 0, 0]].concat())
+}
+fn close(statement: &str) -> Vec<u8> {
+    message(b'C', &[vec![b'S'], cstring(statement)].concat())
+}
+fn sync() -> Vec<u8> {
+    message(b'S', &[])
+}
+impl Wire {
+    async fn connect(url: &reqwest::Url) -> Result<Self> {
+        use tokio::io::AsyncWriteExt;
+        let mut tcp =
+            tokio::net::TcpStream::connect((url.host_str().unwrap(), url.port().unwrap())).await?;
+        let mut body = 196608i32.to_be_bytes().to_vec();
+        body.extend(
+            [
+                cstring("user"),
+                cstring(url.username()),
+                cstring("database"),
+                cstring(&via_db(url)),
+                vec![0],
+            ]
+            .concat(),
+        );
+        let mut startup = (body.len() as i32 + 4).to_be_bytes().to_vec();
+        startup.extend(body);
+        tcp.write_all(&startup).await?;
+        let mut wire = Wire(tcp);
+        wire.cycle().await?;
+        Ok(wire)
+    }
+    async fn send(&mut self, messages: &[Vec<u8>]) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        Ok(self.0.write_all(&messages.concat()).await?)
+    }
+    /// Messages up to the next ReadyForQuery: the first column of the first
+    /// row, and the error message if any.
+    async fn cycle(&mut self) -> Result<Cycle> {
+        use tokio::io::AsyncReadExt;
+        let mut cycle = Cycle::default();
+        loop {
+            let kind = self.0.read_u8().await?;
+            let mut body = vec![0; self.0.read_i32().await? as usize - 4];
+            self.0.read_exact(&mut body).await?;
+            match kind {
+                b'D' if cycle.value.is_empty() => {
+                    let len = i32::from_be_bytes(body[2..6].try_into()?);
+                    cycle.value = String::from_utf8_lossy(&body[6..6 + len.max(0) as usize]).into();
+                }
+                b'E' => {
+                    let at = body
+                        .windows(2)
+                        .position(|w| w[0] == 0 && w[1] == b'M')
+                        .map_or(0, |i| i + 2);
+                    cycle.error = String::from_utf8_lossy(&body[at..])
+                        .split('\0')
+                        .next()
+                        .unwrap_or_default()
+                        .into();
+                }
+                b'Z' => return Ok(cycle),
+                _ => {}
+            }
+        }
+    }
 }

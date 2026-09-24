@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 use super::{inference::Client, ManagedDb};
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Result};
 use postvec_core::{
     client::{EmbedRoute, ErrorClass, PvError, RavennaCode},
     registry::{
@@ -20,15 +20,29 @@ const BATCH_CAP: usize = 8 * 1024 * 1024;
 #[error("{0}")]
 pub(super) struct Quarantine(pub String);
 
-pub(super) async fn guard(conn: &mut PgConnection) -> Result<()> {
+/// Opens a worker transaction: the shared schema lock, the pinned session
+/// settings and the schema version. On the leader's connection it also
+/// checks that this backend still holds the leader lock, which a
+/// transaction pooler moving the connection between backends would break.
+pub(super) async fn guard(conn: &mut PgConnection, leader: bool) -> Result<()> {
     conn.execute("SELECT pg_advisory_xact_lock_shared(1886615158,1); SET LOCAL search_path=pg_catalog; SET LOCAL row_security=off; SET LOCAL standard_conforming_strings=on").await?;
-    let version: Option<(i32, String)> =
-        sqlx::query_as("SELECT version, mode FROM postvec.schema_version")
-            .fetch_optional(conn)
-            .await?;
+    let version: Option<(i32, String, bool)> = sqlx::query_as(
+        "SELECT version, mode, EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid()
+            AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted) FROM postvec.schema_version",
+    )
+    .fetch_optional(conn)
+    .await?;
+    let Some((version, mode, held)) = version else {
+        anyhow::bail!("managed schema is missing");
+    };
     ensure!(
-        version == Some((super::install::VERSION, "managed".into())),
-        "managed schema is missing or has an unsupported version"
+        version == super::install::VERSION && mode == "managed",
+        "managed schema has an unsupported version"
+    );
+    ensure!(
+        held || !leader,
+        "leader lock lost: {}",
+        super::install::POOLER
     );
     Ok(())
 }
@@ -202,7 +216,7 @@ pub(super) async fn step(
     after: &mut i64,
 ) -> Result<bool> {
     let mut tx = conn.begin().await?;
-    guard(&mut tx).await?;
+    guard(&mut tx, true).await?;
     let vis = client.visibility_secs();
     sqlx::query("WITH d AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-make_interval(secs=>$1) AND attempts>=5 RETURNING *) INSERT INTO postvec.jobs_dead(job_id,registry_id,pk_value,op,chunk_id,attempts,last_error,created_at) SELECT id,registry_id,pk_value,op,chunk_id,attempts,'worker repeatedly lost during inference',created_at FROM d").bind(vis).execute(&mut *tx).await?;
     sqlx::query("WITH old AS (DELETE FROM postvec.jobs WHERE claimed_at<now()-make_interval(secs=>$1) RETURNING *) INSERT INTO postvec.jobs(registry_id,pk_value,op,chunk_id,attempts,last_error) SELECT registry_id,pk_value,op,chunk_id,attempts,'reclaimed after worker loss' FROM old ON CONFLICT(registry_id,op,pk_value,chunk_id) WHERE claimed_at IS NULL DO NOTHING").bind(vis).execute(&mut *tx).await?;
@@ -274,22 +288,59 @@ pub(super) async fn step(
     tx.commit().await?;
     let texts: Vec<_> = jobs.iter().filter_map(|j| j.text.clone()).collect();
     let space = expected.space.as_deref();
-    let outcomes = infer(client, &texts, None, &expected.model, space, expected.dim).await;
+    let mut outcomes = infer(client, &texts, None, &expected.model, space, expected.dim)
+        .await
+        .into_iter();
+    let outcomes: Vec<_> = jobs
+        .iter()
+        .map(|j| j.text.as_ref().and_then(|_| outcomes.next()))
+        .collect();
+    let mut written = write_back(conn, &e, &jobs, &outcomes, &expected, false).await;
+    // The table rejected the batch (a raising trigger, a CHECK, a lock
+    // timeout): write it again row by row, so only the rejected rows retry.
+    if written.as_ref().is_err_and(|e| {
+        super::sqlstate(e).is_some_and(|c| !matches!(c.as_str(), "42P01" | "42703"))
+    }) {
+        written = write_back(conn, &e, &jobs, &outcomes, &expected, true).await;
+    }
+    match written {
+        Ok(()) => Ok(true),
+        Err(error) => match quarantine_or_error(conn, id, error).await {
+            // Still rejected as a whole: release the batch with backoff, as
+            // the extension does, so it converges to jobs_dead with the error.
+            Err(error) if super::sqlstate(&error).is_some() => {
+                let error = format!("write-back failed: {error}");
+                for job in &jobs {
+                    let mut tx = conn.begin().await?;
+                    release(&mut tx, job.id, &error, true).await?;
+                    tx.commit().await?;
+                }
+                Ok(true)
+            }
+            other => other,
+        },
+    }
+}
+
+/// Txn C: recheck the entry and its routing, then write each job's vector
+/// where the source row is unchanged. `careful` puts each row's write in a
+/// savepoint and releases the rows the table rejects.
+async fn write_back(
+    conn: &mut PgConnection,
+    e: &RegistryEntry,
+    jobs: &[Job],
+    outcomes: &[Option<Outcome>],
+    expected: &Routing,
+    careful: bool,
+) -> Result<()> {
     let mut tx = conn.begin().await?;
-    guard(&mut tx).await?;
-    let fresh = match entry(&mut tx, id, true).await {
-        Ok(Some(e)) => e,
-        Ok(None) => {
-            tx.commit().await?;
-            return Ok(true);
-        }
-        Err(error) => {
-            tx.rollback().await?;
-            return quarantine_or_error(conn, id, error).await;
-        }
+    guard(&mut tx, true).await?;
+    let Some(fresh) = entry(&mut tx, e.id, true).await? else {
+        tx.commit().await?;
+        return Ok(());
     };
     let route = routing(&mut tx, &fresh).await?;
-    let changed = route != expected
+    let changed = &route != expected
         || fresh.format != e.format
         || fresh.qualified_vector_table() != e.qualified_vector_table();
     let vector_type = vector_type(&mut tx).await?;
@@ -300,13 +351,13 @@ pub(super) async fn step(
             format!(
                 "xmin::text || ':' || (SELECT s.xmin::text FROM {} s WHERE {})",
                 e.qualified_table(),
-                pk_pred(&e, "s", "$3")
+                pk_pred(e, "s", "$3")
             ),
         )
     } else {
         (
             e.qualified_table(),
-            pk_pred(&e, "", "$2"),
+            pk_pred(e, "", "$2"),
             "xmin::text".into(),
         )
     };
@@ -322,14 +373,12 @@ pub(super) async fn step(
             if e.is_recursive() { 4 } else { 3 }
         )
     };
-    let mut outcomes = outcomes.into_iter();
     let (mut embedded, mut nulled) = (0i64, 0i64);
-    for job in jobs {
-        let result = if job.text.is_some() {
-            Some(outcomes.next().context("missing inference outcome")?)
-        } else {
-            None
-        };
+    for (job, result) in jobs.iter().zip(outcomes) {
+        ensure!(
+            job.text.is_none() || result.is_some(),
+            "missing inference outcome"
+        );
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT FROM postvec.jobs WHERE id=$1 AND claimed_at IS NOT NULL)",
         )
@@ -354,18 +403,18 @@ pub(super) async fn step(
             continue;
         }
         let output = match result {
-            Some(Outcome::Vector(v)) => Some(serialize_vector(&v)),
+            Some(Outcome::Vector(v)) => Some(serialize_vector(v)),
             Some(Outcome::Dead(error) | Outcome::Failed(error)) => {
-                finish(&mut tx, job.id, Some(&error), true).await?;
+                finish(&mut tx, job.id, Some(error), true).await?;
                 continue;
             }
             Some(Outcome::Retry(error)) => {
-                release(&mut tx, job.id, &error, true).await?;
+                release(&mut tx, job.id, error, true).await?;
                 continue;
             }
             None => None,
         };
-        if let Some(version) = job.version {
+        if let Some(version) = &job.version {
             let k = job
                 .chunk
                 .map(|n| n.to_string())
@@ -375,7 +424,25 @@ pub(super) async fn step(
             if e.is_recursive() {
                 query = query.bind(&job.pk);
             }
-            if query.bind(version).execute(&mut *tx).await?.rows_affected() == 0 {
+            let query = query.bind(version);
+            let affected = if careful {
+                let mut row = tx.begin().await?;
+                match query.execute(&mut *row).await {
+                    Ok(done) => {
+                        row.commit().await?;
+                        done.rows_affected()
+                    }
+                    Err(error) => {
+                        row.rollback().await?;
+                        let error = format!("write-back failed: {error}");
+                        release(&mut tx, job.id, &error, true).await?;
+                        continue;
+                    }
+                }
+            } else {
+                query.execute(&mut *tx).await?.rows_affected()
+            };
+            if affected == 0 {
                 release(&mut tx, job.id, "source changed", false).await?;
                 continue;
             }
@@ -389,7 +456,7 @@ pub(super) async fn step(
     }
     sqlx::query("UPDATE postvec.worker_heartbeat SET jobs_embedded=jobs_embedded+$1,jobs_nulled=jobs_nulled+$2,jobs_done=COALESCE(jobs_done,0)+$1+$2 WHERE id=1").bind(embedded).bind(nulled).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(true)
+    Ok(())
 }
 
 pub(super) enum Outcome {
@@ -547,7 +614,7 @@ pub(super) async fn quarantine_or_error(
     }
     log::warn!("managed entry {id} disabled: {error}");
     let mut tx = conn.begin().await?;
-    guard(&mut tx).await?;
+    guard(&mut tx, true).await?;
     sqlx::query(
         "UPDATE postvec.registry SET state='disabled',index_error=left($2,1024) WHERE id=$1",
     )

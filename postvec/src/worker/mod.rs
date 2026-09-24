@@ -944,6 +944,18 @@ fn run_worker(db: &str, mode: gucs::Mode, standalone: bool) {
     let embedded = mode == gucs::Mode::Embedded;
 
     BackgroundWorker::connect_worker_to_spi(Some(db), None);
+    // Queued primary keys are parsed in the format the triggers wrote them.
+    if let Err(e) = try_catalog_transaction(|| {
+        for (name, value) in postvec_core::registry::KEY_SETTINGS {
+            Spi::run_with_args(
+                "SELECT pg_catalog.set_config($1, $2, false)",
+                &[name.into(), value.into()],
+            )
+            .unwrap();
+        }
+    }) {
+        warning!("postvec: pinning the key format failed: {e}");
+    }
 
     // Single-ownership guard: a session advisory lock keyed per database
     // (advisory locks are tagged with the database OID, so the same key in
@@ -1249,11 +1261,6 @@ fn run_one_cycle(
         let entry = group.entry;
         let routing = group.routing;
         let (null_jobs, embed_jobs) = jobs::split_items(group.items);
-        let group_ids: Vec<i64> = null_jobs
-            .iter()
-            .map(|(id, _)| *id)
-            .chain(embed_jobs.iter().map(|(id, _, _, _, _)| *id))
-            .collect();
 
         // Resolve public model -> embed call (SPI, own txn). During a
         // migration the routing carries the NEW model, so the entry's
@@ -1295,43 +1302,49 @@ fn run_one_cycle(
         // constraint, policy, or lock timeout on the target table — release
         // the group in a fresh transaction (backoff, dead-letter once
         // attempts exhaust) instead of crash-looping the worker.
-        let apply_result = {
-            let routing = routing.clone();
-            try_transaction(move || {
-                jobs::apply_group(
-                    entry.id,
-                    &routing,
-                    &null_jobs,
-                    &embed_jobs,
-                    &outcomes,
-                    max_retries,
-                    backoff_ms,
-                )
-            })
-        };
+        let apply_result = try_transaction(|| {
+            jobs::apply_group(
+                entry.id,
+                &routing,
+                &null_jobs,
+                &embed_jobs,
+                &outcomes,
+                max_retries,
+                backoff_ms,
+            )
+        });
         let applied = match apply_result {
             Ok(applied) => applied,
             Err(e) => {
                 counters.error(format!("write-back: {e}"));
                 warning!(
-                    "postvec: write-back for {}.{}.{} failed ({e}); releasing the batch",
+                    "postvec: write-back for {}.{}.{} failed ({e}); retrying row by row",
                     entry.table_schema,
                     entry.table_name,
                     entry.source_column
                 );
-                let recovered = try_transaction(move || {
-                    jobs::release_failed_group(&group_ids, max_retries, backoff_ms, &e)
-                });
-                match recovered {
-                    Ok(applied) => applied,
-                    Err(e2) => {
-                        // Even the recovery transaction failed (postvec's own
-                        // tables should never do this): give up on the batch;
-                        // the visibility timeout re-delivers it.
-                        warning!("postvec: batch release failed too: {e2}");
-                        jobs::Applied::default()
-                    }
-                }
+                jobs::apply_rows(
+                    &null_jobs,
+                    &embed_jobs,
+                    &outcomes,
+                    |n, j, o| {
+                        try_transaction(|| {
+                            jobs::apply_group(entry.id, &routing, n, j, o, max_retries, backoff_ms)
+                        })
+                    },
+                    |id, e| {
+                        // Even the recovery transaction failing (postvec's own
+                        // tables should never do this) leaves the job to the
+                        // visibility timeout.
+                        try_transaction(|| {
+                            jobs::release_failed_group(&[id], max_retries, backoff_ms, e)
+                        })
+                        .unwrap_or_else(|e2| {
+                            warning!("postvec: releasing job {id} failed too: {e2}");
+                            jobs::Applied::default()
+                        })
+                    },
+                )
             }
         };
         counters.embedded += applied.done;

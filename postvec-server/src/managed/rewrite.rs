@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-//! Rewrites `postvec.search(rel, col, text, ...)` and `postvec.embed(text,
-//! model)` into their vector-taking forms. Everything else in the statement
-//! is left byte for byte.
+//! Appends the proxy's embedding to `postvec.search(rel, col, text, ...)` and
+//! `postvec.embed(text, model)` as their `query_vector` / `vector` argument.
+//! The database still runs the functions the client named, under the
+//! client's role and privileges; everything else is left byte for byte.
 
 use postvec_core::registry::serialize_vector;
 
@@ -15,13 +16,16 @@ pub(super) enum Arg {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Call {
     start: usize,
-    end: usize,
+    pub end: usize,
+    /// Where the closing parenthesis starts: the vector argument goes here.
+    close: usize,
     pub embed: bool,
     /// `(relation, column)` for search, `model` for embed.
     pub relation: String,
     pub column: String,
     pub text: Arg,
-    rest: String,
+    /// The text argument carries a `::text`/`::varchar` cast.
+    pub text_cast: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -31,8 +35,6 @@ enum Tok<'a> {
     Param(u16),
     Punct(&'a str),
 }
-
-const HINT: &str = "Use literals or $n parameters for postvec.search(relation, column, text) and postvec.embed(text, model) through the proxy; other forms need search_with_vector().";
 
 fn lex(sql: &str, standard_strings: bool) -> Result<Vec<(Tok<'_>, usize, usize)>, String> {
     let b = sql.as_bytes();
@@ -44,7 +46,7 @@ fn lex(sql: &str, standard_strings: bool) -> Result<Vec<(Tok<'_>, usize, usize)>
         if c.is_ascii_whitespace() {
             i += 1;
         } else if b[i..].starts_with(b"--") {
-            i = sql[i..].find('\n').map_or(b.len(), |n| i + n);
+            i = sql[i..].find(['\n', '\r']).map_or(b.len(), |n| i + n);
         } else if b[i..].starts_with(b"/*") {
             let mut depth = 0;
             while i < b.len() {
@@ -163,16 +165,19 @@ fn lex(sql: &str, standard_strings: bool) -> Result<Vec<(Tok<'_>, usize, usize)>
     Ok(out)
 }
 
-/// One argument: a single string literal or `$n`, optionally cast.
+/// One argument: a single string literal or `$n`, optionally cast to text,
+/// so the value the proxy reads is the value the database evaluates.
 fn arg(toks: &[(Tok<'_>, usize, usize)]) -> Option<Arg> {
     let value = match toks.first()?.0 {
         Tok::Str(ref s) => Arg::Literal(s.clone()),
         Tok::Param(n) => Arg::Param(n),
         _ => return None,
     };
-    match toks.len() {
-        1 => Some(value),
-        3 if toks[1].0 == Tok::Punct("::") && matches!(toks[2].0, Tok::Ident(_)) => Some(value),
+    match toks {
+        [_] => Some(value),
+        [_, (Tok::Punct("::"), ..), (Tok::Ident(t), ..)] if t == "text" || t == "varchar" => {
+            Some(value)
+        }
         _ => None,
     }
 }
@@ -184,18 +189,21 @@ fn literal(toks: &[(Tok<'_>, usize, usize)]) -> Option<String> {
     }
 }
 
-/// Every rewritable call in `sql`, in source order. An error names the first
-/// call that cannot be rewritten; SQL the lexer cannot follow is left alone.
-pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Result<Vec<Call>, String> {
+/// Every rewritable call in `sql`, in source order. Other forms (nested
+/// expressions, function signatures in DDL) and SQL the lexer cannot follow
+/// are left for the database, whose `search()`/`embed()` stubs explain.
+pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Vec<Call> {
     let Ok(toks) = lex(sql, standard_strings) else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
     let mut calls = Vec::new();
     let mut i = 0;
     while i + 3 < toks.len() {
         let (embed, open) = match (&toks[i].0, &toks[i + 1].0, &toks[i + 2].0, &toks[i + 3].0) {
             (Tok::Ident(s), Tok::Punct("."), Tok::Ident(f), Tok::Punct("("))
-                if s == "postvec" && (f == "search" || f == "embed") =>
+                if s == "postvec"
+                    && (f == "search" || f == "embed")
+                    && (i == 0 || toks[i - 1].0 != Tok::Punct(".")) =>
             {
                 (f == "embed", i + 3)
             }
@@ -209,7 +217,9 @@ pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Result<Vec
         let mut from = open + 1;
         let mut j = open + 1;
         let close = loop {
-            let t = toks.get(j).ok_or("unterminated call")?;
+            let Some(t) = toks.get(j) else {
+                return calls;
+            };
             match t.0 {
                 Tok::Punct("(") | Tok::Punct("[") => depth += 1,
                 Tok::Punct(")") | Tok::Punct("]") if depth > 0 => depth -= 1,
@@ -225,91 +235,99 @@ pub(super) fn scan_with_strings(sql: &str, standard_strings: bool) -> Result<Vec
             }
             j += 1;
         };
-        let name = if embed { "embed" } else { "search" };
-        let unsupported =
-            || format!("postvec.{name}() arguments are not supported by the proxy. {HINT}");
-        let call = if embed {
-            let [text, model] = args[..] else {
-                return Err(unsupported());
-            };
-            Call {
-                start: toks[i].1,
-                end: toks[close].2,
-                embed,
-                relation: literal(model).ok_or_else(unsupported)?,
-                column: String::new(),
-                text: arg(text).ok_or_else(unsupported)?,
-                rest: String::new(),
-            }
-        } else {
-            let [rel, col, text, ..] = args[..] else {
-                return Err(unsupported());
-            };
-            Call {
-                start: toks[i].1,
-                end: toks[close].2,
-                embed,
-                relation: literal(rel).ok_or_else(unsupported)?,
-                column: literal(col).ok_or_else(unsupported)?,
-                text: arg(text).ok_or_else(unsupported)?,
-                rest: args
-                    .get(3)
-                    .and_then(|a| a.first())
-                    .map(|first| format!(", {}", &sql[first.1..toks[close].1]))
-                    .unwrap_or_default(),
-            }
+        let call = || {
+            Some(if embed {
+                let [text, model] = args[..] else {
+                    return None;
+                };
+                Call {
+                    start: toks[i].1,
+                    end: toks[close].2,
+                    close: toks[close].1,
+                    embed,
+                    relation: literal(model)?,
+                    column: String::new(),
+                    text: arg(text)?,
+                    text_cast: text.len() == 3,
+                }
+            } else {
+                let [rel, col, text, ..] = args[..] else {
+                    return None;
+                };
+                Call {
+                    start: toks[i].1,
+                    end: toks[close].2,
+                    close: toks[close].1,
+                    embed,
+                    relation: literal(rel)?,
+                    column: literal(col)?,
+                    text: arg(text)?,
+                    text_cast: text.len() == 3,
+                }
+            })
         };
-        calls.push(call);
+        calls.extend(call());
         i = close + 1;
     }
-    Ok(calls)
+    calls
 }
 
-/// Substitute each call with its vector form. `None` leaves a typed NULL,
-/// used for the Parse of a statement whose text arrives at Bind.
-pub(super) fn render(sql: &str, calls: &[Call], vectors: &[Option<Vec<f32>>]) -> String {
+/// A vector as a SQL literal, or a typed NULL.
+pub(super) fn literal_vector(vector: Option<&[f32]>) -> String {
+    vector.map_or("NULL::real[]".into(), |v| {
+        format!("ARRAY{}::real[]", serialize_vector(v))
+    })
+}
+
+/// The highest `$n` the statement references.
+pub(super) fn max_param(sql: &str, standard_strings: bool) -> u16 {
+    lex(sql, standard_strings)
+        .map(|toks| {
+            toks.iter()
+                .filter_map(|t| match t.0 {
+                    Tok::Param(n) => Some(n),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
+/// Where the statement holding the first call begins: just after the last
+/// top-level `;` before it.
+pub(super) fn statement_start(sql: &str, calls: &[Call], standard_strings: bool) -> usize {
+    let at = calls.first().map_or(0, |c| c.start);
+    lex(sql, standard_strings)
+        .ok()
+        .and_then(|toks| {
+            toks.iter()
+                .rev()
+                .find(|(t, _, end)| *t == Tok::Punct(";") && *end <= at)
+                .map(|t| t.2)
+        })
+        .unwrap_or(0)
+}
+
+/// Pass each call its vector: `vectors[i]` is the SQL expression for call `i`.
+pub(super) fn render(sql: &str, calls: &[Call], vectors: &[String]) -> String {
     let mut out = String::with_capacity(sql.len());
     let mut cursor = 0;
     for (call, vector) in calls.iter().zip(vectors) {
-        out.push_str(&sql[cursor..call.start]);
-        let vector = match vector {
-            Some(v) => format!("ARRAY{}::real[]", serialize_vector(v)),
-            None => "NULL::real[]".into(),
-        };
-        if call.embed {
-            match call.text {
-                Arg::Param(n) => out.push_str(&format!(
-                    "CASE WHEN ${n}::text IS NULL THEN NULL::real[] ELSE {vector} END"
-                )),
-                _ => out.push_str(&vector),
-            }
-        } else {
-            let text = match &call.text {
-                Arg::Literal(s) => quote(s),
-                Arg::Param(n) => format!("${n}"),
-            };
-            out.push_str(&format!(
-                "postvec.search_with_vector({}, {}, {vector}, {text}{})",
-                quote(&call.relation),
-                quote(&call.column),
-                call.rest
-            ));
-        }
-        cursor = call.end;
+        out.push_str(&sql[cursor..call.close]);
+        let name = if call.embed { "vector" } else { "query_vector" };
+        out.push_str(&format!(", {name} => {vector}"));
+        cursor = call.close;
     }
     out.push_str(&sql[cursor..]);
     out
-}
-
-fn quote(s: &str) -> String {
-    postvec_core::registry::quote_literal_estring(s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn scan(sql: &str) -> Result<Vec<Call>, String> {
+    fn scan(sql: &str) -> Vec<Call> {
         scan_with_strings(sql, true)
     }
 
@@ -317,42 +335,54 @@ mod tests {
     fn honors_legacy_string_escaping() {
         let sql = "SELECT postvec.embed('line\\nnext', 'm')";
         assert_eq!(
-            scan_with_strings(sql, false).unwrap()[0].text,
+            scan_with_strings(sql, false)[0].text,
             Arg::Literal("line\nnext".into())
         );
-        assert_eq!(
-            scan(sql).unwrap()[0].text,
-            Arg::Literal("line\\nnext".into())
-        );
+        assert_eq!(scan(sql)[0].text, Arg::Literal("line\\nnext".into()));
     }
 
     #[test]
     fn rewrites_literals_and_params() {
         let sql = "SELECT * FROM postvec.search('public.docs', 'body', E'reset\\'s', limit_n => 5, filter => '{\"a\":1}') s, postvec.embed($1, 'm') /* postvec.search( */ -- x\nWHERE 'postvec.search(' <> $$postvec.embed($$";
-        let calls = scan(sql).unwrap();
+        let calls = scan(sql);
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].relation, "public.docs");
         assert_eq!(calls[0].text, Arg::Literal("reset's".into()));
         assert_eq!(calls[1].text, Arg::Param(1));
         assert_eq!(calls[1].relation, "m");
-        let out = render(sql, &calls, &[Some(vec![1.0, 2.5]), None]);
-        assert!(out.starts_with("SELECT * FROM postvec.search_with_vector(E'public.docs', E'body', ARRAY[1,2.5]::real[], E'reset\\'s', limit_n => 5, filter => '{\"a\":1}') s, CASE WHEN $1::text IS NULL THEN NULL::real[] ELSE NULL::real[] END /*"));
+        let out = render(
+            sql,
+            &calls,
+            &[literal_vector(Some(&[1.0, 2.5])), literal_vector(None)],
+        );
+        assert!(out.starts_with("SELECT * FROM postvec.search('public.docs', 'body', E'reset\\'s', limit_n => 5, filter => '{\"a\":1}', query_vector => ARRAY[1,2.5]::real[]) s, postvec.embed($1, 'm', vector => NULL::real[]) /*"));
         assert!(out.ends_with("WHERE 'postvec.search(' <> $$postvec.embed($$"));
     }
 
     #[test]
-    fn rejects_expressions_and_accepts_casts() {
-        assert!(scan("SELECT postvec.search(t.name, 'body', 'x') FROM t").is_err());
-        assert!(scan("SELECT postvec.search('d', 'body', lower('x'))").is_err());
-        assert!(scan("SELECT postvec.search('d', 'body')").is_err());
-        assert!(scan("SELECT postvec.embed(ARRAY['a'], 'm')").is_err());
-        assert!(scan("SELECT postvec.search('d', 'body', 'x'").is_err());
-        assert!(scan("SELECT E'\\x41', postvec.search('d', 'body', 'x')")
-            .unwrap()
-            .is_empty());
-        let calls = scan("SELECT \"postvec\".SEARCH('d'::text, 'body', $2::text)").unwrap();
+    fn leaves_other_forms_and_accepts_casts() {
+        for sql in [
+            "SELECT postvec.search(t.name, 'body', 'x') FROM t",
+            "SELECT postvec.search('d', 'body', lower('x'))",
+            "SELECT postvec.search('d', 'body')",
+            "SELECT postvec.embed(ARRAY['a'], 'm')",
+            "SELECT postvec.embed('abcd'::char, 'm')",
+            "SELECT postvec.search('d', 'body', $1::integer)",
+            "SELECT postvec.search('d', 'body', 'x'",
+            "SELECT E'\\x41', postvec.search('d', 'body', 'x')",
+            "GRANT EXECUTE ON FUNCTION postvec.embed(text, text) TO app",
+            "SELECT app.postvec.embed('x', 'm')",
+            "SELECT 1",
+            "SELECT postvec.status()",
+        ] {
+            assert!(scan(sql).is_empty(), "{sql}");
+        }
+        assert_eq!(scan("SELECT 1 -- x\rFROM postvec.embed('x', 'm')").len(), 1);
+        let calls = scan("SELECT \"postvec\".SEARCH('d'::text, 'body', $2::text)");
         assert_eq!(calls[0].text, Arg::Param(2));
-        assert!(scan("SELECT 1").unwrap().is_empty());
-        assert!(scan("SELECT postvec.status()").unwrap().is_empty());
+        let sql =
+            "BEGIN; UPDATE t SET a = ';'; SELECT * FROM postvec.search('d', 'body', 'x'); SELECT 2";
+        let at = statement_start(sql, &scan(sql), true);
+        assert_eq!(&sql[at..at + 15], " SELECT * FROM ");
     }
 }

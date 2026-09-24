@@ -69,13 +69,21 @@ pub(super) async fn step(
         .await;
         progress |= match result {
             Ok(work) => work,
-            Err(error) => worker::quarantine_or_error(conn, id, error).await?,
+            Err(error) => match worker::quarantine_or_error(conn, id, error).await {
+                // One entry's failure must not end the pass for the others.
+                Err(error) if super::recoverable(&error) => {
+                    log::warn!("managed {} entry {id}: {error}", db.name);
+                    let _ = conn.execute("ROLLBACK").await;
+                    false
+                }
+                other => other?,
+            },
         };
     }
     if *lexical <= Instant::now() {
         *lexical = Instant::now() + Duration::from_secs(10);
         let mut tx = conn.begin().await?;
-        worker::guard(&mut tx).await?;
+        worker::guard(&mut tx, true).await?;
         let error: Option<String> =
             sqlx::query_scalar("SELECT postvec._refresh_lexical_stats(postvec._lexical_stale())")
                 .fetch_one(&mut *tx)
@@ -90,7 +98,7 @@ pub(super) async fn step(
 
 async fn local(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<bool> {
     let mut tx = conn.begin().await?;
-    worker::guard(&mut tx).await?;
+    worker::guard(&mut tx, true).await?;
     let Some(e) = worker::entry(&mut tx, id, true).await? else {
         tx.commit().await?;
         return Ok(false);
@@ -215,7 +223,7 @@ async fn migrate(
     db: &ManagedDb,
 ) -> Result<bool> {
     let mut tx = conn.begin().await?;
-    worker::guard(&mut tx).await?;
+    worker::guard(&mut tx, true).await?;
     let Some(e) = worker::entry(&mut tx, id, true).await? else {
         tx.commit().await?;
         return Ok(false);
@@ -301,78 +309,99 @@ async fn migrate(
         dim,
     )
     .await;
-    let mut tx = conn.begin().await?;
-    worker::guard(&mut tx).await?;
-    let Some(fresh) = worker::entry(&mut tx, id, true).await? else {
-        tx.commit().await?;
-        return Ok(true);
-    };
-    let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.migrations WHERE id=$1 AND state='running' AND last_pk IS NOT DISTINCT FROM $2)").bind(mid).bind(&last).fetch_one(&mut *tx).await?;
-    if !active || fresh.format != e.format {
-        tx.commit().await?;
-        return Ok(false);
-    }
-    let key = if e.is_recursive() {
-        "postvec_chunk_id=$2::bigint".to_string()
-    } else {
-        worker::pk_pred(&e, "", "$2")
-    };
-    let write = format!(
-        "UPDATE {} SET {}=$1::{} WHERE {key} AND xmin::text=$3 AND {} IS NULL",
-        e.qualified_vector_table(),
-        qi(&column),
-        worker::vector_type(&mut tx).await?,
-        qi(&column)
-    );
-    let mut outcomes = results.into_iter();
-    let mut parse_ok = parse_ok.into_iter();
-    let (mut done, mut skipped) = (0i64, 0i64);
-    let mut watermark = last.clone();
-    for row in rows {
-        let pk: String = row.get("pk");
-        let version: String = row.get("version");
-        let result = if row.get::<Option<String>, _>("payload").is_some() {
-            if !reembed && parse_ok.next() != Some(true) {
-                None
-            } else {
-                outcomes.next()
-            }
-        } else {
-            None
+    let written = async {
+        let mut tx = conn.begin().await?;
+        worker::guard(&mut tx, true).await?;
+        let Some(fresh) = worker::entry(&mut tx, id, true).await? else {
+            tx.commit().await?;
+            return Ok(true);
         };
-        match result {
-            Some(Outcome::Vector(v)) => {
-                let affected = sqlx::query(&write)
-                    .bind(serialize_vector(&v))
-                    .bind(&pk)
-                    .bind(version)
-                    .execute(&mut *tx)
-                    .await?
-                    .rows_affected();
-                if affected == 0 {
+        let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM postvec.migrations WHERE id=$1 AND state='running' AND last_pk IS NOT DISTINCT FROM $2)").bind(mid).bind(&last).fetch_one(&mut *tx).await?;
+        if !active || fresh.format != e.format {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        let key = if e.is_recursive() {
+            "postvec_chunk_id=$2::bigint".to_string()
+        } else {
+            worker::pk_pred(&e, "", "$2")
+        };
+        let write = format!(
+            "UPDATE {} SET {}=$1::{} WHERE {key} AND xmin::text=$3 AND {} IS NULL",
+            e.qualified_vector_table(),
+            qi(&column),
+            worker::vector_type(&mut tx).await?,
+            qi(&column)
+        );
+        let mut outcomes = results.into_iter();
+        let mut parse_ok = parse_ok.into_iter();
+        let (mut done, mut skipped) = (0i64, 0i64);
+        let mut watermark = last.clone();
+        for row in rows {
+            let pk: String = row.get("pk");
+            let version: String = row.get("version");
+            let result = if row.get::<Option<String>, _>("payload").is_some() {
+                if !reembed && parse_ok.next() != Some(true) {
+                    None
+                } else {
+                    outcomes.next()
+                }
+            } else {
+                None
+            };
+            match result {
+                Some(Outcome::Vector(v)) => {
+                    let affected = sqlx::query(&write)
+                        .bind(serialize_vector(&v))
+                        .bind(&pk)
+                        .bind(version)
+                        .execute(&mut *tx)
+                        .await?
+                        .rows_affected();
+                    if affected == 0 {
+                        break;
+                    }
+                    done += 1;
+                }
+                Some(Outcome::Retry(error)) => {
+                    sqlx::query("UPDATE postvec.migrations SET retry_failures=retry_failures+1,not_before=now()+make_interval(secs=>least(60,power(2,least(retry_failures+1,6)))),error=left($2,1024) WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
                     break;
                 }
-                done += 1;
+                Some(Outcome::Failed(error)) => {
+                    sqlx::query("UPDATE postvec.migrations SET state='failed',error=left($2,1024),finished_at=now() WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
+                    break;
+                }
+                Some(Outcome::Dead(_)) | None => skipped += 1,
             }
-            Some(Outcome::Retry(error)) => {
-                sqlx::query("UPDATE postvec.migrations SET retry_failures=retry_failures+1,not_before=now()+make_interval(secs=>least(60,power(2,least(retry_failures+1,6)))),error=left($2,1024) WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
-                break;
-            }
-            Some(Outcome::Failed(error)) => {
-                sqlx::query("UPDATE postvec.migrations SET state='failed',error=left($2,1024),finished_at=now() WHERE id=$1").bind(mid).bind(error).execute(&mut *tx).await?;
-                break;
-            }
-            Some(Outcome::Dead(_)) | None => skipped += 1,
+            watermark = Some(pk);
         }
-        watermark = Some(pk);
+        if done + skipped > 0 && watermark != last {
+            sqlx::query("UPDATE postvec.migrations SET retry_failures=0,error=NULL WHERE id=$1 AND state='running' AND not_before<=now()").bind(mid).execute(&mut *tx).await?;
+        }
+        sqlx::query("UPDATE postvec.migrations SET last_pk=$2,rows_done=rows_done+$3,rows_skipped=rows_skipped+$4 WHERE id=$1").bind(mid).bind(&watermark).bind(done).bind(skipped).execute(&mut *tx).await?;
+        sqlx::query("UPDATE postvec.worker_heartbeat SET rows_converted=rows_converted+$1,rows_skipped=rows_skipped+$2 WHERE id=1").bind(done).bind(skipped).execute(&mut *tx).await?;
+        tx.commit().await?;
+        anyhow::Ok(watermark != last)
     }
-    if done + skipped > 0 && watermark != last {
-        sqlx::query("UPDATE postvec.migrations SET retry_failures=0,error=NULL WHERE id=$1 AND state='running' AND not_before<=now()").bind(mid).execute(&mut *tx).await?;
+    .await;
+    match written {
+        // The table rejected the batch: back off like a failed inference, or
+        // fail the migration on a constraint violation.
+        Err(error)
+            if super::recoverable(&error)
+                && !matches!(super::sqlstate(&error).as_deref(), Some("42P01" | "42703")) =>
+        {
+            let failed = super::sqlstate(&error).is_some_and(|c| c.starts_with("23"));
+            // Only the batch that failed: an abort or finalize since then stands.
+            let mut tx = conn.begin().await?;
+            worker::guard(&mut tx, true).await?;
+            sqlx::query("UPDATE postvec.migrations SET retry_failures=retry_failures+1,not_before=now()+make_interval(secs=>least(60,power(2,least(retry_failures+1,6)))),error=left($2,1024),state=CASE WHEN $3 THEN 'failed' ELSE state END,finished_at=CASE WHEN $3 THEN now() END WHERE id=$1 AND state='running' AND last_pk IS NOT DISTINCT FROM $4")
+                .bind(mid).bind(format!("write failed: {error}")).bind(failed).bind(&last).execute(&mut *tx).await?;
+            tx.commit().await?;
+            Ok(false)
+        }
+        other => other,
     }
-    sqlx::query("UPDATE postvec.migrations SET last_pk=$2,rows_done=rows_done+$3,rows_skipped=rows_skipped+$4 WHERE id=$1").bind(mid).bind(&watermark).bind(done).bind(skipped).execute(&mut *tx).await?;
-    sqlx::query("UPDATE postvec.worker_heartbeat SET rows_converted=rows_converted+$1,rows_skipped=rows_skipped+$2 WHERE id=1").bind(done).bind(skipped).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(watermark != last)
 }
 
 /// Builds run on their own connection so draining continues meanwhile.
@@ -383,7 +412,7 @@ async fn index(db: &ManagedDb, id: i64) -> Result<()> {
             return Ok(());
         }
         let mut tx = conn.begin().await?;
-        worker::guard(&mut tx).await?;
+        worker::guard(&mut tx, false).await?;
         sqlx::query("UPDATE postvec.registry SET index_error=left($2,1024) WHERE id=$1")
             .bind(id)
             .bind(error.to_string())
@@ -396,7 +425,7 @@ async fn index(db: &ManagedDb, id: i64) -> Result<()> {
 
 async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result<()> {
     let mut tx = conn.begin().await?;
-    worker::guard(&mut tx).await?;
+    worker::guard(&mut tx, false).await?;
     let Some(e) = worker::entry(&mut tx, id, true).await? else {
         tx.commit().await?;
         return Ok(());
@@ -483,7 +512,7 @@ async fn build_index(conn: &mut PgConnection, id: i64, db: &ManagedDb) -> Result
         let retry = error
             .as_database_error()
             .and_then(|e| e.code())
-            .is_some_and(|c| matches!(c.as_ref(), "57014" | "40P01" | "55P03"));
+            .is_some_and(|c| matches!(c.as_ref(), "40P01" | "55P03"));
         return if retry { Ok(()) } else { Err(error.into()) };
     }
     conn.execute(

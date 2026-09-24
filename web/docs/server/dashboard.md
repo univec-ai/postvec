@@ -102,8 +102,8 @@ queue depth, dead letters and proxy state (port, connections, search and
 embed rewrites). Migrations in flight are listed with their state, rows
 done and skipped.
 
-**Source-owner grant script** expands the `GRANT owner TO worker`
-statements that `managed install` printed. **Inspect jobs** lists the recent
+**Source-owner grant script** repeats the ownership advice that
+`managed install` printed for tables the worker cannot enable yet. **Inspect jobs** lists the recent
 job queue, dead letters and quarantine (disabled registry entries with their
 index error). Each dead letter offers **Retry** (`retry_dead()`). **Refresh
 models** reruns `refresh_models()`.

@@ -4,7 +4,7 @@
 -- Corpus stats are derived data: rebuilt by the worker when the table's
 -- pg_stat tuple counters move, never dumped.
 
-DROP FUNCTION IF EXISTS postvec._refresh_lexical_stats(bigint), postvec.refresh_lexical_stats(text, text),
+DROP FUNCTION IF EXISTS postvec.refresh_lexical_stats(text, text),
     postvec._query_terms(regconfig, text), postvec._lexical_touch(bigint);
 CREATE TABLE IF NOT EXISTS postvec.lexical_stats (
     registry_id  bigint PRIMARY KEY

@@ -3,8 +3,9 @@
 //! pgwire proxy: the client authenticates against the upstream database
 //! itself; the proxy relays bytes and rewrites `postvec.search()` and
 //! `postvec.embed()` calls, embedding their text on the way through.
-//! Authentication is relayed. The proxy offers SCRAM-SHA-256; libpq falls
-//! back from SCRAM-SHA-256-PLUS because channel binding cannot survive a proxy.
+//! Authentication is relayed. SCRAM-SHA-256-PLUS is never offered: channel
+//! binding cannot survive a proxy, so a TLS client of a TLS database must
+//! connect with `channel_binding=disable`.
 
 use super::{
     inference::Client,
@@ -22,6 +23,7 @@ use sqlx::{
     ConnectOptions, Executor,
 };
 use std::{
+    borrow::Cow,
     collections::{HashMap, VecDeque},
     pin::Pin,
     sync::{
@@ -36,6 +38,11 @@ trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 type Stream = Box<dyn Io>;
 const MAX_MESSAGE: usize = 256 * 1024 * 1024;
+/// Rows may reach PostgreSQL's 1 GB allocation limit; authentication
+/// messages stay small (PostgreSQL caps its own tokens at 64 KB).
+const MAX_ROW: usize = 1 << 30;
+const MAX_AUTH: usize = 65536;
+const BINDING: &str = "SCRAM channel binding cannot pass through the postvec-server proxy; connect with channel_binding=disable";
 const SSL_REQUEST: i32 = 80877103;
 const GSSENC_REQUEST: i32 = 80877104;
 const CANCEL_REQUEST: i32 = 80877102;
@@ -90,6 +97,7 @@ pub(super) async fn serve(
             .acquire_timeout(Duration::from_secs(10))
             .after_connect(|conn, _| {
                 Box::pin(async move {
+                    super::install::tune(conn).await?;
                     conn.execute("SET statement_timeout='30s'; SET lock_timeout='5s'")
                         .await?;
                     Ok(())
@@ -140,6 +148,8 @@ pub(super) async fn serve(
         }
     );
     let slots = Arc::new(tokio::sync::Semaphore::new(db.proxy_max_connections));
+    // Over the cap, as many again may negotiate: to cancel, or to be refused.
+    let overflow = Arc::new(tokio::sync::Semaphore::new(db.proxy_max_connections));
     while !proxy.state.draining() {
         let (tcp, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -149,20 +159,27 @@ pub(super) async fn serve(
                 continue;
             }
         };
-        let Ok(slot) = slots.clone().try_acquire_owned() else {
-            log::warn!(
-                "proxy {}: connection cap reached, dropping {peer}",
-                proxy.name
-            );
-            continue;
+        let (slot, capped) = match slots.clone().try_acquire_owned() {
+            Ok(slot) => (slot, false),
+            Err(_) => match overflow.clone().try_acquire_owned() {
+                Ok(slot) => (slot, true),
+                Err(_) => {
+                    log::warn!(
+                        "proxy {}: connection cap reached, dropping {peer}",
+                        proxy.name
+                    );
+                    continue;
+                }
+            },
         };
         let proxy = proxy.clone();
         tokio::spawn(async move {
             let _slot = slot;
             let _ = tcp.set_nodelay(true);
+            keepalive(&tcp);
             proxy.stats.connections.fetch_add(1, Relaxed);
             let _count = ConnCount(proxy.stats.clone());
-            if let Err(e) = connection(&proxy, Box::new(tcp)).await {
+            if let Err(e) = connection(&proxy, Box::new(tcp), capped).await {
                 log::info!("proxy {} {peer}: {e:#}", proxy.name);
             }
         });
@@ -170,24 +187,61 @@ pub(super) async fn serve(
     Ok(())
 }
 
-async fn connection(proxy: &Proxy, client: Stream) -> Result<()> {
-    let Some((client, upstream)) =
-        tokio::time::timeout(Duration::from_secs(10), handshake(proxy, client))
+async fn connection(proxy: &Proxy, client: Stream, capped: bool) -> Result<()> {
+    let Some((client, (upstream, upstream_tls))) =
+        tokio::time::timeout(Duration::from_secs(10), handshake(proxy, client, capped))
             .await
             .context("proxy handshake timed out")??
     else {
         return Ok(());
     };
-    let (cr, cw) = tokio::io::split(client);
+    let (cr, mut cw) = tokio::io::split(client);
     let (ur, uw) = tokio::io::split(upstream);
-    let shared = Arc::new(Shared::default());
-    tokio::select! {
-        r = backend_to_client(ur, cw, shared.clone()) => r,
+    let shared = Arc::new(Shared {
+        upstream_tls,
+        ..Default::default()
+    });
+    let result = tokio::select! {
+        r = backend_to_client(ur, &mut cw, shared.clone()) => r,
         r = client_to_backend(proxy, cr, uw, shared) => r,
+    };
+    if result.as_ref().is_err_and(|e| e.to_string() == BINDING) {
+        cw.write_all(&fatal("28000", BINDING)).await?;
     }
+    result
 }
 
-async fn handshake(proxy: &Proxy, mut client: Stream) -> Result<Option<(Stream, Stream)>> {
+/// A FATAL ErrorResponse, so clients show why the proxy ended the login.
+fn fatal(code: &str, message: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (field, value) in [
+        (b'S', "FATAL"),
+        (b'V', "FATAL"),
+        (b'C', code),
+        (b'M', message),
+    ] {
+        body.push(field);
+        body.extend(cstring(value));
+    }
+    body.push(0);
+    frame(b'E', &body)
+}
+
+fn keepalive(tcp: &tokio::net::TcpStream) {
+    let _ = socket2::SockRef::from(tcp).set_tcp_keepalive(
+        &socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(30))
+            .with_interval(Duration::from_secs(10))
+            .with_retries(3),
+    );
+}
+
+type Upstream = (Stream, bool);
+async fn handshake(
+    proxy: &Proxy,
+    mut client: Stream,
+    capped: bool,
+) -> Result<Option<(Stream, Upstream)>> {
     let mut encrypted = false;
     let startup = loop {
         let len = client.read_i32().await? as usize;
@@ -208,23 +262,29 @@ async fn handshake(proxy: &Proxy, mut client: Stream) -> Result<Option<(Stream, 
                 None => client.write_all(b"N").await?,
             },
             GSSENC_REQUEST if !encrypted && len == 8 => client.write_all(b"N").await?,
-            CANCEL_REQUEST if len == 16 => {
-                let mut upstream = proxy.connect().await?;
+            CANCEL_REQUEST if (16..=268).contains(&len) => {
+                let (mut upstream, _) = proxy.connect().await?;
                 upstream.write_all(&(len as i32).to_be_bytes()).await?;
                 upstream.write_all(&body).await?;
                 return Ok(None);
             }
-            PROTOCOL_3 => {
+            v if v >> 16 == PROTOCOL_3 >> 16 => {
                 ensure!(
                     encrypted || proxy.acceptor.is_none(),
                     "client TLS is required"
                 );
+                if capped {
+                    client
+                        .write_all(&fatal("53300", "postvec proxy connection limit reached"))
+                        .await?;
+                    bail!("connection cap reached");
+                }
                 let mut rest = &body[4..];
                 let (mut user, mut database) = (None, None);
                 while rest != b"\0" {
                     let (key, tail) = cstr(rest)?;
                     let (value, tail) = cstr(tail)?;
-                    match key {
+                    match key.as_ref() {
                         "user" => user = Some(value),
                         "database" => database = Some(value),
                         _ => {}
@@ -232,7 +292,7 @@ async fn handshake(proxy: &Proxy, mut client: Stream) -> Result<Option<(Stream, 
                     rest = tail;
                 }
                 ensure!(
-                    database.or(user)
+                    database.or(user).as_deref()
                         == Some(
                             proxy
                                 .upstream
@@ -246,16 +306,17 @@ async fn handshake(proxy: &Proxy, mut client: Stream) -> Result<Option<(Stream, 
             _ => bail!("unsupported protocol"),
         }
     };
-    let mut upstream = proxy.connect().await?;
+    let (mut upstream, tls) = proxy.connect().await?;
     upstream
         .write_all(&(startup.len() as i32 + 4).to_be_bytes())
         .await?;
     upstream.write_all(&startup).await?;
-    Ok(Some((client, upstream)))
+    Ok(Some((client, (upstream, tls))))
 }
 
 impl Proxy {
-    async fn connect(&self) -> Result<Stream> {
+    /// The upstream stream, and whether it negotiated TLS.
+    async fn connect(&self) -> Result<Upstream> {
         let (host, port) = (self.upstream.get_host(), self.upstream.get_port());
         let socket = self
             .upstream
@@ -268,19 +329,21 @@ impl Proxy {
                     .await
                     .context("upstream socket")?,
             ),
-            None => Box::new(
-                tokio::time::timeout(
+            None => {
+                let tcp = tokio::time::timeout(
                     Duration::from_secs(10),
                     tokio::net::TcpStream::connect((host, port)),
                 )
                 .await
                 .context("upstream connect timed out")?
-                .context("upstream connect")?,
-            ),
+                .context("upstream connect")?;
+                keepalive(&tcp);
+                Box::new(tcp)
+            }
         };
         let mode = self.upstream.get_ssl_mode();
         if socket.is_some() || matches!(mode, PgSslMode::Disable) {
-            return Ok(stream);
+            return Ok((stream, false));
         }
         stream.write_all(&8i32.to_be_bytes()).await?;
         stream.write_all(&SSL_REQUEST.to_be_bytes()).await?;
@@ -294,7 +357,7 @@ impl Proxy {
                 matches!(mode, PgSslMode::Prefer | PgSslMode::Allow),
                 "upstream refuses TLS"
             );
-            return Ok(stream);
+            return Ok((stream, false));
         }
         let mut builder = SslConnector::builder(SslMethod::tls_client())?;
         for (key, path) in &self.tls_files {
@@ -315,38 +378,88 @@ impl Proxy {
         config.set_verify_hostname(matches!(mode, PgSslMode::VerifyFull));
         let mut tls = tokio_openssl::SslStream::new(config.into_ssl(host)?, stream)?;
         Pin::new(&mut tls).connect().await.context("upstream TLS")?;
-        Ok(Box::new(tls))
+        Ok((Box::new(tls), true))
     }
 
-    /// One vector per call, taking `$n` texts from the bind parameters.
+    /// One vector per call, taking `$n` texts from the bind parameters. On
+    /// failure, the vectors of the calls before the failing one.
     async fn embed_all(
         &self,
         calls: &[Call],
         params: &[Option<&[u8]>],
         shared: &Shared,
-    ) -> Result<Vec<Option<Vec<f32>>>> {
+    ) -> Result<Vec<Option<Vec<f32>>>, (Vec<Option<Vec<f32>>>, anyhow::Error)> {
+        let mut vectors = Vec::with_capacity(calls.len());
+        for call in calls {
+            match self.embed_one(call, params, shared).await {
+                Ok(vector) => vectors.push(vector),
+                Err(e) => return Err((vectors, e)),
+            }
+        }
+        Ok(vectors)
+    }
+
+    async fn embed_one(
+        &self,
+        call: &Call,
+        params: &[Option<&[u8]>],
+        shared: &Shared,
+    ) -> Result<Option<Vec<f32>>> {
         ensure!(
             !shared.non_utf8.load(Relaxed),
             "postvec proxy inference requires client_encoding=UTF8"
         );
-        let mut vectors = Vec::with_capacity(calls.len());
-        for call in calls {
-            let text = match &call.text {
-                Arg::Literal(text) => text.as_str(),
-                Arg::Param(n) => {
-                    let value = (*n as usize)
-                        .checked_sub(1)
-                        .and_then(|i| params.get(i))
-                        .context(
+        let text = match &call.text {
+            Arg::Literal(text) => text.as_str(),
+            Arg::Param(n) => {
+                let value = (*n as usize)
+                    .checked_sub(1)
+                    .and_then(|i| params.get(i))
+                    .context(
                         "postvec: the query text is a bind parameter; use the extended protocol",
                     )?;
-                    std::str::from_utf8(value.context("postvec: the query text must not be NULL")?)
-                        .context("postvec: the query text must be UTF-8 text")?
+                match value {
+                    // embed(NULL, model) is NULL, as in SQL.
+                    None if call.embed => return Ok(None),
+                    None => bail!("postvec: the query text must not be NULL"),
+                    Some(value) => std::str::from_utf8(value)
+                        .context("postvec: the query text must be UTF-8 text")?,
                 }
-            };
-            vectors.push(Some(self.embed(call, text).await?));
-        }
-        Ok(vectors)
+            }
+        };
+        self.permitted(call.embed, shared).await?;
+        self.embed(call, text).await.map(Some)
+    }
+
+    /// Inference is paid before the database runs the call and checks
+    /// EXECUTE under the current role, so a session whose login role cannot
+    /// reach EXECUTE through any role it may SET ROLE to is refused first.
+    async fn permitted(&self, embed: bool, shared: &Shared) -> Result<()> {
+        let flag = &shared.permitted[usize::from(embed)];
+        let user = shared.session_user.lock().unwrap().clone();
+        let (Some(user), false) = (user, flag.load(Relaxed)) else {
+            return Ok(());
+        };
+        let (name, signature) = if embed {
+            ("embed", "postvec.embed(text,text,real[])")
+        } else {
+            (
+                "search",
+                "postvec.search(text,text,text,integer,real,integer,integer,jsonb,real[])",
+            )
+        };
+        let allowed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT FROM pg_catalog.pg_roles r
+            WHERE pg_has_role($1, r.oid, 'SET') AND has_function_privilege(r.oid, $2, 'EXECUTE'))",
+        )
+        .bind(user)
+        .bind(signature)
+        .fetch_one(&self.pool)
+        .await
+        .context("privilege check")?;
+        ensure!(allowed, "permission denied for function {name}");
+        flag.store(true, Relaxed);
+        Ok(())
     }
 
     /// Embed one text for a call: `search()` resolves the entry's model,
@@ -407,43 +520,150 @@ impl Proxy {
 
 #[derive(Default)]
 struct Shared {
+    upstream_tls: bool,
     authenticated: AtomicBool,
     legacy_strings: AtomicBool,
     non_utf8: AtomicBool,
-    replies: Mutex<VecDeque<Option<(u8, bool)>>>,
+    /// The session's login role, from ParameterStatus `session_authorization`.
+    session_user: Mutex<Option<String>>,
+    /// EXECUTE on `search` / `embed`, once confirmed for this session.
+    permitted: [AtomicBool; 2],
+    replies: Mutex<Replies>,
+    /// Signalled whenever a reply settles statement state.
+    resolved: tokio::sync::Notify,
 }
 
-impl Shared {
-    fn sent(&self, kind: u8, internal: bool) {
-        let entry = match kind {
-            b'P' => Some((b'1', internal)),
-            b'C' => Some((b'3', internal)),
-            b'S' | b'Q' => None,
-            _ => return,
-        };
-        self.replies.lock().unwrap().push_back(entry);
-    }
-    fn swallow(&self, kind: u8) -> bool {
-        let mut replies = self.replies.lock().unwrap();
-        match kind {
-            b'1' | b'3' => replies.pop_front() == Some(Some((kind, true))),
-            b'Z' => {
-                while matches!(replies.pop_front(), Some(Some(_))) {}
-                false
-            }
-            _ => false,
+/// A reply the backend owes, in order: ParseComplete (`1`), CloseComplete
+/// (`3`), the ParameterDescription (`t`) of a statement Describe, and the
+/// Sync (`S`) or Query (`Q`) a ReadyForQuery answers. `statements` names the
+/// client statements the reply creates (`Some` rewrite) or removes (`None`),
+/// applied only when it arrives: a Parse the server rejects replaces nothing.
+/// `extra` is how many proxy parameters a ParameterDescription must hide.
+struct Reply {
+    kind: u8,
+    extra: usize,
+    statements: Vec<(String, Option<Prepared>)>,
+}
+
+/// The server ignores Syncs sent during COPY FROM STDIN, so those are dropped.
+#[derive(Default)]
+struct Replies {
+    queue: VecDeque<Reply>,
+    copy_in: bool,
+    statements: HashMap<String, Prepared>,
+}
+
+impl Replies {
+    fn apply(&mut self, statements: Vec<(String, Option<Prepared>)>) {
+        for (name, prepared) in statements {
+            match prepared {
+                Some(prepared) => self.statements.insert(name, prepared),
+                None => self.statements.remove(&name),
+            };
         }
     }
 }
 
-async fn read_message<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<(u8, Vec<u8>)>> {
+impl Shared {
+    fn sent(&self, kind: u8, extra: usize, statements: Vec<(String, Option<Prepared>)>) {
+        let mut r = self.replies.lock().unwrap();
+        let kind = match kind {
+            b'P' => b'1',
+            b'C' => b'3',
+            b'D' => b't',
+            b'Q' => b'Q',
+            b'S' if !r.copy_in => b'S',
+            b'c' | b'f' => return r.copy_in = false,
+            _ => return,
+        };
+        r.queue.push_back(Reply {
+            kind,
+            extra,
+            statements,
+        });
+    }
+    /// Book one backend message; for a ParameterDescription, how many trailing
+    /// parameters are the proxy's.
+    fn settle(&self, kind: u8) -> usize {
+        let extra = {
+            let mut r = self.replies.lock().unwrap();
+            match kind {
+                b'1' | b'3' | b't' => match r.queue.pop_front() {
+                    Some(reply) => {
+                        r.apply(reply.statements);
+                        reply.extra
+                    }
+                    None => 0,
+                },
+                // Replies still queued before the marker were skipped after an
+                // error. A failed unnamed Parse still ended the old unnamed
+                // statement.
+                b'Z' => {
+                    r.copy_in = false;
+                    while let Some(reply) = r.queue.pop_front() {
+                        if matches!(reply.kind, b'S' | b'Q') {
+                            r.apply(reply.statements);
+                            break;
+                        }
+                        if reply.kind == b'1' && reply.statements.iter().any(|(n, _)| n.is_empty())
+                        {
+                            r.apply(vec![(String::new(), None)]);
+                        }
+                    }
+                    0
+                }
+                b'G' => {
+                    r.copy_in = true;
+                    r.queue.retain(|reply| reply.kind != b'S');
+                    0
+                }
+                _ => return 0,
+            }
+        };
+        self.resolved.notify_waiters();
+        extra
+    }
+    /// The rewrite of statement `name`: a Parse or Close of that name pending
+    /// in the current Sync cycle (if it fails, the server skips what follows
+    /// too), else the server-confirmed state. `None` while one is pending in
+    /// an earlier cycle, whose outcome decides.
+    fn prepared(&self, name: &str) -> Option<Option<Prepared>> {
+        let r = self.replies.lock().unwrap();
+        let mut earlier = false;
+        for reply in r.queue.iter().rev() {
+            earlier |= matches!(reply.kind, b'S' | b'Q');
+            if let Some((_, prepared)) = reply.statements.iter().rev().find(|(n, _)| n == name) {
+                return (!earlier).then(|| prepared.clone());
+            }
+        }
+        Some(r.statements.get(name).cloned())
+    }
+    /// `prepared`, waiting out a pending earlier cycle.
+    async fn statement(&self, name: &str) -> Option<Prepared> {
+        loop {
+            let resolved = self.resolved.notified();
+            tokio::pin!(resolved);
+            resolved.as_mut().enable();
+            match self.prepared(name) {
+                Some(known) => return known,
+                None => resolved.await,
+            }
+        }
+    }
+}
+
+/// One message; `max` is asked once its header has arrived.
+async fn read_message<R: AsyncRead + Unpin>(
+    r: &mut R,
+    max: impl Fn() -> usize,
+) -> Result<Option<(u8, Vec<u8>)>> {
     let kind = match r.read_u8().await {
         Ok(k) => k,
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e.into()),
     };
     let len = r.read_i32().await? as usize;
-    ensure!((4..=MAX_MESSAGE).contains(&len), "invalid message length");
+    ensure!((4..=max()).contains(&len), "invalid message length");
     let mut body = Vec::with_capacity((len - 4).min(8192));
     r.take((len - 4) as u64).read_to_end(&mut body).await?;
     ensure!(body.len() == len - 4, "truncated message");
@@ -458,12 +678,13 @@ fn frame(kind: u8, body: &[u8]) -> Vec<u8> {
     m
 }
 
-fn cstr(body: &[u8]) -> Result<(&str, &[u8])> {
+/// A NUL-terminated string, borrowed when it is valid UTF-8.
+fn cstr(body: &[u8]) -> Result<(Cow<'_, str>, &[u8])> {
     let end = body
         .iter()
         .position(|b| *b == 0)
         .context("unterminated string")?;
-    Ok((std::str::from_utf8(&body[..end])?, &body[end + 1..]))
+    Ok((String::from_utf8_lossy(&body[..end]), &body[end + 1..]))
 }
 
 fn strip_sasl_plus(body: &[u8]) -> Vec<u8> {
@@ -505,14 +726,18 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut w: W,
     shared: Arc<Shared>,
 ) -> Result<()> {
-    while let Some((kind, mut body)) = read_message(&mut r).await? {
+    while let Some((kind, mut body)) = read_message(&mut r, || MAX_ROW).await? {
         match kind {
             b'S' => {
                 let (name, rest) = cstr(&body)?;
                 let (value, _) = cstr(rest)?;
-                match name {
+                let value = value.as_ref();
+                match name.as_ref() {
                     "standard_conforming_strings" => {
                         shared.legacy_strings.store(value == "off", Relaxed)
+                    }
+                    "session_authorization" => {
+                        *shared.session_user.lock().unwrap() = Some(value.into())
                     }
                     "client_encoding" => shared
                         .non_utf8
@@ -524,7 +749,18 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             b'R' if body.len() > 4 && body[..4] == 10i32.to_be_bytes() => {
                 body = strip_sasl_plus(&body);
             }
-            b'1' | b'3' | b'Z' if shared.swallow(kind) => continue,
+            b'1' | b'3' | b'Z' | b'G' => {
+                shared.settle(kind);
+            }
+            // The server counts the proxy's vector parameters; the client must not.
+            b't' => {
+                let extra = shared.settle(kind);
+                let n = u16::from_be_bytes([body[0], body[1]]) as usize;
+                if extra > 0 && n >= extra {
+                    body.truncate(2 + 4 * (n - extra));
+                    body[..2].copy_from_slice(&((n - extra) as u16).to_be_bytes());
+                }
+            }
             _ => {}
         }
         w.write_all(&frame(kind, &body)).await?;
@@ -532,127 +768,209 @@ async fn backend_to_client<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// A client statement the proxy rewrote: the calls to embed, and how many
+/// parameters the client binds; each call's vector is one more after those.
+#[derive(Clone)]
 struct Prepared {
-    sql: String,
     calls: Vec<Call>,
-    types: Vec<u8>,
+    params: usize,
 }
 
 /// Statements the proxy cannot rewrite are forwarded untouched: the managed
-/// schema's own `search()` and `embed()` raise the explanatory error. When
-/// the proxy cannot embed the text it runs `postvec._proxy_error()` upstream,
-/// so errors stay in order with the backend's replies and leave the
-/// transaction state to the database.
+/// schema's own `search()` and `embed()` raise the explanatory error. A
+/// rewritten Parse takes one extra text parameter per call; each Bind embeds
+/// and appends them. The client's statements, portals and their lifetimes
+/// stay the server's. Errors run in the database, in order with its replies.
 async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     proxy: &Proxy,
     mut r: R,
     mut w: W,
     shared: Arc<Shared>,
 ) -> Result<()> {
-    let mut statements: HashMap<String, Prepared> = HashMap::new();
-    let internal = format!("postvec_{}", uuid::Uuid::new_v4().simple());
-    let mut close = vec![b'S'];
-    close.extend(cstring(&internal));
-    while let Some((kind, body)) = read_message(&mut r).await? {
+    let limit = || {
+        if shared.authenticated.load(Relaxed) {
+            MAX_MESSAGE
+        } else {
+            MAX_AUTH
+        }
+    };
+    while let Some((kind, body)) = read_message(&mut r, limit).await? {
         if !shared.authenticated.load(Relaxed) {
             ensure!(matches!(kind, b'p' | b'X'), "authentication required");
+            // libpq on TLS, seeing no SCRAM-SHA-256-PLUS offered, flags `y`,
+            // which a TLS upstream rejects with an opaque negotiation error.
+            if shared.upstream_tls
+                && body.starts_with(b"SCRAM-SHA-256\0")
+                && body.get(18..20) == Some(b"y,")
+            {
+                bail!(BINDING);
+            }
             w.write_all(&frame(kind, &body)).await?;
             continue;
         }
-        let body = match kind {
+        let standard = !shared.legacy_strings.load(Relaxed);
+        let (body, extra, statements) = match kind {
+            // A simple query also ends the unnamed statement.
             b'Q' => {
-                statements.remove("");
-                let (sql, _) = cstr(&body)?;
-                match rewrite::scan_with_strings(sql, !shared.legacy_strings.load(Relaxed)) {
-                    Ok(calls) if calls.is_empty() => body,
-                    Ok(calls) => cstring(&match proxy.embed_all(&calls, &[], &shared).await {
-                        Ok(vectors) => rewrite::render(sql, &calls, &vectors),
-                        Err(e) => error_sql(&e),
-                    }),
-                    Err(e) => cstring(&error_sql(&anyhow::Error::msg(e))),
-                }
+                let rewritten = match cstr(&body)?.0 {
+                    Cow::Borrowed(sql) => {
+                        let calls = rewrite::scan_with_strings(sql, standard);
+                        if calls.is_empty() {
+                            None
+                        } else {
+                            let literal = |v: &Vec<Option<Vec<f32>>>| -> Vec<String> {
+                                v.iter()
+                                    .map(|v| rewrite::literal_vector(v.as_deref()))
+                                    .collect()
+                            };
+                            Some(cstring(
+                                &match proxy.embed_all(&calls, &[], &shared).await {
+                                    Ok(vectors) => rewrite::render(sql, &calls, &literal(&vectors)),
+                                    // Statements before the failing one still run
+                                    // (earlier calls with their vectors), so the
+                                    // transaction state stays the server's.
+                                    Err((vectors, e)) => {
+                                        let failed = &calls[vectors.len()..];
+                                        let at = rewrite::statement_start(sql, failed, standard);
+                                        let done = calls.iter().take_while(|c| c.end <= at).count();
+                                        let head = rewrite::render(
+                                            &sql[..at],
+                                            &calls[..done],
+                                            &literal(&vectors),
+                                        );
+                                        format!("{head}{}", error_sql(&e))
+                                    }
+                                },
+                            ))
+                        }
+                    }
+                    Cow::Owned(_) => None,
+                };
+                (rewritten.unwrap_or(body), 0, vec![(String::new(), None)])
             }
             b'P' => {
                 let (name, rest) = cstr(&body)?;
                 let (sql, types) = cstr(rest)?;
-                match rewrite::scan_with_strings(sql, !shared.legacy_strings.load(Relaxed)) {
-                    Ok(calls) if !calls.is_empty() => {
-                        let placeholders = vec![None; calls.len()];
-                        let rewritten =
-                            parse_body(name, &rewrite::render(sql, &calls, &placeholders), types);
-                        statements.insert(
-                            name.into(),
-                            Prepared {
-                                sql: sql.into(),
-                                calls,
-                                types: types.to_vec(),
-                            },
-                        );
-                        rewritten
-                    }
-                    _ => {
-                        statements.remove(name);
-                        body
-                    }
+                let mut calls = match &sql {
+                    Cow::Borrowed(sql) => rewrite::scan_with_strings(sql, standard),
+                    Cow::Owned(_) => Vec::new(),
+                };
+                // A `$n` text is embedded as sent only if PostgreSQL reads it as
+                // text too: declared text/varchar, or undeclared and bare (then
+                // the function's argument makes it text).
+                let oids = param_types(types);
+                calls.retain(|c| match c.text {
+                    Arg::Param(n) => match oids.get(usize::from(n).wrapping_sub(1)) {
+                        Some(25 | 1043) => true,
+                        Some(0) | None => !c.text_cast,
+                        Some(_) => false,
+                    },
+                    Arg::Literal(_) => true,
+                });
+                let name = name.into_owned();
+                if calls.is_empty() {
+                    (body, 0, vec![(name, None)])
+                } else {
+                    let params = oids.len().max(rewrite::max_param(&sql, standard).into());
+                    let vectors: Vec<String> = (1..=calls.len())
+                        .map(|i| format!("postvec._proxy_vector(${}::text)", params + i))
+                        .collect();
+                    let parse = parse_body(&name, &rewrite::render(&sql, &calls, &vectors), types);
+                    (parse, 0, vec![(name, Some(Prepared { calls, params }))])
                 }
+            }
+            b'D' if body.first() == Some(&b'S') => {
+                let name = cstr(&body[1..])?.0.into_owned();
+                let extra = shared.statement(&name).await.map_or(0, |p| p.calls.len());
+                (body, extra, Vec::new())
             }
             b'B' => {
                 let (portal, rest) = cstr(&body)?;
                 let (name, rest) = cstr(rest)?;
-                let Some(prepared) = statements.get(name) else {
+                let bind = match shared.statement(&name).await {
+                    Some(prepared) => rebind(proxy, &shared, &prepared, rest).await?,
+                    None => None,
+                };
+                if let Some(bind) = bind {
+                    let mut body = cstring(&portal);
+                    body.extend(cstring(&name));
+                    body.extend(bind);
                     w.write_all(&frame(kind, &body)).await?;
                     continue;
-                };
-                let (params, results) = bind_params(rest)?;
-                let (parse, bind) = match proxy.embed_all(&prepared.calls, &params, &shared).await {
-                    Ok(vectors) => (
-                        parse_body(
-                            &internal,
-                            &rewrite::render(&prepared.sql, &prepared.calls, &vectors),
-                            &prepared.types,
-                        ),
-                        rest.to_vec(),
-                    ),
-                    Err(e) => {
-                        let message = format!("{e:#}");
-                        let mut bind = vec![0, 1, 0, 0, 0, 1];
-                        bind.extend((message.len() as i32).to_be_bytes());
-                        bind.extend_from_slice(message.as_bytes());
-                        bind.extend_from_slice(results);
-                        (
-                            parse_body(
-                                &internal,
-                                "SELECT postvec._proxy_error($1)",
-                                &[0, 1, 0, 0, 0, 25],
-                            ),
-                            bind,
-                        )
-                    }
-                };
-                shared.sent(b'C', true);
-                shared.sent(b'P', true);
-                w.write_all(&frame(b'C', &close)).await?;
-                w.write_all(&frame(b'P', &parse)).await?;
-                let mut body = cstring(portal);
-                body.extend(cstring(&internal));
-                body.extend(bind);
-                w.write_all(&frame(b'B', &body)).await?;
-                shared.sent(b'C', true);
-                w.write_all(&frame(b'C', &close)).await?;
-                continue;
-            }
-            b'C' => {
-                if body.first() == Some(&b'S') {
-                    statements.remove(cstr(&body[1..])?.0);
                 }
-                body
+                (body, 0, Vec::new())
             }
-            _ => body,
+            b'C' if body.first() == Some(&b'S') => {
+                let name = cstr(&body[1..])?.0.into_owned();
+                (body, 0, vec![(name, None)])
+            }
+            _ => (body, 0, Vec::new()),
         };
-        shared.sent(kind, false);
+        shared.sent(kind, extra, statements);
         w.write_all(&frame(kind, &body)).await?;
     }
     Ok(())
+}
+
+/// A Bind of a rewritten statement with the vectors appended as text
+/// parameters: an array literal each, or `!message` when inference failed,
+/// which `postvec._proxy_vector()` raises. `None` leaves a Bind that does not
+/// match the statement to the server, which rejects it.
+async fn rebind(
+    proxy: &Proxy,
+    shared: &Shared,
+    prepared: &Prepared,
+    rest: &[u8],
+) -> Result<Option<Vec<u8>>> {
+    let (formats, params, results) = bind_parts(rest)?;
+    if params.len() != prepared.params || !(formats.len() <= 1 || formats.len() == params.len()) {
+        return Ok(None);
+    }
+    let extra: Vec<Option<String>> = match proxy.embed_all(&prepared.calls, &params, shared).await {
+        Ok(vectors) => vectors
+            .iter()
+            .map(|v| {
+                v.as_deref().map(|v| {
+                    let v = postvec_core::registry::serialize_vector(v);
+                    format!("{{{}}}", &v[1..v.len() - 1])
+                })
+            })
+            .collect(),
+        Err((_, e)) => vec![Some(format!("!{e:#}")); prepared.calls.len()],
+    };
+    // Explicit format codes gain a text code per proxy parameter.
+    let formats: Vec<u16> = match formats[..] {
+        [] | [0] => formats,
+        _ => {
+            let per_param = if formats.len() == 1 {
+                vec![formats[0]; params.len()]
+            } else {
+                formats
+            };
+            per_param
+                .into_iter()
+                .chain(extra.iter().map(|_| 0))
+                .collect()
+        }
+    };
+    let mut out = (formats.len() as u16).to_be_bytes().to_vec();
+    formats.iter().for_each(|f| out.extend(f.to_be_bytes()));
+    out.extend(((params.len() + extra.len()) as u16).to_be_bytes());
+    let values = params
+        .iter()
+        .map(|p| p.map(<[u8]>::to_vec))
+        .chain(extra.into_iter().map(|v| v.map(String::into_bytes)));
+    for value in values {
+        match value {
+            Some(v) => {
+                out.extend((v.len() as i32).to_be_bytes());
+                out.extend(v);
+            }
+            None => out.extend((-1i32).to_be_bytes()),
+        }
+    }
+    out.extend_from_slice(results);
+    Ok(Some(out))
 }
 
 fn error_sql(e: &anyhow::Error) -> String {
@@ -677,15 +995,34 @@ fn parse_body(name: &str, sql: &str, types: &[u8]) -> Vec<u8> {
     body
 }
 
-/// Bind parameter values (text and binary formats carry the same bytes for
-/// text types), plus the result-format tail that follows them.
-type Params<'a> = Vec<Option<&'a [u8]>>;
-fn bind_params(rest: &[u8]) -> Result<(Params<'_>, &[u8])> {
-    let u16_at = |at: usize| -> Result<usize> {
-        Ok(u16::from_be_bytes(rest.get(at..at + 2).context("short Bind")?.try_into()?) as usize)
+/// The parameter type OIDs a Parse declares (0 = left to the server).
+fn param_types(types: &[u8]) -> Vec<u32> {
+    let n = types
+        .get(..2)
+        .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]) as usize);
+    types
+        .get(2..2 + 4 * n)
+        .unwrap_or_default()
+        .chunks_exact(4)
+        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
+}
+
+/// A Bind after its portal and statement names: the parameter format codes,
+/// the values (text and binary carry the same bytes for text types), and the
+/// result-format tail.
+type BindParts<'a> = (Vec<u16>, Vec<Option<&'a [u8]>>, &'a [u8]);
+fn bind_parts(rest: &[u8]) -> Result<BindParts<'_>> {
+    let u16_at = |at: usize| -> Result<u16> {
+        Ok(u16::from_be_bytes(
+            rest.get(at..at + 2).context("short Bind")?.try_into()?,
+        ))
     };
-    let mut at = 2 + u16_at(0)? * 2;
-    let count = u16_at(at)?;
+    let formats: Vec<u16> = (0..u16_at(0)? as usize)
+        .map(|i| u16_at(2 + 2 * i))
+        .collect::<Result<_>>()?;
+    let mut at = 2 + 2 * formats.len();
+    let count = u16_at(at)? as usize;
     at += 2;
     let mut params = Vec::with_capacity(count);
     for _ in 0..count {
@@ -699,7 +1036,7 @@ fn bind_params(rest: &[u8]) -> Result<(Params<'_>, &[u8])> {
             Some(v)
         });
     }
-    Ok((params, &rest[at..]))
+    Ok((formats, params, &rest[at..]))
 }
 
 #[cfg(test)]
@@ -707,28 +1044,82 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_replies_remain_ordered_across_pipelines_and_errors() {
+    fn parameter_descriptions_hide_the_proxy_parameters_in_order() {
         let shared = Shared::default();
-        for (kind, internal) in [
-            (b'P', false),
-            (b'P', true),
-            (b'S', false),
-            (b'P', false),
-            (b'S', false),
-        ] {
-            shared.sent(kind, internal);
-        }
-        assert!(!shared.swallow(b'1'));
-        assert!(shared.swallow(b'1'));
-        assert!(!shared.swallow(b'Z'));
-        assert!(!shared.swallow(b'1'));
-        assert!(!shared.swallow(b'Z'));
-        for kind in *b"PSPS" {
-            shared.sent(kind, true);
-        }
-        assert!(!shared.swallow(b'E'));
-        assert!(!shared.swallow(b'Z'));
-        assert!(shared.swallow(b'1'));
+        shared.sent(b'P', 0, Vec::new());
+        shared.sent(b'D', 2, Vec::new());
+        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'D', 0, Vec::new());
+        shared.sent(b'S', 0, Vec::new());
+        assert_eq!(shared.settle(b'1'), 0);
+        assert_eq!(shared.settle(b't'), 2);
+        shared.settle(b'Z');
+        assert_eq!(shared.settle(b't'), 0);
+    }
+
+    #[test]
+    fn syncs_during_copy_in_are_not_awaited() {
+        let shared = Shared::default();
+        shared.sent(b'S', 0, Vec::new());
+        shared.settle(b'G');
+        shared.sent(b'S', 0, Vec::new());
+        shared.sent(b'c', 0, Vec::new());
+        shared.sent(b'S', 0, Vec::new());
+        shared.settle(b'Z');
+        shared.sent(b'D', 1, Vec::new());
+        assert_eq!(
+            shared.settle(b't'),
+            1,
+            "no stale Sync left ahead of the reply"
+        );
+    }
+
+    #[test]
+    fn statements_follow_the_server() {
+        let prepared = |params| Prepared {
+            calls: Vec::new(),
+            params,
+        };
+        let known =
+            |shared: &Shared, name: &str| shared.prepared(name).map(|p| p.map(|p| p.params));
+        let shared = Shared::default();
+        shared.sent(b'P', 0, vec![("s".into(), Some(prepared(1)))]);
+        assert_eq!(
+            known(&shared, "s"),
+            Some(Some(1)),
+            "a Bind in the Parse's own cycle"
+        );
+        shared.sent(b'S', 0, Vec::new());
+        assert_eq!(
+            known(&shared, "s"),
+            None,
+            "a later cycle waits for the Parse's outcome"
+        );
+        shared.settle(b'1');
+        shared.settle(b'Z');
+        assert_eq!(known(&shared, "s"), Some(Some(1)));
+        shared.sent(b'P', 0, vec![("s".into(), Some(prepared(2)))]);
+        shared.sent(b'S', 0, Vec::new());
+        shared.settle(b'Z');
+        assert_eq!(
+            known(&shared, "s"),
+            Some(Some(1)),
+            "a rejected Parse replaces nothing"
+        );
+        shared.sent(b'C', 0, vec![("s".into(), None)]);
+        assert_eq!(known(&shared, "s"), Some(None));
+        shared.sent(b'P', 0, vec![(String::new(), Some(prepared(0)))]);
+        shared.sent(b'S', 0, Vec::new());
+        shared.settle(b'1');
+        shared.settle(b'Z');
+        shared.sent(b'P', 0, vec![(String::new(), None)]);
+        shared.sent(b'S', 0, Vec::new());
+        shared.settle(b'Z');
+        assert_eq!(
+            known(&shared, ""),
+            Some(None),
+            "a failed unnamed Parse ends the old one"
+        );
     }
 
     #[test]

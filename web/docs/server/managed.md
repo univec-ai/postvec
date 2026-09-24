@@ -30,19 +30,53 @@ evaluation per organization are free. See [License](/docs/license).
 
 ## 1. Prepare the database
 
-Have the database administrator:
+Have the database administrator run:
 
-- Enable **pgvector 0.8 or newer** on PostgreSQL 16, 17 or 18
-- Create a login role with `CREATE` on the application database
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;          -- pgvector 0.8 or newer
+CREATE ROLE postvec_worker LOGIN PASSWORD '…';
+GRANT CREATE ON DATABASE app TO postvec_worker;
+```
+
+PostgreSQL 16, 17 and 18 are supported. If pgvector lives in a schema the
+role cannot use (Supabase's `extensions`), also
+`GRANT USAGE ON SCHEMA extensions TO postvec_worker`.
 
 Install as that role; it owns the managed schema. The worker needs
-ownership of source tables, or membership in their owning roles. The
-installer prints the applicable `GRANT owner TO worker` commands. A
-superuser (or a role with `ADMIN OPTION` on the table owner) must run
-them. A table owner cannot grant their own role.
+ownership of source tables, or membership in their owning roles. For
+tables owned by other roles, in schemas the worker can use, the installer
+prints two options per owner:
 
-Use a **direct** database endpoint. Leader election takes a session
-advisory lock, which a transaction-pooling endpoint does not hold.
+```sql
+-- as a superuser:
+GRANT app_owner TO postvec_worker;
+-- or hand the tables over, as admin:
+GRANT postvec_worker TO app_owner;
+-- as the schema owner:
+GRANT CREATE ON SCHEMA sales TO postvec_worker;
+-- then as app_owner:
+ALTER TABLE sales.orders OWNER TO postvec_worker;
+```
+
+Managed platforms on PostgreSQL 16+ have no superuser, and a role never
+holds ADMIN OPTION on itself, so they use the hand-over. Its `GRANT` needs
+ADMIN OPTION on the worker, which the role that created the worker holds;
+the installer names it. The schema line appears only where the worker
+lacks `CREATE`. Afterwards the owner is a member of the worker role and
+keeps full control of its tables. Membership is a shared trust boundary:
+every member can reach every table the worker owns, with or without
+`INHERIT`. Where owners must not reach each other's tables, revoke the
+membership once the tables are handed over and have the worker grant each
+owner the privileges it needs on its own tables; DDL on them then runs as
+the worker.
+
+Use a **direct** or session-mode database endpoint. Leader election takes
+a session advisory lock, which a transaction-pooling endpoint does not
+hold. The server refuses the known ones (Supabase port 6543, Neon
+`-pooler` hosts). Behind another transaction pooler the worker usually
+stops with `leader lock lost`, since every worker transaction checks that
+its backend still holds the lock, but only direct and session-mode
+endpoints are supported.
 
 ## 2. Install the schema
 
@@ -61,12 +95,17 @@ and the command prints any remaining `GRANT` statements.
 
 Installation is transactional and repeatable. Rerun `managed install` after
 upgrading postvec-server: it upgrades an older schema in place and replaces the
-SQL function bodies. Index changes build `CONCURRENTLY` after that commit, so
+SQL function bodies, keeping views that use them and narrowed `EXECUTE`
+grants. Schema version 3 adds the vector argument to `search()` and
+`embed()`, and the upgrade to it refuses while views use their old
+signatures: drop those views, upgrade, then recreate them and any
+`EXECUTE` grants on the two functions. Index changes build `CONCURRENTLY` after that commit, so
 application writes continue; the build waits for transactions already open,
 and an interrupted build is retried by the next install. The installer refuses an extension database, an unrelated
 schema or a schema newer than the server.
 
-Passwords stay in the password file. The file must be a regular file
+Passwords stay in the password file (or `PGPASSWORD` / `~/.pgpass`, which
+the server also reads). The file must be a regular file
 owned by the service account, mode `0600` or `0400`. Symlinks are
 refused. A relative `--password-file` resolves against the working
 directory of the `managed install` process. DSNs use the
@@ -104,6 +143,11 @@ For one database, `postvec-server serve --sync <DSN>` is a shortcut.
 All nodes configured for a database share one leader, even when their
 DSNs use different credentials or host aliases. Standbys take over after
 the leader's database session closes.
+
+Each node holds one session per database, the leader three (worker,
+heartbeat, LISTEN), plus up to four for a proxy. They show in
+`pg_stat_activity` as `application_name = 'postvec-server'` unless the DSN
+sets one.
 
 `poll_only` removes the LISTEN connection. Election and heartbeat still
 keep database sessions open, so Neon or Aurora Serverless may stay
@@ -161,8 +205,20 @@ concurrent index creation on partitioned parents; use a blocking build
 or manage partition indexes explicitly.
 
 Claims and source reads commit before inference. Write-back checks the
-source row version and migration target again. Worker statements and
-lock waits time out after ten minutes; index builds get an hour.
+source row version and migration target again. Worker statements time
+out after ten minutes. A lock wait gives up after five seconds and that
+entry retries at the next poll, so one locked table (an `ALTER`, a
+`VACUUM FULL`) does not stall the others. Index builds get an hour, and
+one that runs out of time is recorded in `status().index_error` rather
+than retried. A row the table rejects on write-back (a trigger, a
+`CHECK`) retries on its own and dead-letters with the database's error;
+the rest of its batch is written.
+
+Primary keys travel through the queue as text, so the triggers and the
+worker both render them with `DateStyle = 'ISO, MDY'`, `TimeZone = 'UTC'`
+and `IntervalStyle = 'postgres'`, whatever the writing session uses. The
+worker's session keeps those settings, so a format template that includes a
+timestamp renders it in UTC.
 Transient and configuration failures retry with exponential backoff.
 Queue jobs dead-letter after five attempts.
 
@@ -189,20 +245,30 @@ SELECT * FROM postvec.search(
 SELECT postvec.embed('reset password', 'your-model');
 ```
 
-The proxy rewrites each call into `search_with_vector()` or a vector
-literal, embedding the text with this node's models or the fleet, and
-forwards every other byte unchanged: authentication, transactions,
-prepared statements, `COPY` and cancellation all pass through. Clients
-authenticate against the database with their own credentials. Each
-proxy port accepts only the database configured in its managed entry.
+The proxy embeds the text with this node's models or the fleet and passes
+the vector to the same call as a last argument (`query_vector =>` for
+`search()`, `vector =>` for `embed()`). The database still runs the
+function the client named, under the client's role: `EXECUTE` privileges,
+result column names and prepared statements behave as without the proxy.
+Every other byte passes unchanged: authentication, transactions, `COPY` and
+cancellation. Clients authenticate against the database with their own
+credentials. Each proxy port accepts only the database configured in its
+managed entry.
+
+Inference costs money, so before embedding the proxy also refuses a
+session whose login role cannot reach `EXECUTE` at all, directly or through
+a role it may `SET ROLE` to (checked once per session; the database still
+checks every call). `REVOKE EXECUTE ON FUNCTION postvec.embed(text, text, real[]) FROM PUBLIC`
+(or `postvec.search(...)`) limits who can use it.
 
 The relation, column and model must be literals. The text may be a
-literal or a bind parameter. Inference accepts UTF-8 text
-(`client_encoding=UTF8`, or UTF-8 bytes in a `SQL_ASCII` session).
-SQL string escapes follow the session's `standard_conforming_strings`
-setting. Calls in any other form raise an error naming the supported
-forms. Unqualified relation names must be unique across schemas. Every
-execution embeds the text again, so prepared statements cost one
+literal or a bind parameter, cast to `text` or `varchar` at most.
+Inference accepts UTF-8 text (`client_encoding=UTF8`, or UTF-8 bytes in a
+`SQL_ASCII` session). SQL string escapes follow the session's
+`standard_conforming_strings` setting. Calls in any other form reach the
+database's own `search()`/`embed()`, which raise an error naming the
+supported forms. Unqualified relation names must be unique across schemas.
+Every execution embeds the text again, so prepared statements cost one
 embedding per execution.
 
 Everything else (`status()`, `migrate()`, `adopt()`, DDL) connects to
@@ -220,9 +286,12 @@ entry. Upstream TLS uses the entry's `sslmode`, root CA and optional
 client certificate/key settings.
 
 SCRAM channel binding cannot pass through a proxy, so the proxy never
-offers `SCRAM-SHA-256-PLUS`. Default libpq (`channel_binding=prefer`)
-falls back to `SCRAM-SHA-256`. Clients that set
-`channel_binding=require` fail to authenticate.
+offers `SCRAM-SHA-256-PLUS`. A client connected over TLS must turn channel
+binding off when the database also uses TLS (every managed provider does):
+`channel_binding=disable` for libpq and psql, `channelBinding=disable` for
+pgjdbc. Otherwise the client asks for binding, and the proxy refuses the
+login with a message saying exactly that. Plain-TCP clients and drivers
+without channel binding support (sqlx, node-postgres) need nothing.
 
 Metrics: `postvec_proxy_connections{db}` and
 `postvec_proxy_rewrites_total{db,kind}`.
@@ -237,9 +306,9 @@ while another node syncs.
 | Amazon RDS / Aurora | Direct instance endpoint. Enable pgvector. `sslmode=verify-full` with the AWS CA. |
 | Aurora Serverless, Neon | Set `poll_only`. Worker and election sessions still keep the instance awake. |
 | Cloud SQL / AlloyDB | Worker through the auth proxy sidecar or a private IP. |
-| Azure Flexible Server | `sslmode=require`. The worker role must be a member of the table owner. |
-| Supabase | Direct (non-pooler) port for the worker. `search(text)` goes through the proxy. |
-| Neon | Direct endpoint. `poll_only` as above. |
+| Azure Flexible Server | `sslmode=require`. Port 5432, not the built-in PgBouncer on 6432. |
+| Supabase | Direct connection, or the session pooler on port 5432 with user `postvec_worker.<project-ref>`. `search(text)` goes through the proxy. |
+| Neon | Endpoint host without `-pooler`. `poll_only` as above. |
 
 Use your provider's CA configuration for verified TLS. The test suite runs
 against local PostgreSQL; provider role, TLS and network configuration differ

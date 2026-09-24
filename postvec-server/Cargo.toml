@@ -33,6 +33,8 @@ sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio
 # discovery listener already links.
 openssl = "0.10"
 tokio-openssl = "0.6"
+# TCP keepalive on the proxy's relayed sockets.
+socket2 = "0.6"
 postvec-core = { path = "../core" }
 # Engine-root serving lease (shared flock). A postvec-cli purge takes the
 # exclusive side before it deletes the root.

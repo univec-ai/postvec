@@ -41,7 +41,8 @@
 --     refresh replaces them anyway.
 
 CREATE OR REPLACE FUNCTION postvec.trg_chunk_ins() RETURNS trigger LANGUAGE plpgsql
-SECURITY DEFINER SET search_path = pg_catalog AS $body$
+SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $body$
 DECLARE
     r record;
     rid bigint := TG_ARGV[0]::bigint;
@@ -93,7 +94,8 @@ BEGIN
 END $body$;
 
 CREATE OR REPLACE FUNCTION postvec.trg_chunk_upd() RETURNS trigger LANGUAGE plpgsql
-SECURITY DEFINER SET search_path = pg_catalog AS $body$
+SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $body$
 DECLARE
     r record;
     rid bigint := TG_ARGV[0]::bigint;
@@ -189,7 +191,8 @@ END $body$;
 -- key differs from the NEW-keyed insert, so deleting it is arbitration-safe);
 -- the NEW identity gets one refresh when the source is non-NULL.
 CREATE OR REPLACE FUNCTION postvec.trg_chunk_pk() RETURNS trigger LANGUAGE plpgsql
-SECURITY DEFINER SET search_path = pg_catalog AS $body$
+SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $body$
 DECLARE
     r record;
     rid bigint := TG_ARGV[0]::bigint;
@@ -243,7 +246,8 @@ BEGIN
 END $body$;
 
 CREATE OR REPLACE FUNCTION postvec.trg_chunk_del() RETURNS trigger LANGUAGE plpgsql
-SECURITY DEFINER SET search_path = pg_catalog AS $body$
+SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $body$
 DECLARE
     r record;
     rid bigint := TG_ARGV[0]::bigint;
@@ -329,7 +333,7 @@ GRANT EXECUTE ON FUNCTION postvec.trg_chunk_del() TO PUBLIC;
 -- their own table. The firing relation must therefore match the registry row
 -- the argument names; anything else is ignored with a WARNING.
 CREATE OR REPLACE FUNCTION postvec.trg_truncate() RETURNS trigger LANGUAGE plpgsql
-SECURITY DEFINER SET search_path = pg_catalog AS $body$
+SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE
     r record;
 BEGIN

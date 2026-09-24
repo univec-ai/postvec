@@ -62,6 +62,37 @@ pub(crate) fn resolve_relation(relation: &str) -> RelInfo {
 /// their schema qualification, so text stored in the registry and later
 /// interpolated into **worker** SQL — which runs without the enabling
 /// session's search path, always resolves.
+/// Run `f` under `KEY_SETTINGS`, the format queued primary keys are written
+/// and parsed in, restoring the caller's settings afterwards.
+pub(crate) fn with_key_format<R>(f: impl FnOnce() -> R) -> R {
+    let set = |name: &str, value: &str| {
+        Spi::run_with_args(
+            "SELECT pg_catalog.set_config($1, $2, true)",
+            &[name.into(), value.into()],
+        )
+        .unwrap_or_else(|e| error!("postvec: setting {name} failed: {e}"))
+    };
+    let saved: Vec<(&str, String)> = postvec_core::registry::KEY_SETTINGS
+        .iter()
+        .map(|&(name, value)| {
+            let old = Spi::get_one_with_args::<String>(
+                "SELECT pg_catalog.current_setting($1)",
+                &[name.into()],
+            )
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+            set(name, value);
+            (name, old)
+        })
+        .collect();
+    let out = f();
+    for (name, old) in saved {
+        set(name, &old);
+    }
+    out
+}
+
 pub(crate) fn with_pinned_search_path<R>(f: impl FnOnce() -> R) -> R {
     let saved = Spi::get_one::<String>("SELECT pg_catalog.current_setting('search_path')")
         .ok()
@@ -1829,13 +1860,15 @@ fn enable(
     if backfill_mode == "queue" {
         assert_queue_backfill_scale(&entry.qualified_table());
         let op = if recursive { "refresh" } else { "embed" };
-        Spi::run(&format!(
-            "INSERT INTO postvec.jobs (registry_id, pk_value, op)
+        with_key_format(|| {
+            Spi::run(&format!(
+                "INSERT INTO postvec.jobs (registry_id, pk_value, op)
              SELECT {id}, {pk}, '{op}' FROM {qtable} WHERE {col} IS NOT NULL
              ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING",
-            pk = entry.pk_text_expr(""),
-            col = quote_ident(column_name),
-        ))
+                pk = entry.pk_text_expr(""),
+                col = quote_ident(column_name),
+            ))
+        })
         .unwrap_or_else(|e| error!("postvec: backfill enqueue failed: {e}"));
     }
     crate::worker::worker_kick();
@@ -2099,15 +2132,17 @@ fn enqueue_gap_backfill(entry: &RegistryEntry, missing_only: bool) {
     } else {
         String::new()
     };
-    Spi::run(&format!(
-        "INSERT INTO postvec.jobs (registry_id, pk_value)
+    with_key_format(|| {
+        Spi::run(&format!(
+            "INSERT INTO postvec.jobs (registry_id, pk_value)
          SELECT {id}, {pk} FROM {qtable} WHERE {col} IS NOT NULL{gap}
          ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING",
-        id = entry.id,
-        pk = entry.pk_text_expr(""),
-        qtable = entry.qualified_table(),
-        col = quote_ident(&entry.source_column),
-    ))
+            id = entry.id,
+            pk = entry.pk_text_expr(""),
+            qtable = entry.qualified_table(),
+            col = quote_ident(&entry.source_column),
+        ))
+    })
     .unwrap_or_else(|e| error!("postvec: backfill enqueue failed: {e}"));
 }
 
@@ -2610,15 +2645,17 @@ fn set_format(relation: &str, column_name: &str, format: Option<&str>) {
             &[entry.id.into()],
         )
         .unwrap();
-        Spi::run(&format!(
-            "INSERT INTO postvec.jobs (registry_id, pk_value, op)
+        with_key_format(|| {
+            Spi::run(&format!(
+                "INSERT INTO postvec.jobs (registry_id, pk_value, op)
              SELECT {id}, {pk}, 'refresh' FROM {qtable} WHERE {col} IS NOT NULL
              ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING",
-            id = entry.id,
-            pk = entry.pk_text_expr(""),
-            qtable = entry.qualified_table(),
-            col = quote_ident(&entry.source_column),
-        ))
+                id = entry.id,
+                pk = entry.pk_text_expr(""),
+                qtable = entry.qualified_table(),
+                col = quote_ident(&entry.source_column),
+            ))
+        })
         .unwrap_or_else(|e| error!("postvec: set_format refresh enqueue failed: {e}"));
     } else {
         enqueue_full_refresh(&entry);
@@ -2677,14 +2714,16 @@ fn enqueue_full_refresh(entry: &RegistryEntry) {
              size, schedule set_format() in a maintenance window"
         );
     }
-    Spi::run(&format!(
-        "INSERT INTO postvec.jobs (registry_id, pk_value)
+    with_key_format(|| {
+        Spi::run(&format!(
+            "INSERT INTO postvec.jobs (registry_id, pk_value)
          SELECT {id}, {pk} FROM {qtable}
          ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING",
-        id = entry.id,
-        pk = entry.pk_text_expr(""),
-        qtable = entry.qualified_table(),
-    ))
+            id = entry.id,
+            pk = entry.pk_text_expr(""),
+            qtable = entry.qualified_table(),
+        ))
+    })
     .unwrap_or_else(|e| error!("postvec: full-refresh enqueue failed: {e}"));
 }
 
@@ -2784,6 +2823,7 @@ fn create_enqueue_triggers(entry: &RegistryEntry, mode: &str) {
     // aliased for statement triggers. Composite PKs key as ROW(...)::text.
     let pk_new = entry.pk_text_expr("NEW");
     let pk_n = entry.pk_text_expr("n");
+    let keys = postvec_core::registry::key_settings_clause();
     // Transition-table join on every PK column (composite-safe).
     let pk_join = entry
         .pk_columns
@@ -2810,7 +2850,7 @@ fn create_enqueue_triggers(entry: &RegistryEntry, mode: &str) {
     let ins_upd = if mode == "row" {
         format!(
             r#"
-CREATE FUNCTION postvec.trg_ins_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
+CREATE FUNCTION postvec.trg_ins_{id}() RETURNS trigger LANGUAGE plpgsql {keys} AS $pv$
 BEGIN
     IF NEW.{col} IS NOT NULL THEN
         INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
@@ -2822,7 +2862,7 @@ END $pv$;
 CREATE TRIGGER {ins_trg} AFTER INSERT ON {qtable}
     FOR EACH ROW EXECUTE FUNCTION postvec.trg_ins_{id}();
 
-CREATE FUNCTION postvec.trg_upd_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
+CREATE FUNCTION postvec.trg_upd_{id}() RETURNS trigger LANGUAGE plpgsql {keys} AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
@@ -2837,7 +2877,7 @@ CREATE TRIGGER {upd_trg} AFTER UPDATE OF {row_of_list} ON {qtable}
 -- the OLD pk text; an update that changes the PK without touching {col}
 -- would otherwise leave that job pointing at a nonexistent row and the text
 -- change silently never embedded.
-CREATE FUNCTION postvec.trg_pk_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
+CREATE FUNCTION postvec.trg_pk_{id}() RETURNS trigger LANGUAGE plpgsql {keys} AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
@@ -2852,7 +2892,7 @@ CREATE TRIGGER {pk_trg} AFTER UPDATE OF {pk_update_cols} ON {qtable}
     } else {
         format!(
             r#"
-CREATE FUNCTION postvec.trg_ins_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
+CREATE FUNCTION postvec.trg_ins_{id}() RETURNS trigger LANGUAGE plpgsql {keys} AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value)
     SELECT {id}, {pk_n} FROM new_table n WHERE n.{col} IS NOT NULL
@@ -2864,7 +2904,7 @@ CREATE TRIGGER {ins_trg} AFTER INSERT ON {qtable}
     REFERENCING NEW TABLE AS new_table
     FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_ins_{id}();
 
-CREATE FUNCTION postvec.trg_upd_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
+CREATE FUNCTION postvec.trg_upd_{id}() RETURNS trigger LANGUAGE plpgsql {keys} AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value)
     SELECT {id}, {pk_n}
@@ -2880,7 +2920,7 @@ CREATE TRIGGER {upd_trg} AFTER UPDATE ON {qtable}
     REFERENCING OLD TABLE AS old_table NEW TABLE AS new_table
     FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_upd_{id}();
 
-CREATE FUNCTION postvec.trg_pk_{id}() RETURNS trigger LANGUAGE plpgsql AS $pv$
+CREATE FUNCTION postvec.trg_pk_{id}() RETURNS trigger LANGUAGE plpgsql {keys} AS $pv$
 BEGIN
     INSERT INTO postvec.jobs (registry_id, pk_value) VALUES ({id}, {pk_new})
     ON CONFLICT (registry_id, op, pk_value, chunk_id) WHERE claimed_at IS NULL DO NOTHING;
@@ -3702,11 +3742,12 @@ fn retry_dead(
     // dead row on a chunked entry (a malformed direct queue insert
     // dead-lettered at claim time) can never succeed and is consumed too.
     const RETRY_DEAD_MAX_ROWS: i64 = 100_000;
-    let (consumed, obsolete) = if entry.is_recursive() {
-        let qdest = entry.qualified_vector_table();
-        let pk_type = &entry.pk_types[0];
-        let q = format!(
-            "WITH pick AS (
+    let (consumed, obsolete) = with_key_format(|| {
+        if entry.is_recursive() {
+            let qdest = entry.qualified_vector_table();
+            let pk_type = &entry.pk_types[0];
+            let q = format!(
+                "WITH pick AS (
                  SELECT dead_id FROM postvec.jobs_dead
                   WHERE registry_id = $1 AND ($2::int8[] IS NULL OR dead_id = ANY($2))
                   ORDER BY dead_id
@@ -3739,31 +3780,31 @@ fn retry_dead(
                              SELECT 1 FROM {qdest} c
                               WHERE c.postvec_chunk_id = d.chunk_id
                                 AND c.postvec_source_pk = d.pk_value::{pk_type})))"
-        );
-        Spi::connect_mut(|c| {
-            let t = c
-                .update(
-                    q.as_str(),
-                    None,
-                    &[
-                        entry.id.into(),
-                        picked_ids.clone().into(),
-                        RETRY_DEAD_MAX_ROWS.into(),
-                    ],
+            );
+            Spi::connect_mut(|c| {
+                let t = c
+                    .update(
+                        q.as_str(),
+                        None,
+                        &[
+                            entry.id.into(),
+                            picked_ids.clone().into(),
+                            RETRY_DEAD_MAX_ROWS.into(),
+                        ],
+                    )
+                    .unwrap_or_else(|e| error!("postvec: re-driving dead jobs failed: {e}"));
+                let row = t.into_iter().next();
+                let row = row.as_ref();
+                (
+                    row.and_then(|r| r.get::<i64>(1).unwrap()).unwrap_or(0),
+                    row.and_then(|r| r.get::<i64>(2).unwrap()).unwrap_or(0),
                 )
-                .unwrap_or_else(|e| error!("postvec: re-driving dead jobs failed: {e}"));
-            let row = t.into_iter().next();
-            let row = row.as_ref();
-            (
-                row.and_then(|r| r.get::<i64>(1).unwrap()).unwrap_or(0),
-                row.and_then(|r| r.get::<i64>(2).unwrap()).unwrap_or(0),
-            )
-        })
-    } else {
-        let consumed = Spi::connect_mut(|c| {
-            let t = c
-                .update(
-                    "WITH pick AS (
+            })
+        } else {
+            let consumed = Spi::connect_mut(|c| {
+                let t = c
+                    .update(
+                        "WITH pick AS (
                          SELECT dead_id FROM postvec.jobs_dead
                           WHERE registry_id = $1
                             AND ($2::int8[] IS NULL OR dead_id = ANY($2))
@@ -3780,21 +3821,22 @@ fn retry_dead(
                          WHERE claimed_at IS NULL DO NOTHING
                      )
                      SELECT count(*) FROM del",
-                    None,
-                    &[
-                        entry.id.into(),
-                        picked_ids.clone().into(),
-                        RETRY_DEAD_MAX_ROWS.into(),
-                    ],
-                )
-                .unwrap_or_else(|e| error!("postvec: re-driving dead jobs failed: {e}"));
-            t.into_iter()
-                .next()
-                .and_then(|r| r.get::<i64>(1).unwrap())
-                .unwrap_or(0)
-        });
-        (consumed, 0i64)
-    };
+                        None,
+                        &[
+                            entry.id.into(),
+                            picked_ids.clone().into(),
+                            RETRY_DEAD_MAX_ROWS.into(),
+                        ],
+                    )
+                    .unwrap_or_else(|e| error!("postvec: re-driving dead jobs failed: {e}"));
+                t.into_iter()
+                    .next()
+                    .and_then(|r| r.get::<i64>(1).unwrap())
+                    .unwrap_or(0)
+            });
+            (consumed, 0i64)
+        }
+    });
 
     if let Some(ids) = &picked_ids {
         if consumed != ids.len() as i64 {

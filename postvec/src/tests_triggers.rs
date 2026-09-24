@@ -431,6 +431,85 @@ mod tests {
         assert_eq!(pending(), 0);
     }
 
+    /// Keys are queued in one format whatever the writing session's
+    /// DateStyle, so the worker reads back the row that was written.
+    #[pg_test]
+    fn keys_are_queued_in_the_worker_format() {
+        seed_and_enable("CREATE TABLE docs (id date PRIMARY KEY, body text)");
+        Spi::run("CREATE TABLE rdocs (id date PRIMARY KEY, body text)").unwrap();
+        Spi::get_one::<i64>(
+            "SELECT postvec.enable('rdocs','body','m', trigger_mode => 'row', backfill => false)",
+        )
+        .unwrap();
+        Spi::run("SET LOCAL DateStyle = 'SQL, DMY'").unwrap();
+        Spi::run("INSERT INTO docs VALUES ('2026-02-03', 'a'); INSERT INTO rdocs VALUES ('2026-02-03', 'b')")
+            .unwrap();
+        assert_eq!(
+            Spi::get_one::<String>("SELECT string_agg(DISTINCT pk_value, ',') FROM postvec.jobs")
+                .unwrap(),
+            Some("2026-02-03".into())
+        );
+    }
+
+    /// The 0.3.0 upgrade rekeys state queued in another session's format and
+    /// restarts the cursor checkpoint.
+    #[pg_test]
+    fn upgrade_rekeys_legacy_state() {
+        seed_and_enable(
+            "CREATE TABLE docs (tenant int, at timestamptz, body text, PRIMARY KEY (tenant, at))",
+        );
+        Spi::run(
+            "SET LOCAL TimeZone = 'Europe/Dublin';
+             INSERT INTO postvec.jobs (registry_id, pk_value)
+             SELECT id, ROW(1, '2026-06-01 00:30+00'::timestamptz)::text FROM postvec.registry;
+             UPDATE postvec.registry SET backfill_mode = 'cursor', backfill_watermark = ROW(1, now())::text",
+        )
+        .unwrap();
+        Spi::run(include_str!("../sql/postvec--0.2.0--0.3.0.sql")).unwrap();
+        assert_eq!(
+            Spi::get_one::<String>("SELECT pk_value FROM postvec.jobs").unwrap(),
+            Some(r#"(1,"2026-06-01 00:30:00+00")"#.into())
+        );
+        assert_eq!(
+            Spi::get_one::<bool>("SELECT backfill_watermark IS NULL FROM postvec.registry")
+                .unwrap(),
+            Some(true)
+        );
+    }
+
+    /// The shared SECURITY DEFINER trigger functions resolve types past
+    /// pg_temp: a temporary `text` domain must not run code as their owner.
+    #[pg_test]
+    fn definer_triggers_ignore_temporary_types() {
+        seed_and_enable(DOCS);
+        let victim_id = Spi::get_one::<i64>("SELECT id FROM postvec.registry")
+            .unwrap()
+            .unwrap();
+        Spi::run("CREATE ROLE pv_intruder").unwrap();
+        Spi::run("SET ROLE pv_intruder").unwrap();
+        Spi::run("CREATE TEMP TABLE seen (who name)").unwrap();
+        Spi::run(
+            "CREATE FUNCTION pg_temp.pwn(v pg_catalog.text) RETURNS bool LANGUAGE sql
+                 AS $$ INSERT INTO pg_temp.seen VALUES (current_user); SELECT true $$",
+        )
+        .unwrap();
+        Spi::run("CREATE DOMAIN pg_temp.text AS pg_catalog.text CHECK (pg_temp.pwn(VALUE))")
+            .unwrap();
+        Spi::run("CREATE TEMP TABLE t (x int)").unwrap();
+        Spi::run(&format!(
+            "CREATE TRIGGER t AFTER TRUNCATE ON pg_temp.t
+                 FOR EACH STATEMENT EXECUTE FUNCTION postvec.trg_truncate('{victim_id}')"
+        ))
+        .unwrap();
+        Spi::run("TRUNCATE pg_temp.t").unwrap();
+        Spi::run("RESET ROLE").unwrap();
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM pg_temp.seen").unwrap(),
+            Some(0),
+            "a temporary type ran as the trigger function's owner"
+        );
+    }
+
     /// The network-consuming one-shot functions are not PUBLIC-executable
     /// (resource amplification); app roles get them via explicit GRANT.
     #[pg_test]

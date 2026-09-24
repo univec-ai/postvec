@@ -46,15 +46,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgListener, Connection, Executor};
 use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
-    },
+    sync::{Arc, RwLock},
     time::Duration,
 };
 use tokio::time::Instant;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+/// Bound on each heartbeat query, so a silently dropped connection is replaced.
+const BOUND: Duration = Duration::from_secs(30);
 /// Statement and lock timeout of worker connections: cursor scans over
 /// large, mostly embedded tables need minutes, not the CLI's seconds.
 const WORKER_TIMEOUT: u32 = 600;
@@ -118,9 +117,13 @@ impl ManagedDb {
         if self.proxy_port == Some(0) || (!self.sync && self.proxy_port.is_none()) {
             return Err("managed entry needs sync or a nonzero proxy_port".into());
         }
-        self.dsn
+        let options = self
+            .dsn
             .parse::<sqlx::postgres::PgConnectOptions>()
             .map_err(|_| "invalid managed PostgreSQL DSN")?;
+        if self.sync && install::transaction_pooler(&options) {
+            return Err(format!("managed {}: {}", self.name, install::POOLER));
+        }
         Ok(())
     }
     fn args(&self) -> ConnectionArgs {
@@ -306,8 +309,16 @@ pub fn start(
         let db = db.clone();
         let state = state.clone();
         tokio::spawn(async move {
+            let base = Duration::from_millis(db.poll_interval_ms.max(1000));
+            let mut delay = base;
             while !state.draining() {
-                if let Err(e) = session(&state, &db).await {
+                let started = Instant::now();
+                let lost = Arc::new(tokio::sync::Notify::new());
+                let result = tokio::select! {
+                    r = session(&state, &db, &lost) => r,
+                    _ = lost.notified() => Err(anyhow::anyhow!("leader session lost")),
+                };
+                if let Err(e) = result {
                     log::warn!("managed {}: {e}", db.name);
                     state.managed.update(
                         &db.name,
@@ -316,7 +327,13 @@ pub fn start(
                         None,
                     );
                 }
-                tokio::time::sleep(Duration::from_millis(db.poll_interval_ms.max(1000))).await;
+                // Back off while sessions keep failing (a wrong password, a
+                // newer schema): poolers ban clients that retry every second.
+                if started.elapsed() > Duration::from_secs(60) {
+                    delay = base;
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(60));
             }
         })
     }));
@@ -325,14 +342,21 @@ pub fn start(
 
 /// One database session: stand by until the leader lock is free, then drain
 /// until the connection or the schema is lost. The lock is session-scoped, so
-/// losing the connection is losing leadership.
-async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()> {
+/// losing the connection is losing leadership; the heartbeat notifies `lost`
+/// when the database no longer sees this session holding it.
+async fn session(
+    state: &Arc<ServerState>,
+    db: &ManagedDb,
+    lost: &Arc<tokio::sync::Notify>,
+) -> anyhow::Result<()> {
     let mut conn = install::connect(&db.args()).await?;
+    // A table locked for minutes (an ALTER, a VACUUM FULL) must not stall
+    // every other entry: its step fails fast and is retried at the next poll.
+    conn.execute("SET lock_timeout = '5s'").await?;
     let mut listener: Option<PgListener> = None;
     let mut monitor: Option<AbortOnDrop> = None;
     let mut build: Option<AbortOnDrop> = None;
     let mut client = inference::Client::new(state);
-    let lost = Arc::new(AtomicBool::new(false));
     let mut refresh = Instant::now();
     let mut sampled = Instant::now();
     let mut lexical = Instant::now();
@@ -341,16 +365,13 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
         if state.draining() {
             return Ok(());
         }
-        if lost.load(Ordering::Relaxed) {
-            anyhow::bail!("leader session lost");
-        }
         if monitor.is_none()
             && sqlx::query_scalar("SELECT pg_try_advisory_lock(1886615158, 2)")
                 .fetch_one(&mut conn)
                 .await?
         {
             let mut tx = conn.begin().await?;
-            worker::guard(&mut tx).await?;
+            worker::guard(&mut tx, true).await?;
             sqlx::query("INSERT INTO postvec.settings(key,value) VALUES ('leader',to_jsonb($1::text)) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
                 .bind(&state.identity.grpc_address).execute(&mut *tx).await?;
             tx.execute("INSERT INTO postvec.worker_heartbeat(id,pid,started_at,last_beat,jobs_done,errors) VALUES (1,pg_backend_pid(),now(),now(),0,0) ON CONFLICT(id) DO UPDATE SET pid=pg_backend_pid(),started_at=now(),last_beat=now()").await?;
@@ -372,6 +393,7 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
                 let pool = sqlx::postgres::PgPoolOptions::new()
                     .max_connections(1)
                     .acquire_timeout(Duration::from_secs(10))
+                    .after_connect(|conn, _| Box::pin(install::tune(conn)))
                     .connect_lazy_with(install::options(&db.args())?);
                 let mut l = PgListener::connect_with(&pool).await?;
                 l.listen("postvec_kick").await?;
@@ -383,7 +405,7 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
             if refresh <= Instant::now() {
                 client.refresh(state).await?;
                 let mut tx = conn.begin().await?;
-                worker::guard(&mut tx).await?;
+                worker::guard(&mut tx, true).await?;
                 client.cache(&mut tx).await?;
                 tx.commit().await?;
                 refresh = Instant::now() + Duration::from_secs(30);
@@ -402,6 +424,14 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
                     let _ = conn.execute("ROLLBACK").await;
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     true
+                }
+                // One entry's database error (a lock timeout behind a long
+                // ALTER, say) waits for the next poll; leadership and the
+                // round-robin position survive it.
+                Err(e) if recoverable(&e) => {
+                    log::warn!("managed {}: {e}", db.name);
+                    let _ = conn.execute("ROLLBACK").await;
+                    false
                 }
                 other => other?,
             };
@@ -434,45 +464,62 @@ async fn session(state: &Arc<ServerState>, db: &ManagedDb) -> anyhow::Result<()>
 /// The leader's heartbeat and status sampler, on its own connection so a
 /// long index build or inference call never lets the beat go stale. The beat
 /// is conditional on the leader session still holding its lock.
-async fn heartbeat(state: Arc<ServerState>, db: ManagedDb, lost: Arc<AtomicBool>, pid: i32) {
+async fn heartbeat(
+    state: Arc<ServerState>,
+    db: ManagedDb,
+    lost: Arc<tokio::sync::Notify>,
+    pid: i32,
+) {
     loop {
         let result = async {
             let mut conn = install::connect(&db.args()).await?;
             loop {
-                let beats = sqlx::query("UPDATE postvec.worker_heartbeat SET last_beat=now() WHERE id=1 AND pid=$1 AND EXISTS(SELECT FROM postvec.schema_version WHERE version=$2 AND mode='managed') AND EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND pid=$1 AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted)")
-                    .bind(pid).bind(install::VERSION).execute(&mut conn).await?.rows_affected();
+                let beats = tokio::time::timeout(BOUND, sqlx::query("UPDATE postvec.worker_heartbeat SET last_beat=now() WHERE id=1 AND pid=$1 AND EXISTS(SELECT FROM postvec.schema_version WHERE version=$2 AND mode='managed') AND EXISTS(SELECT FROM pg_locks WHERE locktype='advisory' AND pid=$1 AND classid=1886615158 AND objid=2 AND objsubid=2 AND granted)")
+                    .bind(pid).bind(install::VERSION).execute(&mut conn)).await??.rows_affected();
                 if beats != 1 {
-                    lost.store(true, Ordering::Relaxed);
-                    anyhow::bail!("leader session lost");
+                    return anyhow::Ok(());
                 }
-                let status = admin::status(&mut conn).await?;
+                let status = tokio::time::timeout(BOUND, admin::status(&mut conn)).await??;
                 state.managed.update(&db.name, true, None, Some(status));
                 tokio::time::sleep(SAMPLE_INTERVAL).await;
             }
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
         }
         .await;
-        if let Err(e) = result {
-            log::warn!("managed {} heartbeat: {e}", db.name);
+        match result {
+            Ok(()) => return lost.notify_one(),
+            Err(e) => log::warn!("managed {} heartbeat: {e}", db.name),
         }
+        // Still the leader until the lock is seen gone or the session ends.
         state.managed.update(
             &db.name,
-            false,
+            true,
             Some("Heartbeat unavailable; see server log".into()),
             None,
         );
-        if lost.load(Ordering::Relaxed) {
-            return;
-        }
         tokio::time::sleep(SAMPLE_INTERVAL).await;
     }
 }
 
+/// The SQLSTATE of the first database error in the chain.
+fn sqlstate(e: &anyhow::Error) -> Option<String> {
+    e.chain().find_map(|c| {
+        Some(
+            c.downcast_ref::<sqlx::Error>()?
+                .as_database_error()?
+                .code()?
+                .into_owned(),
+        )
+    })
+}
+
+/// A database error that leaves the connection usable: not a lost or
+/// terminated session (`08*`, `57P*`).
+fn recoverable(e: &anyhow::Error) -> bool {
+    sqlstate(e).is_some_and(|c| !c.starts_with("08") && !c.starts_with("57P"))
+}
+
 fn transient(e: &anyhow::Error) -> bool {
-    e.chain()
-        .filter_map(|c| c.downcast_ref::<sqlx::Error>()?.as_database_error())
-        .any(|d| matches!(d.code().as_deref(), Some("40001" | "40P01")))
+    matches!(sqlstate(e).as_deref(), Some("40001" | "40P01"))
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);

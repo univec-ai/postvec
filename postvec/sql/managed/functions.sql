@@ -5,35 +5,52 @@ CREATE OR REPLACE FUNCTION postvec.refresh_models() RETURNS void LANGUAGE sql
 SET search_path = pg_catalog, pg_temp AS $$ SELECT pg_catalog.pg_notify('postvec_kick', 'refresh_models') $$;
 REVOKE ALL ON FUNCTION postvec.refresh_models() FROM PUBLIC;
 
--- Served by the postvec-server proxy, which rewrites these calls before the
--- database sees them; reaching the function means the call did not go
--- through it.
-DROP FUNCTION IF EXISTS postvec.search(text,text,text,integer,real,integer,integer,jsonb);
-DROP FUNCTION IF EXISTS postvec.search_with_vector(text,text,real[],text,integer,real,integer,integer,jsonb);
+-- The postvec-server proxy embeds the text and passes the vector as the last
+-- argument, so the call still runs here, under the client's role and its
+-- EXECUTE privilege. Without a vector the call did not go through the proxy.
+-- search() keeps the caller's search_path for an unqualified relation, as
+-- search_with_vector() does.
 CREATE OR REPLACE FUNCTION postvec.search(relation text, column_name text, query text, limit_n integer DEFAULT 10,
-    semantic_weight real DEFAULT 0.5, rrf_k integer DEFAULT 60, candidates integer DEFAULT NULL, filter jsonb DEFAULT NULL)
+    semantic_weight real DEFAULT 0.5, rrf_k integer DEFAULT 60, candidates integer DEFAULT NULL, filter jsonb DEFAULT NULL,
+    query_vector real[] DEFAULT NULL)
 RETURNS TABLE(pk_value text, rrf_score double precision, semantic_rank bigint, fts_rank bigint,
               semantic_distance double precision, fts_score double precision,
               chunk_seq integer, chunk_start bigint, chunk_end bigint, chunk_text text)
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF query_vector IS NOT NULL THEN
+        RETURN QUERY SELECT * FROM postvec.search_with_vector(relation, column_name, query_vector, query,
+            limit_n, semantic_weight, rrf_k, candidates, filter);
+        RETURN;
+    END IF;
+    RAISE EXCEPTION 'postvec: search(text) is served only by the postvec-server proxy, and only with a literal relation and column and a literal or $n query text'
+        USING ERRCODE = 'feature_not_supported',
+              HINT = 'Connect through the proxy port (managed proxy_port, or serve --proxy) and pass those arguments directly, or embed the query with the server API and call postvec.search_with_vector().';
+END $$;
+-- A prepared statement's vector arrives as a text parameter the proxy
+-- appends at each Bind: an array literal, or `!` and the reason inference
+-- failed, raised here.
+CREATE OR REPLACE FUNCTION postvec._proxy_vector(v text) RETURNS real[]
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    RAISE EXCEPTION 'postvec: search(text) needs the postvec-server proxy port with literal relation and column arguments and a literal or $n query text'
-        USING ERRCODE = 'feature_not_supported',
-              HINT = 'Connect through the proxy, or embed the query with the server API and call postvec.search_with_vector().';
+    IF left(v, 1) = '!' THEN RAISE EXCEPTION '%', substr(v, 2) USING ERRCODE = 'feature_not_supported'; END IF;
+    RETURN v::real[];
 END $$;
 CREATE OR REPLACE FUNCTION postvec._proxy_error(message text) RETURNS void
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN RAISE EXCEPTION '%', message USING ERRCODE = 'feature_not_supported'; END $$;
-CREATE OR REPLACE FUNCTION postvec.embed(input text, model text) RETURNS real[]
+CREATE OR REPLACE FUNCTION postvec.embed(input text, model text, vector real[] DEFAULT NULL) RETURNS real[]
 LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-    RAISE EXCEPTION 'postvec: embed() needs the postvec-server proxy port with a literal model and a literal or $n text'
+    IF vector IS NOT NULL OR input IS NULL THEN RETURN vector; END IF;
+    RAISE EXCEPTION 'postvec: embed() is served only by the postvec-server proxy, and only with a literal model and a literal or $n text'
         USING ERRCODE = 'feature_not_supported',
-              HINT = 'Connect through the proxy, or use the server''s /api/openai/embeddings endpoint.';
+              HINT = 'Connect through the proxy port (managed proxy_port, or serve --proxy) and pass those arguments directly, or use the server''s /api/openai/embeddings endpoint.';
 END $$;
 
 CREATE OR REPLACE FUNCTION postvec.retry_dead(relation regclass, column_name text, dead_ids bigint[] DEFAULT NULL)
-RETURNS bigint LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
+RETURNS bigint LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
+SET DateStyle TO 'ISO, MDY' SET TimeZone TO 'UTC' SET IntervalStyle TO 'postgres' AS $$
 DECLARE r postvec.registry; picked bigint[]; consumed bigint; q text;
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_class c WHERE c.oid = relation AND c.relkind IN ('r','p')
@@ -260,7 +277,6 @@ BEGIN
               HINT = 'POST {"source_model","target_model","embeddings"} to the postvec-server /api/convert endpoint.';
 END $$;
 
-DROP FUNCTION IF EXISTS postvec.status();
 CREATE OR REPLACE FUNCTION postvec.status() RETURNS TABLE(worker_alive boolean, registry_id bigint, relation text, source_column text, model text, dim integer, state text, distance text, backfill_mode text, pending_jobs bigint, dead_jobs bigint, oldest_pending_seconds double precision, has_vector_index boolean, model_last_seen text, last_error text, worker_pid integer, worker_last_beat text, index_mode text, index_error text, chunking text, chunk_size integer, chunk_overlap integer, destination text, destination_view text, pending_refresh_jobs bigint, pending_embed_jobs bigint, lexical_docs bigint, lexical_stats_age_seconds double precision, lexical_error text, space text, route text, route_execution text)
 LANGUAGE sql SET search_path = pg_catalog, pg_temp AS $$
 SELECT COALESCE(hb.last_beat > now() - interval '30 seconds', false), r.id,
