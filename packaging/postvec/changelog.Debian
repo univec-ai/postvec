@@ -1,5 +1,11 @@
 postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
 
+  * Managed services fixes
+
+ -- ${MAINTAINER}  Thu, 24 Sep 2026 18:29:52 +0000
+
+postvec (0.2.0-2) unstable; urgency=medium
+
   * Packaging revision
 
  -- ${MAINTAINER}  Sat, 19 Sep 2026 16:37:15 +0100
