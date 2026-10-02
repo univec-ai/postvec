@@ -41,7 +41,7 @@ const deployments = [
         <h3>{{ deployments[selected].title }}</h3>
         <p>{{ deployments[selected].body }}</p>
         <p class="deployment__detail">{{ deployments[selected].detail }}</p>
-        <a :href="withBase(deployments[selected].href)">{{ deployments[selected].link }} <span aria-hidden="true">&rarr;</span></a>
+        <a :href="withBase(deployments[selected].href)">{{ deployments[selected].link }} <span aria-hidden="true">-&gt;</span></a>
       </div>
       <div class="deployment__diagram" :class="{ 'deployment__diagram--embedded': selected === 0 }">
         <span class="deployment__node">{{ deployments[selected].database }}</span>

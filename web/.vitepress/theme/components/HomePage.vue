@@ -193,17 +193,24 @@ onBeforeUnmount(() => {
     <header class="hero">
       <div class="wrap hero__grid">
         <div class="hero__copy">
-          <h1>Hybrid search for PostgreSQL. Convert stored vectors in place.</h1>
-          <div class="subhead">
-            <ul>
-            <li style="margin-bottom: 10px;">Postvec is a PostgreSQL extension for fused hybrid search: it combines <b>BM25 and semantic search</b> in one SQL call and keeps vectors in sync with your text automatically. You can also use it to <b>migrate vectors without re-embedding of text</b> with direct conversion between embedding formats. </li>
-            <li style="margin-bottom: 10px;">Inference runs <b>locally inside PostgreSQL</b> or remote on <b>postvec-server</b> or through hosted embedding APIs.</li>
-            </ul>
-          </div>
+          <h1>Add AI search to PostgreSQL without building the pipeline.</h1>
+          <p class="subhead">
+            postvec turns a text column into searchable embeddings, keeps them
+            current as rows change and combines keyword and meaning-based
+            results in one SQL call. Local inference runs inside PostgreSQL by
+            default. When models change, UniVec converters can bridge or
+            migrate supported vectors without re-embedding the source text.
+          </p>
           <div class="hero__cta">
-            <a class="btn btn--go" :href="withBase('/docs/quickstart')">Quick start</a>
-            <a class="btn" :href="withBase('/docs/')">Documentation</a>
+            <a class="btn btn--go" :href="withBase('/docs/quickstart')">Run the quickstart</a>
+            <a class="btn" href="#sql">See the SQL</a>
           </div>
+          <ul class="hero__proof">
+            <li>Local inference inside PostgreSQL</li>
+            <li>Automatic vector sync</li>
+            <li>Keyword(bm25) + semantic search</li>
+            <li>UniVec model conversion</li>
+          </ul>
           <p class="hero__fine">
         <span>PostgreSQL License (extension) · BSL 1.1 (postvec-server) · PostgreSQL 16-18 · pgvector 0.8+</span>
             <span>Local inference by default · MiniLM included · {{ SITE.conversionPairs }} conversion pairs</span>
@@ -444,90 +451,17 @@ onBeforeUnmount(() => {
     </header>
 
     <!-- ============================================================ -->
-    <!-- Lock-in and what postvec does                                 -->
-    <!-- ============================================================ -->
-    <section class="band band--story" aria-labelledby="story-heading">
-      <div class="wrap">
-        <h2 id="story-heading" class="visually-hidden">
-          Vector lock-in and embedding debt
-        </h2>
-        <p class="story">
-          A knowledge base held as vectors is tied to the model that
-          produced them. Changing that model usually means embedding the
-          source documents again. A compatible converter gives you another
-          path: translate the stored vectors into the target model's space.
-        </p>
-
-        <dl class="defs">
-          <div>
-            <dt>Vector lock-in</dt>
-            <dd>
-              The dependency between stored vectors and the model that
-              produced them. postvec can translate a search query into an
-              older model's space through a compatible converter, so the
-              existing index can continue to serve search.
-            </dd>
-          </div>
-          <div>
-            <dt>Embedding debt</dt>
-            <dd>
-              The cost of changing that dependency later. postvec migrates
-              a vector store straight into a newer model's space, using
-              {{ SITE.conversionPairs }} conversion pairs from the UniVec
-              catalogue.
-            </dd>
-          </div>
-        </dl>
-
-        <p class="product">
-          postvec makes a text column semantic. It keeps a shadow
-          <code>pgvector</code> column in sync with the text, fuses
-          full-text and semantic search in one call and converts stored
-          vectors from one model space into another directly.
-        </p>
-
-        <div class="pledges">
-          <article class="pledge">
-            <h3>Local inference included</h3>
-            <p>
-              Swappable embedding models run locally, inside PostgreSQL or
-              on inference nodes you operate. Raw text stays on hosts you
-              control. Hosted providers are configured on the inference
-              host, where their API keys are stored.
-            </p>
-            <a :href="withBase('/docs/models/providers')">External providers</a>
-          </article>
-          <article class="pledge">
-            <h3>Convert stored vectors</h3>
-            <p>
-              Convert existing vectors between embedding spaces through the
-              UniVec catalogue of {{ SITE.conversionPairs }} pairs. The
-              source text stays where it is and search continues to use the
-              original column until you finalize the migration.
-            </p>
-            <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
-          </article>
-          <article class="pledge">
-            <h3>Deprecated spaces keep working</h3>
-            <p>
-              Bridge search embeds the query with a local model, then
-              converts that one vector into the stored space. An
-              <code>ada-002</code> index can serve new queries through a
-              compatible bridge. Evaluate retrieval quality on your data.
-            </p>
-            <a :href="withBase('/docs/guides/bridge')">Search a retired space</a>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============================================================ -->
     <!-- The SQL surface                                               -->
     <!-- ============================================================ -->
-    <section class="band" aria-labelledby="sql-heading">
+    <section id="sql" class="band band--sql" aria-labelledby="sql-heading">
       <div class="wrap">
-        <h2 id="sql-heading">Enable, search, adopt, migrate.</h2>
-        <p class="prose">Manage embedding, retrieval and model migration through SQL.</p>
+        <h2 id="sql-heading">From text column to search results, inside PostgreSQL.</h2>
+        <p class="prose">
+          Enable a column and postvec generates and keeps its embeddings up to
+          date. Search by keyword and meaning in one SQL call, adopt vectors
+          you already have and migrate supported vectors when your model
+          changes.
+        </p>
 
         <div class="try">
           <div class="try__head">
@@ -576,7 +510,7 @@ onBeforeUnmount(() => {
               <h3>{{ tab.title }}</h3>
               <p>{{ tab.body }}</p>
               <p class="expect"><b>Expected:</b> {{ tab.expect }}</p>
-              <a class="more" :href="withBase(tab.href)">{{ tab.linkText }} &rarr;</a>
+              <a class="more" :href="withBase(tab.href)">{{ tab.linkText }} -&gt;</a>
             </div>
           </div>
         </div>
@@ -589,6 +523,94 @@ onBeforeUnmount(() => {
           <a :href="withBase('/docs/reference/sql')">SQL reference</a> lists
           every function.
         </p>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Build now, change models later                               -->
+    <!-- ============================================================ -->
+    <section class="band band--story" aria-labelledby="story-heading">
+      <div class="wrap">
+        <h2 id="story-heading">Build search now. Change models later.</h2>
+        <p class="story">
+          Your embedding model will not stay the same forever. postvec brings
+          UniVec conversion into the PostgreSQL workflow so a supported model
+          change does not automatically mean rebuilding the whole vector store
+          from source text.
+        </p>
+
+        <div class="paths">
+          <div>
+            <h3>Keep the old index searchable.</h3>
+            <p>
+              If its embedding model is no longer available, bridge new queries
+              into that existing vector space. The stored vectors stay as they
+              are.
+            </p>
+          </div>
+          <div>
+            <h3>Move to a new model.</h3>
+            <p>
+              When a compatible converter is available, translate the stored
+              vectors, test retrieval quality on your data, then complete the
+              migration.
+            </p>
+          </div>
+        </div>
+
+        <dl class="defs">
+          <div>
+            <dt>Vector lock-in</dt>
+            <dd>
+              The dependency between stored vectors and the model that
+              produced them. postvec can translate a search query into an
+              older model's space through a compatible converter, so the
+              existing index can continue to serve search.
+            </dd>
+          </div>
+          <div>
+            <dt>Embedding debt</dt>
+            <dd>
+              The cost of changing that dependency later. postvec migrates
+              a vector store straight into a newer model's space, using
+              {{ SITE.conversionPairs }} conversion pairs from the UniVec
+              catalogue.
+            </dd>
+          </div>
+        </dl>
+
+        <div class="pledges">
+          <article class="pledge">
+            <h3>Local inference included</h3>
+            <p>
+              Swappable embedding models run locally, inside PostgreSQL or
+              on inference nodes you operate. Raw text stays on hosts you
+              control. Hosted providers are configured on the inference
+              host, where their API keys are stored.
+            </p>
+            <a :href="withBase('/docs/models/providers')">External providers</a>
+          </article>
+          <article class="pledge">
+            <h3>Convert stored vectors</h3>
+            <p>
+              Convert existing vectors between embedding spaces through the
+              UniVec catalogue of {{ SITE.conversionPairs }} pairs. The
+              source text stays where it is and search continues to use the
+              original column until you finalize the migration.
+            </p>
+            <a :href="withBase('/docs/guides/migrate')">Migrate in place</a>
+          </article>
+          <article class="pledge">
+            <h3>Deprecated spaces keep working</h3>
+            <p>
+              Bridge search embeds the query with a local model, then
+              converts that one vector into the stored space. An
+              <code>ada-002</code> index can serve new queries through a
+              compatible bridge. Evaluate retrieval quality on your data.
+            </p>
+            <a :href="withBase('/docs/guides/bridge')">Search a retired space</a>
+          </article>
+        </div>
       </div>
     </section>
 
@@ -945,10 +967,30 @@ h1 {
   color: var(--vp-c-text-2);
 }
 
-.subhead ul {
-  margin: 0;
+.hero__proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.25rem;
+  margin: 1.4rem 0 0;
   padding: 0;
   list-style: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--vp-c-text-1);
+}
+
+.hero__proof li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.hero__proof li::before {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 1px;
+  background: var(--pv-mark);
 }
 
 .hero__cta {
@@ -1236,13 +1278,32 @@ html:not(.dark) .band--alt {
   color: var(--vp-c-text-1);
 }
 
-.product {
-  max-width: none;
-  margin: 2.5rem 0 0;
-  font-size: 1.05rem;
-  line-height: 1.7;
-  color: var(--vp-c-text-1);
+.band--story .story { margin-top: 0.9rem; }
+
+.paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem 2.5rem;
+  margin-top: 2rem;
 }
+
+.paths > div {
+  padding-left: 1rem;
+  border-left: 2px solid var(--pv-mark);
+}
+
+.paths p {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.65;
+  color: var(--vp-c-text-2);
+}
+
+.band--sql { scroll-margin-top: var(--vp-nav-height, 64px); }
+
+/* the walkthrough below spans the container, so the intro does too */
+.home-page .band--sql h2,
+.band--sql .prose { max-width: none; }
 
 .know {
   display: grid;
@@ -1532,7 +1593,7 @@ html:not(.dark) .band--alt {
   .tabs__panel { grid-template-columns: minmax(0, 1fr); min-height: 0; }
   .tabs__why { border-left: 0; border-top: 1px solid var(--vp-c-divider); }
   .pledges, .dir, .know { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
-  .defs { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .defs, .paths { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
   .core, .univec { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
 }
 

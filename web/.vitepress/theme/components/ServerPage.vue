@@ -68,7 +68,7 @@ const features: Feature[] = [
     icon: "M5 5h14v14H5zM9 9h6v6H9zM12 2v3M12 19v3M2 12h3M19 12h3",
     title: "Process isolation",
     body:
-      "Inference runs in its own process, with its own limits and restart cycle. A native fault in a model stops that node, and the PostgreSQL service continues to run.",
+      "Inference runs in its own process, with its own limits and restart cycle. A native fault in a model stops that node and the PostgreSQL service continues to run.",
     href: "/docs/server/usage",
     link: "When to use it",
   },
@@ -217,7 +217,7 @@ const plans: Plan[] = [
               A self-hosted PostgreSQL cluster calls a fleet of three
               postvec-server nodes over gRPC. Two managed databases are served
               by the server's worker over SQL. The nodes form a gossip group,
-              one of them is a GPU node, and a dashboard manages them.
+              one of them is a GPU node and a dashboard manages them.
             </desc>
 
             <!-- wires -->
@@ -336,7 +336,7 @@ const plans: Plan[] = [
             <p>
               postvec-server adds a second host for inference: process isolation,
               throughput beyond one database host and managed PostgreSQL. It is
-              source-available under the Business Source License 1.1, and each
+              source-available under the Business Source License 1.1 and each
               version changes to the PostgreSQL License four years after its
               release.
             </p>
@@ -396,7 +396,7 @@ const plans: Plan[] = [
               <h3>Install the schema</h3>
               <p>
                 Creates the <code>postvec</code> schema as a plain SQL install.
-                The install is transactional, and it runs again after a server
+                The install is transactional and it runs again after a server
                 upgrade to update the schema in place.
               </p>
             </div>
@@ -472,7 +472,7 @@ const plans: Plan[] = [
         <p class="sp-note">
           After a cancellation, production use of the server and the private
           converters ends after a 30-day transition. Vectors already written stay
-          in the database, and embedded mode with public models continues to
+          in the database and embedded mode with public models continues to
           work. Full terms: <a :href="withBase('/docs/license')">License</a>.
         </p>
       </div>
@@ -496,7 +496,7 @@ const plans: Plan[] = [
             <h3>Converter catalogue</h3>
             <p>
               {{ SITE.conversionPairs }} conversion pairs between embedding model
-              spaces. A public subset is open to everyone, and
+              spaces. A public subset is open to everyone and
               private converters are available through verified UniVec accounts
               under their model terms. Pro covers commercial use.
             </p>

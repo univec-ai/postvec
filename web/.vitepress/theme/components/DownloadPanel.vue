@@ -290,7 +290,7 @@ function assetUrl(name: string): string | null {
       packages install. The package creates the service account and starts
       nothing: the two <code>install</code> lines put your certificate pair
       where the packaged configuration looks (key
-      <code>root:postvec-server 0640</code>), and only then is the unit
+      <code>root:postvec-server 0640</code>) and only then is the unit
       started. The CLI and the extras are Recommends of the node package;
       they are listed because a local-file install cannot fetch them on its
       own.

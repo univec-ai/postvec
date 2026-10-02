@@ -2,7 +2,7 @@ export const SITE = {
   name: "postvec",
   title: "postvec",
   description:
-    "Fused hybrid search for PostgreSQL: BM25 and semantic search in one SQL call, vectors kept in sync with text, and direct conversion between embedding formats. Inference runs locally inside PostgreSQL, on postvec-server, or through hosted embedding APIs.",
+    "Fused hybrid search for PostgreSQL: BM25 and semantic search in one SQL call, vectors kept in sync with text and direct conversion between embedding formats. Inference runs locally inside PostgreSQL, on postvec-server or through hosted embedding APIs.",
   url: "https://postvec.dev",
   github: "https://github.com/univec-ai/postvec",
   githubRepo: "univec-ai/postvec",

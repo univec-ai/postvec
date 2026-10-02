@@ -3,7 +3,7 @@ layout: page
 sidebar: false
 title: postvec
 titleTemplate: postvec
-description: "Fused hybrid search for PostgreSQL: BM25 and semantic search in one SQL call, vectors kept in sync with text, and direct conversion between embedding formats. Inference runs locally inside PostgreSQL, on postvec-server, or through hosted embedding APIs."
+description: "Fused hybrid search for PostgreSQL: BM25 and semantic search in one SQL call, vectors kept in sync with text and direct conversion between embedding formats. Inference runs locally inside PostgreSQL, on postvec-server or through hosted embedding APIs."
 ---
 
 <HomePage>
