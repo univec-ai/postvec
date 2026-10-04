@@ -5,3 +5,4 @@ postvec/target/
 .env.*
 *.log
 /docs/
+.idea

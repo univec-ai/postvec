@@ -100,6 +100,17 @@ The fork is trimmed by deletion only, with two recorded amendments:
   `as_str`/`from_str` arms and round-trip test row) as the fork's only `+`
   lines; upstream may adopt the same variant verbatim.
 
+## Synced from upstream
+
+Upstream changes picked up after the fork point:
+
+- `univec-ai/stack@273d335d` (2026-10-04), "vector converters normalizing
+  inputs": `VectorEmbeddingExecutor` L2-normalizes input rows before the
+  model runs (`executor.params.normalize_input`, default `true`) - univec
+  converters are trained on unit-length vectors. Affects:
+  `src/executors/vector_embedding.rs`
+  `src/executors/mod.rs`; tests included.
+
 ## Known deferred lint
 
 `engine/src/lib.rs` carries one `clippy::nonminimal_bool` warning under

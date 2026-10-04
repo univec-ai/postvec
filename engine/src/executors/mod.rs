@@ -137,7 +137,7 @@ pub fn new_executor(
     match executor_key {
         "passthru" => Ok(Arc::new(PassThruExecutor::new())),
         "dummy" => Ok(Arc::new(DummyExecutor::new())),
-        "vector-embedding" => Ok(Arc::new(VectorEmbeddingExecutor::new())),
+        "vector-embedding" => Ok(Arc::new(VectorEmbeddingExecutor::new(config)?)),
         "embed-bridge" => Ok(Arc::new(EmbedBridgeExecutor::new(config)?)),
         "convert-bridge" => Ok(Arc::new(ConvertBridgeExecutor::new(config)?)),
         "transformer-sequence-embedding" => Ok(Arc::new(TransformerForSequenceEmbedding::new(
