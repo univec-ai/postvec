@@ -37,7 +37,10 @@ DISTROS=(
     "ubuntu2204:ubuntu:22.04"
     "ubuntu2404:ubuntu:24.04"
     "almalinux9:almalinux:9"
-    "rocky9:rockylinux:9"
+    # Rocky's own, maintained image. Docker Hub's library `rockylinux:9` stopped
+    # at 9.3, and PGDG's repository RPM resolves per minor (rhel-9.3-*), which
+    # PGDG no longer serves: it 404s, though no current Rocky host is on 9.3.
+    "rocky9:rockylinux/rockylinux:9"
 )
 
 PG_MAJOR=18
