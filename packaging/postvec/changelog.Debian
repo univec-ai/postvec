@@ -1,5 +1,15 @@
 postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
 
+  * Converters L2-normalize their input vectors before conversion
+    (executor.params.normalize_input - default on) matching the hosted
+    API (converters trained on unit-length embeddings)
+  * Registry fixes: converters from API-only embedding spaces (OpenAI, Cohere,
+    Gemini, Titan, Mistral) install cleanly
+
+ -- ${MAINTAINER}  Sun, 04 Oct 2026 15:28:01 +0000
+
+postvec (0.3.0-1) unstable; urgency=medium
+
   * Managed services fixes
 
  -- ${MAINTAINER}  Thu, 24 Sep 2026 18:29:52 +0000
