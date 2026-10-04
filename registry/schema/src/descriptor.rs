@@ -1,24 +1,6 @@
 //! One canonical reading of `ninference.hub.json` for registry purposes,
 //! shared by the client installer and the publisher.
 //!
-//! The registry-relevant subset of a descriptor lives here, once, so the
-//! publisher and installer cannot disagree about it. The rules:
-//!
-//! - **No guessed load-bearing defaults.** A published descriptor must state
-//!   its `backend` and `params.model_type` explicitly; the publisher refuses
-//!   anything else, and the installer refuses an archive whose descriptor
-//!   disagrees with the index entry that advertised it.
-//! - **Every runtime file reference is a required asset.** `file_path` plus
-//!   every tokenizer file reference the engine understands
-//!   (`pretrained_vocab_file`, `vocab_file_path`, `merges_file_path`) — from
-//!   every object stored under a `tokenizer` key anywhere in the descriptor,
-//!   because the engine's executors also consume nested shapes
-//!   (`executor.params.transformer.tokenizer`, encoder/decoder tokenizers).
-//!   The publisher ships them or fails; the installer requires them present
-//!   or fails.
-//! - **Checked numeric conversions.** A dimension that does not fit `u32` is
-//!   an error, never a silent truncation.
-//!
 //! This module deliberately has no dependency on the `engine` crate: it must
 //! stay easy to audit, and the publisher separately proves "the engine can
 //! parse this" with the real engine schema.
@@ -156,7 +138,7 @@ impl Descriptor {
         })
     }
 
-    /// The identity this descriptor declares — what the **engine** will
+    /// The identity this descriptor declares - what the **engine** will
     /// believe once the directory is installed, which is the only identity
     /// that can move a column's vector space.
     ///
@@ -175,9 +157,9 @@ impl Descriptor {
         }
     }
 
-    /// The install-time agreement gate. The **immutable identity** fields —
+    /// The install-time agreement gate. The **immutable identity** fields -
     /// `name`, `backend`, `model_type`, `source_model`, `target_model`,
-    /// `source_dim`, `target_dim` — are hard failures: the engine consumes
+    /// `source_dim`, `target_dim` - are hard failures: the engine consumes
     /// the descriptor, so an archive that disagrees with the catalogue that
     /// advertised it is serving a different model than the one the client
     /// asked for, whatever the index says.
@@ -275,35 +257,59 @@ impl Descriptor {
         Ok(warnings)
     }
 
-    /// The `postvec_requires` product rule, derived from the descriptor
-    /// alone: a converter needs its source space's embed model and the
-    /// `embed-bridge` executor so its target stays writable for new text;
-    /// everything else needs nothing. Shared by the publisher (which
-    /// writes the index from it) and the installer (which verifies the
-    /// index against it).
-    pub fn derived_postvec_requires(&self) -> Vec<String> {
-        match self.model_type.as_deref() {
-            Some("convert") => {
-                let mut requires = Vec::new();
-                if let Some(source) = &self.source_model {
-                    requires.push(source.clone());
-                }
-                requires.push("embed-bridge".to_string());
-                requires
+    /// The `postvec_requires` product rule: what keeps a converter's spaces
+    /// writable for new text, given which names the index `offered` as
+    /// installable models. Everything but a converter needs nothing.
+    ///
+    /// - source offered (`bge -> ada-002`): the source embed model plus the
+    ///   `embed-bridge` executor, so the target space stays writable by
+    ///   embedding locally and converting;
+    /// - source not offered - an API-only space (`openai -> bge`, the
+    ///   migration direction): the target embed model when offered, since
+    ///   new rows of a migrated column are embedded with it; the converter
+    ///   itself is all `migrate()` needs;
+    /// - neither offered (`openai-3-small -> ada-002`): nothing.
+    ///
+    /// The publisher calls this with its catalogue; the installer accepts any
+    /// shape in [`Self::postvec_requires_shapes`], because it checks one
+    /// staged descriptor without the index.
+    pub fn derived_postvec_requires(&self, offered: impl Fn(&str) -> bool) -> Vec<String> {
+        if self.model_type.as_deref() != Some("convert") {
+            return Vec::new();
+        }
+        match (&self.source_model, &self.target_model) {
+            (Some(source), _) if offered(source) => {
+                vec![source.clone(), "embed-bridge".to_string()]
             }
+            (_, Some(target)) if offered(target) => vec![target.clone()],
             _ => Vec::new(),
         }
     }
 
+    /// Every closure [`Self::derived_postvec_requires`] can produce for this
+    /// descriptor, whatever the index offers.
+    pub fn postvec_requires_shapes(&self) -> Vec<Vec<String>> {
+        let mut shapes = vec![
+            self.derived_postvec_requires(|_| true),
+            self.derived_postvec_requires(|name| Some(name) != self.source_model.as_deref()),
+            self.derived_postvec_requires(|_| false),
+        ];
+        shapes.dedup();
+        shapes
+    }
+
     fn check_postvec_requires(&self, model: &IndexModel) -> Result<(), String> {
-        let derived: BTreeSet<String> = self.derived_postvec_requires().into_iter().collect();
-        let advertised: BTreeSet<String> = model.postvec_requires.iter().cloned().collect();
-        if derived != advertised {
+        let advertised: BTreeSet<&str> =
+            model.postvec_requires.iter().map(|s| s.as_str()).collect();
+        let shapes = self.postvec_requires_shapes();
+        if !shapes
+            .iter()
+            .any(|shape| shape.iter().map(|s| s.as_str()).collect::<BTreeSet<_>>() == advertised)
+        {
             return Err(format!(
-                "the index advertises postvec_requires {:?} but the descriptor derives {:?}; \
-                 the installed companion closure would differ from the required one",
+                "the index advertises postvec_requires {:?} but the descriptor derives one of \
+                 {shapes:?}; the installed companion closure would differ from the required one",
                 model.postvec_requires,
-                self.derived_postvec_requires()
             ));
         }
         Ok(())
@@ -665,28 +671,56 @@ mod tests {
         model
     }
 
-    /// The installer independently derives the companion closure and
-    /// requires the index to advertise exactly that set.
+    /// The closure follows what the index offers: bridge shape when the
+    /// source is installable, the target embed model when only it is (the
+    /// API-space migration direction), nothing when neither is.
     #[test]
-    fn postvec_requires_must_match_the_derived_closure() {
+    fn postvec_requires_follows_what_the_index_offers() {
         let descriptor = convert_descriptor();
         assert_eq!(
-            descriptor.derived_postvec_requires(),
+            descriptor.derived_postvec_requires(|_| true),
             ["embed-a", "embed-bridge"]
         );
-        descriptor
-            .validate_against_index(&convert_index_model())
-            .unwrap();
-
-        // An index that omits the companions is drift, reported as a
-        // warning. Pull's closure came from the validated index either way.
-        let mut bare = convert_index_model();
-        bare.postvec_requires.clear();
-        let warnings = descriptor.validate_against_index(&bare).unwrap();
-        assert!(
-            warnings.iter().any(|w| w.contains("postvec_requires")),
-            "{warnings:?}"
+        assert_eq!(
+            descriptor.derived_postvec_requires(|name| name == "space-b"),
+            ["space-b"]
         );
+        assert!(descriptor.derived_postvec_requires(|_| false).is_empty());
+        let embed = Descriptor::parse(&descriptor_json("")).unwrap();
+        assert!(embed.derived_postvec_requires(|_| true).is_empty());
+    }
+
+    /// The installer checks one staged descriptor without the index, so it
+    /// accepts every shape the publisher could have derived - and only those.
+    #[test]
+    fn postvec_requires_must_match_a_derivable_closure() {
+        let descriptor = convert_descriptor();
+        for advertised in [
+            vec!["embed-a".to_string(), "embed-bridge".to_string()],
+            vec!["space-b".to_string()],
+            vec![],
+        ] {
+            let mut index = convert_index_model();
+            index.postvec_requires = advertised;
+            let warnings = descriptor.validate_against_index(&index).unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+        }
+
+        // A closure no index could produce is drift, reported as a warning.
+        // Pull's closure came from the validated index either way.
+        for advertised in [
+            vec!["embed-bridge"],
+            vec!["embed-a"],
+            vec!["other", "embed-bridge"],
+        ] {
+            let mut index = convert_index_model();
+            index.postvec_requires = advertised.into_iter().map(String::from).collect();
+            let warnings = descriptor.validate_against_index(&index).unwrap();
+            assert!(
+                warnings.iter().any(|w| w.contains("postvec_requires")),
+                "{warnings:?}"
+            );
+        }
 
         // An index that invents companions for a non-converter, likewise.
         let embed = Descriptor::parse(&descriptor_json("")).unwrap();
