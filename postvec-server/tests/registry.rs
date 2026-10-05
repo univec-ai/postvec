@@ -191,6 +191,8 @@ impl Node {
 #[tokio::test]
 async fn pull_activate_deactivate_through_the_admin_port() {
     let work = tempfile::tempdir().unwrap();
+    std::env::remove_var("POSTVEC_API_KEY");
+    std::env::set_var("XDG_CONFIG_HOME", work.path());
     std::env::set_var(
         "POSTVEC_REGISTRY_PUBLIC_INDEX_URL",
         serve_registry(work.path()),

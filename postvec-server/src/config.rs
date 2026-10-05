@@ -198,15 +198,24 @@ pub fn default_max_inflight() -> usize {
 /// or both.
 pub const DEFAULT_ROOT: &str = "/opt/postvec";
 
-/// `--root` > `POSTVEC_SERVER_ROOT` > [`DEFAULT_ROOT`].
+/// `--root` > `POSTVEC_PATH` > [`DEFAULT_ROOT`]. The CLI reads the same
+/// variable, so one setting serves both.
 ///
 /// The on-disk layout matches embedded mode, so a root is portable between
 /// an in-database engine and this server.
 pub fn resolve_root(flag: Option<&Path>, env: &dyn EnvSource) -> Result<PathBuf, String> {
-    Ok(flag
-        .map(|p| p.to_path_buf())
-        .or_else(|| env.get("POSTVEC_SERVER_ROOT").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT)))
+    match flag {
+        Some(path) => Ok(path.to_path_buf()),
+        None => Ok(env_path(env, "POSTVEC_PATH")?.unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT))),
+    }
+}
+
+fn env_path(env: &dyn EnvSource, key: &str) -> Result<Option<PathBuf>, String> {
+    match env.get(key).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) if Path::new(&value).is_absolute() => Ok(Some(PathBuf::from(value))),
+        Some(_) => Err(format!("{key} must be an absolute path")),
+    }
 }
 
 /// Where to look for the optional configuration file.
@@ -312,7 +321,7 @@ pub fn split_list(raw: &str) -> Vec<String> {
 /// Resolve a possibly-relative path against the engine root.
 ///
 /// Relative certificate paths resolve against the root, so a unit that sets
-/// `POSTVEC_SERVER_ROOT=/srv/postvec` and drops certificates there is
+/// `POSTVEC_PATH=/srv/postvec` and drops certificates there is
 /// independent of where the JSON lives.
 fn against_root(root: &Path, value: impl AsRef<Path>) -> PathBuf {
     let value = value.as_ref();
@@ -515,13 +524,13 @@ pub fn resolve(
     // The server default nests under --root: the root is this process's
     // configuration anchor, and each node is administered with
     // `postvec provider ... --path <root>`.
-    let providers_path = flags
-        .providers_path
-        .clone()
-        .or_else(|| env.get("POSTVEC_SERVER_PROVIDERS_PATH").map(PathBuf::from))
-        .or_else(|| file.providers_path.clone().map(PathBuf::from))
-        .map(|p| against_root(&root, p))
-        .unwrap_or_else(|| root.join("providers.d"));
+    let providers_path = match &flags.providers_path {
+        Some(path) => Some(path.clone()),
+        None => env_path(env, "POSTVEC_PROVIDERS_PATH")?,
+    }
+    .or_else(|| file.providers_path.clone().map(PathBuf::from))
+    .map(|p| against_root(&root, p))
+    .unwrap_or_else(|| root.join("providers.d"));
 
     let predict_timeout_ms = flags
         .predict_timeout_ms
@@ -765,7 +774,7 @@ mod tests {
         let s = resolve_with(
             ServeArgs::default(),
             file.clone(),
-            &[("POSTVEC_SERVER_PROVIDERS_PATH", "/from/env")],
+            &[("POSTVEC_PROVIDERS_PATH", "/from/env")],
         )
         .unwrap();
         assert_eq!(s.providers_path, PathBuf::from("/from/env"));
@@ -775,7 +784,7 @@ mod tests {
                 ..Default::default()
             },
             file,
-            &[("POSTVEC_SERVER_PROVIDERS_PATH", "/from/env")],
+            &[("POSTVEC_PROVIDERS_PATH", "/from/env")],
         )
         .unwrap();
         assert_eq!(s.providers_path, PathBuf::from("/from/flag"));
@@ -1214,16 +1223,47 @@ mod tests {
     fn root_resolution_order() {
         let flag = PathBuf::from("/from/flag");
         assert_eq!(
-            resolve_root(Some(&flag), &env(&[("POSTVEC_SERVER_ROOT", "/from/env")])).unwrap(),
+            resolve_root(Some(&flag), &env(&[("POSTVEC_PATH", "/from/env")])).unwrap(),
             flag
         );
         assert_eq!(
-            resolve_root(None, &env(&[("POSTVEC_SERVER_ROOT", "/from/env")])).unwrap(),
+            resolve_root(None, &env(&[("POSTVEC_PATH", "/from/env")])).unwrap(),
             PathBuf::from("/from/env")
         );
         assert_eq!(
             resolve_root(None, &env(&[])).unwrap(),
             PathBuf::from(DEFAULT_ROOT)
+        );
+        assert_eq!(
+            resolve_root(None, &env(&[("POSTVEC_PATH", "")])).unwrap(),
+            PathBuf::from(DEFAULT_ROOT)
+        );
+        assert!(resolve_root(None, &env(&[("POSTVEC_PATH", "relative")])).is_err());
+        assert_eq!(
+            resolve_root(Some(&flag), &env(&[("POSTVEC_PATH", "relative")])).unwrap(),
+            flag
+        );
+    }
+
+    #[test]
+    fn providers_env_paths_are_absolute_and_empty_means_default() {
+        let resolve = |value| {
+            resolve_with(
+                ServeArgs::default(),
+                FileConfig::default(),
+                &[("POSTVEC_PROVIDERS_PATH", value)],
+            )
+        };
+        assert_eq!(
+            resolve("").unwrap().providers_path,
+            PathBuf::from("/srv/root/providers.d")
+        );
+        assert!(resolve("relative")
+            .unwrap_err()
+            .contains("POSTVEC_PROVIDERS_PATH"));
+        assert_eq!(
+            resolve("/srv/custom").unwrap().providers_path,
+            PathBuf::from("/srv/custom")
         );
     }
 

@@ -17,7 +17,35 @@ use crate::error::{CliError, Exit, Result};
 use crate::facts::ServerFacts;
 use crate::output::Output;
 use crate::proc::{self, OsAccount};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Packaged files-only target when no postvec cluster could be found.
+pub fn node_root(cli: &Cli, why: CliError, output: &Output) -> Result<PathBuf> {
+    if cli.cluster.is_some() || cli.pg_config.is_some() {
+        return Err(why);
+    }
+    let root = Path::new(crate::config::DEFAULT_ENGINE_ROOT);
+    if root.is_dir() {
+        output.note(&format!(
+            "{why}; using engine root {} (override with --path or POSTVEC_PATH)",
+            root.display()
+        ));
+        return Ok(root.to_path_buf());
+    }
+    let fix = "for a postvec-server node or files only, pass --path DIR or set POSTVEC_PATH";
+    let fix = match why.remediation() {
+        Some(first) => format!("{first}; {fix}"),
+        None => fix.to_string(),
+    };
+    Err(why.with_fix(fix))
+}
+
+/// A running cluster that does not load the postvec library.
+pub fn not_loaded(cluster_id: &str) -> CliError {
+    CliError::precondition(format!("cluster {cluster_id} does not load postvec"))
+        .with_fix("run `sudo postvec setup` to enable it there")
+}
 
 pub async fn dispatch(cli: Cli) -> Exit {
     let output = Output::new(cli.format, cli.no_color);
@@ -233,27 +261,18 @@ impl Context {
     }
 
     /// Whether the connected server is the instance the selected cluster's
-    /// own endpoint reaches.
+    /// own socket reaches.
     ///
-    /// Local discovery and `--database-url` are independent: discovery owns
-    /// the host side, the URI owns the database side. Without this proof,
-    /// `setup` could install the extension into a server elsewhere and then
-    /// rewrite and restart the cluster on this machine.
+    /// Discovery owns the host. `--database-url` owns the database. Without
+    /// this check, `setup` could install into one server and restart another.
     ///
-    /// The proof is a second connection through the cluster's own socket,
-    /// compared with the supplied one on two values:
-    ///
-    /// - the system identifier, which identifies a replication lineage. A
-    ///   physical standby, or any restored copy, carries its primary's, so
-    ///   on its own it would match a primary against its own standby.
-    /// - the exact postmaster start time, which identifies the instance.
-    ///
-    /// Both values come from SQL on each connection. Line 3 of
-    /// `postmaster.pid` is `MyStartTime` (whole seconds, captured earlier
-    /// than `pg_postmaster_start_time()`), so comparing the pid file with
-    /// SQL would reject the right postmaster when startup crossed a second
-    /// boundary, and accept a different same-lineage postmaster that
-    /// started in the same second.
+    /// A second connection through the cluster socket is compared on two SQL
+    /// values: the system identifier (replication lineage; a standby shares
+    /// its primary's) and the exact postmaster start time (this instance).
+    /// Line 3 of `postmaster.pid` is `MyStartTime` in whole seconds, captured
+    /// earlier than `pg_postmaster_start_time()`, so a pid-file comparison
+    /// would reject the right postmaster across a second boundary and accept
+    /// a different same-lineage postmaster that started in the same second.
     pub async fn prove_database_is_the_selected_cluster(&self) -> IdentityProof {
         if !self.database_url_supplied || self.cluster.kind == ClusterKind::Remote {
             // A socket target is the cluster's own socket; a remote-only
@@ -510,7 +529,6 @@ pub fn require_host_privileges(cluster: &Cluster) -> Result<()> {
 mod tests {
     use super::*;
     use crate::facts::ClusterIdentity;
-    use std::path::PathBuf;
 
     fn cluster(owner: Option<OsAccount>) -> Cluster {
         Cluster {

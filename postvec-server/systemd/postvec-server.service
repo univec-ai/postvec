@@ -11,7 +11,7 @@ Group=postvec-server
 
 # The engine root: libs/ (ONNX Runtime) and models/. The same tree the
 # packages install and `postvec model pull` writes into.
-Environment=POSTVEC_SERVER_ROOT=/opt/postvec
+Environment=POSTVEC_PATH=/opt/postvec
 Environment=RUST_LOG=info
 
 # Everything else lives in the file. Peers, ports and certificates belong to

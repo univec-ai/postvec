@@ -13,7 +13,9 @@ setting does and where it can be set.
 
 **Defaults < config file < environment < flags.** A present flag always wins.
 An omitted flag leaves the file or environment value in place. No file is
-required.
+required. `POSTVEC_PATH` and `POSTVEC_PROVIDERS_PATH` are shared with the
+`postvec` CLI. Use absolute paths; empty values are ignored. The providers
+variable names the exact connector directory.
 
 The file is searched at `$root/postvec-server.json`,
 `/etc/postvec-server/config.json`, `/etc/postvec-server.json`, then
@@ -25,7 +27,7 @@ with `//` are comments.
 
 | Flag | Environment | File key | Default |
 |---|---|---|---|
-| `--root PATH` | `POSTVEC_SERVER_ROOT` | - | `/opt/postvec` |
+| `--root PATH` | `POSTVEC_PATH` | - | `/opt/postvec` |
 | `--config PATH` | `POSTVEC_SERVER_CONFIG` | - | The search order above |
 | `--bind ADDR` | `POSTVEC_SERVER_BIND` | `bind_address` | `0.0.0.0` |
 | `--http PORT` | `POSTVEC_SERVER_HTTP` | `http_port` | `22222` |
@@ -40,7 +42,7 @@ with `//` are comments.
 | `--ssl-cert-key PATH` | `POSTVEC_SERVER_SSL_KEY` | `ssl.key` | `$root/certs/server.key` |
 | `--insecure` | `POSTVEC_SERVER_INSECURE` | `insecure` | Off. TLS required |
 | `--models LIST` | `POSTVEC_SERVER_MODELS` | `models` | Empty, every enabled descriptor |
-| `--providers-path PATH` | `POSTVEC_SERVER_PROVIDERS_PATH` | `providers_path` | `$root/providers.d`. A path, never a credential |
+| `--providers-path PATH` | `POSTVEC_PROVIDERS_PATH` | `providers_path` | `$root/providers.d`. A path, never a credential |
 | `--predict-timeout-ms N` | `POSTVEC_SERVER_PREDICT_TIMEOUT_MS` | `predict_timeout_ms` | `30000` |
 | `--max-inflight N` | `POSTVEC_SERVER_MAX_INFLIGHT` | `max_inflight` | CPU count, clamped to 4-16 |
 | `--max-resident-models N` | `POSTVEC_SERVER_MAX_RESIDENT_MODELS` | `max_resident_models` | `16` |

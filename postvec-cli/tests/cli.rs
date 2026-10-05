@@ -45,6 +45,92 @@ fn code(output: &Output) -> i32 {
 }
 
 #[test]
+fn provider_paths_work_without_a_local_database() {
+    let root = tempfile::tempdir().unwrap();
+    let custom = root.path().join("custom-connectors");
+    for (engine, providers, expected) in [
+        (root.path(), None, root.path().join("providers.d")),
+        (
+            std::path::Path::new("/nonexistent-engine-root"),
+            Some(custom.as_path()),
+            custom.clone(),
+        ),
+    ] {
+        let mut command = Command::new(binary());
+        command
+            .args(["provider", "ls", "--format", "json"])
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_PROVIDERS_PATH")
+            .env("POSTVEC_PATH", engine);
+        if let Some(path) = providers {
+            command.env("POSTVEC_PROVIDERS_PATH", path);
+        }
+        let out = command.output().unwrap();
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["directory"], expected.to_str().unwrap());
+        assert!(!expected.exists());
+    }
+    let out = run(&[
+        "provider",
+        "ls",
+        "--path",
+        root.path().join("providers.d").to_str().unwrap(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    std::fs::write(&custom, "not a directory").unwrap();
+    let out = Command::new(binary())
+        .args(["provider", "ls"])
+        .env_remove("POSTVEC_DATABASE_URL")
+        .env("POSTVEC_PROVIDERS_PATH", &custom)
+        .output()
+        .unwrap();
+    assert_ne!(code(&out), 0);
+}
+
+#[test]
+fn explicit_cluster_selection_is_not_shadowed_by_path_environment() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("models")).unwrap();
+    for args in [vec!["model", "ls"], vec!["provider", "ls"]] {
+        let out = Command::new(binary())
+            .args(args)
+            .args(["--pg-config", "/nonexistent-postvec-pg-config"])
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env("POSTVEC_PATH", root.path())
+            .env("POSTVEC_PROVIDERS_PATH", root.path())
+            .output()
+            .unwrap();
+        assert_ne!(code(&out), 0);
+        assert!(
+            stderr(&out).contains("nonexistent-postvec-pg-config"),
+            "{}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn a_missing_pull_root_is_reported_before_registry_access() {
+    let out = run(&[
+        "model",
+        "pull",
+        "some-model",
+        "--path",
+        "/nonexistent-postvec-root",
+        "--timeout",
+        "1ms",
+        "--yes",
+    ]);
+    assert_ne!(code(&out), 0);
+    assert!(
+        stderr(&out).contains("not an engine root"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn help_lists_the_public_commands() {
     let output = run(&["--help"]);
     assert_eq!(code(&output), 0);
@@ -3079,7 +3165,10 @@ mod univec_discovery {
                 "json",
             ])
             .env_remove("POSTVEC_DATABASE_URL")
-            .env("POSTVEC_PROVIDERS_PATH", "/nonexistent-providers-root")
+            .env(
+                "POSTVEC_PROVIDERS_PATH",
+                "/nonexistent-providers-root/providers.d",
+            )
             .env("NO_COLOR", "1")
             .output()
             .unwrap();

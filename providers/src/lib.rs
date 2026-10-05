@@ -371,11 +371,8 @@ pub enum EmbeddingError {
 
     /// The provider rejected the request because an input was too long.
     ///
-    /// A distinct variant rather than a marker inside [`EmbeddingError::Api`]'s
-    /// message, because it is the one classification that used to be recovered
-    /// by *re-reading the response body* one layer up. Deciding it here — where
-    /// the body is, and before the body is discarded — is what lets the public
-    /// error carry no upstream text at all.
+    /// Decided here, while the body is still in hand, so the public error
+    /// carries the status and none of the upstream text.
     #[error("Provider rejected an input as too long (status {status})")]
     InputTooLong { status: u16 },
 

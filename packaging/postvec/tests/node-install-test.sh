@@ -189,7 +189,7 @@ install -o root -g postvec-server -m 0640 /tmp/server.key /etc/postvec-server/se
 # the certificate paths, so no --ssl flags: this is the packaged default
 # working end to end.
 install -d -m 1775 -o root -g postvec-server /run/lock/postvec
-POSTVEC_SERVER_ROOT=/opt/postvec setpriv --reuid=postvec-server --regid=postvec-server --init-groups \
+POSTVEC_PATH=/opt/postvec setpriv --reuid=postvec-server --regid=postvec-server --init-groups \
     postvec-server --config /etc/postvec-server/config.json --bind 127.0.0.1 >/tmp/node.log 2>&1 &
 node_pid=$!
 deadline=$(( SECONDS + 240 )); ready=""

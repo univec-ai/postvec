@@ -282,5 +282,48 @@ else
 fi
 
 echo
+echo "server entrypoint"
+ln -s "${WORK}/recorder" "${WORK}/bin/postvec-server"
+run_server_entrypoint() {
+    env -i PATH="${WORK}/bin:${PATH}" \
+        POSTVEC_PATH="${WORK}/node" \
+        POSTVEC_SERVER_CERTS_DIR="${WORK}/certs" \
+        POSTVEC_SERVER_INSECURE="${POSTVEC_SERVER_INSECURE:-}" \
+        bash "${PKG_DIR}/docker/postvec-server-entrypoint.sh" "$@"
+}
+for args in "managed status" "--help" "status" "serve --ssl-cert=/operator.crt" "serve --ssl-key=/operator.key"; do
+    read -r -a words <<<"${args}"
+    if run_server_entrypoint postvec-server "${words[@]}" >/dev/null && [[ ! -e "${WORK}/certs" ]]; then
+        ok "server ${args} skips certificate generation"
+    else
+        bad "server ${args} generated certificates or failed"
+    fi
+done
+if run_server_entrypoint "${WORK}/recorder" model ls >/dev/null && [[ ! -e "${WORK}/certs" ]]; then
+    ok "CLI commands skip server certificate generation"
+else
+    bad "CLI command generated certificates or failed"
+fi
+if POSTVEC_SERVER_INSECURE=TRUE run_server_entrypoint postvec-server >/dev/null && [[ ! -e "${WORK}/certs" ]]; then
+    ok "uppercase insecure environment skips certificate generation"
+else
+    bad "uppercase insecure environment was ignored"
+fi
+mkdir "${WORK}/certs"
+printf 'operator certificate\n' > "${WORK}/certs/server.crt"
+if run_server_entrypoint postvec-server >"${WORK}/out" 2>&1; then
+    bad "an incomplete certificate pair was replaced"
+elif grep -q 'incomplete TLS pair' "${WORK}/out" && [[ "$(cat "${WORK}/certs/server.crt")" == 'operator certificate' ]] && [[ ! -e "${WORK}/certs/server.key" ]]; then
+    ok "an incomplete certificate pair is retained and reported"
+else
+    bad "incomplete certificate pair handling failed"
+fi
+rm "${WORK}/certs/server.crt"
+if run_server_entrypoint postvec-server >/dev/null && [[ -s "${WORK}/certs/server.crt" && -s "${WORK}/certs/server.key" ]]; then
+    ok "server startup generates a missing certificate pair"
+else
+    bad "server certificate generation failed"
+fi
+
 printf '%d passed, %d failed\n' "${passed}" "${failed}"
 (( failed == 0 ))

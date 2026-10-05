@@ -117,7 +117,8 @@ async fn execute(cli: &Cli, request: Request, output: &Output) -> Result<Exit> {
     let accepted_flags = terms::parse_accept_license(&request.accept_license)?;
 
     let mut target = resolve_target_for_mutation(cli, request.path.as_deref(), output).await?;
-    require_root(&target, request.mode.command())?;
+    let root = require_root(&target, request.mode.command())?.clone();
+    root.check_pull_root()?;
 
     // Channel and closure before the lock: a typo'd name or a dead network
     // should not block concurrent commands on the root.
@@ -129,7 +130,14 @@ async fn execute(cli: &Cli, request: Request, output: &Output) -> Result<Exit> {
         index.models.len()
     ));
 
-    let root = require_root(&target, request.mode.command())?.clone();
+    let requested_closure = if request.all {
+        None
+    } else {
+        Some(crate::registry::index::expand_closure(
+            &index,
+            &request.names,
+        )?)
+    };
 
     // The lock comes first, and pending recovery immediately after it: an
     // interrupted replacement may already have put the head revision on disk,
@@ -139,7 +147,7 @@ async fn execute(cli: &Cli, request: Request, output: &Output) -> Result<Exit> {
     // the exclusive lock: a preview that reports a clean plan and is then
     // followed by "refusing to manage it" has told the operator nothing.
     let _shared = if request.dry_run {
-        root.check_mutable()?;
+        root.check_pull_root()?;
         root.lock_shared()?
     } else {
         None
@@ -154,6 +162,7 @@ async fn execute(cli: &Cli, request: Request, output: &Output) -> Result<Exit> {
     let lock = if request.dry_run {
         None
     } else {
+        root.create_models_dir()?;
         let lock = root.lock_exclusive()?;
         model::recover_pending_swap(&root, &target, cli.timeout, output).await?;
         Some(lock)
@@ -193,7 +202,10 @@ async fn execute(cli: &Cli, request: Request, output: &Output) -> Result<Exit> {
         output.show_result(&result)?;
         return Ok(Exit::Success);
     }
-    let closure = crate::registry::index::expand_closure(&index, &names)?;
+    let closure = match requested_closure {
+        Some(closure) => closure,
+        None => crate::registry::index::expand_closure(&index, &names)?,
+    };
 
     // Preflight every closure entry against the root.
     let work = preflight(request.mode, &root, &closure, cli.timeout).await?;
@@ -1143,7 +1155,7 @@ async fn check_cluster_compatibility(
                  upgrade is unfinished, so compatibility gates cannot be trusted",
                 extension.catalog_version, extension.library_version
             ))
-            .with_fix("run `ALTER EXTENSION postvec UPDATE` there first (install.md §11)"));
+            .with_fix("run `ALTER EXTENSION postvec UPDATE` in that database, then rerun"));
         }
         let installed = crate::validate::parse_extension_version(&extension.library_version)
             .ok_or_else(|| {
@@ -1159,7 +1171,7 @@ async fn check_cluster_compatibility(
                 return Err(CliError::precondition(format!(
                     "{name} needs postvec >= {min}, but {database:?} has {installed}"
                 ))
-                .with_fix("upgrade the extension first (install.md §11)"));
+                .with_fix("upgrade the extension in that database, then rerun"));
             }
         }
         if let Some(backends) = extension

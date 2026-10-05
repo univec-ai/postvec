@@ -23,6 +23,7 @@ with `--database-url 'postgresql:///app?host=/var/run/postgresql'`.
 | `CREATE EXTENSION` is denied | Superuser; postvec is untrusted |
 | No advancing `worker_last_beat` | Preload, `postvec.database`, restart finished, worker slots, server log |
 | Jobs pile up with endpoint errors | Restore [postvec-server](/docs/server/); an empty endpoint list leaves jobs pending |
+| `postvec model` asks for a cluster on a server node or workstation | Pass `--path DIR` or set `POSTVEC_PATH`; the server reads the same variable |
 | Embedded engine will not start | Engine path, unversioned `libonnxruntime.so`, readable descriptors, loopback ports |
 | Search returns FTS only | Query embedding failed while degradation was enabled; restore inference or disable degradation |
 | Search is slow | No usable ANN index for the entry's distance. Keyword traffic also wants a GIN (`create_fts_index => true`). [BM25](/docs/guides/bm25) |

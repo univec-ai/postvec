@@ -75,7 +75,8 @@ $root/
 
 The model layout is the one embedded mode uses, so a tree that
 `postvec model pull` already wrote works unchanged: point `--root` or
-`POSTVEC_SERVER_ROOT` at it.
+`POSTVEC_PATH` at it. The CLI reads `POSTVEC_PATH` too, so one variable serves
+both.
 
 ## License
 

@@ -138,9 +138,8 @@ mapfile -t INSTALLED < <(
 if (( ${#INSTALLED[@]} != 1 )); then
     printf '  %s\n' "${INSTALLED[@]}" >&2
     die "the pull produced ${#INSTALLED[@]} model directories (above).
-A dependency closure is a deliberate packaging decision — one package per model
-identity — not something to absorb into one binary package. See
-docs/postgres/packaging-registry-models.md §8."
+Ship one package per model identity. A dependency closure is not folded into
+one binary package."
 fi
 BACKEND="${INSTALLED[0]%%/*}"
 INSTALLED_NAME="${INSTALLED[0]#*/}"

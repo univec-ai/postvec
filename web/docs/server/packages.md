@@ -51,7 +51,7 @@ package's post-install message prints the two `install` lines.
 ## Start the unit
 
 The package installs the unit from `postvec-server/systemd/`, which sets
-`POSTVEC_SERVER_ROOT=/opt/postvec`, plus a drop-in that hands
+`POSTVEC_PATH=/opt/postvec`, plus a drop-in that hands
 `/opt/postvec/models` to the service account so the node can activate and
 deactivate models. The unit runs unprivileged under a strict sandbox:
 

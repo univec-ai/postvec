@@ -1,10 +1,10 @@
 //! `postvec model ...`: model management for an engine root.
 //!
 //! `--path` wins (filesystem only: no cluster, no activation). Else
-//! `--database-url`. Else `POSTVEC_PATH`. Else the selected cluster:
+//! an explicit database/cluster selection. Else `POSTVEC_PATH`, then discovery:
 //! embedded manages `postvec.path`; remote can only list advertised
-//! models. With no cluster, the packaged default `/opt/postvec` is used
-//! when it exists.
+//! models. With no cluster running postvec, the packaged default
+//! `/opt/postvec` is used when it exists.
 
 pub mod activate;
 pub mod admin;
@@ -19,7 +19,7 @@ pub mod terms;
 
 use crate::cli::{Cli, Mode};
 use crate::cluster::Cluster;
-use crate::commands::{collect, Context};
+use crate::commands::{collect, node_root, not_loaded, Context};
 use crate::config::owned;
 use crate::error::{CliError, Result};
 use crate::facts::SettingsSnapshot;
@@ -129,43 +129,35 @@ async fn resolve_target_inner(
     // POSTVEC_PATH: same semantics as --path (pure filesystem
     // management). The container images set it, which is what lets
     // `docker exec <ctr> postvec model …` run flag-free.
-    if let Some(root) = crate::config::env_path_override(crate::config::ENGINE_ROOT_ENV)? {
-        output.note(&format!(
-            "using engine root {} (from {})",
-            root.display(),
-            crate::config::ENGINE_ROOT_ENV
-        ));
-        return Ok(ModelTarget::Path(ModelRoot::new(root)));
+    if cli.cluster.is_none() && cli.pg_config.is_none() {
+        if let Some(root) = crate::config::env_path_override(crate::config::ENGINE_ROOT_ENV)? {
+            output.note(&format!(
+                "using engine root {} (from {})",
+                root.display(),
+                crate::config::ENGINE_ROOT_ENV
+            ));
+            return Ok(ModelTarget::Path(ModelRoot::new(root)));
+        }
     }
 
+    let node =
+        |why| node_root(cli, why, output).map(|root| ModelTarget::Path(ModelRoot::new(root)));
     let cluster = match Context::discover_local(cli, output).await {
         Ok(cluster) => cluster,
-        // No cluster on this host at all. The packaged engine root is still a
-        // meaningful target when it exists (a container, or packages installed
-        // before `postvec setup`), and managing it directly is exactly what an
-        // explicit `--path /opt/postvec` would do.
-        Err(error) => {
-            let default_root = Path::new(crate::config::DEFAULT_ENGINE_ROOT);
-            if default_root.is_dir() {
-                output.note(&format!(
-                    "no PostgreSQL cluster found; using the default engine root {} \
-                     (pass --path or set {} to override)",
-                    default_root.display(),
-                    crate::config::ENGINE_ROOT_ENV
-                ));
-                return Ok(ModelTarget::Path(ModelRoot::new(
-                    default_root.to_path_buf(),
-                )));
-            }
-            return Err(error);
-        }
+        Err(error) => return node(error),
     };
     let cluster_id = cluster.identity.id.clone();
     match Context::connect_to(cli, cluster.clone(), output).await {
-        Ok(context) => target_from_live(context).await,
+        Ok(mut context) => {
+            let settings = collect::cluster_snapshot(&mut context).await?.settings;
+            if settings.raw_mode().is_none() {
+                return node(not_loaded(&cluster_id));
+            }
+            target_from_settings(settings, Some(context), None)
+        }
         Err(error) if allow_snippet => match target_from_snippet(&cluster, cluster_id, output) {
             Some(target) => Ok(target),
-            None => Err(error),
+            None => node(error),
         },
         Err(error) => Err(CliError::precondition(format!(
             "{error}; installing or removing models against this cluster also needs a \
@@ -173,8 +165,8 @@ async fn resolve_target_inner(
         ))
         .with_fix(
             "rerun with sudo (it drops to the cluster owner), as the cluster owner, or \
-             pass --database-url. `model ls` and `model show` do not need that. For \
-             files only, pass --path DIR",
+             pass --database-url. `model ls` and `model show` do not need a login. For \
+             files only, pass --path DIR or set POSTVEC_PATH",
         )),
     }
 }
@@ -239,11 +231,13 @@ fn target_from_settings(
             context: boxed,
             cluster_id,
         }),
-        None => Err(CliError::precondition(format!(
-            "the cluster's postvec.mode is unparseable ({:?})",
-            settings.raw_mode().unwrap_or("unset")
-        ))
-        .with_fix("fix postvec.mode, or pass --path <DIR> to manage a root directly")),
+        None => Err(match settings.raw_mode() {
+            None => not_loaded(&cluster_id),
+            Some(raw) => CliError::precondition(format!(
+                "the cluster's postvec.mode is unparseable ({raw:?})"
+            ))
+            .with_fix("fix postvec.mode, or pass --path <DIR> to manage a root directly"),
+        }),
     }
 }
 
@@ -254,8 +248,8 @@ pub fn require_root<'a>(target: &'a ModelTarget, action: &str) -> Result<&'a Mod
             "the selected cluster uses remote inference; {action} would change nothing it uses"
         ))
         .with_fix(
-            "remote nodes are administered with `nin`; pass --path <DIR> to manage a local \
-             standalone engine root",
+            "run this command on the postvec-server node, or pass --path DIR (or set \
+             POSTVEC_PATH) to manage that node's engine root",
         )
     })
 }
@@ -317,13 +311,12 @@ pub fn engine_listen(target: &ModelTarget) -> Option<String> {
     }
 }
 
-/// **Quiesce**: take every name that might hold new bytes out of the engine,
-/// with the exact result set verified, before any of them is moved on disk.
+/// Unload every name that might hold new bytes, and check the result set,
+/// before any of them moves on disk.
 ///
-/// A transport error is an *unknown partial application*, never "nothing
-/// happened": the request may have been applied in
-/// whole or in part with only the answer lost. So this refuses, and the
-/// caller leaves the transaction recorded for the next command to settle.
+/// A transport error is an unknown partial application: the request may
+/// have landed in whole or in part with only the answer lost. This refuses
+/// and leaves the transaction recorded for the next command.
 pub async fn quiesce(
     engine: Option<&str>,
     names: &[String],
@@ -355,23 +348,14 @@ pub async fn quiesce(
     })
 }
 
-/// Restore and prove: undo the whole batch (put every parked predecessor
-/// back and remove every fresh install), then load the complete intended
-/// predecessor set with the exact result set verified, and only then clear
-/// the record.
+/// Undo the batch: restore parked predecessors, remove fresh installs,
+/// reload that predecessor set, and clear the record only after the load
+/// is proven. If it is not, the transaction stays on disk.
 ///
-/// The record is the last thing to go. If the reload cannot be proven the
-/// transaction stays on disk, so the next command still sees unsettled
-/// state.
-///
-/// Quiesce covers every batch member, because the engine may have been
-/// made to hold any of them. The reload covers only the replacements: a
-/// fresh install has no predecessor, and asking the engine to load a name
-/// whose directory was just removed would fail the proof this function
-/// exists to establish.
-///
-/// The caller must have run [`quiesce`] over at least this transaction's
-/// names first.
+/// Reload covers replacements only. A fresh install has no predecessor,
+/// and loading a name whose directory was just removed would fail this
+/// proof. The caller must have run [`quiesce`] over at least this
+/// transaction's names first.
 pub async fn restore_and_prove(
     root: &ModelRoot,
     engine: Option<&str>,

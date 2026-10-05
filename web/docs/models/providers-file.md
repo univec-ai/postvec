@@ -230,7 +230,7 @@ once cannot lose one another's change.
 Change the location with `postvec.providers_path` (SIGHUP) or
 `setup --embedded --providers-path DIR`, and on a
 [postvec-server](/docs/server/) node with `--providers-path` or
-`POSTVEC_SERVER_PROVIDERS_PATH`.
+`POSTVEC_PROVIDERS_PATH`.
 
 `postvec uninstall` reports connector files and leaves them. Package
 removal does the same.

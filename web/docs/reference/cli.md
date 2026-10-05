@@ -140,7 +140,7 @@ See [pull / upgrade / rm](/docs/models/pull) and [login](/docs/models/login).
 
 ```
 model ls [--path DIR]
-model ls --available [--api-key-file FILE]
+model ls --available [--path DIR] [--api-key-file FILE]
 model show NAME [--verify] [--path DIR]
 model pull NAME... [--path DIR] [--api-key-file FILE]
             [--accept-license ID@VERSION] [--dry-run] [--yes]
@@ -155,10 +155,16 @@ model prefer SPACE ROUTE... [--default] [--path DIR] [--acknowledge-in-use]
 model set-space ROUTE SPACE [--path DIR] [--acknowledge-in-use] [--dry-run] [--yes]
 ```
 
-`--path` and `--available` are exclusive; `--api-key-file` requires
-`--available`. `POSTVEC_PATH` has the same meaning as `--path`. Container
+`--available --path DIR` joins the catalogue against that root's installed
+models. `--api-key-file` requires `--available`. `POSTVEC_PATH` selects
+files-only management, like `--path`; an explicit `--database-url`,
+`--cluster` or `--pg-config` takes priority over the environment. Container
 images set it, so `docker exec <ctr> postvec model ...` needs no extra
-flags.
+flags. On a host where no cluster runs postvec (a postvec-server node, or a
+workstation), `/opt/postvec` is managed when it exists; otherwise set
+`POSTVEC_PATH`, which the server reads too. `pull` creates `models/` inside
+an existing root. A fresh root lists as empty; `pull --dry-run` previews
+the first install without creating `models/`. A missing root is an error.
 
 `pull` installs **deactivated**; `activate` / `deactivate` are the only verbs
 that change serving state, and both persist across a PostgreSQL restart.
@@ -236,7 +242,8 @@ before confirmation. Attempts, not charges: UniVec debits only a successful
 inference. A key rotation on `univec` re-verifies one existing entry per
 kind; on every other connector it re-verifies every existing route. The listing document reports a configured file that cannot
 be read as `failed` with a `file` field; an explicit `--path`,
-`--database-url`, `--cluster` or `POSTVEC_PROVIDERS_PATH` that cannot be
+`--database-url`, `--cluster`, `--pg-config`, `POSTVEC_PATH` or
+`POSTVEC_PROVIDERS_PATH` that cannot be
 honoured is an error, while an implicit cluster that is not there lists the
 catalogue with `configured_state_unavailable` set. `--no-catalog` skips discovery. The manual
 converter flags (`--convert-source`, `--convert-target`, `--source-model`,
@@ -258,8 +265,12 @@ provider is shown; there is never a second error document.
 `DIR` must already exist, and new files inherit its owner. That is how a
 `postvec-server` node is administered, and it is the only form accepted on
 a remote-mode cluster; without it, such a cluster is refused with a message
-naming the server root. `POSTVEC_PROVIDERS_PATH` has the same meaning as
-`--path`. The postvec-server image sets it to the server root. An embed change through `--path` requires
+naming the server root. `POSTVEC_PROVIDERS_PATH` names the exact connector
+directory and overrides `<POSTVEC_PATH>/providers.d`. Both the CLI and server
+read these variables; use absolute paths. Empty values are ignored. An
+explicit database or cluster selection takes priority in the CLI. Without
+these variables, the CLI discovers a cluster, then falls back to an existing
+`/opt/postvec` when no cluster runs postvec. An embed change through `--path` requires
 `--acknowledge-in-use` because there is no cluster to scan. Adding a converter
 leaves source text on the host, so that acknowledgement is skipped. Removing
 one can break an active migration, so `provider rm` requires it.

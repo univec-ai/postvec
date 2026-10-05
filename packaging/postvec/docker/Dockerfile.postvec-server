@@ -31,19 +31,17 @@ LABEL org.opencontainers.image.title="postvec-server" \
 
 # The engine root is the path the packages install to — and the one the
 # postvec CLI treats as its default — so `--path` values are identical on a
-# database host, in the local image, and here. POSTVEC_PATH and
-# POSTVEC_PROVIDERS_PATH point the bundled CLI at the same root, so
-# `docker exec <ctr> postvec model|provider …` needs no flags.
+# database host, in the local image, and here. POSTVEC_PATH names it for the
+# server and the bundled CLI alike, so model and provider commands need no
+# extra path flags.
 #
 # POSTVEC_SERVER_CERTS_DIR is where the entrypoint generates (or expects) the
 # TLS pair: the packaged /etc/postvec-server/config.json names
 # /etc/postvec-server/server.{crt,key}, and the entrypoint and the
 # configuration have to agree.
 ENV DEBIAN_FRONTEND=noninteractive \
-    POSTVEC_SERVER_ROOT=/opt/postvec \
     POSTVEC_SERVER_CERTS_DIR=/etc/postvec-server \
     POSTVEC_PATH=/opt/postvec \
-    POSTVEC_PROVIDERS_PATH=/opt/postvec \
     RUST_LOG=info
 
 # The packages, resolved by apt so their generated ELF dependencies (the

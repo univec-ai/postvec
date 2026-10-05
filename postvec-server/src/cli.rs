@@ -81,7 +81,7 @@ pub struct ServeArgs {
 
     /// Engine root holding libs/ and models/.
     ///
-    /// [env: POSTVEC_SERVER_ROOT] [default: /opt/postvec]
+    /// [env: POSTVEC_PATH] [default: /opt/postvec]
     #[arg(long, value_name = "PATH")]
     pub root: Option<PathBuf>,
 
@@ -183,7 +183,7 @@ pub struct ServeArgs {
     /// Directory of providers.d connector files. API keys live in the
     /// 0600 TOML files under it. Empty or missing means no provider models.
     ///
-    /// [env: POSTVEC_SERVER_PROVIDERS_PATH] [default: <root>/providers.d]
+    /// [env: POSTVEC_PROVIDERS_PATH] [default: <root>/providers.d]
     #[arg(long = "providers-path", value_name = "PATH")]
     pub providers_path: Option<PathBuf>,
 

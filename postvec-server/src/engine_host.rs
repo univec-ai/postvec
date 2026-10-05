@@ -219,7 +219,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = settings_for(dir.path(), ServeArgs::default());
         let err = build_err(&settings).await;
-        assert!(err.contains("POSTVEC_SERVER_ROOT"), "{err}");
+        assert!(err.contains("POSTVEC_PATH"), "{err}");
     }
 
     #[tokio::test]

@@ -467,6 +467,71 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn a_fresh_server_root_supports_listing_preview_and_pull() {
+    let work = tempfile::tempdir().unwrap();
+    let fixture = Fixture::start(work.path());
+    let root = work.path().join("empty-root");
+    std::fs::create_dir(&root).unwrap();
+    let cli = |args: &[&str]| {
+        Command::new(binary())
+            .args(args)
+            .env_remove("POSTVEC_DATABASE_URL")
+            .env_remove("POSTVEC_API_KEY")
+            .env("XDG_CONFIG_HOME", work.path().join("auth"))
+            .env("POSTVEC_PATH", &root)
+            .env("POSTVEC_REGISTRY_PUBLIC_INDEX_URL", fixture.index_url())
+            .output()
+            .unwrap()
+    };
+
+    let out = cli(&["model", "ls", "--format", "json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["models"], serde_json::json!([]));
+    let out = cli(&["model", "pull", MODEL, "--dry-run", "--yes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!root.join("models").exists());
+    assert_eq!(fixture.archive_request_count(), 0);
+
+    let out = cli(&["model", "pull", MODEL, "--yes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let other = work.path().join("other-root");
+    std::fs::create_dir(&other).unwrap();
+    let out = cli(&[
+        "model",
+        "pull",
+        "unknown-model",
+        "--path",
+        other.to_str().unwrap(),
+        "--yes",
+    ]);
+    assert!(!out.status.success());
+    assert!(!other.join("models").exists());
+    for (path, installed) in [(&root, true), (&other, false)] {
+        let out = cli(&[
+            "model",
+            "ls",
+            "--available",
+            "--path",
+            path.to_str().unwrap(),
+            "--format",
+            "json",
+        ]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["models"][0]["installed"], installed);
+    }
+    let out = cli(&[
+        "model",
+        "ls",
+        "--available",
+        "--path",
+        "/nonexistent-postvec-root",
+    ]);
+    assert!(!out.status.success());
+}
+
+#[test]
 fn an_anonymous_pull_installs_verifies_and_is_idempotent() {
     let work = tempfile::tempdir().unwrap();
     let fixture = Fixture::start(work.path());
@@ -576,6 +641,27 @@ fn dry_run_downloads_nothing_and_changes_nothing() {
     assert!(!root.join("models/onnx-runtime").join(MODEL).exists());
     assert!(!root.join("models/.staging").exists());
     let _ = &fixture.index_body;
+}
+
+#[test]
+fn a_first_pull_creates_models_inside_an_existing_root() {
+    let work = tempfile::tempdir().unwrap();
+    let fixture = Fixture::start(work.path());
+    let root = engine_root(work.path());
+    std::fs::remove_dir_all(root.join("models")).unwrap();
+
+    let output = run_pull(&fixture, &root, &["--dry-run"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(!root.join("models").exists());
+
+    let output = run_pull(&fixture, &root, &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(root.join("models/onnx-runtime").join(MODEL).is_dir());
+
+    let missing = root.join("typo");
+    let output = run_pull(&fixture, &missing, &[]);
+    assert_ne!(output.status.code(), Some(0));
+    assert!(!missing.exists());
 }
 
 /// The whole feature, end to end: publish revision 1, install it, publish

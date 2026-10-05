@@ -35,7 +35,7 @@ In remote mode the models live on each [postvec-server](/docs/server/models)
 node, and a `pull` against the cluster is refused on the database host. Unpack
 the tarball into the node's engine root and load it there. The root is
 `/opt/postvec` by default, or the one given by `--root` or
-`POSTVEC_SERVER_ROOT`.
+`POSTVEC_PATH`.
 
 ```bash
 # On the node

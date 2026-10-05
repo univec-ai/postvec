@@ -21,7 +21,7 @@ use std::time::Duration;
 #[command(
     name = "postvec",
     version,
-    about = "Install and diagnose postvec",
+    about = "Manage postvec databases, models and providers",
     long_about = None,
     disable_help_subcommand = true
 )]
@@ -299,8 +299,9 @@ pub struct ProviderAddArgs {
 
     /// Write into <DIR>/providers.d (or <DIR> itself when it already is
     /// one) instead of the selected cluster's providers path. This is how
-    /// remote postvec-server roots are administered. Default:
-    /// POSTVEC_PROVIDERS_PATH, then the selected cluster's providers path.
+    /// remote postvec-server roots are administered.
+    /// Default: POSTVEC_PROVIDERS_PATH, then <POSTVEC_PATH>/providers.d,
+    /// then cluster discovery or /opt/postvec on a server node.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -337,8 +338,8 @@ pub struct ProviderAddArgs {
 #[derive(Debug, Args, Clone)]
 pub struct ProviderLsArgs {
     /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
-    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then the
-    /// selected cluster's providers path.
+    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then
+    /// <POSTVEC_PATH>/providers.d, then cluster discovery or /opt/postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -395,7 +396,7 @@ pub struct ProviderRmArgs {
 
     /// Operate on <DIR>/providers.d (or <DIR> itself) instead of the
     /// selected cluster's providers path. Default: POSTVEC_PROVIDERS_PATH,
-    /// then the selected cluster's providers path.
+    /// then <POSTVEC_PATH>/providers.d, then cluster discovery or /opt/postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -425,8 +426,8 @@ pub struct ProviderTestArgs {
     pub model: Option<String>,
 
     /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
-    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then the
-    /// selected cluster's providers path.
+    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then
+    /// <POSTVEC_PATH>/providers.d, then cluster discovery or /opt/postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 }
@@ -441,7 +442,7 @@ pub struct ModelPullArgs {
     /// Manage this engine root directly instead of the selected cluster's.
     /// Filesystem management only: no activation, no database refresh.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
-    /// then /opt/postvec when no cluster exists.
+    /// then /opt/postvec when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -497,7 +498,7 @@ pub struct ModelUpgradeArgs {
 
     /// Manage this engine root directly instead of the selected cluster's.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
-    /// then /opt/postvec when no cluster exists.
+    /// then /opt/postvec when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -553,8 +554,8 @@ pub struct ModelLsArgs {
 
     /// Inspect this engine root instead of the selected cluster's.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
-    /// then /opt/postvec when no cluster exists.
-    #[arg(long, value_name = "DIR", conflicts_with = "available")]
+    /// then /opt/postvec when no cluster runs postvec.
+    #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
     /// Read the API key from this file instead of the credential store.
@@ -615,7 +616,7 @@ pub struct ModelShowArgs {
 
     /// Inspect this engine root instead of the selected cluster's.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
-    /// then /opt/postvec when no cluster exists.
+    /// then /opt/postvec when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -632,7 +633,7 @@ pub struct ModelRmArgs {
 
     /// Manage this engine root directly instead of the selected cluster's.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
-    /// then /opt/postvec when no cluster exists.
+    /// then /opt/postvec when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -672,7 +673,7 @@ pub struct ModelActivateArgs {
     /// Manage this engine root directly instead of the selected cluster's.
     /// Marks the models enabled on disk only: no engine load, no SQL refresh.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
-    /// then /opt/postvec when no cluster exists.
+    /// then /opt/postvec when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -715,7 +716,7 @@ pub struct ModelDeactivateArgs {
     /// Marks the model disabled on disk only: no engine unload, no SQL
     /// refresh, and no database to check for columns still using it.
     /// Default: POSTVEC_PATH, then the selected cluster's root,
-    /// then /opt/postvec when no cluster exists.
+    /// then /opt/postvec when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 

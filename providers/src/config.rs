@@ -652,19 +652,16 @@ pub fn placeholder_dim(provider: &str, provider_model_id: &str) -> u32 {
     }
 }
 
-/// Everything the loader can say about one `(provider, model id, dim)` on its
-/// own, without seeing the rest of the file.
+/// What the loader can say about one `(provider, model id, dim)` without
+/// seeing the rest of the file.
 ///
-/// Split out so that **`provider add` and `provider test` can apply it before
-/// spending a paid API call.** Those two build a backend straight from the
-/// factory, which knows nothing about per-model contracts — so a descriptor
-/// naming a Gemini model postvec cannot serve, or a Cohere width the model
-/// does not produce, used to be probed (and billed) and only then refused at
-/// the write. The rule has to live where both the loader and the CLI can
-/// reach it, and this is that place.
+/// `provider add` and `provider test` run this before a paid probe. The
+/// client factory does not know per-model contracts, so a Gemini id postvec
+/// cannot serve, or a Cohere width the model does not produce, is refused
+/// here. Both the loader and the CLI call this function.
 ///
-/// `dim` is optional because `provider add` may not know it yet — the probe
-/// is what measures an unknown one. The model-id rules apply either way.
+/// `dim` may be absent: `provider add` learns an unknown width from the
+/// probe. The model-id rules apply either way.
 pub fn validate_model_for_provider(
     provider: &str,
     provider_model_id: &str,

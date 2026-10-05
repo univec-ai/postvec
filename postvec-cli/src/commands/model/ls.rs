@@ -8,7 +8,7 @@ use crate::cli::{Cli, ModelLsArgs};
 use crate::commands::model::{
     admin, fetch_channel_index, human_bytes, resolve_target, ModelTarget,
 };
-use crate::error::{Exit, Result};
+use crate::error::{CliError, Exit, Result};
 use crate::output::{Align, Cell, Column, Output, Tone};
 use serde::Serialize;
 
@@ -68,30 +68,47 @@ struct InstalledState {
 }
 
 async fn run_available(cli: &Cli, args: &ModelLsArgs, output: &Output) -> Result<Exit> {
-    let (index, credential) =
-        fetch_channel_index(cli.timeout, args.api_key_file.as_deref(), output).await?;
-
     // Install markers are best-effort: with no resolvable root (no cluster,
     // no --path) the column simply reports unknown as "?".
-    let installed: Option<std::collections::BTreeMap<String, InstalledState>> =
-        match resolve_target(cli, None, output).await {
-            Ok(target) => target.root().and_then(|root| {
-                root.installed().ok().map(|models| {
-                    models
-                        .into_iter()
-                        .map(|m| {
-                            (
-                                m.dir_name,
-                                InstalledState {
-                                    revision: m.receipt.as_ref().map(|r| r.revision()),
-                                },
-                            )
-                        })
-                        .collect()
+    let inventory = match resolve_target(cli, args.path.as_deref(), output).await {
+        Ok(target) => target
+            .root()
+            .map(|root| root.installed())
+            .transpose()
+            .map_err(CliError::from),
+        Err(error) => Err(error),
+    };
+    let installed: Option<std::collections::BTreeMap<String, InstalledState>> = match inventory {
+        Ok(models) => models.map(|models| {
+            models
+                .into_iter()
+                .map(|m| {
+                    (
+                        m.dir_name,
+                        InstalledState {
+                            revision: m.receipt.as_ref().map(|r| r.revision()),
+                        },
+                    )
                 })
-            }),
-            Err(_) => None,
-        };
+                .collect()
+        }),
+        Err(error) => {
+            if args.path.is_some()
+                || cli.database_url.is_some()
+                || cli.cluster.is_some()
+                || cli.pg_config.is_some()
+                || crate::config::env_path_override(crate::config::ENGINE_ROOT_ENV)?.is_some()
+            {
+                return Err(error);
+            }
+            output.note(
+                "installed models could not be inspected; catalogue installation state is unknown",
+            );
+            None
+        }
+    };
+    let (index, credential) =
+        fetch_channel_index(cli.timeout, args.api_key_file.as_deref(), output).await?;
 
     let rows: Vec<AvailableRow> = index
         .models

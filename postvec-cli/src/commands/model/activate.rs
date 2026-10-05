@@ -1,20 +1,15 @@
 //! `postvec model activate`.
 //!
-//! Turning a model on is two facts that must agree: the installed descriptor
-//! says `enabled: true`, so every future engine start loads it, and the
-//! running engine has it now. This command establishes both, disk first,
-//! engine second, and finishes by refreshing every configured database's SQL
-//! model cache.
+//! Two facts have to agree: the installed descriptor says `enabled: true`,
+//! so later starts load it, and the running engine holds it now. Disk first,
+//! engine second, then refresh `postvec.models` in each configured database.
 //!
-//! Naming a model activates its deactivated dependency closure with it.
-//! The engine refuses a load whose closure contains a deactivated model, and
-//! a restart would leave it unloaded too, so enabling only the named root
-//! would activate nothing usable.
+//! Naming a model also enables its deactivated dependency closure. The
+//! engine refuses a load whose closure contains a deactivated model, so
+//! enabling only the named root would activate nothing usable.
 //!
-//! A bare `activate` (or `--all`) activates every eligible CLI-installed
-//! model in the root. `--path DIR` is the files-only form used by the
-//! air-gapped flow: it flips the descriptors and stops, because there is no
-//! engine on that host to talk to.
+//! A bare `activate`, or `--all`, enables every eligible CLI-installed model.
+//! `--path DIR` only flips descriptors. There is no engine on that host.
 
 use crate::cli::{Cli, ModelActivateArgs};
 use crate::commands::model::{

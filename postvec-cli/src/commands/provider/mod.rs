@@ -1,6 +1,7 @@
 //! `postvec provider ...`: providers.d connector files.
 //!
-//! `--path` wins (filesystem only). Else `POSTVEC_PROVIDERS_PATH`. Else
+//! `--path` wins (filesystem only). Explicit cluster selections beat the
+//! environment. Else `POSTVEC_PROVIDERS_PATH`, then `POSTVEC_PATH`, then
 //! the selected cluster: embedded uses `postvec.providers_path`; grpc is
 //! refused (files live on the server nodes) with `--path` named.
 //! Credentials never ride argv. Files are 0600 in a 0700 directory.
@@ -13,7 +14,7 @@ pub mod univec;
 
 use crate::cli::Cli;
 use crate::cli::Mode;
-use crate::commands::Context;
+use crate::commands::{node_root, not_loaded, Context};
 use crate::error::{CliError, Result};
 use crate::facts::SettingsSnapshot;
 use crate::output::Output;
@@ -219,40 +220,47 @@ pub async fn resolve_target(
         return target_from_live(context).await;
     }
     // POSTVEC_PROVIDERS_PATH: same semantics as --path (pure file
-    // management, best-effort node reload). The postvec-server image sets
-    // it, which is what lets `docker exec <ctr> postvec provider …` run
-    // flag-free.
-    if let Some(dir) = crate::config::env_path_override(crate::config::PROVIDERS_PATH_ENV)? {
-        output.note(&format!(
-            "using providers path {} (from {})",
-            dir.display(),
-            crate::config::PROVIDERS_PATH_ENV
-        ));
-        return path_target(dir, crate::config::PROVIDERS_PATH_ENV);
-    }
-    let cluster = match Context::discover_local(cli, output).await {
-        Ok(cluster) => cluster,
-        // No cluster: a node host. Its files live under the packaged root,
-        // the same target `model` commands fall back to.
-        Err(error) => {
-            let root = Path::new(crate::config::DEFAULT_ENGINE_ROOT);
-            if !root.is_dir() {
-                return Err(error);
-            }
+    // management, best-effort node reload), naming the exact directory.
+    if cli.cluster.is_none() && cli.pg_config.is_none() {
+        if let Some(dir) = crate::config::env_path_override(crate::config::PROVIDERS_PATH_ENV)? {
             output.note(&format!(
-                "no PostgreSQL cluster found; using {} (pass --path or set {} to override)",
-                root.display(),
+                "using providers path {} (from {})",
+                dir.display(),
                 crate::config::PROVIDERS_PATH_ENV
             ));
-            return path_target(root.to_path_buf(), "the default root");
+            return path_target(dir, crate::config::PROVIDERS_PATH_ENV);
         }
+        if let Some(root) = crate::config::env_path_override(crate::config::ENGINE_ROOT_ENV)? {
+            let dir = providers_dir_from_path(&root);
+            output.note(&format!(
+                "using providers path {} (from {})",
+                dir.display(),
+                crate::config::ENGINE_ROOT_ENV
+            ));
+            return path_target(root, crate::config::ENGINE_ROOT_ENV);
+        }
+    }
+    // No cluster running postvec: a node host, whose files live under its root.
+    let node =
+        |why| node_root(cli, why, output).and_then(|root| path_target(root, "the node root"));
+    let cluster = match Context::discover_local(cli, output).await {
+        Ok(cluster) => cluster,
+        Err(error) => return node(error),
     };
     let cluster_id = cluster.identity.id.clone();
     match Context::connect_to(cli, cluster.clone(), output).await {
-        Ok(context) => target_from_live(context).await,
+        Ok(mut context) => {
+            let settings = crate::commands::collect::cluster_snapshot(&mut context)
+                .await?
+                .settings;
+            if settings.raw_mode().is_none() {
+                return node(not_loaded(&cluster_id));
+            }
+            target_from_settings(settings, Some(context), None)
+        }
         Err(error) if !mutating => match target_from_snippet(&cluster, cluster_id, output) {
             Some(target) => Ok(target),
-            None => Err(error),
+            None => node(error),
         },
         Err(error) => Err(CliError::precondition(format!(
             "{error}; changing provider files for this cluster also needs a database login so \
@@ -260,7 +268,7 @@ pub async fn resolve_target(
         ))
         .with_fix(
             "rerun with sudo (it drops to the cluster owner), as the cluster owner, or pass \
-             --database-url. For files only, pass --path DIR",
+             --database-url. For files only, pass --path DIR or set POSTVEC_PATH",
         )),
     }
 }
@@ -270,7 +278,19 @@ fn path_target(path: PathBuf, source: &'static str) -> Result<ProviderTarget> {
     // The root must already be there. It is the only thing that says who
     // the files belong to, and a typo would otherwise build a whole
     // credential tree in a directory nothing reads.
-    if !path.is_dir() {
+    let dir = if source == crate::config::PROVIDERS_PATH_ENV {
+        path.clone()
+    } else {
+        providers_dir_from_path(&path)
+    };
+    let anchor = if path == dir {
+        path.parent().unwrap_or(&path)
+    } else {
+        &path
+    };
+    let missing =
+        std::fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+    if !(path.is_dir() || missing && path == dir && anchor.is_dir()) {
         return Err(CliError::precondition(format!(
             "{source} {} is not an existing directory",
             path.display()
@@ -280,7 +300,6 @@ fn path_target(path: PathBuf, source: &'static str) -> Result<ProviderTarget> {
              `postvec provider` creates the providers.d inside it, not the root itself",
         ));
     }
-    let dir = providers_dir_from_path(&path);
     let owner = owner_of_nearest_existing(&dir);
     Ok(ProviderTarget::Path { dir, source, owner })
 }
@@ -339,11 +358,13 @@ fn target_from_settings(
              same provider files — and the node's loopback admin port picks the change up \
              (POST /admin/providers/reload); a restart works too",
         )),
-        None => Err(CliError::precondition(format!(
-            "the cluster's postvec.mode is unparseable ({:?})",
-            settings.raw_mode().unwrap_or("unset")
-        ))
-        .with_fix("fix postvec.mode, or pass --path <DIR> to manage a providers.d directly")),
+        None => Err(match settings.raw_mode() {
+            None => not_loaded(&cluster_id),
+            Some(raw) => CliError::precondition(format!(
+                "the cluster's postvec.mode is unparseable ({raw:?})"
+            ))
+            .with_fix("fix postvec.mode, or pass --path <DIR> to manage a providers.d directly"),
+        }),
     }
 }
 

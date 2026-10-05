@@ -482,10 +482,8 @@ fn try_init() -> Result<(), String> {
         },
     });
 
-    // Engine build runs `block_on` the engine runtime so `spawn_blocking`
-    // inside `load_model` lands on that runtime, exactly as in nin/udb.
-    // `hub: None` everywhere — the DB host carries its model assets on disk;
-    // there is no S3 JIT download in embedded mode.
+    // `block_on` on the engine runtime so `spawn_blocking` inside `load_model`
+    // lands on that runtime. `hub: None`: models are read from disk.
     let engine = if cfg.models.is_empty() {
         // Scan mode: mirror the standalone server's boot (load_models_and_executors +
         // build_executors). Per-model failures are logged and skipped by the

@@ -59,8 +59,7 @@ pub const ENGINE_ROOT_ENV: &str = "POSTVEC_PATH";
 
 /// Environment override for the providers.d directory `provider` commands
 /// act on when no `--path` is given. Same rank and semantics as
-/// [`ENGINE_ROOT_ENV`]; the value may name the providers.d itself or the
-/// root that contains one.
+/// [`ENGINE_ROOT_ENV`]; the value names the exact connector directory.
 pub const PROVIDERS_PATH_ENV: &str = "POSTVEC_PROVIDERS_PATH";
 
 /// Read a path override from the environment. Unset or empty means none;

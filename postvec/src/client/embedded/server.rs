@@ -1068,9 +1068,8 @@ fn resource_exhausted_status(message: impl Into<String>) -> Status {
     status
 }
 
-/// Internal error with `INTERNAL_ERROR` metadata — used where the remote
-/// server routes marshalling failures through `app_error_to_status` (which
-/// attaches the code), so the wire stays byte-parity with a real nin node.
+/// Internal error with `INTERNAL_ERROR` metadata. Matches the code
+/// `app_error_to_status` attaches for a marshalling failure on the server.
 fn internal_status(message: impl Into<String>) -> Status {
     let mut status = Status::internal(message.into());
     status.metadata_mut().insert(

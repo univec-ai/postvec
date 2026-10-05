@@ -48,7 +48,7 @@ if [[ -z "${SLUG}" ]]; then
     SLUG="${GH_REPO:-${SOURCE_REPOSITORY#https://github.com/}}"
     SLUG="${SLUG%.git}"
 fi
-[[ -n "${DIR}" ]] || DIR="$(mktemp -d -t postvec-verify-XXXXXX)"
+[[ -n "${DIR}" ]] || DIR="$(mktemp_mountable_dir verify-release)"
 mkdir -p "${DIR}"
 
 SIGNER="${SLUG}/.github/workflows/postvec-release.yml"

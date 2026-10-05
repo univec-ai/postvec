@@ -106,7 +106,7 @@ hard error so a typo cannot start a node that ignores its configuration. See
 
 The on-disk layout matches embedded mode. A model root is portable between
 the two, and a tree `postvec model pull` already wrote into works unchanged
-(name it with `--root` or `POSTVEC_SERVER_ROOT`).
+(name it with `--root` or `POSTVEC_PATH`, the variable the CLI reads too).
 
 ## Operating
 
@@ -189,7 +189,7 @@ throughout. A second signal skips the wait.
 
 ```ini
 [Service]
-Environment=POSTVEC_SERVER_ROOT=/opt/postvec
+Environment=POSTVEC_PATH=/opt/postvec
 Environment=RUST_LOG=info
 ExecStart=/usr/bin/postvec-server --config /etc/postvec-server/config.json
 Restart=on-failure
@@ -228,7 +228,7 @@ The package installs files and creates the `postvec-server` account. Start
 the unit yourself. Configuration is `/etc/postvec-server/config.json` (a
 conffile; the commented example is under `/usr/share/doc/postvec-server/`).
 The unit runs with the sandbox in [systemd/](systemd/) plus a drop-in that
-sets `POSTVEC_SERVER_ROOT=/opt/postvec`. `postvec-cli` is a Recommends.
+sets `POSTVEC_PATH=/opt/postvec`. `postvec-cli` is a Recommends.
 `postvec model pull` as root writes additional models into the package-owned
 engine root. Verification steps,
 file names and the image's tag scheme are on the release page.

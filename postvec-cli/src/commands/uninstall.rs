@@ -188,8 +188,7 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                 )
                 .with_fix(
                     "select the cluster through postgresql-common (`--cluster MAJOR/NAME`), \
-                     or run `uninstall --all` without --purge and remove the files by hand \
-                     following docs/postvec-cli.md §7.1",
+                     or run `uninstall --all` without --purge and remove the files by hand",
                 ));
             }
             if !host_will_be_clear(&config_change, &ownership, &snapshot.settings) {

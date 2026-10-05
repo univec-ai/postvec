@@ -10,16 +10,21 @@
 # (/etc/postvec-server/server.{crt,key}). The crate default is <root>/certs.
 set -Eeuo pipefail
 
-case "${1:-}:${2:-}" in
+command="${1:-}"
+if [[ "${command##*/}" != postvec-server ]]; then
+    exec "$@"
+fi
+case "${command##*/}:${2:-}" in
     postvec-server:managed|postvec-server:status|postvec-server:load|postvec-server:unload|postvec-server:--help|postvec-server:--version)
         exec "$@" ;;
 esac
 
-ROOT="${POSTVEC_SERVER_ROOT:-/opt/postvec}"
+ROOT="${POSTVEC_PATH:-/opt/postvec}"
 CERTS="${POSTVEC_SERVER_CERTS_DIR:-${ROOT}/certs}"
 
 wants_insecure() {
-    case "${POSTVEC_SERVER_INSECURE:-}" in 1 | true | yes | on) return 0 ;; esac
+    local value="${POSTVEC_SERVER_INSECURE:-}"
+    case "${value,,}" in 1 | true | yes | on) return 0 ;; esac
     for arg in "$@"; do
         [[ "${arg}" == "--insecure" ]] && return 0
     done
@@ -29,15 +34,19 @@ wants_insecure() {
 # An operator-supplied path means an operator-supplied certificate; never
 # generate over the top of one.
 supplies_own_cert() {
-    [[ -n "${POSTVEC_SERVER_SSL_CERT:-}" ]] && return 0
+    [[ -n "${POSTVEC_SERVER_SSL_CERT:-}" || -n "${POSTVEC_SERVER_SSL_KEY:-}" ]] && return 0
     for arg in "$@"; do
-        case "${arg}" in --ssl-cert | --ssl-cert-key | --ssl-key) return 0 ;; esac
+        case "${arg}" in --ssl-cert | --ssl-cert=* | --ssl-cert-key | --ssl-cert-key=* | --ssl-key | --ssl-key=*) return 0 ;; esac
     done
     return 1
 }
 
 if ! wants_insecure "$@" && ! supplies_own_cert "$@" \
     && [[ ! -f "${CERTS}/server.crt" || ! -f "${CERTS}/server.key" ]]; then
+    if [[ -e "${CERTS}/server.crt" || -e "${CERTS}/server.key" ]]; then
+        echo "postvec-server: incomplete TLS pair in ${CERTS}; supply both server.crt and server.key" >&2
+        exit 1
+    fi
     if ! mkdir -p "${CERTS}" 2>/dev/null; then
         cat >&2 <<EOF
 postvec-server: no TLS certificate at ${CERTS}/server.{crt,key}, and that

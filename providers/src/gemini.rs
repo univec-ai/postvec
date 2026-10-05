@@ -163,10 +163,9 @@ pub fn gemini_contract(model_id: &str) -> Option<&'static GeminiContract> {
         .find(|contract| contract.model_id == model_id)
 }
 
-/// `reqwest::Error`'s `Display` includes the request URL. The URL no longer
-/// carries the key (see [`GEMINI_KEY_HEADER`]), so this is now defence rather
-/// than the load-bearing redaction it used to be — kept because a URL in a
-/// log line buys nothing and a future `base_url` could carry a token again.
+/// `reqwest::Error`'s Display includes the request URL. The key is a header
+/// ([`GEMINI_KEY_HEADER`]), not part of the URL, but a logged URL is still
+/// noise and a future `base_url` could carry a token.
 fn redacted_network(e: reqwest::Error) -> EmbeddingError {
     EmbeddingError::Network(e.without_url())
 }

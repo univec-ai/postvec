@@ -13,6 +13,7 @@ use crate::fs::{self as owned, HostLock};
 use crate::receipt::Receipt;
 use std::collections::BTreeSet;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -362,17 +363,51 @@ impl ModelRoot {
                     "{} does not exist; this is not an engine root",
                     models.display()
                 ))
-                .with_fix(format!(
-                    "check --path, or create the root with: mkdir -p {} && chmod go-w {}",
-                    models.display(),
-                    models.display()
-                )))
+                .with_fix(if self.root.is_dir() {
+                    "`postvec model pull NAME` creates it".to_string()
+                } else {
+                    format!(
+                        "check --path; `postvec model pull` creates models/ once {} exists",
+                        self.root.display()
+                    )
+                }))
             }
             Err(e) => Err(CliError::precondition(format!(
                 "cannot inspect {}: {e}",
                 models.display()
             ))),
         }
+    }
+
+    /// Create `models/` in an existing root. The root itself is never created,
+    /// so a mistyped path does not grow a tree nothing serves from.
+    pub fn create_models_dir(&self) -> Result<()> {
+        self.check_pull_root()?;
+        match fs::create_dir(self.models_dir()) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(CliError::precondition(
+                format!("cannot create {}: {e}", self.models_dir().display()),
+            )),
+            Err(_) => self.require_models_dir().map(|_| ()),
+            Ok(()) => fs::set_permissions(self.models_dir(), fs::Permissions::from_mode(0o755))
+                .map_err(|e| {
+                    CliError::precondition(format!("cannot set models directory permissions: {e}"))
+                }),
+        }
+    }
+
+    fn inventory_dir(&self) -> Result<Option<PathBuf>> {
+        if fs::symlink_metadata(self.models_dir())
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            && self.root.is_dir()
+        {
+            return Ok(None);
+        }
+        self.require_models_dir().map(Some)
+    }
+
+    pub fn check_pull_root(&self) -> Result<()> {
+        let dir = self.inventory_dir()?.unwrap_or_else(|| self.root.clone());
+        self.check_mutable_dir(&dir)
     }
 
     /// Every precondition a mutating command places on the models directory,
@@ -385,6 +420,10 @@ impl ModelRoot {
     /// concurrent command is a cost a preview should not impose.
     pub fn check_mutable(&self) -> Result<()> {
         let models = self.require_models_dir()?;
+        self.check_mutable_dir(&models)
+    }
+
+    fn check_mutable_dir(&self, models: &Path) -> Result<()> {
         // Ancestor discipline: the path must reach the models directory
         // without traversing a symlink anywhere. A replaceable
         // symlinked ancestor lets another account swap the whole tree
@@ -401,11 +440,16 @@ impl ModelRoot {
             ))
             .with_fix(format!(
                 "manage the canonical root instead: --path {}",
-                canonical.parent().unwrap_or(&canonical).display()
+                if models == self.root {
+                    canonical.as_path()
+                } else {
+                    canonical.parent().unwrap_or(&canonical)
+                }
+                .display()
             )));
         }
-        owned::check_trusted_dir(&models, "models directory")?;
-        owned::check_trusted_ancestry(&models)
+        owned::check_trusted_dir(models, "model store")?;
+        owned::check_trusted_ancestry(models)
     }
 
     /// Exclusive lock for mutation. Also the moment stale staging from an
@@ -483,7 +527,10 @@ impl ModelRoot {
     /// so a second copy under another backend is a silent wrong-model
     /// bug, not a coexistence feature.
     pub fn find_installed_anywhere(&self, name: &str) -> Result<Option<PathBuf>> {
-        for backend in strict_dir_children(&self.require_models_dir()?, "backend directory")? {
+        let Some(models) = self.inventory_dir()? else {
+            return Ok(None);
+        };
+        for backend in strict_dir_children(&models, "backend directory")? {
             let candidate = backend.join(name);
             if path_present(&candidate)? {
                 return Ok(Some(candidate));
@@ -865,9 +912,12 @@ impl ModelRoot {
     /// with descriptor summary, receipt (when present), and disk usage.
     pub fn installed(&self) -> Result<Vec<InstalledModel>> {
         let mut result = Vec::new();
+        let Some(models) = self.inventory_dir()? else {
+            return Ok(result);
+        };
         // Same strict enumeration as the collision guard: an unreadable
         // backend is reported, never quietly treated as empty.
-        for backend_dir in strict_dir_children(&self.require_models_dir()?, "backend directory")? {
+        for backend_dir in strict_dir_children(&models, "backend directory")? {
             let backend = backend_dir
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -1009,7 +1059,10 @@ impl ModelRoot {
 
     /// Free bytes on the filesystem holding the models directory.
     pub fn free_disk_bytes(&self) -> Option<u64> {
-        let models = self.models_dir();
+        let models = self
+            .inventory_dir()
+            .ok()?
+            .unwrap_or_else(|| self.root.clone());
         let c_path = std::ffi::CString::new(models.as_os_str().as_encoded_bytes()).ok()?;
         let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
         let rc = unsafe { libc::statvfs(c_path.as_ptr(), &mut stats) };
@@ -1201,6 +1254,44 @@ mod tests {
         let root = ModelRoot::new(dir.path().to_path_buf());
         let err = root.lock_exclusive().unwrap_err();
         assert!(err.to_string().contains("not an engine root"), "{err}");
+    }
+
+    #[test]
+    fn models_dir_is_created_only_inside_an_existing_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = ModelRoot::new(dir.path().join("typo"));
+        assert!(missing.create_models_dir().is_err());
+        assert!(!missing.root.exists());
+
+        let root = ModelRoot::new(dir.path().to_path_buf());
+        root.create_models_dir().unwrap();
+        root.create_models_dir().unwrap();
+        assert!(root.require_models_dir().is_ok());
+    }
+
+    #[test]
+    fn an_empty_root_can_be_previewed_without_creating_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ModelRoot::new(dir.path().canonicalize().unwrap());
+        root.check_pull_root().unwrap();
+        assert!(root.installed().unwrap().is_empty());
+        assert!(root.find_installed_anywhere("absent").unwrap().is_none());
+        assert!(root.free_disk_bytes().is_some());
+        assert!(!root.models_dir().exists());
+    }
+
+    #[test]
+    fn initialisation_refuses_unsafe_roots_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = ModelRoot::new(dir.path().canonicalize().unwrap());
+        fs::set_permissions(&root.root, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(root.create_models_dir().is_err());
+        assert!(!root.models_dir().exists());
+        fs::set_permissions(&root.root, fs::Permissions::from_mode(0o755)).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        assert!(ModelRoot::new(link).create_models_dir().is_err());
+        assert!(!root.models_dir().exists());
     }
 
     #[test]

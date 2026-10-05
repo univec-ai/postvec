@@ -341,7 +341,13 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
     let explicit = args.path.is_some()
         || cli.database_url.is_some()
         || cli.cluster.is_some()
-        || std::env::var_os(crate::config::PROVIDERS_PATH_ENV).is_some_and(|v| !v.is_empty());
+        || cli.pg_config.is_some()
+        || [
+            crate::config::PROVIDERS_PATH_ENV,
+            crate::config::ENGINE_ROOT_ENV,
+        ]
+        .iter()
+        .any(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty()));
     let (target, unavailable) = match resolve_target(cli, args.path.as_deref(), output, false).await
     {
         Ok(target) => (Some(target), None),

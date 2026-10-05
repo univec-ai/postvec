@@ -675,7 +675,7 @@ else
     [[ -f /usr/lib/systemd/system/postvec-server.service ]] \
         && ok "the unit is installed" \
         || bad "no /usr/lib/systemd/system/postvec-server.service"
-    if grep -q '^Environment=POSTVEC_SERVER_ROOT=/opt/postvec$' /usr/lib/systemd/system/postvec-server.service \
+    if grep -q '^Environment=POSTVEC_PATH=/opt/postvec$' /usr/lib/systemd/system/postvec-server.service \
         && grep -q '^ReadWritePaths=/opt/postvec/models$' /usr/lib/systemd/system/postvec-server.service.d/packaged.conf; then
         ok "the unit reads /opt/postvec and the drop-in opens its models subtree"
     else
