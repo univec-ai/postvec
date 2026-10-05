@@ -300,8 +300,8 @@ pub struct ProviderAddArgs {
     /// Write into <DIR>/providers.d (or <DIR> itself when it already is
     /// one) instead of the selected cluster's providers path. This is how
     /// remote postvec-server roots are administered.
-    /// Default: POSTVEC_PROVIDERS_PATH, then <POSTVEC_PATH>/providers.d,
-    /// then cluster discovery or /opt/postvec on a server node.
+    /// Default: POSTVEC_PROVIDERS_PATH, then the cluster's providers path,
+    /// then <POSTVEC_PATH or /opt/postvec>/providers.d when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -338,8 +338,9 @@ pub struct ProviderAddArgs {
 #[derive(Debug, Args, Clone)]
 pub struct ProviderLsArgs {
     /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
-    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then
-    /// <POSTVEC_PATH>/providers.d, then cluster discovery or /opt/postvec.
+    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then the
+    /// cluster's providers path, then <POSTVEC_PATH or /opt/postvec>/providers.d
+    /// when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -396,7 +397,8 @@ pub struct ProviderRmArgs {
 
     /// Operate on <DIR>/providers.d (or <DIR> itself) instead of the
     /// selected cluster's providers path. Default: POSTVEC_PROVIDERS_PATH,
-    /// then <POSTVEC_PATH>/providers.d, then cluster discovery or /opt/postvec.
+    /// then the cluster's providers path, then
+    /// <POSTVEC_PATH or /opt/postvec>/providers.d when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 
@@ -426,8 +428,9 @@ pub struct ProviderTestArgs {
     pub model: Option<String>,
 
     /// Inspect <DIR>/providers.d (or <DIR> itself) instead of the selected
-    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then
-    /// <POSTVEC_PATH>/providers.d, then cluster discovery or /opt/postvec.
+    /// cluster's providers path. Default: POSTVEC_PROVIDERS_PATH, then the
+    /// cluster's providers path, then <POSTVEC_PATH or /opt/postvec>/providers.d
+    /// when no cluster runs postvec.
     #[arg(long, value_name = "DIR")]
     pub path: Option<PathBuf>,
 }

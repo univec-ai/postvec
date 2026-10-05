@@ -266,11 +266,13 @@ provider is shown; there is never a second error document.
 `postvec-server` node is administered, and it is the only form accepted on
 a remote-mode cluster; without it, such a cluster is refused with a message
 naming the server root. `POSTVEC_PROVIDERS_PATH` names the exact connector
-directory and overrides `<POSTVEC_PATH>/providers.d`. Both the CLI and server
-read these variables; use absolute paths. Empty values are ignored. An
-explicit database or cluster selection takes priority in the CLI. Without
-these variables, the CLI discovers a cluster, then falls back to an existing
-`/opt/postvec` when no cluster runs postvec. An embed change through `--path` requires
+directory. Both the CLI and server read it; use absolute paths. Empty values
+are ignored. An explicit database or cluster selection takes priority in the
+CLI. Without it, the CLI uses the directory of whatever reads the files: a
+cluster running postvec reads `postvec.providers_path`
+(`/etc/postvec/providers.d` by default); with no such cluster, a
+postvec-server node reads `<POSTVEC_PATH>/providers.d`, or
+`/opt/postvec/providers.d` when that root exists. An embed change through `--path` requires
 `--acknowledge-in-use` because there is no cluster to scan. Adding a converter
 leaves source text on the host, so that acknowledgement is skipped. Removing
 one can break an active migration, so `provider rm` requires it.

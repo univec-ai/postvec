@@ -1,9 +1,10 @@
 //! `postvec provider ...`: providers.d connector files.
 //!
 //! `--path` wins (filesystem only). Explicit cluster selections beat the
-//! environment. Else `POSTVEC_PROVIDERS_PATH`, then `POSTVEC_PATH`, then
-//! the selected cluster: embedded uses `postvec.providers_path`; grpc is
-//! refused (files live on the server nodes) with `--path` named.
+//! environment. Else `POSTVEC_PROVIDERS_PATH`, then the selected cluster:
+//! embedded uses `postvec.providers_path`; grpc is refused (files live on
+//! the server nodes) with `--path` named. With no cluster running postvec,
+//! `<POSTVEC_PATH or /opt/postvec>/providers.d`, as the server reads it.
 //! Credentials never ride argv. Files are 0600 in a 0700 directory.
 
 pub mod add;
@@ -229,15 +230,6 @@ pub async fn resolve_target(
                 crate::config::PROVIDERS_PATH_ENV
             ));
             return path_target(dir, crate::config::PROVIDERS_PATH_ENV);
-        }
-        if let Some(root) = crate::config::env_path_override(crate::config::ENGINE_ROOT_ENV)? {
-            let dir = providers_dir_from_path(&root);
-            output.note(&format!(
-                "using providers path {} (from {})",
-                dir.display(),
-                crate::config::ENGINE_ROOT_ENV
-            ));
-            return path_target(root, crate::config::ENGINE_ROOT_ENV);
         }
     }
     // No cluster running postvec: a node host, whose files live under its root.

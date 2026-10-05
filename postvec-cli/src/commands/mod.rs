@@ -20,10 +20,19 @@ use crate::proc::{self, OsAccount};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Packaged files-only target when no postvec cluster could be found.
+/// Files-only engine root when no cluster on this host runs postvec:
+/// `POSTVEC_PATH`, else the packaged root when it exists.
 pub fn node_root(cli: &Cli, why: CliError, output: &Output) -> Result<PathBuf> {
     if cli.cluster.is_some() || cli.pg_config.is_some() {
         return Err(why);
+    }
+    let var = crate::config::ENGINE_ROOT_ENV;
+    if let Some(root) = crate::config::env_path_override(var)? {
+        output.note(&format!(
+            "{why}; using engine root {} (from {var})",
+            root.display()
+        ));
+        return Ok(root);
     }
     let root = Path::new(crate::config::DEFAULT_ENGINE_ROOT);
     if root.is_dir() {
