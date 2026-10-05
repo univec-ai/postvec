@@ -1,5 +1,23 @@
 postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
 
+  * `postvec model` and `postvec provider` no longer need a local
+    postvec-enabled database. With no cluster running postvec they manage
+    directory POSTVEC_PATH or /opt/postvec
+  * One engine-root variable: postvec-server reads POSTVEC_PATH, like the
+    CLI. POSTVEC_SERVER_ROOT is removed and POSTVEC_SERVER_PROVIDERS_PATH
+    is replaced by POSTVEC_PROVIDERS_PATH
+  * `model pull` creates models/ inside an existing root. A fresh root lists
+    as empty and can be previewed with --dry-run. `model ls --available
+    --path DIR` shows what is installed in that root
+  * postvec-server image: the entrypoint skips TLS setup for CLI and admin
+    commands, accepts --ssl-cert=/--ssl-key= and a case-insensitive
+    POSTVEC_SERVER_INSECURE, and refuses a half-present certificate pair
+    instead of replacing it
+
+ -- ${MAINTAINER}  Mon, 05 Oct 2026 15:55:42 +0000
+
+postvec (0.4.0-1) unstable; urgency=medium
+
   * Converters L2-normalize their input vectors before conversion
     (executor.params.normalize_input - default on) matching the hosted
     API (converters trained on unit-length embeddings)
