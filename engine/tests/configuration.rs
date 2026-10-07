@@ -218,3 +218,26 @@ fn override_with_replaces_executor_wholesale() {
     assert_eq!(base.executor.key, "new");
     assert!(base.executor.inputs.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Declared sequence length (feeds the tokenizer's truncation length)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sequence_len_reads_positive_integers_only() {
+    let parse = |params: serde_json::Value| -> ModelConfiguration {
+        serde_json::from_value(serde_json::json!({ "name": "m", "params": params })).unwrap()
+    };
+    assert_eq!(parse(serde_json::json!({ "sequence_len": 8192 })).sequence_len(), Some(8192));
+    assert_eq!(parse(serde_json::json!({})).sequence_len(), None);
+    assert_eq!(parse(serde_json::json!({ "sequence_len": 0 })).sequence_len(), None);
+    assert_eq!(parse(serde_json::json!({ "sequence_len": -1 })).sequence_len(), None);
+    assert_eq!(parse(serde_json::json!({ "sequence_len": "8192" })).sequence_len(), None);
+}
+
+#[test]
+fn pooling_strategy_default_is_cls_passthrough() {
+    // An absent `pooling_strategy` resolves to Cls (pass-through for 2-D outputs),
+    // not NoPooling — the embedding executor relies on this.
+    assert_eq!(PoolingStrategy::default(), PoolingStrategy::Cls);
+}

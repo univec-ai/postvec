@@ -160,6 +160,19 @@ pub struct ModelConfiguration {
     pub dependencies: Vec<String>,
 }
 impl ModelConfiguration {
+    /// Declared maximum input length in tokens (`params.sequence_len`).
+    ///
+    /// Executors use it as the tokenizer truncation length when the tokenizer
+    /// block sets none. Absent, zero, negative or non-integer values mean
+    /// the model did not declare a length.
+    pub fn sequence_len(&self) -> Option<usize> {
+        self.params
+            .get("sequence_len")
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0)
+            .map(|n| n as usize)
+    }
+
     /// Parse a `ninference.hub.json`.
     pub fn from_file<P: AsRef<Path>>(descriptor_file: P) -> Result<Self, ModelError> {
         let path = descriptor_file.as_ref();

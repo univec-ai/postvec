@@ -5,19 +5,16 @@
 
 use crate::context::Context;
 use crate::error::EngineError;
-// Import the output handling components.
 use crate::executors::templates::TemplateSet;
 use crate::executors::{EmbeddingOutput, Executor, ExecutorOutput, SingleBatchOutput};
-// Import the new InputLayout types from the models module
 use crate::models::{InputLayoutItem, InputLayoutItemType, ModelConfiguration, QuantizationMode};
 use crate::tokenizers::{
     config::Config as TokenizerConfig, new_tokenizer, Tokenizer as TokenizerTrait,
+    TransformerEncodingsWithPosition,
 };
 use crate::InferenceEngine;
-// --- External Imports ---
 use base64::Engine as _;
 use ndarray::Array2;
-// --- Rayon & Concurrency Imports ---
 use once_cell::sync::Lazy;
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -39,6 +36,113 @@ static EXECUTOR_POOL: Lazy<ThreadPool> = Lazy::new(|| {
 });
 
 const DEFAULT_BATCH_SIZE: usize = 32;
+
+/// Most padded tokens one inference call may hold. Default is 32 texts
+/// of 512 tokens. Longer inputs are split so the call stays that size.
+const DEFAULT_MAX_BATCH_TOKENS: usize =
+    DEFAULT_BATCH_SIZE * crate::tokenizers::config::DEFAULT_MAX_LENGTH;
+
+/// Cap on rows times length times length for one call. Default is 32
+/// times 512 squared. The model builds a full length-by-length score
+/// matrix, so two long texts do not share a call. A longer text runs
+/// by itself.
+const DEFAULT_MAX_BATCH_ATTENTION: usize = DEFAULT_BATCH_SIZE
+    * crate::tokenizers::config::DEFAULT_MAX_LENGTH
+    * crate::tokenizers::config::DEFAULT_MAX_LENGTH;
+
+/// The two caps for one call: token count, and rows times length squared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BatchBudget {
+    tokens: usize,
+    attention: usize,
+}
+
+impl BatchBudget {
+    const DEFAULT: Self = Self {
+        tokens: DEFAULT_MAX_BATCH_TOKENS,
+        attention: DEFAULT_MAX_BATCH_ATTENTION,
+    };
+
+    /// Does a batch of `rows` padded to `longest` tokens fit?
+    fn fits(&self, rows: usize, longest: usize) -> bool {
+        let rows = rows as u128;
+        let longest = longest as u128;
+        rows * longest <= self.tokens as u128 && rows * longest * longest <= self.attention as u128
+    }
+}
+
+/// Number of real (non-padding) tokens in an encoding.
+fn real_length(e: &TransformerEncodingsWithPosition) -> usize {
+    if e.attention_mask.is_empty() {
+        e.input_ids.len()
+    } else {
+        e.attention_mask.iter().filter(|&&m| m != 0).count()
+    }
+}
+
+/// True when all padding sits after the real tokens (the engine's tokenizers pad
+/// right), which is what makes trimming the tail safe.
+fn is_right_padded(e: &TransformerEncodingsWithPosition) -> bool {
+    match e.attention_mask.iter().position(|&m| m == 0) {
+        None => true,
+        Some(first_pad) => e.attention_mask[first_pad..].iter().all(|&m| m == 0),
+    }
+}
+
+/// Split `lengths` into contiguous ranges that each fit `budget`.
+/// A row that does not fit on its own gets a range of its own.
+fn plan_lengths(lengths: &[usize], budget: &BatchBudget) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let (mut start, mut longest) = (0, 0);
+    for (i, &len) in lengths.iter().enumerate() {
+        let candidate = longest.max(len);
+        if i > start && !budget.fits(i - start + 1, candidate) {
+            ranges.push(start..i);
+            start = i;
+            longest = len;
+        } else {
+            longest = candidate;
+        }
+    }
+    if start < lengths.len() {
+        ranges.push(start..lengths.len());
+    }
+    ranges
+}
+
+/// Sub-batch plan for one tokenized chunk. A chunk that already fits, or
+/// whose padding is not right-sided (the only layout that can be trimmed),
+/// stays one batch.
+// One range is the whole chunk. The vec is intentional: CI denies the
+// single-range lint.
+#[allow(clippy::single_range_in_vec_init)]
+fn plan_sub_batches(
+    encodings: &[TransformerEncodingsWithPosition],
+    budget: &BatchBudget,
+) -> Vec<std::ops::Range<usize>> {
+    let padded = encodings.iter().map(|e| e.input_ids.len()).max().unwrap_or(0);
+    if budget.fits(encodings.len(), padded) || !encodings.iter().all(is_right_padded) {
+        return vec![0..encodings.len()];
+    }
+    let lengths: Vec<usize> = encodings.iter().map(real_length).collect();
+    plan_lengths(&lengths, budget)
+}
+
+/// Drop the right padding a sub-batch no longer needs (its longest row may be much
+/// shorter than the chunk's). A no-op when the rows are already that long.
+fn trim_right_padding(
+    mut encodings: Vec<TransformerEncodingsWithPosition>,
+) -> Vec<TransformerEncodingsWithPosition> {
+    let longest = encodings.iter().map(real_length).max().unwrap_or(0);
+    for e in encodings.iter_mut() {
+        if e.input_ids.len() > longest && is_right_padded(e) {
+            e.input_ids.truncate(longest);
+            e.attention_mask.truncate(longest);
+            e.token_type_ids.truncate(longest);
+        }
+    }
+    encodings
+}
 
 /// OpenAI-compatible `encoding_format` selector. Default is `Float`.
 #[derive(Clone, Copy)]
@@ -69,58 +173,57 @@ fn encode_vectors(vectors: &[Vec<f32>], format: EncodingFormat) -> Value {
     }
 }
 
-/// The `TransformerForSequenceEmbedding` executor.
-///
-/// It holds the tokenizer and quantization mode required to
-/// preprocess text inputs.
-/// Pooling strategy is now defined per-output in the config.
+/// Sentence-embedding executor. Holds the tokenizer, quantization mode
+/// and per-model input layout. Pooling is configured per output.
 pub struct TransformerForSequenceEmbedding {
     tokenizer: Box<dyn TokenizerTrait>,
     quantization: QuantizationMode,
     /// The specific input layout (e.g., [input_ids, attention_mask, token_type_ids])
     /// required by this model, deserialized from `model.params`.
     input_layout: Option<Vec<InputLayoutItem>>,
-    /// Compiled `input_type → Jinja template` map (Task 3). `None` when the
-    /// model declares no `executor.params.templates` entry.
+    /// Compiled `input_type` to Jinja template map. `None` when the model
+    /// declares no `executor.params.templates` entry.
     templates: Option<TemplateSet>,
-    /// `params.target_dim` (model card) — required to validate Matryoshka
-    /// `dimensions` truncation requests.
+    /// `params.target_dim`. Upper bound for a `dimensions` truncation.
     target_dim: Option<usize>,
+    /// Memory budget for one inference call (`max_batch_tokens`, `max_batch_attention`).
+    budget: BatchBudget,
+    /// Only one over-long text runs at a time.
+    heavy_lane: std::sync::Mutex<()>,
+    /// The truncation length the tokenizer applies and where it came from.
+    input_limit: Option<(usize, crate::tokenizers::config::MaxLengthSource)>,
 }
 
 impl TransformerForSequenceEmbedding {
-    /// The constructor for the executor.
-    ///
-    /// It initializes the tokenizer and determines the
-    /// quantization mode from the model's configuration.
-    /// It also parses the optional `input_layout` from the model parameters.
+    /// Build the executor from the model configuration.
     pub fn new(engine: &InferenceEngine, config: &ModelConfiguration) -> Result<Self, EngineError> {
-        // Extract the executor-specific parameters from the model configuration.
         let params = &config.executor.params;
-        // Load the tokenizer configuration from the `tokenizer` parameter.
-        let tokenizer_config: TokenizerConfig = serde_json::from_value(
+        let mut tokenizer_config: TokenizerConfig = serde_json::from_value(
             params
                 .get("tokenizer")
                 .cloned()
-                // If the "tokenizer" key is missing, default to a null JSON value,
-                // which will cause `from_value` to use the
-                // default `TokenizerConfig`.
+                // A missing key deserializes as the default tokenizer config.
                 .unwrap_or(serde_json::Value::Null),
         )
         .map_err(|e| {
             EngineError::Configuration(format!("Failed to parse tokenizer configuration: {}", e))
         })?;
 
-        // Resolve the model's directory to find tokenizer assets if relative paths are used.
         let model_dir = engine.get_model_version_directory(&config.name)?;
-        // Create the tokenizer instance. `to_str()` is used as the tokenizer constructor
-        // expects an `Option<&str>`.
+        // `to_str()` because `new_tokenizer` takes `Option<&str>`.
+        // Truncation length: explicit `max_length`, else `params.sequence_len`.
+        let (_, limit_source) = tokenizer_config.resolve_max_length(
+            config.sequence_len(),
+            engine.sequence_len_cap(),
+            &config.name,
+        );
+        let input_limit = tokenizer_config
+            .effective_max_length()
+            .map(|n| (n, limit_source));
         let tokenizer = new_tokenizer(&tokenizer_config, model_dir.to_str())?;
-        // Get the quantization mode from the top-level model configuration.
         let quantization = config.quantization;
 
-        // Deserialize the input_layout from model parameters, if it exists.
-        // This uses the top-level `config`, not the executor-specific `params`.
+        // `input_layout` lives on the model params, not the executor block.
         let input_layout: Option<Vec<InputLayoutItem>> = config
             .params
             .get("input_layout")
@@ -140,9 +243,6 @@ impl TransformerForSequenceEmbedding {
             quantization
         );
 
-        // Optional input-type templates, e.g. EmbeddingGemma's
-        // `search_query` / `search_document` wrappers. Loaded once and reused
-        // for every request.
         let templates = TemplateSet::load(params.get("templates"), &model_dir)?;
         if let Some(set) = &templates {
             log::info!(
@@ -153,14 +253,25 @@ impl TransformerForSequenceEmbedding {
             );
         }
 
-        // Validation bound for the optional `dimensions` (Matryoshka) parameter.
-        // Pulled from `params.target_dim` which the hub already populates for
-        // embed models (the hosted gateway applies the same rule).
         let target_dim = config
             .params
             .get("target_dim")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
+
+        // `max_batch_tokens` / `max_batch_attention`. A long input shrinks the batch.
+        let positive = |key: &str, default: usize| {
+            params
+                .get(key)
+                .and_then(|v| v.as_u64())
+                .filter(|&n| n > 0)
+                .map(|n| n as usize)
+                .unwrap_or(default)
+        };
+        let budget = BatchBudget {
+            tokens: positive("max_batch_tokens", BatchBudget::DEFAULT.tokens),
+            attention: positive("max_batch_attention", BatchBudget::DEFAULT.attention),
+        };
 
         Ok(Self {
             tokenizer,
@@ -168,13 +279,17 @@ impl TransformerForSequenceEmbedding {
             input_layout,
             templates,
             target_dim,
+            budget,
+            heavy_lane: std::sync::Mutex::new(()),
+            input_limit,
         })
     }
 
-    /// Read an optional executor input by `json_key`, returning `None` when the
-    /// input is either not wired in the model configuration (older configs that
-    /// predate Task 2) or absent / null in the request payload. Errors only on
-    /// type mismatch.
+    /// Optional executor input by `json_key`.
+    ///
+    /// `None` when the input is not in the model configuration, or when a
+    /// wired key is missing or null. A present value of the wrong type is
+    /// an error.
     fn optional_input(ctx: &Context, json_key: &str) -> Result<Option<Value>, EngineError> {
         let inputs = &ctx.model_configuration().executor.inputs;
         let Some(idx) = inputs.iter().position(|m| m.json_key == json_key) else {
@@ -189,11 +304,8 @@ impl TransformerForSequenceEmbedding {
                     Ok(Some(value.clone()))
                 }
             }
-            // `input_json` returns `Prediction("Missing required key …")` when
-            // a wired key isn't present in JSON payloads, and
-            // `Configuration("Attempted to access structured input index …")`
-            // when it isn't present in a chained Structured call. Both are
-            // "wired but absent" — fall back to None and let callers default.
+            // A missing JSON key is `Prediction`. A missing structured input
+            // is `Configuration`. Both mean the caller left the field out.
             Err(EngineError::Prediction(_)) | Err(EngineError::Configuration(_)) => Ok(None),
             Err(e) => Err(e),
         }
@@ -210,29 +322,19 @@ impl TransformerForSequenceEmbedding {
         }
     }
 
-    /// Read the optional `dimensions` (Matryoshka truncation) input.
+    /// Optional `dimensions` truncation.
     ///
-    /// Relaxed contract: anything that means "I don't care, give me the full
-    /// vector" maps to `None` (no truncation) rather than an error, so callers
-    /// can send a fixed payload shape with the field blanked or sentinel-filled:
-    /// - absent / null in the payload,
-    /// - an empty string,
-    /// - a non-positive integer (`0`, `-1`, …).
-    ///
-    /// The value may arrive as a JSON number (`22`) or as a numeric string
-    /// (`"22"`) — payload shapes that quote every field are common — and both
-    /// are accepted identically. Genuine type errors (non-empty non-numeric
-    /// strings, fractional numbers) still surface so real mistakes aren't
-    /// silently swallowed.
+    /// Missing, null, an empty string or a non-positive integer means no
+    /// truncation, so a caller can send a fixed payload with the field
+    /// blank. A JSON number and a numeric string are the same value.
+    /// A non-numeric string or a fractional number is a type error.
     fn optional_dimensions(ctx: &Context, json_key: &str) -> Result<Option<usize>, EngineError> {
-        // Map a parsed integer to the relaxed result: non-positive → no
-        // truncation, positive → truncate to that many dims.
+        // Non-positive means no truncation.
         let from_int = |v: i64| if v <= 0 { None } else { Some(v as usize) };
         match Self::optional_input(ctx, json_key)? {
             None => Ok(None),
             Some(Value::Number(n)) => match n.as_i64() {
                 Some(v) => Ok(from_int(v)),
-                // Fractional / out-of-range number — a real type error.
                 None => Err(EngineError::InputTypeError(format!(
                     "`{}` must be a positive integer, got {}",
                     json_key, n
@@ -258,13 +360,9 @@ impl TransformerForSequenceEmbedding {
         }
     }
 
-    /// Apply the optional `input_type` template to the input strings.
-    ///
-    /// Wrap texts with the matching template when one is configured.
-    ///
-    /// Unknown or missing `input_type` is not an error: render as-is and, if
-    /// a value was given, warn. Bulk jobs over a mixed catalogue should not
-    /// have to special-case which models know which `input_type` strings.
+    /// Wrap texts with the `input_type` template when this model has one.
+    /// An unknown type is left as-is and logged. The caller does not have
+    /// to know which models define which names.
     fn apply_template(
         &self,
         input_type: Option<&str>,
@@ -296,222 +394,190 @@ impl TransformerForSequenceEmbedding {
         }
     }
 
-    /// A lower-level method that performs tokenization and inference, returning raw batch outputs.
-    ///
-    /// This function separates the core inference logic from the post-processing,
-    /// enabling more flexible use cases and cleaner code.
-    /// It is now responsible for
-    /// handling quantization-specific logic, such as disabling batching for
-    /// dynamically quantized models.
-    /// It also dynamically builds the input tensor list based on the `input_layout`.
-    ///
-    /// This method uses the `EXECUTOR_POOL` to process batches in parallel.
-    ///
-    /// # Arguments
-    /// * `ctx` - The execution context, containing the model and input data.
-    ///
-    /// # Returns
-    /// A `Result` containing an `EmbeddingOutput` instance, which is a staging
-    /// area for all the raw tensors produced by the model for all batches.
+    /// Tokenize the inputs and run the model. Returns one raw output per
+    /// sub-batch. Batches run on `EXECUTOR_POOL`.
     fn transform(&self, ctx: &Context) -> Result<EmbeddingOutput, EngineError> {
-        // Retrieve a thread-safe reference to the model from the context.
         let model = ctx.model_arc()?;
-        // Cancellation contract for every query below. The batches run on the
-        // dedicated Rayon pool, whose threads have NO ambient tokio context —
-        // the bound carries the watchdog runtime explicitly, so the ONNX
-        // termination path works from these threads too.
+        // Rayon threads have no tokio context. The bound carries the
+        // watchdog runtime so a cancelled query still stops the ONNX run.
         let bound = ctx.query_bound();
         let raw_sentences: Vec<String> = ctx.input_json(0)?.as_string_or_string_list()?;
-        // Optional OpenAI-style knobs — see Task 2 / Task 3.
         let input_type = Self::optional_string(ctx, "input_type")?;
-        // Apply input-type template (e.g. "search_query") if one is configured.
         let sentences = self.apply_template(
             input_type.as_deref(),
             raw_sentences,
             ctx.model_configuration().name.as_str(),
         )?;
 
-        // Determine the batch size, crucially checking the quantization mode.
         let batch_size = match self.quantization {
-            // For dynamically quantized models, batching can lead to inconsistent embeddings
-            // across different calls, as the quantization scale is determined per-batch.
-            // We enforce that the entire input is processed as a single batch.
-            QuantizationMode::Dynamic => {
-                log::warn!(
-                    "Model '{}' uses dynamic quantization. All inputs will be processed as a single batch.",
-                    model.name()
-                );
-                sentences.len()
-            }
-            // For other modes, use the default batch size.
+            // Scales are computed over the whole input tensor, padding
+            // included, so a text's vector would change with the other texts
+            // in its batch.
+            // One text per batch keeps the vector stable.
+            QuantizationMode::Dynamic => 1,
             _ => DEFAULT_BATCH_SIZE,
         };
 
         let sentences_str: Vec<&str> = sentences.iter().map(AsRef::as_ref).collect();
 
-        // Process sentences in parallel batches using our constrained Rayon pool.
         let batches = EXECUTOR_POOL.install(|| {
             sentences_str
-                .par_chunks(batch_size) // Use parallel chunks
+                .par_chunks(batch_size)
                 .map(|chunk| {
-                    // --- 1. Tokenization ---
                     let encodings = self.tokenizer.encode_batch(chunk)?;
-                    let batch_tokens: u32 =
-                        encodings.iter().map(|e| e.input_ids.len() as u32).sum();
 
-                    // --- 2. Tensor Creation ---
-                    // Extract all potential tensor data from the encodings.
-                    let batch_input_ids: Vec<Vec<i64>> =
-                        encodings.iter().map(|e| e.input_ids.clone()).collect();
-                    let batch_attn_masks: Vec<Vec<i64>> =
-                        encodings.iter().map(|e| e.attention_mask.clone()).collect();
-                    let batch_token_type_ids: Vec<Vec<i64>> =
-                        encodings.iter().map(|e| e.token_type_ids.clone()).collect();
-
-                    // Get the sequence length from the (padded) input_ids of the first item.
-                    // In a batch, all sequences are padded to the same length.
-                    let seq_len = batch_input_ids.first().map_or(0, |ids| ids.len());
-                    // Create a single position ID range: [0, 1, 2, ..., seq_len-1]
-                    let position_ids_range: Vec<i64> = (0..seq_len as i64).collect();
-                    // Create the batch of position IDs by cloning the range for each item in the batch.
-                    // The shape will be [batch_size, seq_len], matching input_ids.
-                    let batch_position_ids: Vec<Vec<i64>> =
-                        vec![position_ids_range; batch_input_ids.len()];
-
-                    // Convert attention masks to an ndarray::Array2 for pooling.
-                    // We must clone `batch_attn_masks` here so it remains available for the
-                    // `attn_mask_tensor` if needed by the input_layout.
-                    let attention_mask_matrix = if !batch_attn_masks.is_empty() {
-                        let rows = batch_attn_masks.len();
-                        // Handle potential empty encodings
-                        let cols = batch_attn_masks.first().map_or(0, |m| m.len());
-                        // Clone `batch_attn_masks` before consuming it with `into_iter`.
-                        let flat_masks: Vec<i64> =
-                            batch_attn_masks.clone().into_iter().flatten().collect();
-                        Array2::from_shape_vec((rows, cols), flat_masks)
-                            .map_err(EngineError::Shape)?
-                    } else {
-                        // Handle empty input case.
-                        Array2::zeros((0, 0))
-                    };
-
-                    // --- 3. Model Inference ---
-                    // Build the input tensors based on the configured layout.
-                    let output_tensors = if let Some(layout) = &self.input_layout {
-                        // --- Custom Input Layout Logic ---
-                        // Lazily create tensors only if they are needed.
-                        let mut created_tensors = std::collections::HashMap::new();
-                        let mut input_tensors = Vec::with_capacity(layout.len());
-
-                        for item in layout {
-                            match item.item_type {
-                                InputLayoutItemType::InputIds => {
-                                    let tensor = created_tensors
-                                        .entry(InputLayoutItemType::InputIds)
-                                        .or_insert_with(|| {
-                                            vectors::new_2d_tensor_from_i64_vecs(
-                                                batch_input_ids.clone(),
-                                            )
-                                        })
-                                        .as_ref()
-                                        // Convert `&VectorError` to `EngineError`
-                                        .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
-                                    input_tensors.push(tensor.clone());
-                                }
-                                InputLayoutItemType::AttentionMask => {
-                                    let tensor = created_tensors
-                                        .entry(InputLayoutItemType::AttentionMask)
-                                        .or_insert_with(|| {
-                                            vectors::new_2d_tensor_from_i64_vecs(
-                                                batch_attn_masks.clone(),
-                                            )
-                                        })
-                                        .as_ref()
-                                        // Convert `&VectorError` to `EngineError`
-                                        .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
-                                    input_tensors.push(tensor.clone());
-                                }
-                                InputLayoutItemType::TokenTypeIds => {
-                                    let tensor = created_tensors
-                                        .entry(InputLayoutItemType::TokenTypeIds)
-                                        .or_insert_with(|| {
-                                            vectors::new_2d_tensor_from_i64_vecs(
-                                                batch_token_type_ids.clone(),
-                                            )
-                                        })
-                                        .as_ref()
-                                        // Convert `&VectorError` to `EngineError`
-                                        .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
-                                    input_tensors.push(tensor.clone());
-                                }
-                                InputLayoutItemType::PositionIds => {
-                                    // Add logic for the new PositionIds type.
-                                    let tensor = created_tensors
-                                        .entry(InputLayoutItemType::PositionIds)
-                                        .or_insert_with(|| {
-                                            // Use the `batch_position_ids` variable we created earlier.
-                                            vectors::new_2d_tensor_from_i64_vecs(
-                                                batch_position_ids.clone(),
-                                            )
-                                        })
-                                        .as_ref()
-                                        // Convert `&VectorError` to `EngineError`
-                                        .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
-                                    input_tensors.push(tensor.clone());
-                                }
-                            }
-                        }
-                        model.query_with_deadline(&input_tensors, Some(&bound))?
-                    } else {
-                        // --- Default (Legacy) Input Layout Logic ---
-                        let input_tensor = vectors::new_2d_tensor_from_i64_vecs(batch_input_ids)?;
-                        let attn_mask_tensor =
-                            vectors::new_2d_tensor_from_i64_vecs(batch_attn_masks)?;
-                        model
-                            .query_with_deadline(&[input_tensor, attn_mask_tensor], Some(&bound))?
-                    };
-
-                    // --- 4. Package Raw Output ---
-                    // All raw tensors plus the attention mask.
-                    Ok(SingleBatchOutput {
-                        output_tensors,
-                        attention_mask_array: attention_mask_matrix,
-                        token_count: batch_tokens,
-                    })
+                    // A chunk is padded to its longest text, so one long row
+                    // pads every row. Split into ordered groups that fit the
+                    // budget, then drop padding the group does not need.
+                    let plan = plan_sub_batches(&encodings, &self.budget);
+                    let mut remaining = encodings.into_iter();
+                    plan.into_iter()
+                        .map(|range| {
+                            let sub = trim_right_padding(
+                                remaining.by_ref().take(range.len()).collect(),
+                            );
+                            let longest = sub.iter().map(|e| e.input_ids.len()).max().unwrap_or(0);
+                            // A group that still exceeds the budget is one long
+                            // text. Hold the lock so only one of those runs.
+                            let _heavy = if self.budget.fits(sub.len(), longest) {
+                                None
+                            } else {
+                                Some(self.heavy_lane.lock().unwrap_or_else(|p| p.into_inner()))
+                            };
+                            self.run_batch(model, &bound, &sub)
+                        })
+                        .collect::<Result<Vec<_>, EngineError>>()
                 })
-                .collect::<Result<Vec<_>, EngineError>>()
-        })?; // The '?' operator handles the `Result` from the `install` block.
+                .collect::<Result<Vec<Vec<_>>, EngineError>>()
+        })?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
         Ok(EmbeddingOutput::new(batches))
+    }
+
+    /// Run one padded group and return its raw outputs.
+    fn run_batch(
+        &self,
+        model: &std::sync::Arc<dyn crate::models::Model>,
+        bound: &crate::models::QueryBound,
+        encodings: &[TransformerEncodingsWithPosition],
+    ) -> Result<SingleBatchOutput, EngineError> {
+        // Count real tokens. Padding that lines the rows up is not input.
+        let batch_tokens: u32 = encodings.iter().map(|e| real_length(e) as u32).sum();
+
+        let batch_input_ids: Vec<Vec<i64>> =
+            encodings.iter().map(|e| e.input_ids.clone()).collect();
+        let batch_attn_masks: Vec<Vec<i64>> =
+            encodings.iter().map(|e| e.attention_mask.clone()).collect();
+        let batch_token_type_ids: Vec<Vec<i64>> =
+            encodings.iter().map(|e| e.token_type_ids.clone()).collect();
+
+        let seq_len = batch_input_ids.first().map_or(0, |ids| ids.len());
+        let position_ids_range: Vec<i64> = (0..seq_len as i64).collect();
+        let batch_position_ids: Vec<Vec<i64>> =
+            vec![position_ids_range; batch_input_ids.len()];
+
+        // Pooling needs the mask as an array, and the model may need the
+        // same rows, so they are cloned.
+        let attention_mask_matrix = if !batch_attn_masks.is_empty() {
+            let rows = batch_attn_masks.len();
+            let cols = batch_attn_masks.first().map_or(0, |m| m.len());
+            let flat_masks: Vec<i64> =
+                batch_attn_masks.clone().into_iter().flatten().collect();
+            Array2::from_shape_vec((rows, cols), flat_masks)
+                .map_err(EngineError::Shape)?
+        } else {
+            Array2::zeros((0, 0))
+        };
+
+        let output_tensors = if let Some(layout) = &self.input_layout {
+            let mut created_tensors = std::collections::HashMap::new();
+            let mut input_tensors = Vec::with_capacity(layout.len());
+
+            for item in layout {
+                match item.item_type {
+                    InputLayoutItemType::InputIds => {
+                        let tensor = created_tensors
+                            .entry(InputLayoutItemType::InputIds)
+                            .or_insert_with(|| {
+                                vectors::new_2d_tensor_from_i64_vecs(
+                                    batch_input_ids.clone(),
+                                )
+                            })
+                            .as_ref()
+                            .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
+                        input_tensors.push(tensor.clone());
+                    }
+                    InputLayoutItemType::AttentionMask => {
+                        let tensor = created_tensors
+                            .entry(InputLayoutItemType::AttentionMask)
+                            .or_insert_with(|| {
+                                vectors::new_2d_tensor_from_i64_vecs(
+                                    batch_attn_masks.clone(),
+                                )
+                            })
+                            .as_ref()
+                            .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
+                        input_tensors.push(tensor.clone());
+                    }
+                    InputLayoutItemType::TokenTypeIds => {
+                        let tensor = created_tensors
+                            .entry(InputLayoutItemType::TokenTypeIds)
+                            .or_insert_with(|| {
+                                vectors::new_2d_tensor_from_i64_vecs(
+                                    batch_token_type_ids.clone(),
+                                )
+                            })
+                            .as_ref()
+                            .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
+                        input_tensors.push(tensor.clone());
+                    }
+                    InputLayoutItemType::PositionIds => {
+                        let tensor = created_tensors
+                            .entry(InputLayoutItemType::PositionIds)
+                            .or_insert_with(|| {
+                                vectors::new_2d_tensor_from_i64_vecs(
+                                    batch_position_ids.clone(),
+                                )
+                            })
+                            .as_ref()
+                            .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
+                        input_tensors.push(tensor.clone());
+                    }
+                }
+            }
+            model.query_with_deadline(&input_tensors, Some(bound))?
+        } else {
+            let input_tensor = vectors::new_2d_tensor_from_i64_vecs(batch_input_ids)?;
+            let attn_mask_tensor =
+                vectors::new_2d_tensor_from_i64_vecs(batch_attn_masks)?;
+            model
+                .query_with_deadline(&[input_tensor, attn_mask_tensor], Some(bound))?
+        };
+
+        Ok(SingleBatchOutput {
+            output_tensors,
+            attention_mask_array: attention_mask_matrix,
+            token_count: batch_tokens,
+        })
     }
 }
 
 impl Executor for TransformerForSequenceEmbedding {
-    /// The main `execute` method that processes an embedding request.
+    fn max_input_tokens(&self) -> Option<(usize, crate::tokenizers::config::MaxLengthSource)> {
+        self.input_limit
+    }
+
+    /// Run the model, then pool each configured output.
     ///
-    /// This method now orchestrates the two-stage process:
-    /// 1. Calls `transform` to get the raw, batched model outputs (containing all tensors).
-    /// 2. Iterates through the `executor.outputs` configuration *in parallel*
-    ///    using the `EXECUTOR_POOL`.
-    /// 3. For each configured output, it creates a custom "transformer" closure
-    ///    that checks the `pooling_strategy`:
-    ///    a. **If `NoPooling` (which is now the default):** It selects the correct
-    ///    tensor (by name or index) and returns the raw, unpooled token embeddings.
-    ///    The output is a JSON array of 2D matrices.
-    ///    b. **Otherwise (Cls, Mean, etc.):** It selects the correct tensor, applies
-    ///    the specified pooling *in parallel* over the batches, and normalizes the
-    ///    results. The output is a JSON array of 1D vectors.
-    /// 4. It collects all processed JSON outputs into a `Structured` result.
+    /// An explicit `no-pooling` output returns the token matrices. Any other
+    /// strategy, including a missing one, returns one vector per input.
     fn execute(&self, ctx: &Context) -> Result<ExecutorOutput, EngineError> {
-        // --- 1. Transformation Stage ---
-        // Get the raw, batched outputs from the model.
-        // This call already uses Rayon internally for batch processing.
         let embedding_output = self.transform(ctx)?;
 
-        // --- 1b. OpenAI-compatible post-pool knobs (Task 2) ---
-        // `dimensions` — Matryoshka truncation. Validated against the model's
-        // declared target_dim so callers can't ask for more dimensions than
-        // the model actually emits.
+        // `dimensions` truncates each vector. It cannot exceed `target_dim`.
         let dimensions = Self::optional_dimensions(ctx, "dimensions")?;
         if let (Some(req), Some(tgt)) = (dimensions, self.target_dim) {
             if req > tgt {
@@ -521,9 +587,7 @@ impl Executor for TransformerForSequenceEmbedding {
                 )));
             }
         }
-        // `encoding_format` — "float" (default) or "base64". An empty string is
-        // treated as absent (default to float) so callers can send a fixed
-        // payload shape with the field blanked out rather than omitting it.
+        // Empty `encoding_format` means float, so a fixed payload can leave it blank.
         let encoding_format = match Self::optional_string(ctx, "encoding_format")?.as_deref() {
             None | Some("") | Some("float") => EncodingFormat::Float,
             Some("base64") => EncodingFormat::Base64,
@@ -535,20 +599,14 @@ impl Executor for TransformerForSequenceEmbedding {
             }
         };
 
-        // --- 2. Post-processing Stage ---
-        // Get the model overview to map layer names to tensor indices.
         let overview = ctx.model_overview()?;
-        // Get the list of configured outputs.
         let executor_outputs = &ctx.model_configuration().executor.outputs;
 
-        // Process each configured output in parallel using our constrained Rayon pool.
         let structured_outputs: Vec<Value> = EXECUTOR_POOL.install(|| {
             executor_outputs
-                .par_iter() // Use parallel iterator
+                .par_iter()
                 .enumerate()
                 .map(|(output_index, output_mapping)| {
-                    // Determine which tensor to use for this output.
-                    // If `layer_name` is provided, find its index by name.
                     let tensor_index = if let Some(layer_name) = &output_mapping.layer_name {
                         overview
                             .outputs
@@ -562,40 +620,27 @@ impl Executor for TransformerForSequenceEmbedding {
                                 ))
                             })?
                     } else {
-                        // If no `layer_name` is given, default to the mapping's index.
                         output_index
                     };
 
-                    // Get the pooling strategy.
-                    // If the `pooling_strategy` key is missing or null,
-                    // `unwrap_or_default()` will now call `PoolingStrategy::default()`,
-                    // which we changed to `PoolingStrategy::NoPooling`.
+                    // A missing strategy is `Cls`, which passes an already-pooled
+                    // matrix through. Token matrices come back only for `no-pooling`.
                     let pooling_strategy = output_mapping
                         .pooling_strategy
                         .clone()
                         .unwrap_or_default();
 
-                    // Whether to L2-normalize the output embeddings after pooling.
                     let normalize = output_mapping.normalize;
 
-                    // Create the post-processing pipeline for this specific output.
-                    // This closure returns a `Result<Value, EngineError>` because its output
-                    // format (1D vectors vs 2D matrices) is conditional.
                     let transformer =
                         |batches: &[SingleBatchOutput]| -> Result<Value, EngineError> {
-                            // We check if the strategy is *not* `NoPooling`.
                             if pooling_strategy != crate::pooling::PoolingStrategy::NoPooling {
-                                // --- Pooled and Normalized Logic ---
-                                // This branch executes for `Cls`, `Mean`, `Splade`, `LastToken`.
-                                // We process the batches in parallel using the pool.
                                 let all_embeddings: Vec<FloatVector> = batches
-                                    .par_iter() // Use parallel iterator over batches
+                                    .par_iter()
                                     .map(|batch| {
-                                        // 1. Pool the batch output.
                                         let pooled =
                                             batch.pool(pooling_strategy.clone(), tensor_index)?;
 
-                                        // 2. Optionally normalize each embedding in the pooled batch.
                                         let embeddings: Vec<FloatVector> = if normalize {
                                             pooled
                                                 .rows()
@@ -612,23 +657,26 @@ impl Executor for TransformerForSequenceEmbedding {
 
                                         Ok(embeddings)
                                     })
-                                    // Collect the results from parallel processing.
                                     .collect::<Result<Vec<Vec<FloatVector>>, EngineError>>()?
                                     .into_iter()
                                     .flatten()
                                     .collect();
 
-                                // 3. Optional Matryoshka truncation (with renormalisation
-                                //    when the configured output is normalised — truncating a
-                                //    unit-norm vector breaks unit-norm).
                                 let embeddings_as_vecs: Vec<Vec<f32>> = all_embeddings
                                     .into_iter()
                                     .map(|v| {
                                         let mut out: Vec<f32> = v.to_vec();
                                         if let Some(d) = dimensions {
                                             if d < out.len() {
+                                                // Cutting a unit vector short breaks the unit
+                                                // length. Re-normalise when the output asks
+                                                // for it, or when the vector already was unit
+                                                // length. Some graphs normalise inside, such
+                                                // as embeddinggemma-300m.
+                                                let was_unit = (out.iter().map(|x| x * x).sum::<f32>().sqrt() - 1.0).abs()
+                                                    < 1e-3;
                                                 out.truncate(d);
-                                                if normalize {
+                                                if normalize || was_unit {
                                                     let norm: f32 = out
                                                         .iter()
                                                         .map(|x| x * x)
@@ -645,18 +693,11 @@ impl Executor for TransformerForSequenceEmbedding {
                                         out
                                     })
                                     .collect();
-                                // 4. Optional base64 encoding (OpenAI parity).
                                 Ok(encode_vectors(&embeddings_as_vecs, encoding_format))
                             } else {
-                                // --- Unpooled (Raw) Tensor Logic ---
-                                // This branch executes if pooling_strategy was "no-pooling" or absent.
-                                // We return the raw token embeddings for each sentence.
-                                // The result will be a list of 2D matrices.
-                                // We process the batches in parallel using the pool.
                                 let all_unpooled_tensors: Vec<FloatMatrix> = batches
-                                    .par_iter() // Use parallel iterator over batches
+                                    .par_iter()
                                     .map(|batch| {
-                                        // 1. Get the raw output tensor for this batch.
                                         let output_tensor =
                                             batch.output_tensors.get(tensor_index).ok_or_else(
                                                 || {
@@ -666,25 +707,18 @@ impl Executor for TransformerForSequenceEmbedding {
                                                     ))
                                                 },
                                             )?;
-                                        // 2. Convert it to a 3D cube [batch_size, seq_len, hidden_size].
                                         let tensor_cube = output_tensor.clone().as_float_cube()?;
-                                        // 3. Split the 3D cube into a Vec of 2D matrices (one per sentence).
                                         let sentence_matrices: Vec<FloatMatrix> =
                                             tensor_cube.outer_iter().map(|m| m.to_owned()).collect();
                                         Ok(sentence_matrices)
                                     })
-                                    // Collect the results from parallel processing.
                                     .collect::<Result<Vec<Vec<FloatMatrix>>, EngineError>>()?
                                     .into_iter()
                                     .flatten()
                                     .collect();
 
-                                // 4. Final Formatting (for this output)
-                                // Convert `Vec<FloatMatrix>` to `Vec<Vec<Vec<f32>>>` for JSON,
-                                // truncating along the hidden dimension when `dimensions` is set.
-                                // `NoPooling` typically marks pre-pooled sentence vectors that
-                                // arrive as 1×D rows; truncating the last axis is the same
-                                // operation in both shapes.
+                                // Some `no-pooling` outputs are already one row per text.
+                                // Truncation still cuts the last axis.
                                 let unpooled_as_vecs: Vec<Vec<Vec<f32>>> = all_unpooled_tensors
                                     .into_iter()
                                     .map(|matrix| {
@@ -704,9 +738,7 @@ impl Executor for TransformerForSequenceEmbedding {
                                     })
                                     .collect();
 
-                                // base64 for raw token tensors: encode the flattened f32 buffer
-                                // per row. The OpenAI wire shape is one base64 string per data
-                                // item, regardless of underlying tensor rank.
+                                // One base64 string per row, the flattened floats.
                                 match encoding_format {
                                     EncodingFormat::Float => Ok(json!(unpooled_as_vecs)),
                                     EncodingFormat::Base64 => {
@@ -724,19 +756,12 @@ impl Executor for TransformerForSequenceEmbedding {
                             }
                         };
 
-                    // Apply the transformer to get the final JSON value for this output.
                     let final_json_output = embedding_output.export_with_transformer(transformer)?;
-                    // The transformer closure now returns the final JSON value directly,
-                    // so we just return it.
                     Ok(final_json_output)
                 })
-                .collect::<Result<Vec<_>, EngineError>>() // Collect parallel results
-        })?; // The '?' operator handles the `Result` from the `install` block.
+                .collect::<Result<Vec<_>, EngineError>>()
+        })?;
 
-        // Return the embeddings as a structured output.
-        // The order of values in the `Vec` matches the order of `executor.outputs`.
-        // Return the embeddings as a structured output with usage metadata.
-        // The order of values in the `Vec` matches the order of `executor.outputs`.
         let total_tokens = embedding_output.total_tokens();
         Ok(ExecutorOutput::StructuredWithUsage {
             outputs: structured_outputs,
@@ -746,5 +771,99 @@ impl Executor for TransformerForSequenceEmbedding {
                 total_tokens,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A right-padded encoding of `real` tokens padded to `padded`.
+    fn enc(real: usize, padded: usize) -> TransformerEncodingsWithPosition {
+        let ids: Vec<i64> = (0..padded).map(|i| if i < real { 5 } else { 0 }).collect();
+        let mask: Vec<i64> = (0..padded).map(|i| (i < real) as i64).collect();
+        TransformerEncodingsWithPosition {
+            attention_mask: mask,
+            input_ids: ids,
+            token_type_ids: vec![0; padded],
+            tokens_with_positions: vec![],
+        }
+    }
+
+    #[test]
+    fn default_budget_is_the_old_worst_case() {
+        assert_eq!(DEFAULT_MAX_BATCH_TOKENS, 32 * 512);
+        assert_eq!(DEFAULT_MAX_BATCH_ATTENTION, 32 * 512 * 512);
+    }
+
+    #[test]
+    fn attention_budget_bounds_rows_times_length_squared() {
+        let b = BatchBudget::DEFAULT;
+        // 32 texts of 512 tokens fit exactly.
+        assert!(b.fits(32, 512));
+        // Two 8192-token rows fit the token limit (16384) and miss the
+        // length-squared limit, so they run separately.
+        assert!(2 * 8192 <= b.tokens);
+        assert!(!b.fits(2, 8192));
+        assert_eq!(plan_lengths(&[8192, 8192], &b), vec![0..1, 1..2]);
+        // 2048-token rows: two per batch.
+        assert!(b.fits(2, 2048) && !b.fits(3, 2048));
+    }
+
+    #[test]
+    fn a_chunk_that_fits_is_never_split() {
+        // 32 rows padded to 512 is the default budget, so the chunk stays whole.
+        let chunk: Vec<_> = (0..32).map(|i| enc(10 + i, 512)).collect();
+        assert_eq!(plan_sub_batches(&chunk, &BatchBudget::DEFAULT), vec![0..32]);
+    }
+
+    #[test]
+    fn a_long_text_shrinks_its_batch_and_keeps_order() {
+        // 31 short texts and one 8192-token text in the middle.
+        let mut lengths = vec![20; 32];
+        lengths[10] = 8192;
+        let ranges = plan_lengths(&lengths, &BatchBudget::DEFAULT);
+        // The ranges stay in order and cover every row.
+        assert_eq!(ranges.first().unwrap().start, 0);
+        assert_eq!(ranges.last().unwrap().end, 32);
+        for w in ranges.windows(2) {
+            assert_eq!(w[0].end, w[1].start);
+        }
+        for r in &ranges {
+            let longest = lengths[r.clone()].iter().max().unwrap();
+            assert!(r.len() == 1 || BatchBudget::DEFAULT.fits(r.len(), *longest), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn an_over_budget_text_runs_alone() {
+        assert_eq!(plan_lengths(&[10, 40000, 10], &BatchBudget::DEFAULT), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn trimming_drops_only_padding() {
+        let sub = trim_right_padding(vec![enc(3, 100), enc(7, 100)]);
+        assert!(sub.iter().all(|e| e.input_ids.len() == 7 && e.attention_mask.len() == 7));
+        assert_eq!(real_length(&sub[0]), 3);
+        assert_eq!(real_length(&sub[1]), 7);
+        assert_eq!(&sub[1].input_ids, &vec![5; 7]);
+    }
+
+    #[test]
+    fn left_padding_is_left_alone() {
+        let mut left = enc(3, 6);
+        left.attention_mask.reverse();
+        left.input_ids.reverse();
+        assert!(!is_right_padded(&left));
+        let chunk = vec![left, enc(6, 6)];
+        assert_eq!(
+            plan_sub_batches(&chunk, &BatchBudget { tokens: 1, attention: 1 }),
+            vec![0..2]
+        );
+    }
+
+    #[test]
+    fn real_length_ignores_padding() {
+        assert_eq!(real_length(&enc(4, 9)), 4);
     }
 }

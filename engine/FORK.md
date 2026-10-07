@@ -100,6 +100,14 @@ The fork is trimmed by deletion only, with two recorded amendments:
   `as_str`/`from_str` arms and round-trip test row) as the fork's only `+`
   lines; upstream may adopt the same variant verbatim.
 
+- `src/executors/transformer_sequence_embedding.rs`: one
+  `#[allow(clippy::single_range_in_vec_init)]` on `plan_sub_batches`
+  (2026-10-08). The lint arrived with the tokenization sync below;
+  `vec![0..n]` is the intended value (one sub-batch), and the server CI's
+  `cargo clippy -p postvec-server -p postvec-core -- -D warnings` lints the
+  engine as a workspace member, so leaving it would fail CI. Upstream can
+  take the same attribute.
+
 ## Synced from upstream
 
 Upstream changes picked up after the fork point:
@@ -110,6 +118,29 @@ Upstream changes picked up after the fork point:
   converters are trained on unit-length vectors. Affects:
   `src/executors/vector_embedding.rs`
   `src/executors/mod.rs`; tests included.
+- `univec-ai/stack@a427885a` (2026-10-07), "tokenization fixes", plus the
+  engine half of `@21d72c76`: the tokenizer truncates at an explicit
+  `tokenizer.max_length`, else the model's `params.sequence_len`, else 512,
+  clamped to the engine-wide ceiling `HostPolicy::max_sequence_len`
+  (default 8192). The embedding executor splits a call when the token
+  count or rows times length squared would be too large. A text that
+  still does not fit runs alone, and only one such text runs at a time.
+  Usage counts real tokens from the attention mask. Truncating a unit
+  vector re-normalizes it. Dynamic quantization runs one text per batch.
+  A loaded `tokenizer.json` has its truncation and padding overwritten
+  from the descriptor. `Executor::max_input_tokens` and
+  `InferenceEngine::max_input_tokens` report the length actually applied.
+  Merged three-way, so postvec's shortened comments are kept; the hunks for
+  the deleted executors were dropped. Affects: `src/config.rs`, `src/lib.rs`,
+  `src/models/configuration.rs`, `src/tokenizers/{config,huggingface}.rs`,
+  `src/executors/{mod,transformer_sequence_embedding}.rs`,
+  `tests/configuration.rs`; tests included.
+- `univec-ai/stack@435c7ab4` (2026-10-07), "grpc fixes", engine part only:
+  `VectorEmbeddingExecutor` rejects a batch whose width differs from the
+  graph input's static last dimension (fallback: `params.source_dim`) with
+  `InputTypeError` → `INVALID_INPUT`, before normalization or inference;
+  before, ONNX Runtime failed with an internal error. Affects:
+  `src/executors/vector_embedding.rs`; test included.
 
 ## Known deferred lint
 

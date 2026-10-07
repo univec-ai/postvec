@@ -18,6 +18,9 @@ use shared::vectors::{FloatMatrix, IntoGenericTensorExt};
 /// the input rows first unless `normalize_input` is off.
 pub struct VectorEmbeddingExecutor {
     normalize_input: bool,
+    /// The descriptor's `params.source_dim`, the fallback input width when the
+    /// graph's input dimension is dynamic.
+    source_dim: Option<usize>,
 }
 
 impl VectorEmbeddingExecutor {
@@ -32,7 +35,44 @@ impl VectorEmbeddingExecutor {
                 ))
             })?,
         };
-        Ok(Self { normalize_input })
+        let source_dim = config
+            .params
+            .get("source_dim")
+            .and_then(|v| v.as_u64())
+            .filter(|&d| d > 0)
+            .map(|d| d as usize);
+        Ok(Self {
+            normalize_input,
+            source_dim,
+        })
+    }
+
+    /// The vector width this model accepts: the graph input's static last
+    /// dimension when it has one (authoritative), else the declared
+    /// `source_dim`.
+    fn expected_width(&self, overview: &crate::models::ModelOverview) -> Option<usize> {
+        overview
+            .inputs
+            .first()
+            .and_then(|layer| layer.shape.last().copied())
+            .filter(|&d| d > 0)
+            .map(|d| d as usize)
+            .or(self.source_dim)
+    }
+}
+
+/// Reject a batch whose vectors are not the model's input width.
+/// The caller gets invalid input. Left unchecked, ONNX Runtime raises an
+/// internal error and the server answers 502.
+fn check_width(input: &FloatMatrix, expected: Option<usize>) -> Result<(), EngineError> {
+    match expected {
+        Some(expected) if input.nrows() > 0 && input.ncols() != expected => {
+            Err(EngineError::InputTypeError(format!(
+                "this converter takes {expected}-dimensional vectors, got {}",
+                input.ncols()
+            )))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -49,39 +89,21 @@ fn normalize_rows(m: &mut FloatMatrix) {
 impl Executor for VectorEmbeddingExecutor {
     /// JSON matrix in, model query, JSON matrix out per configured output.
     fn execute(&self, ctx: &Context) -> Result<ExecutorOutput, EngineError> {
-        // --- 1. Get Input ---
-        // Retrieve the input embeddings from the first configured JSON input.
-        // The `as_float_matrix` helper handles the conversion from a JSON
-        // array of arrays into an ndarray `FloatMatrix`.
         let mut input_embeddings: FloatMatrix = ctx.input_json(0)?.as_float_matrix()?;
+        let overview = ctx.model_overview()?;
+        check_width(&input_embeddings, self.expected_width(&overview))?;
         if self.normalize_input {
             normalize_rows(&mut input_embeddings);
         }
 
-        // --- 2. Prepare for Model ---
-        // Convert the `FloatMatrix` into a `GenericTensor`.
-        // The `to_tensor` method
-        // is part of the `IntoGenericTensorExt` trait, which is implemented for
-        // ndarray types like `FloatMatrix`.
         let input_tensor = input_embeddings.to_tensor();
-
-        // --- 3. Run Inference ---
-        // Query the model with the prepared input tensor.
         let output_tensors = ctx.query(&[input_tensor])?;
-
-        // --- 4. Process Outputs ---
-        // Get model and executor configuration.
-        let overview = ctx.model_overview()?;
         let executor_outputs = &ctx.model_configuration().executor.outputs;
 
-        // Process each configured output in parallel.
-        // We use `.iter().enumerate()` to get the index of each output mapping.
         let structured_outputs: Vec<Value> = executor_outputs
             .iter()
-            .enumerate() // Get the index of each output mapping
+            .enumerate()
             .map(|(output_index, output_mapping)| {
-                // Determine which tensor to use.
-                // If `layer_name` is provided, find its index by name.
                 let tensor_index = if let Some(layer_name) = &output_mapping.layer_name {
                     overview
                         .outputs
@@ -94,11 +116,9 @@ impl Executor for VectorEmbeddingExecutor {
                             ))
                         })?
                 } else {
-                    // If no `layer_name` is given, default to the mapping's index.
                     output_index
                 };
 
-                // Get the tensor from the model's output.
                 let output_tensor = output_tensors.get(tensor_index).ok_or_else(|| {
                     EngineError::Prediction(format!(
                         "Model output tensor at index {} not found for output key '{}'",
@@ -106,27 +126,17 @@ impl Executor for VectorEmbeddingExecutor {
                     ))
                 })?;
 
-                // Convert the generic output tensor back into a strongly-typed `FloatMatrix`.
-                // The `as_float_matrix` method on `GenericTensor` handles this conversion,
-                // failing if the tensor is not numeric or doesn't have a 2D shape.
                 let output_embeddings: FloatMatrix = output_tensor.clone().as_float_matrix()?;
-
-                // To create a JSON array of arrays for the response, we first convert the
-                // `FloatMatrix` into a `Vec<Vec<f32>>`.
                 let embeddings_as_vecs: Vec<Vec<f32>> = output_embeddings
                     .rows()
                     .into_iter()
                     .map(|row| row.to_vec())
                     .collect();
 
-                // Convert the final list of embeddings into a JSON value.
                 Ok(json!(embeddings_as_vecs))
             })
             .collect::<Result<Vec<_>, EngineError>>()?;
 
-        // --- 5. Format and Return ---
-        // Return the embeddings as a structured output. The server will map these
-        // values to the keys defined in `executor.outputs`.
         Ok(ExecutorOutput::Structured(structured_outputs))
     }
 }
@@ -135,6 +145,19 @@ impl Executor for VectorEmbeddingExecutor {
 mod tests {
     use super::*;
     use ndarray::array;
+
+    #[test]
+    fn wrong_width_is_invalid_input_not_internal() {
+        let m = array![[1.0f32, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        assert!(check_width(&m, Some(3)).is_ok());
+        assert!(check_width(&m, None).is_ok());
+        let err = check_width(&m, Some(1024)).unwrap_err();
+        assert!(matches!(err, EngineError::InputTypeError(_)));
+        assert_eq!(err.to_error_code(), shared::ErrorCode::InvalidInput);
+        // An empty batch has no rows to check.
+        let empty = FloatMatrix::zeros((0, 0));
+        assert!(check_width(&empty, Some(1024)).is_ok());
+    }
 
     fn cfg(params: serde_json::Value) -> ModelConfiguration {
         serde_json::from_value(serde_json::json!({

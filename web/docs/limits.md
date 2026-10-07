@@ -67,8 +67,13 @@ Embed-bridge uses local models.
 - Chunk splitter: at most 10,000 non-blank chunks, 32 MiB UTF-8 and 4x
   amplification per document.
 - `postvec.max_document_bytes` (default 1 MiB) dead-letters a row whose
-  rendered text is larger, with the measured size. Text is never
-  truncated. The same ceiling bounds `embed()` and `search()` query input.
+  rendered text is larger, with the measured size. postvec never
+  truncates text. The same ceiling bounds `embed()` and `search()` query input.
+- The model itself reads at most its served length in tokens and ignores
+  the rest of a longer input: its declared `sequence_len`, capped at
+  `postvec.embedded_max_sequence_len` (default 2,048) in embedded mode
+  and at 8,192 with postvec-server. Chunk long documents so each chunk
+  fits.
 - `postvec.max_batch_total_bytes` (default 16 MiB) ends a batch at that
   budget. Rows past it stay pending for the next cycle without consuming
   a retry attempt.

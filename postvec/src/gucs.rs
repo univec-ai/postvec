@@ -51,6 +51,10 @@ pub static EMBEDDED_LISTEN: GucSetting<Option<CString>> = GucSetting::<Option<CS
 pub static EMBEDDED_HTTP_LISTEN: GucSetting<Option<CString>> =
     GucSetting::<Option<CString>>::new(None);
 pub static EMBEDDED_MAX_INFLIGHT: GucSetting<i32> = GucSetting::<i32>::new(1);
+/// Engine-wide ceiling on tokens per input text in embedded mode. Lower than
+/// the standalone server's 8192: attention memory grows with the square of
+/// the length, and here it is taken from PostgreSQL's host.
+pub static EMBEDDED_MAX_SEQUENCE_LEN: GucSetting<i32> = GucSetting::<i32>::new(2048);
 
 /// Where the embedded engine host reads external-provider connector files
 /// (`providers.d/*.toml`). A **path**, never a credential — provider API keys
@@ -216,6 +220,20 @@ pub fn register() {
         &EMBEDDED_MAX_INFLIGHT,
         1,
         16,
+        GucContext::Sighup,
+        GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"postvec.embedded_max_sequence_len",
+        c"Most tokens the embedded engine feeds a model per input text",
+        c"Default 2048. Clamps every model's own length (descriptor tokenizer.max_length, \
+          else params.sequence_len); the rest of a longer input is ignored, so chunk long \
+          documents. Attention memory grows with the square of the length: one 8192-token \
+          text can take several GB on a large model, on the database host. Read when the \
+          embedded engine starts.",
+        &EMBEDDED_MAX_SEQUENCE_LEN,
+        128,
+        8192,
         GucContext::Sighup,
         GucFlags::default(),
     );

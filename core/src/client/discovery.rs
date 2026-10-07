@@ -147,8 +147,33 @@ impl HubModel {
         self.configuration.as_ref().is_some_and(|c| c.enabled)
     }
 
+    /// Input length actually served, in tokens.
+    ///
+    /// `params.sequence_len` is the length the model declares. An explicit
+    /// `executor.params.tokenizer.max_length` is a lower truncation point
+    /// (a model may declare 32768 and be served at 8192). When both are
+    /// set, the smaller one is what truncation uses, so that is what this
+    /// reports.
+    fn sequence_len(&self) -> Option<u32> {
+        let cfg = self.configuration.as_ref()?;
+        let served = cfg
+            .rest
+            .get("executor")
+            .and_then(|e| e.get("params"))
+            .and_then(|p| p.get("tokenizer"))
+            .and_then(|t| t.get("max_length"))
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0)
+            .map(|n| n.min(u32::MAX as u64) as u32);
+        match (cfg.params.sequence_len, served) {
+            (Some(declared), Some(served)) => Some(declared.min(served)),
+            (declared, served) => declared.or(served),
+        }
+    }
+
     fn into_model_info(self) -> ModelInfo {
         let model_type = self.model_type();
+        let sequence_len = self.sequence_len();
         let (params_snapshot, config_rest) = match &self.configuration {
             Some(c) => (
                 serde_json::json!({
@@ -171,7 +196,7 @@ impl HubModel {
             target_model: params.and_then(|p| p.target_model.clone()),
             source_dim: params.and_then(|p| p.source_dim),
             target_dim: params.and_then(|p| p.target_dim),
-            sequence_len: params.and_then(|p| p.sequence_len),
+            sequence_len,
             raw: serde_json::json!({
                 "name": self.name,
                 "params": params_snapshot,
@@ -400,6 +425,29 @@ mod tests {
         assert_eq!(convert.source_model.as_deref(), Some("baai-bge-m3"));
         assert_eq!(convert.target_model.as_deref(), Some("cohere-embed-v4.0"));
         assert_eq!(convert.target_dim, Some(1536));
+    }
+
+    #[test]
+    fn sequence_len_reports_the_served_length() {
+        let parse = |cfg: serde_json::Value| -> Option<u32> {
+            let body = serde_json::json!({
+                "success": true,
+                "data": { "models": [{ "name": "m", "status": "local", "configuration": cfg }] }
+            });
+            parse_config(&body.to_string()).unwrap()[0].sequence_len
+        };
+        let declared = serde_json::json!({"enabled": true, "params": {"sequence_len": 32768}});
+        assert_eq!(parse(declared), Some(32768));
+        let capped = serde_json::json!({"enabled": true, "params": {"sequence_len": 32768},
+            "executor": {"params": {"tokenizer": {"max_length": 8192}}}});
+        assert_eq!(parse(capped), Some(8192));
+        // A larger explicit value never inflates the reported length.
+        let larger = serde_json::json!({"enabled": true, "params": {"sequence_len": 2048},
+            "executor": {"params": {"tokenizer": {"max_length": 4096}}}});
+        assert_eq!(parse(larger), Some(2048));
+        let only_explicit = serde_json::json!({"enabled": true, "params": {},
+            "executor": {"params": {"tokenizer": {"max_length": 1024}}}});
+        assert_eq!(parse(only_explicit), Some(1024));
     }
 
     /// Serve one canned HTTP response on a loopback port, in a background

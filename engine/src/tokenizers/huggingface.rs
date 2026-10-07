@@ -3,7 +3,7 @@
 use super::config::{
     Config as TokenizerConfig, HuggingFaceBpeParams, HuggingFacePretrainedParams,
     HuggingFaceUnigramParams, HuggingFaceWordlevelParams, HuggingFaceWordpieceParams,
-    TokenizerType,
+    TokenizerType, TruncationSide,
 };
 use super::error::TokenizerError;
 use super::{TokenWithPosition, Tokenizer, TransformerEncodingsWithPosition};
@@ -12,7 +12,9 @@ use hf_tokenizers::models::bpe::BPE;
 use hf_tokenizers::models::unigram::Unigram;
 use hf_tokenizers::models::wordlevel::WordLevel;
 use hf_tokenizers::models::wordpiece::WordPiece;
-use hf_tokenizers::{PaddingParams, PaddingStrategy, Tokenizer as HfTokenizer, TruncationParams};
+use hf_tokenizers::{
+    PaddingParams, PaddingStrategy, Tokenizer as HfTokenizer, TruncationDirection, TruncationParams,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -56,8 +58,6 @@ impl HuggingFaceTokenizer {
             TokenizerType::HuggingFacePretrained => {
                 let specific_params: HuggingFacePretrainedParams =
                     serde_json::from_value(params_value.clone())?;
-                // The library returns a `Box<dyn Error>`, which is an unsized type.
-                // We map the error into an `anyhow::Error` to handle it uniformly.
                 if specific_params.pretrained_vocab_file.is_empty() {
                     return Err(anyhow::anyhow!(
                         "tokenizer for '{}' declares no pretrained_vocab_file; \
@@ -83,15 +83,13 @@ impl HuggingFaceTokenizer {
             TokenizerType::HuggingFaceBpe => {
                 let specific_params: HuggingFaceBpeParams =
                     serde_json::from_value(params_value.clone())?;
-                // Every file-backed shape resolves against the model base
-                // directory, exactly like the pretrained branch (P3-R05) —
-                // the packaged model-relative paths must be what runtime opens.
+                // Every file-backed shape resolves against the model directory,
+                // same as the pretrained branch. Packaged paths are relative
+                // to the model, and that is the path runtime opens.
                 let vocab =
                     resolve_tokenizer_path(&specific_params.vocab_file_path, maybe_base_path);
                 let merges =
                     resolve_tokenizer_path(&specific_params.merges_file_path, maybe_base_path);
-                // Correctly use the builder pattern: build the model first, then
-                // create the tokenizer instance with the built model.
                 let bpe_model = BPE::from_file(&vocab, &merges)
                     .build()
                     .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -105,7 +103,6 @@ impl HuggingFaceTokenizer {
                     serde_json::from_value(params_value.clone())?;
                 let vocab =
                     resolve_tokenizer_path(&specific_params.vocab_file_path, maybe_base_path);
-                // Correctly use the builder pattern for WordPiece.
                 let wordpiece_model = WordPiece::from_file(&vocab)
                     .build()
                     .map_err(|e| anyhow::anyhow!(e.to_string()))
@@ -144,27 +141,36 @@ impl HuggingFaceTokenizer {
             }
         };
 
-        // Now, configure truncation and padding using the top-level fields from the config.
-        if !config.truncation_disabled && config.max_length > 0 {
+        // Set truncation and padding from this config on every path. A
+        // pretrained `tokenizer.json` can carry its own settings (all-MiniLM
+        // ships a fixed length of 128). Leaving the loaded instance alone
+        // would keep those settings.
+        if let Some(max_length) = config.effective_max_length() {
             let truncation_params = TruncationParams {
-                max_length: config.max_length,
+                max_length,
+                direction: match config.truncation_side.unwrap_or_default() {
+                    TruncationSide::Right => TruncationDirection::Right,
+                    TruncationSide::Left => TruncationDirection::Left,
+                },
                 ..Default::default()
             };
-            // The `with_truncation` method modifies the instance in place. We just need to handle the potential error.
             instance
                 .with_truncation(Some(truncation_params))
                 .map_err(|e| TokenizerError::Process(e.to_string()))?;
+        } else {
+            instance
+                .with_truncation(None)
+                .map_err(|e| TokenizerError::Process(e.to_string()))?;
         }
 
-        if !config.padding_disabled {
-            // Using `BatchLongest` is more efficient for batch processing as it pads
-            // each batch to the length of the longest sequence in that batch, rather than
-            // a fixed global max length.
+        if config.padding_disabled {
+            instance.with_padding(None);
+        } else {
+            // Each batch is padded to its longest row.
             let padding_params = PaddingParams {
                 strategy: PaddingStrategy::BatchLongest,
                 ..Default::default()
             };
-            // `with_padding` also modifies the instance in place.
             instance.with_padding(Some(padding_params));
         }
 
@@ -320,10 +326,11 @@ mod tests {
         TokenizerConfig {
             tokenizer_type,
             params,
-            max_length: 16,
+            max_length: Some(16),
             padding_disabled: true,
             lowercase: false,
             truncation_disabled: false,
+            truncation_side: Default::default(),
         }
     }
 
@@ -338,6 +345,115 @@ mod tests {
         ));
         std::fs::create_dir_all(dir.join("tok")).unwrap();
         dir
+    }
+
+    /// A tokenizer file that already sets truncation and padding, the way
+    /// catalogue files do. The test needs no model weights.
+    fn pretrained_fixture() -> (tempfile::TempDir, TokenizerConfig) {
+        let dir = tempfile::tempdir().unwrap();
+        let model = WordLevel::builder()
+            .vocab(
+                [
+                    ("[UNK]", 0),
+                    ("[PAD]", 1),
+                    ("hello", 2),
+                    ("red", 3),
+                    ("blue", 4),
+                ]
+                .into_iter()
+                .map(|(word, id)| (word.to_owned(), id))
+                .collect(),
+            )
+            .unk_token("[UNK]".to_owned())
+            .build()
+            .unwrap();
+        let mut tokenizer = HfTokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(
+            hf_tokenizers::pre_tokenizers::whitespace::WhitespaceSplit,
+        ));
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: 4,
+                ..Default::default()
+            }))
+            .unwrap();
+        tokenizer.with_padding(Some(PaddingParams {
+            strategy: PaddingStrategy::Fixed(8),
+            pad_id: 1,
+            ..Default::default()
+        }));
+        tokenizer
+            .save(dir.path().join("tokenizer.json"), false)
+            .unwrap();
+        let cfg = config(
+            TokenizerType::HuggingFacePretrained,
+            json!({"pretrained_vocab_file": "tokenizer.json"}),
+        );
+        (dir, cfg)
+    }
+
+    #[test]
+    fn declared_length_preserves_differences_beyond_the_old_512_cap() {
+        let (dir, mut cfg) = pretrained_fixture();
+        cfg.max_length = None;
+        cfg.resolve_max_length(Some(2048), None, "fixture");
+        let tokenizer = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
+        let prefix = "hello ".repeat(600);
+        let red = format!("{prefix}red");
+        let blue = format!("{prefix}blue");
+        let encoded = tokenizer.encode_batch(&[&red, &blue]).unwrap();
+        assert_eq!(encoded[0].input_ids.len(), 601);
+        assert_eq!(encoded[1].input_ids.len(), 601);
+        assert_ne!(encoded[0].input_ids, encoded[1].input_ids);
+
+        cfg.max_length = Some(512);
+        let old = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
+        let encoded = old.encode_batch(&[&red, &blue]).unwrap();
+        assert_eq!(encoded[0].input_ids.len(), 512);
+        assert_eq!(encoded[0].input_ids, encoded[1].input_ids);
+    }
+
+    #[test]
+    fn disabled_settings_clear_pretrained_truncation_and_padding() {
+        for use_zero in [false, true] {
+            let (dir, mut cfg) = pretrained_fixture();
+            cfg.truncation_disabled = !use_zero;
+            cfg.max_length = if use_zero { Some(0) } else { Some(16) };
+            let tokenizer = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
+            let text = "hello ".repeat(20);
+            let encoded = tokenizer.encode_batch(&["hello", &text]).unwrap();
+            assert_eq!(encoded[0].input_ids.len(), 1);
+            assert_eq!(encoded[1].input_ids.len(), 20);
+            assert!(encoded
+                .iter()
+                .all(|e| e.attention_mask.iter().all(|&m| m == 1)));
+        }
+    }
+
+    #[test]
+    fn truncation_side_left_keeps_the_end() {
+        let (dir, mut cfg) = pretrained_fixture();
+        cfg.max_length = Some(2);
+        let right = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
+        assert_eq!(right.encode_plus("red blue hello").unwrap()[0].input_ids, vec![3, 4]);
+        cfg.truncation_side = Some(super::super::config::TruncationSide::Left);
+        let left = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
+        assert_eq!(left.encode_plus("red blue hello").unwrap()[0].input_ids, vec![4, 2]);
+    }
+
+    #[test]
+    fn explicit_limit_and_batch_longest_replace_pretrained_settings() {
+        let (dir, mut cfg) = pretrained_fixture();
+        cfg.max_length = Some(6);
+        cfg.padding_disabled = false;
+        cfg.resolve_max_length(Some(2048), None, "fixture");
+        let tokenizer = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
+        let text = "hello ".repeat(20);
+        let encoded = tokenizer.encode_batch(&["hello", &text]).unwrap();
+        assert_eq!(encoded[0].input_ids.len(), 6);
+        assert_eq!(encoded[1].input_ids.len(), 6);
+        assert_eq!(encoded[0].attention_mask.iter().sum::<i64>(), 1);
+        assert_eq!(encoded[1].attention_mask.iter().sum::<i64>(), 6);
     }
 
     /// P3-R05 load-level proof: a model-relative WordLevel vocabulary loads

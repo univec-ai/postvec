@@ -106,6 +106,8 @@ struct EmbeddedConfig {
     /// gate and the loopback server's global ingress limit. The ingress
     /// memory envelope scales with this, so it is one knob.
     max_inflight: usize,
+    /// `postvec.embedded_max_sequence_len`: the engine-wide token ceiling.
+    max_sequence_len: usize,
 }
 
 fn config_from_gucs() -> Result<EmbeddedConfig, String> {
@@ -129,6 +131,9 @@ fn config_from_gucs() -> Result<EmbeddedConfig, String> {
         providers_path: PathBuf::from(crate::gucs::providers_path()),
         predict_timeout: Duration::from_millis(crate::gucs::EMBED_TIMEOUT_MS.get().max(100) as u64),
         max_inflight: crate::gucs::EMBEDDED_MAX_INFLIGHT.get().clamp(1, 16) as usize,
+        max_sequence_len: crate::gucs::EMBEDDED_MAX_SEQUENCE_LEN
+            .get()
+            .clamp(128, 8192) as usize,
     })
 }
 
@@ -479,6 +484,10 @@ fn try_init() -> Result<(), String> {
             // gate: on the database host a cancelled load must not admit a
             // second native instantiation while the first still runs.
             serialized_model_loads: true,
+            // Token ceiling per input text (postvec.embedded_max_sequence_len,
+            // default 2048, below the standalone 8192): attention memory grows
+            // with the square of the length and is taken from PostgreSQL.
+            max_sequence_len: Some(cfg.max_sequence_len),
         },
     });
 

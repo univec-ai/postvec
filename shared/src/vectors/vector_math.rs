@@ -175,7 +175,6 @@ pub trait VectorMathExt {
         num_samples: usize,
         with_replacement: bool,
     ) -> Result<FloatVector, VectorError>;
-    // --- NEWLY PORTED FUNCTIONS ---
     /// Prints the first `n` values of the vector to the console for debugging.
     fn print_values(&self, message: &str, n: usize);
     /// Creates a new vector containing only the values between two percentiles.
@@ -566,7 +565,6 @@ impl VectorMathExt for Array<FloatX, Ix1> {
         Ok(Array::from(sampled_vec))
     }
 
-    // --- NEWLY PORTED FUNCTION IMPLEMENTATIONS ---
     fn print_values(&self, message: &str, n: usize) {
         let num_elements = std::cmp::min(n, self.len());
         let slice = self.slice(ndarray::s![..num_elements]);

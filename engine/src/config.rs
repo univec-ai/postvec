@@ -26,6 +26,27 @@ pub struct HostPolicy {
     /// so a cancelled load cannot start a second native instantiation while
     /// the first is still running on a blocking thread.
     pub serialized_model_loads: bool,
+    /// Engine-wide ceiling on tokens fed to a model per input, applied on
+    /// top of each descriptor's `tokenizer.max_length` or `params.sequence_len`.
+    /// `None` (the default) uses [`DEFAULT_MAX_SEQUENCE_LEN`]. `Some(0)` means
+    /// no ceiling. `Some(n)` means n tokens. Attention memory grows with the
+    /// square of the length, so a descriptor that declares 32k tokens still
+    /// cannot admit a 32k-token input on a host that cannot hold it.
+    pub max_sequence_len: Option<usize>,
+}
+
+/// Ceiling used when [`HostPolicy::max_sequence_len`] is unset.
+pub const DEFAULT_MAX_SEQUENCE_LEN: usize = 8192;
+
+impl HostPolicy {
+    /// The effective engine-wide token ceiling, or `None` when unlimited.
+    pub fn sequence_len_cap(&self) -> Option<usize> {
+        match self.max_sequence_len {
+            None => Some(DEFAULT_MAX_SEQUENCE_LEN),
+            Some(0) => None,
+            Some(n) => Some(n),
+        }
+    }
 }
 
 /// Per-session ONNX Runtime threading policy, applied to every session built

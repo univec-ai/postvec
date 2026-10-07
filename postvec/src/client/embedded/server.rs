@@ -1143,8 +1143,16 @@ fn json_to_list_value(
             crate::jobs::MAX_REQUEST_ITEMS
         )));
     }
+    // A row is an array of numbers or, with `encoding_format=base64`, one
+    // string the executor already encoded (OpenAI parity). Strings pass
+    // through unchanged and cost their bytes twice (JSON + prost copy).
     let mut total_components = 0u64;
+    let mut string_bytes = 0u64;
     for vec_value in outer {
+        if let Value::String(encoded) = vec_value {
+            string_bytes = string_bytes.saturating_add(encoded.len() as u64);
+            continue;
+        }
         let inner = vec_value
             .as_array()
             .ok_or_else(|| internal_status("Embedding element was not an array of numbers."))?;
@@ -1152,7 +1160,8 @@ fn json_to_list_value(
     }
     let estimated = total_components
         .saturating_mul(OUTPUT_COMPONENT_TRANSIENT_BYTES)
-        .saturating_add((outer.len() as u64).saturating_mul(TREE_ITEM_OVERHEAD_BYTES));
+        .saturating_add((outer.len() as u64).saturating_mul(TREE_ITEM_OVERHEAD_BYTES))
+        .saturating_add(string_bytes.saturating_mul(2));
     if estimated > OUTPUT_TREE_BUDGET_BYTES {
         return Err(resource_exhausted_status(format!(
             "executor output of {} rows / {total_components} components exceeds the \
@@ -1165,6 +1174,12 @@ fn json_to_list_value(
     let mut converted = 0u64;
     let mut next_deadline_check = DEADLINE_CHECK_COMPONENTS;
     for vec_value in outer {
+        if let Value::String(encoded) = vec_value {
+            prost_outer.push(ProstValue {
+                kind: Some(prost_types::value::Kind::StringValue(encoded.clone())),
+            });
+            continue;
+        }
         let inner = vec_value
             .as_array()
             .ok_or_else(|| internal_status("Embedding element was not an array of numbers."))?;
@@ -1250,6 +1265,16 @@ mod tests {
         let status = invalid_input_status("bad vector");
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert_eq!(code_meta(&status), "INVALID_INPUT");
+    }
+
+    #[test]
+    fn json_to_list_value_passes_base64_rows_through() {
+        // encoding_format=base64: the executor returns one string per vector.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let lv = json_to_list_value(json!(["AACAPw==", "AAAAQA=="]), deadline).unwrap();
+        assert_eq!(lv.values.len(), 2);
+        assert!(matches!(&lv.values[0].kind, Some(Kind::StringValue(s)) if s == "AACAPw=="));
+        assert!(matches!(&lv.values[1].kind, Some(Kind::StringValue(s)) if s == "AAAAQA=="));
     }
 
     #[test]

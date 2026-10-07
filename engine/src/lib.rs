@@ -308,8 +308,19 @@ fn find_model_config_path(root_path: &Path, model_name: &str) -> Result<PathBuf,
     )))
 }
 impl InferenceEngine {
+    /// Engine-wide token ceiling per input (`HostPolicy::max_sequence_len`).
+    /// Executors apply it on top of each model's own truncation length.
+    pub fn sequence_len_cap(&self) -> Option<usize> {
+        self.config.host_policy.sequence_len_cap()
+    }
+
     /// Empty engine. Load models in a later step.
     pub fn new(config: Arc<EngineConfig>) -> Self {
+        if let Some(cap) = config.host_policy.sequence_len_cap() {
+            log::info!("Engine-wide input ceiling: {} tokens per text", cap);
+        } else {
+            log::warn!("Engine-wide input ceiling disabled (max_sequence_len = 0)");
+        }
         let admission = config
             .host_policy
             .admission_limit
@@ -996,6 +1007,16 @@ impl InferenceEngine {
         self.models.read().unwrap().contains_key(model_name)
             && self.executors.read().unwrap().contains_key(model_name)
     }
+    /// Most tokens a loaded model is fed per input, and where that limit
+    /// came from. See [`crate::executors::Executor::max_input_tokens`].
+    /// `None` when the model is not loaded or its executor does not
+    /// truncate text.
+    pub fn max_input_tokens(
+        &self,
+        model_name: &str,
+    ) -> Option<(usize, crate::tokenizers::config::MaxLengthSource)> {
+        self.get_executor_for_model(model_name).ok()?.max_input_tokens()
+    }
 
     pub fn get_executor_for_model(
         &self,
@@ -1336,6 +1357,7 @@ mod admission_tests {
             host_policy: HostPolicy {
                 admission_limit: Some(limit),
                 serialized_model_loads: true,
+                ..Default::default()
             },
         })))
     }

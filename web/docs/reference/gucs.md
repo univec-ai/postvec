@@ -44,6 +44,7 @@ started with `start_worker()` picks them up when it is started.
 | `embedded_listen` | `127.0.0.1:33433` | SIGHUP |
 | `embedded_http_listen` | `127.0.0.1:33434` | SIGHUP |
 | `embedded_max_inflight` | 1 | SIGHUP |
+| `embedded_max_sequence_len` | 2048 | SIGHUP - tokens per input text, 128-8192; longer input is cut |
 | `providers_path` | `/etc/postvec/providers.d` | SIGHUP - a path, never a credential |
 
 `path` is the engine root (`libs/`, `models/`). Package payloads install

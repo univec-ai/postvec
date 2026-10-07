@@ -113,6 +113,12 @@ pub async fn build_dependencies(
 #[async_trait]
 pub trait Executor: Send + Sync {
     fn execute(&self, ctx: &Context) -> Result<ExecutorOutput, EngineError>;
+    /// Most tokens this executor feeds its model for one input, and where
+    /// that limit came from. `None` when the executor does not tokenize
+    /// text or does not truncate. Callers filter inputs with this limit.
+    fn max_input_tokens(&self) -> Option<(usize, crate::tokenizers::config::MaxLengthSource)> {
+        None
+    }
     /// Load declared dependencies. A failure unloads this executor and its model.
     async fn build(
         &self,

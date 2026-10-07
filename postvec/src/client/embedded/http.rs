@@ -90,7 +90,16 @@ fn engine_envelope(engine: &InferenceEngine, gateway: &Gateway) -> Value {
         .get_active_models()
         .into_iter()
         .filter_map(|name| engine.get_model(&name).ok())
-        .map(|model| model.configuration().clone())
+        .map(|model| {
+            // Publish the truncation length the engine applies. Discovery
+            // advertises that length.
+            let mut cfg = model.configuration().clone();
+            if let Some((served, _)) = engine.max_input_tokens(&cfg.name) {
+                cfg.params
+                    .insert("sequence_len".to_string(), Value::from(served as u64));
+            }
+            cfg
+        })
         .collect();
     config_envelope(&configs, gateway)
 }

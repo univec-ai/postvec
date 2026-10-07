@@ -79,8 +79,23 @@ fn loaded_configs(engine: &InferenceEngine) -> Vec<ModelConfiguration> {
         .get_active_models()
         .into_iter()
         .filter_map(|name| engine.get_model(&name).ok())
-        .map(|model| model.configuration().clone())
+        .map(|model| served_configuration(engine, model.configuration()))
         .collect()
+}
+
+/// Loaded model configuration with `params.sequence_len` set to the length
+/// the engine truncates at, so discovery advertises the served length.
+/// Models whose executor does not tokenize are left unchanged.
+pub(crate) fn served_configuration(
+    engine: &InferenceEngine,
+    cfg: &ModelConfiguration,
+) -> ModelConfiguration {
+    let mut cfg = cfg.clone();
+    if let Some((served, _)) = engine.max_input_tokens(&cfg.name) {
+        cfg.params
+            .insert("sequence_len".to_string(), Value::from(served as u64));
+    }
+    cfg
 }
 
 /// Memory, from `/proc/meminfo` where it exists.
