@@ -6,3 +6,4 @@ postvec/target/
 *.log
 /docs/
 .idea
+debug/
