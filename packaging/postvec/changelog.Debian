@@ -3,6 +3,7 @@ postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
   * input normalization for converter models
   * engine fixes / backports: embedding models tokenization settings
     respecting configured values for sequence_len
+  * rustls 0.23.46 / quinn-proto 0.11.19
 
  -- ${MAINTAINER}  Tue, 20 Oct 2026 11:45:40 +0000
 
