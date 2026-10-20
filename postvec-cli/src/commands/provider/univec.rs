@@ -226,7 +226,6 @@ pub(super) fn converter_model(
     })
 }
 
-
 /// Every stored UniVec credential this run could copy, as `(key, source)`:
 /// `POSTVEC_API_KEY`, the effective user's store and, under `sudo`, the
 /// invoking user's own store, read as root from that user's passwd home
@@ -589,7 +588,6 @@ fn key_path(providers_dir: &Path, stem: &str) -> PathBuf {
         .join("keys")
         .join(format!("{stem}.key"))
 }
-
 
 /// `GET {base}/v1/registry/index.json` with the key. The unbilled,
 /// identity-only route `postvec login` relies on. Best-effort, not a

@@ -208,11 +208,23 @@ fn sequence_len_reads_positive_integers_only() {
     let parse = |params: serde_json::Value| -> ModelConfiguration {
         serde_json::from_value(serde_json::json!({ "name": "m", "params": params })).unwrap()
     };
-    assert_eq!(parse(serde_json::json!({ "sequence_len": 8192 })).sequence_len(), Some(8192));
+    assert_eq!(
+        parse(serde_json::json!({ "sequence_len": 8192 })).sequence_len(),
+        Some(8192)
+    );
     assert_eq!(parse(serde_json::json!({})).sequence_len(), None);
-    assert_eq!(parse(serde_json::json!({ "sequence_len": 0 })).sequence_len(), None);
-    assert_eq!(parse(serde_json::json!({ "sequence_len": -1 })).sequence_len(), None);
-    assert_eq!(parse(serde_json::json!({ "sequence_len": "8192" })).sequence_len(), None);
+    assert_eq!(
+        parse(serde_json::json!({ "sequence_len": 0 })).sequence_len(),
+        None
+    );
+    assert_eq!(
+        parse(serde_json::json!({ "sequence_len": -1 })).sequence_len(),
+        None
+    );
+    assert_eq!(
+        parse(serde_json::json!({ "sequence_len": "8192" })).sequence_len(),
+        None
+    );
 }
 
 #[test]

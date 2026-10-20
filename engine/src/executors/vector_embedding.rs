@@ -164,10 +164,17 @@ mod tests {
 
     #[test]
     fn normalize_input_defaults_to_true_and_can_be_turned_off() {
-        assert!(VectorEmbeddingExecutor::new(&cfg(serde_json::json!({}))).unwrap().normalize_input);
+        assert!(
+            VectorEmbeddingExecutor::new(&cfg(serde_json::json!({})))
+                .unwrap()
+                .normalize_input
+        );
         let off = cfg(serde_json::json!({ "normalize_input": false }));
         assert!(!VectorEmbeddingExecutor::new(&off).unwrap().normalize_input);
-        assert!(VectorEmbeddingExecutor::new(&cfg(serde_json::json!({ "normalize_input": "no" }))).is_err());
+        assert!(
+            VectorEmbeddingExecutor::new(&cfg(serde_json::json!({ "normalize_input": "no" })))
+                .is_err()
+        );
     }
 
     #[test]

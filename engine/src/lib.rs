@@ -1000,7 +1000,9 @@ impl InferenceEngine {
         &self,
         model_name: &str,
     ) -> Option<(usize, crate::tokenizers::config::MaxLengthSource)> {
-        self.get_executor_for_model(model_name).ok()?.max_input_tokens()
+        self.get_executor_for_model(model_name)
+            .ok()?
+            .max_input_tokens()
     }
 
     pub fn get_executor_for_model(

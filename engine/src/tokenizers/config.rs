@@ -178,7 +178,11 @@ impl Config {
         log::info!(
             "Model '{}': tokenizer truncates at {} tokens (source: {:?})",
             model_name,
-            if effective == 0 || self.truncation_disabled { "no limit".to_string() } else { effective.to_string() },
+            if effective == 0 || self.truncation_disabled {
+                "no limit".to_string()
+            } else {
+                effective.to_string()
+            },
             source
         );
         (effective, source)
@@ -221,7 +225,10 @@ mod tests {
     #[test]
     fn sequence_len_fills_an_absent_max_length() {
         let mut c = parse(base());
-        assert_eq!(c.resolve_max_length(Some(8192), None, "m"), (8192, MaxLengthSource::SequenceLen));
+        assert_eq!(
+            c.resolve_max_length(Some(8192), None, "m"),
+            (8192, MaxLengthSource::SequenceLen)
+        );
         assert_eq!(c.max_length, Some(8192));
         assert_eq!(c.effective_max_length(), Some(8192));
     }
@@ -231,29 +238,47 @@ mod tests {
         let mut v = base();
         v["max_length"] = json!(2048);
         let mut c = parse(v);
-        assert_eq!(c.resolve_max_length(Some(32768), None, "m"), (2048, MaxLengthSource::Explicit));
+        assert_eq!(
+            c.resolve_max_length(Some(32768), None, "m"),
+            (2048, MaxLengthSource::Explicit)
+        );
         // Larger than declared is honoured (and logged), not clamped.
         let mut v = base();
         v["max_length"] = json!(1024);
         let mut c = parse(v);
-        assert_eq!(c.resolve_max_length(Some(256), None, "m"), (1024, MaxLengthSource::Explicit));
+        assert_eq!(
+            c.resolve_max_length(Some(256), None, "m"),
+            (1024, MaxLengthSource::Explicit)
+        );
     }
 
     #[test]
     fn nothing_declared_keeps_the_historical_default() {
         let mut c = parse(base());
-        assert_eq!(c.resolve_max_length(None, None, "m"), (DEFAULT_MAX_LENGTH, MaxLengthSource::Default));
+        assert_eq!(
+            c.resolve_max_length(None, None, "m"),
+            (DEFAULT_MAX_LENGTH, MaxLengthSource::Default)
+        );
         // An unresolved config also truncates at the default.
-        assert_eq!(parse(base()).effective_max_length(), Some(DEFAULT_MAX_LENGTH));
+        assert_eq!(
+            parse(base()).effective_max_length(),
+            Some(DEFAULT_MAX_LENGTH)
+        );
     }
 
     #[test]
     fn host_cap_clamps_declared_explicit_and_unbounded_lengths() {
         let mut c = parse(base());
-        assert_eq!(c.resolve_max_length(Some(32768), Some(8192), "m"), (8192, MaxLengthSource::HostCap));
+        assert_eq!(
+            c.resolve_max_length(Some(32768), Some(8192), "m"),
+            (8192, MaxLengthSource::HostCap)
+        );
         // Below the cap nothing changes.
         let mut c = parse(base());
-        assert_eq!(c.resolve_max_length(Some(2048), Some(8192), "m"), (2048, MaxLengthSource::SequenceLen));
+        assert_eq!(
+            c.resolve_max_length(Some(2048), Some(8192), "m"),
+            (2048, MaxLengthSource::SequenceLen)
+        );
         // An explicit 0 ("unlimited") and truncation_disabled are bounded too.
         let mut v = base();
         v["max_length"] = json!(0);

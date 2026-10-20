@@ -428,10 +428,16 @@ mod tests {
         let (dir, mut cfg) = pretrained_fixture();
         cfg.max_length = Some(2);
         let right = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
-        assert_eq!(right.encode_plus("red blue hello").unwrap()[0].input_ids, vec![3, 4]);
+        assert_eq!(
+            right.encode_plus("red blue hello").unwrap()[0].input_ids,
+            vec![3, 4]
+        );
         cfg.truncation_side = Some(super::super::config::TruncationSide::Left);
         let left = HuggingFaceTokenizer::new(&cfg, dir.path().to_str()).unwrap();
-        assert_eq!(left.encode_plus("red blue hello").unwrap()[0].input_ids, vec![4, 2]);
+        assert_eq!(
+            left.encode_plus("red blue hello").unwrap()[0].input_ids,
+            vec![4, 2]
+        );
     }
 
     #[test]

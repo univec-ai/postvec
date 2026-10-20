@@ -1909,7 +1909,6 @@ pub async fn probe_convert_one(
     Ok(vectors[0].len() as u32)
 }
 
-
 /// What `POST /admin/providers/reload` reported.
 #[derive(Debug, Deserialize)]
 pub struct ReloadOutcome {
@@ -2103,7 +2102,6 @@ pub async fn refresh_databases(target: &mut ProviderTarget, journal: &mut ApplyJ
         }
     }
 }
-
 
 /// What a column scan asks about a set of routes.
 #[derive(Clone, Copy)]

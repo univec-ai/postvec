@@ -265,7 +265,6 @@ pub fn provider_files(
     Ok(files)
 }
 
-
 #[derive(Serialize)]
 struct AvailableModel {
     #[serde(flatten)]

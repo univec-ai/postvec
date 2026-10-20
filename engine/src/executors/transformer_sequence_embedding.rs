@@ -120,7 +120,11 @@ fn plan_sub_batches(
     encodings: &[TransformerEncodingsWithPosition],
     budget: &BatchBudget,
 ) -> Vec<std::ops::Range<usize>> {
-    let padded = encodings.iter().map(|e| e.input_ids.len()).max().unwrap_or(0);
+    let padded = encodings
+        .iter()
+        .map(|e| e.input_ids.len())
+        .max()
+        .unwrap_or(0);
     if budget.fits(encodings.len(), padded) || !encodings.iter().all(is_right_padded) {
         return vec![0..encodings.len()];
     }
@@ -419,39 +423,41 @@ impl TransformerForSequenceEmbedding {
 
         let sentences_str: Vec<&str> = sentences.iter().map(AsRef::as_ref).collect();
 
-        let batches = EXECUTOR_POOL.install(|| {
-            sentences_str
-                .par_chunks(batch_size)
-                .map(|chunk| {
-                    let encodings = self.tokenizer.encode_batch(chunk)?;
+        let batches = EXECUTOR_POOL
+            .install(|| {
+                sentences_str
+                    .par_chunks(batch_size)
+                    .map(|chunk| {
+                        let encodings = self.tokenizer.encode_batch(chunk)?;
 
-                    // A chunk is padded to its longest text, so one long row
-                    // pads every row. Split into ordered groups that fit the
-                    // budget, then drop padding the group does not need.
-                    let plan = plan_sub_batches(&encodings, &self.budget);
-                    let mut remaining = encodings.into_iter();
-                    plan.into_iter()
-                        .map(|range| {
-                            let sub = trim_right_padding(
-                                remaining.by_ref().take(range.len()).collect(),
-                            );
-                            let longest = sub.iter().map(|e| e.input_ids.len()).max().unwrap_or(0);
-                            // A group that still exceeds the budget is one long
-                            // text. Hold the lock so only one of those runs.
-                            let _heavy = if self.budget.fits(sub.len(), longest) {
-                                None
-                            } else {
-                                Some(self.heavy_lane.lock().unwrap_or_else(|p| p.into_inner()))
-                            };
-                            self.run_batch(model, &bound, &sub)
-                        })
-                        .collect::<Result<Vec<_>, EngineError>>()
-                })
-                .collect::<Result<Vec<Vec<_>>, EngineError>>()
-        })?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+                        // A chunk is padded to its longest text, so one long row
+                        // pads every row. Split into ordered groups that fit the
+                        // budget, then drop padding the group does not need.
+                        let plan = plan_sub_batches(&encodings, &self.budget);
+                        let mut remaining = encodings.into_iter();
+                        plan.into_iter()
+                            .map(|range| {
+                                let sub = trim_right_padding(
+                                    remaining.by_ref().take(range.len()).collect(),
+                                );
+                                let longest =
+                                    sub.iter().map(|e| e.input_ids.len()).max().unwrap_or(0);
+                                // A group that still exceeds the budget is one long
+                                // text. Hold the lock so only one of those runs.
+                                let _heavy = if self.budget.fits(sub.len(), longest) {
+                                    None
+                                } else {
+                                    Some(self.heavy_lane.lock().unwrap_or_else(|p| p.into_inner()))
+                                };
+                                self.run_batch(model, &bound, &sub)
+                            })
+                            .collect::<Result<Vec<_>, EngineError>>()
+                    })
+                    .collect::<Result<Vec<Vec<_>>, EngineError>>()
+            })?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
 
         Ok(EmbeddingOutput::new(batches))
     }
@@ -475,18 +481,15 @@ impl TransformerForSequenceEmbedding {
 
         let seq_len = batch_input_ids.first().map_or(0, |ids| ids.len());
         let position_ids_range: Vec<i64> = (0..seq_len as i64).collect();
-        let batch_position_ids: Vec<Vec<i64>> =
-            vec![position_ids_range; batch_input_ids.len()];
+        let batch_position_ids: Vec<Vec<i64>> = vec![position_ids_range; batch_input_ids.len()];
 
         // Pooling needs the mask as an array, and the model may need the
         // same rows, so they are cloned.
         let attention_mask_matrix = if !batch_attn_masks.is_empty() {
             let rows = batch_attn_masks.len();
             let cols = batch_attn_masks.first().map_or(0, |m| m.len());
-            let flat_masks: Vec<i64> =
-                batch_attn_masks.clone().into_iter().flatten().collect();
-            Array2::from_shape_vec((rows, cols), flat_masks)
-                .map_err(EngineError::Shape)?
+            let flat_masks: Vec<i64> = batch_attn_masks.clone().into_iter().flatten().collect();
+            Array2::from_shape_vec((rows, cols), flat_masks).map_err(EngineError::Shape)?
         } else {
             Array2::zeros((0, 0))
         };
@@ -501,9 +504,7 @@ impl TransformerForSequenceEmbedding {
                         let tensor = created_tensors
                             .entry(InputLayoutItemType::InputIds)
                             .or_insert_with(|| {
-                                vectors::new_2d_tensor_from_i64_vecs(
-                                    batch_input_ids.clone(),
-                                )
+                                vectors::new_2d_tensor_from_i64_vecs(batch_input_ids.clone())
                             })
                             .as_ref()
                             .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
@@ -513,9 +514,7 @@ impl TransformerForSequenceEmbedding {
                         let tensor = created_tensors
                             .entry(InputLayoutItemType::AttentionMask)
                             .or_insert_with(|| {
-                                vectors::new_2d_tensor_from_i64_vecs(
-                                    batch_attn_masks.clone(),
-                                )
+                                vectors::new_2d_tensor_from_i64_vecs(batch_attn_masks.clone())
                             })
                             .as_ref()
                             .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
@@ -525,9 +524,7 @@ impl TransformerForSequenceEmbedding {
                         let tensor = created_tensors
                             .entry(InputLayoutItemType::TokenTypeIds)
                             .or_insert_with(|| {
-                                vectors::new_2d_tensor_from_i64_vecs(
-                                    batch_token_type_ids.clone(),
-                                )
+                                vectors::new_2d_tensor_from_i64_vecs(batch_token_type_ids.clone())
                             })
                             .as_ref()
                             .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
@@ -537,9 +534,7 @@ impl TransformerForSequenceEmbedding {
                         let tensor = created_tensors
                             .entry(InputLayoutItemType::PositionIds)
                             .or_insert_with(|| {
-                                vectors::new_2d_tensor_from_i64_vecs(
-                                    batch_position_ids.clone(),
-                                )
+                                vectors::new_2d_tensor_from_i64_vecs(batch_position_ids.clone())
                             })
                             .as_ref()
                             .map_err(|e| EngineError::InputTypeError(e.to_string()))?;
@@ -550,10 +545,8 @@ impl TransformerForSequenceEmbedding {
             model.query_with_deadline(&input_tensors, Some(bound))?
         } else {
             let input_tensor = vectors::new_2d_tensor_from_i64_vecs(batch_input_ids)?;
-            let attn_mask_tensor =
-                vectors::new_2d_tensor_from_i64_vecs(batch_attn_masks)?;
-            model
-                .query_with_deadline(&[input_tensor, attn_mask_tensor], Some(bound))?
+            let attn_mask_tensor = vectors::new_2d_tensor_from_i64_vecs(batch_attn_masks)?;
+            model.query_with_deadline(&[input_tensor, attn_mask_tensor], Some(bound))?
         };
 
         Ok(SingleBatchOutput {
@@ -830,19 +823,27 @@ mod tests {
         }
         for r in &ranges {
             let longest = lengths[r.clone()].iter().max().unwrap();
-            assert!(r.len() == 1 || BatchBudget::DEFAULT.fits(r.len(), *longest), "{r:?}");
+            assert!(
+                r.len() == 1 || BatchBudget::DEFAULT.fits(r.len(), *longest),
+                "{r:?}"
+            );
         }
     }
 
     #[test]
     fn an_over_budget_text_runs_alone() {
-        assert_eq!(plan_lengths(&[10, 40000, 10], &BatchBudget::DEFAULT), vec![0..1, 1..2, 2..3]);
+        assert_eq!(
+            plan_lengths(&[10, 40000, 10], &BatchBudget::DEFAULT),
+            vec![0..1, 1..2, 2..3]
+        );
     }
 
     #[test]
     fn trimming_drops_only_padding() {
         let sub = trim_right_padding(vec![enc(3, 100), enc(7, 100)]);
-        assert!(sub.iter().all(|e| e.input_ids.len() == 7 && e.attention_mask.len() == 7));
+        assert!(sub
+            .iter()
+            .all(|e| e.input_ids.len() == 7 && e.attention_mask.len() == 7));
         assert_eq!(real_length(&sub[0]), 3);
         assert_eq!(real_length(&sub[1]), 7);
         assert_eq!(&sub[1].input_ids, &vec![5; 7]);
@@ -856,7 +857,13 @@ mod tests {
         assert!(!is_right_padded(&left));
         let chunk = vec![left, enc(6, 6)];
         assert_eq!(
-            plan_sub_batches(&chunk, &BatchBudget { tokens: 1, attention: 1 }),
+            plan_sub_batches(
+                &chunk,
+                &BatchBudget {
+                    tokens: 1,
+                    attention: 1
+                }
+            ),
             vec![0..2]
         );
     }
