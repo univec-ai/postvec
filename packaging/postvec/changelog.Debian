@@ -1,5 +1,13 @@
 postvec (${POSTVEC_VERSION}-${PACKAGE_RELEASE}) unstable; urgency=medium
 
+  * input normalization for converter models
+  * engine fixes / backports: embedding models tokenization settings
+    respecting configured values for sequence_len
+
+ -- ${MAINTAINER}  Tue, 20 Oct 2026 11:45:40 +0000
+
+postvec (0.5.0-2) unstable; urgency=medium
+
   * `postvec model` and `postvec provider` no longer need a local
     postvec-enabled database. With no cluster running postvec they manage
     directory POSTVEC_PATH or /opt/postvec
