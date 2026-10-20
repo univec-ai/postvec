@@ -40,21 +40,18 @@ pub struct ServerFacts {
     pub port: i32,
     /// Text rendering; used only for equality across a restart.
     pub postmaster_start_time: String,
-    /// The same instant, rendered explicitly in UTC with microsecond
-    /// precision.
+    /// The same instant, in UTC with microsecond precision.
     ///
-    /// Rendered with `to_char` rather than a plain cast because a cast depends
-    /// on the session's `DateStyle` and `TimeZone`, which can differ per role
-    /// or per database — two connections to the *same* server could then
-    /// disagree about the text. This form cannot.
+    /// `to_char`, not a cast. A cast depends on `DateStyle` and `TimeZone`,
+    /// which can differ per role or database. Two connections to the same
+    /// server must not disagree about this text.
     #[serde(default)]
     pub postmaster_start_exact: Option<String>,
-    /// `pg_control_system().system_identifier`, rendered as text.
+    /// `pg_control_system().system_identifier`, as text.
     ///
-    /// Identifies a replication *lineage*, not an instance: a physical standby
-    /// or a restored copy carries its primary's identifier. Useful as one half
-    /// of an identity proof, never as the whole of one. `None` when the
-    /// connecting role may not read it.
+    /// A replication lineage, not an instance: a standby or a restored copy
+    /// carries its primary's identifier. One half of an identity proof, never
+    /// the whole. `None` when the connecting role may not read it.
     #[serde(default)]
     pub system_identifier: Option<String>,
 }
@@ -246,14 +243,14 @@ pub struct BuildInfo {
     pub model_backends: Option<Vec<String>>,
 }
 
-/// The diagnostics contract this CLI was written against.
+/// The diagnostics contract this CLI supports.
 pub const SUPPORTED_DIAGNOSTICS_API: i64 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionFacts {
     /// `pg_extension.extversion`.
     pub catalog_version: String,
-    /// `postvec.version()` — the loaded library's crate version.
+    /// `postvec.version()`, the loaded library's crate version.
     pub library_version: String,
     /// `postvec.build_info()`; absent on extension versions that predate it.
     pub build_info: Option<BuildInfo>,
@@ -315,9 +312,9 @@ pub struct RegistryEntryFacts {
     /// The parked automatic-build failure, if any.
     #[serde(default)]
     pub index_error: Option<String>,
-    /// Whether a valid/ready/live ANN index with the opclass `search()`
-    /// expects for this entry's distance/dimension covers the vector column
-    /// (ownership-neutral — a user index counts, without being claimed).
+    /// Whether a valid, ready, live ANN index with the opclass `search()`
+    /// expects covers the vector column. Ownership-neutral: a user index
+    /// counts, and is not claimed.
     #[serde(default)]
     pub has_expected_opclass_index: bool,
     pub last_error: Option<String>,
@@ -410,10 +407,9 @@ pub struct InventoryModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// The providers.d file stem serving this name, for provider-backed
-    /// entries. This is what `provider rm` compares against: the **live**
-    /// snapshot, not the files — after a failed reload the two differ, and
-    /// a route can be serving from a file the current directory would not
-    /// load.
+    /// entries. `provider rm` compares against this live snapshot, not the
+    /// files. After a failed reload the two differ, and a route can serve
+    /// from a file the current directory would not load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_file: Option<String>,
     /// The gateway's endpoint digest (region + `base_url`), so a same-name
@@ -443,8 +439,7 @@ pub struct ConfigInventory {
 }
 
 impl ConfigInventory {
-    /// Names of models the node reports as enabled — the set that can actually
-    /// serve traffic.
+    /// Names of models the node reports as enabled, the set that can serve.
     pub fn enabled_names(&self) -> BTreeSet<String> {
         self.models
             .iter()
@@ -501,9 +496,9 @@ pub struct HttpProbe {
 pub struct RemoteProbe {
     pub grpc: Vec<GrpcProbe>,
     pub http: Vec<HttpProbe>,
-    /// Configured endpoint values that are not valid at all — a hand-edited
-    /// `postvec.grpc_endpoints`/`postvec.http_endpoints` with a typo. Reported rather than
-    /// silently skipped, because the extension skips them silently too.
+    /// Configured endpoint values that are not valid at all: a hand-edited
+    /// `postvec.grpc_endpoints` or `postvec.http_endpoints` with a typo.
+    /// Reported rather than skipped, because the extension skips them too.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub malformed: Vec<MalformedEndpoint>,
 }
@@ -560,12 +555,12 @@ pub struct ListenerProbe {
 /// schema so unknown fields never break diagnosis.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DiskModel {
-    /// `configuration.name` — the name the engine registers a scan-loaded
+    /// `configuration.name`, the name the engine registers a scan-loaded
     /// model under.
     pub name: String,
-    /// The containing directory's name — what an explicit
-    /// `postvec.embedded_models` entry has to match, because the engine
-    /// resolves a requested model by *path*, not by descriptor name.
+    /// The containing directory's name. An explicit `postvec.embedded_models`
+    /// entry has to match this: the engine resolves a requested model by
+    /// path, not by descriptor name.
     pub dir_name: String,
     pub enabled: bool,
     pub backend: Option<String>,
@@ -624,7 +619,7 @@ pub struct RegistryProbeFacts {
     pub attempted: bool,
     pub channel: Option<String>,
     pub model_count: Option<usize>,
-    /// Which credential source was selected, if any — never the key.
+    /// Which credential source was selected, if any. Never the key.
     pub credential_source: Option<String>,
     pub error: Option<String>,
     /// Head revision per catalogue name, so the report can say which
@@ -634,7 +629,7 @@ pub struct RegistryProbeFacts {
     pub head_revisions: std::collections::BTreeMap<String, u64>,
 }
 
-/// Where the engine root came from — the CLI must not claim to know a value
+/// Where the engine root came from. The CLI must not claim to know a value
 /// the server merely inherited from its environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -684,10 +679,10 @@ impl EmbeddedProbe {
 
     /// Models that should be loaded, given the configured selection.
     ///
-    /// With an empty `postvec.embedded_models` the engine scan-loads every
-    /// enabled descriptor. With an explicit list only those are requested;
-    /// their engine-resolved dependencies also end up loaded, but the CLI must
-    /// not *require* names the engine alone can resolve.
+    /// An empty `postvec.embedded_models` scan-loads every enabled descriptor.
+    /// An explicit list requests only those. The engine also loads their
+    /// dependencies, but the CLI must not require names only the engine
+    /// can resolve.
     pub fn expected_names(&self, requested: &[String]) -> BTreeSet<String> {
         if requested.is_empty() {
             self.descriptors
@@ -723,9 +718,8 @@ impl EmbeddedProbe {
 
 /// One database's model cache, kept separate from every other database's.
 ///
-/// Reconciling a *union* of caches against an engine inventory is unsound: two
-/// databases each holding half the models look complete together and are broken
-/// individually.
+/// A union of caches against one engine inventory is unsound: two databases
+/// each holding half the models look complete together and are broken apart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DatabaseCache {
     pub database: String,
@@ -793,9 +787,8 @@ mod tests {
         }
     }
 
-    /// The two settings have different grammars, and the preload one holds
-    /// file names — so `PostVec` is read as `PostVec`, not folded to
-    /// `postvec`. See `config::guc`.
+    /// The two settings have different grammars. The preload list holds file
+    /// names, so `PostVec` stays `PostVec` and is not folded to `postvec`.
     #[test]
     fn snapshot_reads_lists_with_the_right_grammar() {
         let s = snapshot(&[
@@ -808,7 +801,7 @@ mod tests {
 
     #[test]
     fn mode_defaults_to_embedded_and_rejects_garbage() {
-        // Not observed at all — a cluster that has not loaded the library.
+        // Not observed at all: a cluster that has not loaded the library.
         assert_eq!(snapshot(&[]).mode(), None);
         // Observed and empty means the extension's default, which is embedded.
         assert_eq!(

@@ -3,29 +3,16 @@
 #
 #   verify-release-metadata.sh [release-dir]
 #
-# `write-release-manifest.sh` reads a release out of file names. That is the
-# right primary source: a file name is the only thing a user holding a
-# download has, and it is what `sha256sum --check` and `apt install ./file.deb`
-# work from. A package renamed after it was built still satisfies every
-# check in the manifest generator and is a different package from the one
-# the release says it is.
-#
-# This asks the packages instead. For each artifact the manifest lists, it
-# reads the name, version, release and architecture that `dpkg-deb`/`rpm`
-# report from inside the file, reconstructs the file name those fields imply,
-# and requires it to be the name the file actually has. It also re-hashes
-# every file against the manifest, and requires the directory and the
-# manifest to contain exactly the same set of packages.
-#
-# Earlier jobs already inspected real metadata (`verify-package.sh` runs in
-# the job that built each package). This runs at the boundary, over the
-# flat directory that is about to be published, so the last thing that
-# happens before publication is independently fail-closed.
+# The manifest trusts file names. A package renamed after it was built still
+# matches that check and is a different package. This reads name, version,
+# release and architecture from inside each file, rebuilds the file name
+# and requires it to match. It also re-hashes every file and requires the
+# directory and the manifest to list the same packages.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 RELEASE_DIR="${1:-${PKG_DIR}/release}"
-[[ "${RELEASE_DIR}" != -h && "${RELEASE_DIR}" != --help ]] || { sed -n '2,26p' "$0"; exit 0; }
+[[ "${RELEASE_DIR}" != -h && "${RELEASE_DIR}" != --help ]] || { sed -n '2,10p' "$0"; exit 0; }
 
 load_versions
 need python3 jq sha256sum
@@ -40,7 +27,7 @@ pass()    { printf '    ok    %s\n' "$*"; }
 
 # `rpm` is not installed on a Debian/Ubuntu release runner. Falling back to a
 # container of the target distribution is both possible and the more faithful
-# reader — the same choice verify-package.sh makes, for the same reason.
+# reader: the same choice verify-package.sh makes, for the same reason.
 RPM_HOST_TOOL="$(type -P rpm || true)"
 rpm_fields() {
     local file="$1"
@@ -58,7 +45,6 @@ rpm_fields() {
 log "verifying ${RELEASE_DIR} against the packages' own metadata"
 [[ -n "${RPM_HOST_TOOL}" ]] || printf '    note  rpm is not installed; reading RPMs in a container\n'
 
-# ------------------------------------------------- the set must match exactly
 
 mapfile -t listed < <(jq -r '.artifacts[].name' "${MANIFEST}" | LC_ALL=C sort)
 mapfile -t present < <(cd "${RELEASE_DIR}" && ls -1 ./*.deb ./*.rpm 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort)
@@ -70,7 +56,6 @@ else
     diff <(printf '%s\n' "${listed[@]}") <(printf '%s\n' "${present[@]}") >&2 || true
 fi
 
-# ----------------------------------------------------------- per package
 
 for name in "${present[@]}"; do
     file="${RELEASE_DIR}/${name}"

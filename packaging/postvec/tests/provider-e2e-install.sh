@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# The install phase of the PV-13 provider gate's PACKAGE cells, run *inside*
+# The install phase of the PV-13 provider gate's PACKAGE cells, run inside
 # a clean container of the target distribution by
 # tests/provider-e2e-test.sh. Not useful on its own.
 #
-# It brings the container to the state an operator's full install reaches —
+# It brings the container to the state an operator's full install reaches -
 # documented prerequisites, every release package, an initdb'd cluster with
-# postvec set up in embedded mode and a beating worker — and stops there.
+# postvec set up in embedded mode and a beating worker, and stops there.
 # The provider scenarios themselves are driven from the host so that the one
 # scenario suite serves the package cells and the image cells alike
 # (package-install-body.sh proves the install contract in depth; this only
@@ -34,8 +34,8 @@ esac
 echo "== provider-e2e install: prerequisites"
 bash /postvec-prerequisites.sh --pg "${PG_MAJOR}" --yes >/dev/null
 
-# Tools the *test harness* needs (process inspection, JSON, the mock's
-# runtime), which a user does not — installed separately so they cannot
+# Tools the test harness needs (process inspection, JSON, the mock's
+# runtime), which a user does not: installed separately so they cannot
 # quietly become part of what the bootstrap provides.
 PKG_INSTALL "${TEST_TOOLS[@]}"
 

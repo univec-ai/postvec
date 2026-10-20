@@ -78,7 +78,6 @@ impl EmbeddingOutput {
     }
 }
 /// Closure that pools tensor 0 (optional L2-norm) and concatenates batches.
-/// A `Result` containing a `Vec` of `FloatVector`s (embeddings).
 #[allow(dead_code)]
 pub fn default_embedding_transformer(
     pooling_strategy: PoolingStrategy,

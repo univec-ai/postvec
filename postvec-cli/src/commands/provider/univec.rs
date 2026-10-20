@@ -226,12 +226,11 @@ pub(super) fn converter_model(
     })
 }
 
-// ---- The login-key offer --------------------------------------------------
 
 /// Every stored UniVec credential this run could copy, as `(key, source)`:
-/// `POSTVEC_API_KEY`, the effective user's store, and — under `sudo` —
-/// the invoking user's own store, read as root from that user's passwd
-/// home (`sudo` resets `$HOME`). A malformed store is a note, not a stop.
+/// `POSTVEC_API_KEY`, the effective user's store and, under `sudo`, the
+/// invoking user's own store, read as root from that user's passwd home
+/// (`sudo` resets `$HOME`). A malformed store is a note, not a stop.
 fn stored_credentials(output: &Output) -> Vec<(String, String)> {
     use crate::registry::auth;
     let mut found = Vec::new();
@@ -256,11 +255,11 @@ fn stored_credentials(output: &Output) -> Vec<(String, String)> {
     found
 }
 
-/// Which credential to offer. `POSTVEC_API_KEY` wins outright (it is an
-/// explicit choice for this run); otherwise root's store and the invoking
-/// user's store are peers, and two different keys are an ambiguity the
-/// operator resolves — interactively by picking, in a script by naming a
-/// source — never by precedence.
+/// Which credential to offer. `POSTVEC_API_KEY` wins outright. It is an
+/// explicit choice for this run. Otherwise root's store and the invoking
+/// user's store are peers. Two different keys are an ambiguity the operator
+/// resolves, by picking interactively or by naming a source in a script.
+/// Never by precedence.
 enum Choice {
     None,
     One(String, String),
@@ -413,23 +412,22 @@ pub(super) enum Destination {
     },
 }
 
-/// A copied key file is a token; anything larger is not one — the same
-/// bound `validate_key_shape` applies to a key before it is ever written.
+/// A copied key file is a token. Anything larger is not one. Same bound
+/// `validate_key_shape` applies to a key before it is ever written.
 const MAX_KEY_BYTES: u64 = crate::registry::auth::MAX_KEY_BYTES as u64;
 
 /// The destination, checked before anything is spent, under the same rules
-/// `write_secret_file` / `ensure_private_dir` apply at apply time — so
-/// apply cannot refuse what preflight passed. The deepest existing ancestor
-/// is validated as a directory chain nobody else can rewrite (the same
-/// predicate, nothing created). An existing file must be a regular,
-/// singly-linked, private file; it is opened without following links and
-/// the *descriptor* is checked for type, links, mode and identity; a body
-/// over [`MAX_KEY_BYTES`] or not UTF-8 is refused, never truncated. Only
-/// absent, or safe-and-identical, proceeds silently. A safe file with a
-/// different key is somebody's — replacing it would rotate every connector
-/// that references it — unless `--replace-copied-key` proves, by file
-/// identity rather than path spelling, that this stem's connector is its
-/// only referent; that inventory fails closed on any unreadable file.
+/// `write_secret_file` and `ensure_private_dir` apply at apply time. Apply
+/// cannot refuse what preflight passed. The deepest existing ancestor is a
+/// directory chain nobody else can rewrite. Nothing is created. An existing
+/// file must be regular, singly-linked and private. It is opened without
+/// following links and the descriptor is checked for type, links, mode and
+/// identity. A body over [`MAX_KEY_BYTES`] or not UTF-8 is refused, never
+/// truncated. Only absent, or safe-and-identical, proceeds silently. A safe
+/// file with a different key is somebody's. Replacing it would rotate every
+/// connector that references it, unless `--replace-copied-key` proves, by
+/// file identity, that this stem's connector is its only referent. That
+/// inventory fails closed on any unreadable file.
 fn preflight_key_destination(
     path: &Path,
     key: &str,
@@ -592,13 +590,12 @@ fn key_path(providers_dir: &Path, stem: &str) -> PathBuf {
         .join(format!("{stem}.key"))
 }
 
-// ---- The best-effort identity check --------------------------------------
 
-/// `GET {base}/v1/registry/index.json` with the key — the unbilled,
+/// `GET {base}/v1/registry/index.json` with the key. The unbilled,
 /// identity-only route `postvec login` relies on. Best-effort, not a
-/// promise: the route is conditionally registered on aphex's side. Only
-/// 401/403 is decisive (a bad key, nothing spent); 404, 429, 5xx and
-/// transport failures are warnings, and the billed probe decides.
+/// promise: the route is conditionally registered. Only 401/403 is decisive
+/// (a bad key, nothing spent). 404, 429, 5xx and transport failures are
+/// warnings, and the billed probe decides.
 pub async fn identity_check(
     base_url: Option<&str>,
     key: &str,
@@ -856,8 +853,8 @@ mod tests {
         }
     }
 
-    /// Every unsafe destination shape — and an unsafe chain above an absent
-    /// destination — is refused before anything is spent; only absent, or
+    /// Every unsafe destination shape, and an unsafe chain above an absent
+    /// destination, is refused before anything is spent. Only absent, or
     /// safe-and-identical, proceeds. Rotation inventory fails closed.
     #[test]
     fn the_key_destination_is_preflighted_for_shape_chain_and_content() {

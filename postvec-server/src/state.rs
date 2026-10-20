@@ -15,18 +15,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-/// How this node describes itself to peers, to `/config` readers and in its
-/// own logs.
+/// How this node describes itself to peers, `/config` readers and its own logs.
 #[derive(Debug, Clone)]
 pub struct NodeIdentity {
     pub advertise: IpAddr,
-    /// `{scheme}://{advertise}:{http_port}` — what a peer would dial.
+    /// `{scheme}://{advertise}:{http_port}`, what a peer would dial.
     pub api_address: String,
-    /// `{advertise}:{grpc_port}` — what postvec would put in
-    /// `postvec.grpc_endpoints`.
+    /// `{advertise}:{grpc_port}`, what postvec puts in `postvec.grpc_endpoints`.
     pub grpc_address: String,
-    /// The reachable HTTP URL, which is `api_address` unless the operator
-    /// pinned something else.
+    /// Reachable HTTP URL. `api_address` unless the operator pinned something else.
     pub frontend: String,
 }
 
@@ -56,19 +53,14 @@ pub struct ServerState {
     pub settings: Arc<Settings>,
     pub identity: NodeIdentity,
     pub metrics: Arc<Metrics>,
-    /// `None` in the degenerate case where gossip could not start. The node
-    /// still serves; it just cannot describe its peers.
+    /// `None` when gossip could not start. The node still serves. It cannot describe its peers.
     pub cluster: Option<Arc<ClusterManager>>,
-    /// External-provider gateway. Empty in the zero-config case; shared by
-    /// `/config`, the gRPC dispatch and the admin reload route.
+    /// External-provider gateway. Empty when unconfigured. Shared by `/config`, gRPC and admin reload.
     pub gateway: Arc<Gateway>,
     pub started_at: SystemTime,
-    /// Serializes model load/unload. Held across the whole
-    /// admission-check-and-mutate sequence so the resident-count check is
-    /// the admission decision.
+    /// Serializes load and unload across admission and mutate, so the resident count is the decision.
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
-    /// Registry pulls started through the API, oldest first. `pull_serial`
-    /// runs them one at a time: a second request queues behind the first.
+    /// Registry pulls, oldest first. `pull_serial` runs one at a time.
     pub pulls: std::sync::Mutex<Vec<PullJob>>,
     pub pull_serial: tokio::sync::Mutex<()>,
     draining: AtomicBool,
@@ -100,9 +92,7 @@ impl ServerState {
         })
     }
 
-    /// Enter the drain: `/ready` goes 503 so healthchecks and load balancers
-    /// stop sending new work, while `/health` stays 200 and in-flight
-    /// requests finish.
+    /// `/ready` goes 503. `/health` stays 200. In-flight requests finish.
     pub fn begin_drain(&self) {
         self.draining.store(true, Ordering::SeqCst);
     }
@@ -111,9 +101,8 @@ impl ServerState {
         self.draining.load(Ordering::SeqCst)
     }
 
-    /// Names this process can answer right now, engine and gateway.
-    /// A provider-only node has no engine models; readiness still has to
-    /// be true.
+    /// Names this process can answer now, engine and gateway.
+    /// A provider-only node has no engine models and must still be ready.
     pub fn ready_models(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .engine

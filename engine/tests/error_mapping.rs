@@ -1,6 +1,4 @@
-//! Tests for `engine::error::EngineError::to_error_code` — the mapping from
-//! internal engine errors to the cross-service `shared::ErrorCode` carried back
-//! to aphex (and ultimately the client) via gRPC metadata.
+//! `EngineError::to_error_code`: internal errors to the shared gRPC code.
 
 use engine::error::EngineError;
 use shared::ErrorCode;

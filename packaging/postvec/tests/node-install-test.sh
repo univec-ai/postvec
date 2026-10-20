@@ -1,29 +1,15 @@
 #!/usr/bin/env bash
-# Install the node bundle on a clean host that has no PostgreSQL, and assert
-# what must be true of a fleet node afterwards.
+# Install the node bundle on a clean host with no PostgreSQL.
 #
 #   tests/node-install-test.sh --distro debian12
 #   tests/node-install-test.sh --distro el9 --arch amd64
 #   tests/node-install-test.sh --distro debian12 --without-cli
 #
-# tests/package-install-test.sh installs the extension, the CLI, the node and
-# the engine assets together: that proves coexistence on a database host.
-# This is the other topology, the inference host, and the questions only it
-# can answer:
-#
-#   * does `postvec-server` plus the engine assets install on a host with no
-#     PGDG repository and no PostgreSQL, from local files and the
-#     distribution's own archive;
-#   * is postgresql-common the only PostgreSQL package that arrives, and
-#     only via the CLI's Recommends;
-#   * does the packaged node then serve the packaged model as its service
-#     account, over TLS, with the certificate pair where the packaged
-#     configuration says it is;
-#   * does removal leave the configuration, the engine root and the account;
-#   * with `--without-cli`, does the node package stand alone.
-#
-# No PostgreSQL bootstrap: a node host never runs it, and running it here
-# would hide a package that pulled PostgreSQL in.
+# The database-host install is package-install-test.sh. This is the
+# inference host: no PGDG repo, postgresql-common only via the CLI's
+# Recommends, the node serves the packaged model over TLS as its service
+# account, removal leaves config and the account, and --without-cli
+# stands alone. Do not bootstrap PostgreSQL here.
 
 set -Eeuo pipefail
 
@@ -38,7 +24,7 @@ while (($#)); do
     --distro)      DISTRO="$2"; shift 2 ;;
     --arch)        RELEASE_ARCH="$2"; shift 2 ;;
     --without-cli) WITH_CLI=0; shift ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done

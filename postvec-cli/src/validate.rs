@@ -115,9 +115,9 @@ impl std::fmt::Display for GrpcEndpoint {
     }
 }
 
-/// Parse `host:port` or `[ipv6]:port`. Rejects anything with a scheme, path,
-/// query, fragment or userinfo — the extension's gRPC client dials a bare
-/// authority and would fail confusingly on those.
+/// Parse `host:port` or `[ipv6]:port`. Rejects a scheme, path, query,
+/// fragment or userinfo. The extension's gRPC client dials a bare authority
+/// and would fail confusingly on those.
 pub fn grpc_endpoint(raw: &str) -> Result<GrpcEndpoint> {
     let value = raw.trim();
     if value.is_empty() {
@@ -320,7 +320,7 @@ pub fn absolute_path(path: &Path, flag: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Render a value as a PostgreSQL **configuration** string literal.
+/// Render a value as a PostgreSQL configuration string literal.
 ///
 /// This is not SQL quoting: postgresql.conf uses single quotes with `''` as
 /// the escape and has no other escape mechanism, which is why control

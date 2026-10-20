@@ -13,7 +13,6 @@ OFFICIAL_ENTRYPOINT="${POSTVEC_OFFICIAL_ENTRYPOINT:-/usr/local/bin/docker-entryp
 fatal() { printf 'postvec: %s\n' "$*" >&2; exit 78; }   # EX_CONFIG
 usage() { printf 'postvec: %s\n' "$*" >&2; exit 64; }   # EX_USAGE
 
-# ---------------------------------------------------------------- delegation
 
 # `docker run <image> -c work_mem=...` means "run postgres with these flags",
 # and `docker run <image> psql ...` means "run this other program". Both are
@@ -25,11 +24,10 @@ if [[ "${1:-}" != postgres ]]; then
     exec "${OFFICIAL_ENTRYPOINT}" "$@"
 fi
 
-# ------------------------------------------------------------- configuration
 
 # The official image's own convention: VAR_FILE points at a secret file and
-# wins over VAR. Reimplemented here because these values are needed *before*
-# the official entrypoint runs — a POSTGRES_DB supplied only as
+# wins over VAR. Reimplemented here because these values are needed before
+# the official entrypoint runs: a POSTGRES_DB supplied only as
 # POSTGRES_DB_FILE would otherwise be invisible to us and postvec would serve
 # the wrong database.
 file_env() {
@@ -80,7 +78,7 @@ esac
 
 # These values become `postgres -c name=value` arguments. A newline would let a
 # value inject an unrelated setting, and a NUL or carriage return would be
-# silently mangled — refuse rather than guess.
+# silently mangled: refuse rather than guess.
 for value in "${POSTVEC_DATABASES}" "${POSTVEC_SHARED_PRELOAD_LIBRARIES}" \
              "${POSTVEC_GRPC_ENDPOINTS:-}" "${POSTVEC_HTTP_ENDPOINTS:-}" \
              "${POSTVEC_EMBEDDED_MODELS:-}" "${POSTVEC_PATH:-}"; do
@@ -149,7 +147,7 @@ printf 'postvec: mode=%s databases=%s preload=%s\n' \
     "${mode}" "${POSTVEC_DATABASES}" "${preloads}" >&2
 
 # Generated settings come first so an explicit `-c` from `docker run` still
-# wins — the last occurrence of a setting is the one PostgreSQL uses. The
+# wins: the last occurrence of a setting is the one PostgreSQL uses. The
 # healthcheck is what catches an override that removes postvec or points the
 # worker at an engine that is not there.
 exec "${OFFICIAL_ENTRYPOINT}" postgres "${postvec_args[@]}" "${@:2}"

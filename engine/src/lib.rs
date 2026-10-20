@@ -121,12 +121,10 @@ pub struct InferenceEngine {
     pub resolver: Arc<crate::resolver::ModelResolver>,
     /// Cap on concurrent native execution. `None` = unlimited.
     admission: Option<Arc<tokio::sync::Semaphore>>,
-    /// Serializes publication (path + pool insert), executor build and
-    /// resolver rebuild. Discovery and dependency loads happen first.
-    /// `HostPolicy::serialized_model_loads` also holds this across native
-    /// instantiation so a cancelled caller cannot start a second native load.
-    /// Not re-entrant: `LOAD_COMMIT_HELD` makes `build_dependencies` fail
-    /// typed instead of deadlocking on the same task.
+    /// Serializes publication, executor build and resolver rebuild.
+    /// Dependency loads happen first. `serialized_model_loads` also holds
+    /// this across native instantiation so a cancelled caller cannot start
+    /// a second load. Not re-entrant: re-entry deadlocks this task.
     model_load_commit: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -719,7 +717,6 @@ impl InferenceEngine {
             );
         } else {
             log::info!("Successfully loaded and built model '{}'.", model_name);
-            // Rebuild resolver
             let models_map = self.models.read().unwrap();
             let configs = models_map
                 .values()
@@ -729,24 +726,18 @@ impl InferenceEngine {
         }
         result
     }
-    /// Unloads a model and its executor, freeing up resources.
-    /// Returns true if a model was unloaded, false otherwise.
+    /// Returns true if a model was unloaded.
     pub fn unload_model(&self, model_name: &str) -> bool {
         log::info!("Unloading model '{}'...", model_name);
-        // Acquire write locks on all maps to ensure atomicity.
         let mut models = self.models.write().unwrap();
         let mut executors = self.executors.write().unwrap();
         let mut paths = self.model_paths.write().unwrap();
-        // The removal from models is the primary operation.
-        // If it succeeds, we also remove the associated executor and path for consistency.
-        // Dropping the `Arc<ModelPoolWrapper>` will cause `deadpool` to
-        // shut down and drop all pooled `Model` instances.
+        // Dropping the pool `Arc` shuts the pooled instances down.
         if models.remove(model_name).is_some() {
             executors.remove(model_name);
             paths.remove(model_name);
             log::info!("Successfully unloaded model '{}'.", model_name);
-            // Rebuild resolver
-            let models_map = models; // models is already a write guard, we can iterate it or clone values
+            let models_map = models;
             let configs = models_map
                 .values()
                 .map(|wrapper| wrapper.template_model.configuration());
@@ -761,7 +752,6 @@ impl InferenceEngine {
             false
         }
     }
-    /// A synchronous wrapper around the public `instantiate_model_from_config` helper.
     fn instantiate_model(
         &self,
         model_config: &mut ModelConfiguration,
@@ -769,7 +759,6 @@ impl InferenceEngine {
     ) -> Result<Arc<dyn Model>, EngineError> {
         instantiate_model_from_config(model_config, config_path)
     }
-    /// Asynchronously calls the `build()` method on all loaded executors.
     pub async fn build_executors(&self) -> Result<(), EngineError> {
         log::info!("Building loaded executors...");
         let model_names: Vec<String> = self.executors.read().unwrap().keys().cloned().collect();
@@ -778,11 +767,9 @@ impl InferenceEngine {
         for model_name in model_names {
             // We need to clone the Arc to work with it outside the read lock.
             let executor = self.executors.read().unwrap().get(&model_name).cloned();
-            // Get the template model for its configuration
             let model = self.get_model(&model_name)?;
             if let Some(executor) = executor {
                 log::info!("Building executor for model '{}'...", model_name);
-                // The build method is now async and requires the config.
                 match executor.build(self, model.configuration()).await {
                     Ok(_) => {
                         log::info!("=> Successfully built executor for '{}'", model_name);
@@ -795,7 +782,6 @@ impl InferenceEngine {
                             e
                         );
                         log::warn!("  Unloading model '{}' due to build failure.", model_name);
-                        // If build fails, remove the model, executor, and path.
                         self.models.write().unwrap().remove(&model_name);
                         self.executors.write().unwrap().remove(&model_name);
                         self.model_paths.write().unwrap().remove(&model_name);
@@ -869,11 +855,10 @@ impl InferenceEngine {
                 "deadline elapsed before engine admission for '{model_name}'"
             )));
         }
-        // Root requests only. Pools bound same-model concurrency; different
-        // models could still all enter blocking execution and oversubscribe a
-        // shared host. The permit moves into the blocking closure so a timed
-        // out caller does not free capacity while native work is still
-        // running. Nested predictions use [`Self::predict_raw_nested`].
+        // Root requests only. Pools bound same-model concurrency, but
+        // different models can still all enter native execution. The permit
+        // moves into the blocking closure so a timeout does not free capacity
+        // while native work runs. Nested calls use [`Self::predict_raw_nested`].
         let admission_permit = match &self.admission {
             Some(sem) => {
                 let acquire = sem.clone().acquire_owned();
@@ -1687,10 +1672,9 @@ mod admission_tests {
                 .await;
             let elapsed = started.elapsed();
             assert!(res.is_err(), "the terminated run must surface an error");
-            // The caller's outer deadline and the watchdog fire at the SAME
-            // instant, so the caller can observe its timeout a moment before
-            // the (mock-)native run finishes terminating — exactly like real
-            // ORT. Wait briefly for the termination to land.
+            // The caller's deadline and the watchdog fire together, so the
+            // caller can see its timeout a moment before the mock run
+            // finishes, same as real ORT. Wait briefly for termination.
             let flag_deadline = std::time::Instant::now() + Duration::from_secs(3);
             while !terminated.load(Ordering::SeqCst) && std::time::Instant::now() < flag_deadline {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1721,9 +1705,9 @@ mod admission_tests {
         });
     }
 
-    /// Capacity recovery: after a root request whose deadline expires while a
-    /// (mock) execution is still running, the admission permit is released
-    /// when the blocking closure exits — the NEXT request must be admitted.
+    /// After a root request times out while mock work is still running, the
+    /// admission permit is released when the blocking closure exits. The next
+    /// request must be admitted.
     #[test]
     fn admission_capacity_recovers_after_a_timed_out_call() {
         struct SlowExecutor;
@@ -1754,8 +1738,8 @@ mod admission_tests {
             };
             assert!(format!("{err}").contains("deadline"), "{err}");
 
-            // The permit is held until the native (mock) work exits — wait it
-            // out, then the gate must admit a fresh request.
+            // The permit stays held until the mock work exits. Wait that out,
+            // then the gate must admit a fresh request.
             let out = engine
                 .clone()
                 .predict_raw(

@@ -40,7 +40,7 @@ contents:
     dst: ${EXTENSIONDIR}/postvec.control
     file_info: { mode: 0644, owner: root, group: root }
   # The install script for this version plus every upgrade script that ships
-  # with it — ALTER EXTENSION postvec UPDATE needs the chain present on disk.
+  # with it: ALTER EXTENSION postvec UPDATE needs the chain present on disk.
   - src: ${CELL_DIR}/stage${EXTENSIONDIR}/postvec--*.sql
     dst: ${EXTENSIONDIR}/
     file_info: { mode: 0644, owner: root, group: root }
@@ -93,5 +93,5 @@ rpm:
   group: Applications/Databases
 
 umask: 0022
-# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly: an
 # explicit `mtime:` here would be parsed before environment expansion.

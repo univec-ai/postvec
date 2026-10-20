@@ -1,9 +1,9 @@
-//! External-provider checks: the providers.d directory, per-file (and
-//! referenced secret-file) permissions, key-source resolvability, descriptor
-//! sanity, and the served-vs-configured diff against the running host.
+//! External-provider checks: the providers.d directory, per-file and
+//! secret-file permissions, key-source resolvability, descriptor sanity
+//! and the served-vs-configured diff against the running host.
 //!
-//! All read-only per the doctor contract, and — like every check module —
-//! pure over gathered facts, with the filesystem walk in [`gather`].
+//! Read-only, like every check module. Pure over gathered facts. The
+//! filesystem walk is in [`gather`].
 
 use super::CheckResult;
 use std::collections::BTreeSet;
@@ -12,12 +12,12 @@ use std::path::{Path, PathBuf};
 /// One providers.d file, as far as a read-only inspection can see it.
 #[derive(Debug, Clone)]
 pub struct ProviderFileFacts {
-    /// The file stem — the operator-facing provider name.
+    /// The file stem, the operator-facing provider name.
     pub name: String,
     pub provider: Option<String>,
     /// `enabled = false`: the file parses and serves nothing, on purpose.
     pub enabled: bool,
-    /// The key *source* rendered for display; never a value.
+    /// The key source rendered for display, never a value.
     pub key_source: String,
     /// `Some(problem)` when the key source cannot resolve (missing or
     /// world-readable file; variable unset in this environment).
@@ -26,9 +26,9 @@ pub struct ProviderFileFacts {
     pub models: Vec<(String, Option<i64>)>,
     /// A permission or parse problem with the file itself.
     pub error: Option<String>,
-    /// The file loads, but something about it is worth saying out loud —
-    /// today: a plaintext `base_url` on a non-loopback host, which puts the
-    /// credential on the wire unencrypted.
+    /// The file loads, but something is worth saying: a plaintext `base_url`
+    /// on a non-loopback host, which puts the credential on the wire
+    /// unencrypted.
     pub warning: Option<String>,
 }
 
@@ -73,8 +73,7 @@ pub fn gather(dir: &Path) -> ProviderFacts {
         Err(problem) => {
             // An unreadable directory is a finding, not an empty one. The
             // serving host will not scan it either, so every provider in it
-            // is down — and "0 provider file(s)" would have said the
-            // opposite.
+            // is down. "0 provider file(s)" would say the opposite.
             facts.scan_error = Some(problem);
             return facts;
         }
@@ -105,14 +104,11 @@ pub fn gather(dir: &Path) -> ProviderFacts {
             });
             continue;
         }
-        // The loader's own schema, run before the display read. Doctor's
-        // job here is to predict the serving host, and a permissive TOML
-        // parse cannot: `deny_unknown_fields` (a typo'd `api_kee`), the
-        // one-source-per-secret rule, the per-file ceilings and the
-        // descriptor rules are all load errors the host will hit and this
-        // check would otherwise miss — reporting the file as healthy and
-        // then blaming `provider.served` on a missing reload. It reads no
-        // secret to reach that verdict.
+        // The loader's own schema, before the display read. A permissive
+        // TOML parse cannot predict the host: unknown fields, the
+        // one-source-per-secret rule, the ceilings and the descriptor rules
+        // are load errors. Missing them reports the file healthy and blames
+        // `provider.served` on a reload. No secret is read to reach that.
         if let Err(problem) = providers::config::validate_file(&path) {
             facts.files.push(ProviderFileFacts {
                 name,
@@ -178,12 +174,11 @@ pub fn gather(dir: &Path) -> ProviderFacts {
 
 /// A file that took the `allow_insecure_transport` opt-in.
 ///
-/// The loader refuses plaintext to a non-loopback host **unless** the file
+/// The loader refuses plaintext to a non-loopback host unless the file
 /// says so in writing, and `provider.file` reports that refusal like any
-/// other. This is the other half: a file that opted in loads fine, and the
-/// operator should still be reminded on every doctor run that the API key —
-/// and every document the column embeds — crosses the network in the clear.
-/// An accepted risk is not the same as an invisible one.
+/// other. A file that opted in loads. Doctor still says, on every run, that
+/// the API key and every embedded document cross the network in the clear.
+/// An accepted risk is not an invisible one.
 fn plaintext_transport_warning(doc: &crate::commands::provider::ProviderFileDoc) -> Option<String> {
     let base_url = doc.value.get("base_url").and_then(toml::Value::as_str)?;
     let opted_in = doc
@@ -202,10 +197,10 @@ fn plaintext_transport_warning(doc: &crate::commands::provider::ProviderFileDoc)
 
 /// Whether the file's key sources can resolve, without printing any value.
 ///
-/// Every source is checked, not just the first: an AWS file authenticates
-/// with a *pair* (`access_key_id` + `secret_access_key`), so stopping at the
-/// first field would report a world-readable secret-key file as healthy —
-/// while the host refuses the whole connector over it.
+/// Every source is checked, not just the first. An AWS file authenticates
+/// with a pair (`access_key_id` and `secret_access_key`). Stopping at the
+/// first field would call a world-readable secret healthy while the host
+/// refuses the whole connector.
 fn key_source_problem(doc: &crate::commands::provider::ProviderFileDoc) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     let mut problems: Vec<String> = Vec::new();
@@ -352,12 +347,10 @@ pub fn checks(input: &ProviderInput) -> Vec<CheckResult> {
             )),
         }
 
-        // There is deliberately no separate descriptor check. Every rule one
-        // could state here — a positive `dim`, a public name in the host's
-        // charset, a non-empty `provider_model_id` — is enforced by
-        // `config::validate_file` above, and the host refuses the file over
-        // any of them. A second check restating them could only ever pass,
-        // and a check that cannot fail teaches operators to skim.
+        // No separate descriptor check. A positive `dim`, a public name in
+        // the host's charset and a non-empty `provider_model_id` are all
+        // enforced by `config::validate_file` above. The host refuses the
+        // file over any of them. A second check could only ever pass.
 
         // A parked file is not a stale reload. Comparing it against what the
         // host serves would warn on every run, forever, for a state the
@@ -742,9 +735,9 @@ mod tests {
     }
 
     /// The AWS SigV4 pair is two secrets, and `provider add` never writes
-    /// it — so a hand-written file is exactly where a world-readable key
-    /// lands. Checking only the first source would have called this healthy
-    /// while the host refused the whole connector.
+    /// it, so a hand-written file is where a world-readable key lands.
+    /// Checking only the first source would call this healthy while the
+    /// host refused the whole connector.
     #[test]
     fn every_aws_secret_source_is_checked_not_just_the_first() {
         let dir = tempfile::tempdir().unwrap();
@@ -776,11 +769,10 @@ mod tests {
         }
     }
 
-    /// The factory refuses an unsupported connector type, and a connector
-    /// with no credential declared, at gateway build — where only the host's
-    /// log sees it. Both must be `provider.file` failures here, or doctor
-    /// reports the file healthy and blames `provider.served` on a reload that
-    /// changes nothing.
+    /// The factory refuses an unsupported connector, and a connector with no
+    /// credential, at gateway build. Only the host's log sees that. Both must
+    /// be `provider.file` failures here, or doctor reports the file healthy
+    /// and blames `provider.served` on a reload that changes nothing.
     #[test]
     fn a_connector_the_host_cannot_build_fails_the_file_check() {
         let dir = tempfile::tempdir().unwrap();
@@ -806,7 +798,7 @@ mod tests {
             let file = by_id(&results, "provider.file", &format!("provider:{stem}"));
             assert_eq!(file.status, CheckStatus::Fail, "{file:?}");
             assert!(file.summary.contains(expect), "{file:?}");
-            // …and nothing tells the operator to reload.
+            // And nothing tells the operator to reload.
             assert!(
                 !results
                     .iter()
@@ -817,9 +809,9 @@ mod tests {
         }
     }
 
-    /// Plaintext to a non-loopback host is a **failure** unless the file
-    /// opted in, and a standing **warning** when it did. An accepted risk is
-    /// not an invisible one. Loopback — a sidecar, a mock — is silent.
+    /// Plaintext to a non-loopback host fails unless the file opted in, and
+    /// then warns on every run. An accepted risk is not an invisible one.
+    /// Loopback (a sidecar or a mock) is silent.
     #[test]
     fn plaintext_off_host_fails_unless_opted_in_and_then_warns_forever() {
         let dir = tempfile::tempdir().unwrap();

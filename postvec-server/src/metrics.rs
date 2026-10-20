@@ -43,9 +43,8 @@ const CODES: [&str; 20] = [
 ];
 const CODE_OTHER: usize = CODES.len() - 1;
 
-/// Upper bounds, in seconds. Spread for inference: a warm MiniLM batch is
-/// single-digit milliseconds, a cold bridge chain is seconds, and the
-/// default execution ceiling is 30 s.
+/// Upper bounds, in seconds. A warm MiniLM batch is single-digit milliseconds.
+/// A cold bridge chain is seconds. The default execution ceiling is 30 s.
 const DURATION_BUCKETS: [f64; 14] = [
     0.005,
     0.01,
@@ -68,8 +67,7 @@ struct MethodMetrics {
     requests: AtomicU64,
     errors: [AtomicU64; CODES.len()],
     items: AtomicU64,
-    /// Cumulative bucket counts, in the Prometheus `le` sense (each bucket
-    /// is rendered as the running total up to and including its bound).
+    /// Cumulative bucket counts, Prometheus `le`: the running total up to and including the bound.
     buckets: [AtomicU64; DURATION_BUCKETS.len()],
     /// Nanoseconds, summed. Rendered as seconds.
     duration_nanos: AtomicU64,
@@ -88,8 +86,7 @@ pub struct Metrics {
     warmup_failures: AtomicU64,
 }
 
-/// A snapshot of everything the renderer needs that does not live in the
-/// counters: engine and cluster state, sampled at scrape time.
+/// Engine and cluster state sampled at scrape time, outside the counters.
 pub struct Snapshot {
     pub version: &'static str,
     pub features: String,
@@ -113,9 +110,7 @@ impl Metrics {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A request that produced a response. Records latency. The histogram
-    /// excludes failures, whose duration says more about when a guard fired
-    /// than about how long inference takes.
+    /// A response. Records latency. Failures stay out: their duration is when a guard fired.
     pub fn request_completed(&self, method: usize, items: usize, elapsed: Duration) {
         let m = &self.methods[method];
         self.in_flight.fetch_sub(1, Ordering::Relaxed);
@@ -362,9 +357,8 @@ mod tests {
         }
     }
 
-    /// The first thirteen labels must be exactly `shared::ErrorCode`, in
-    /// order. That set is a pinned two-repo wire contract; a variant added
-    /// privately and not mirrored here would silently land in `OTHER`.
+    /// The first thirteen labels are `shared::ErrorCode`, in order.
+    /// A variant not mirrored here would silently land in `OTHER`.
     #[test]
     fn the_error_labels_cover_the_whole_wire_taxonomy() {
         use shared::ErrorCode::*;

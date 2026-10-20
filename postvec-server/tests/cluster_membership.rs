@@ -17,8 +17,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
-/// Ports for these tests. Every node in one test shares a port — that is the
-/// property under test — so the counter advances per test, not per node.
+/// Ports for these tests. Every node in one test shares a port, which is the
+/// property under test, so the counter advances per test, not per node.
 fn next_port() -> u16 {
     static NEXT: AtomicU16 = AtomicU16::new(0);
     let offset = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -97,9 +97,8 @@ async fn two_nodes_on_identical_ports_find_each_other() {
     let a_addr = format!("127.0.0.2:{port}");
     let b_addr = format!("127.0.0.3:{port}");
 
-    // Each node's peer list contains *both* nodes, including itself — which
-    // is what an operator writes when every node runs the same command, and
-    // which the self-filter has to handle without discarding the other one.
+    // Each peer list names both nodes, including itself, the way one shared
+    // command is written. The self-filter must keep the other node.
     let peers = vec![a_addr.clone(), b_addr.clone()];
     let a = node("127.0.0.2", port, "postvec", &peers).await;
     let b = node("127.0.0.3", port, "postvec", &peers).await;
@@ -135,9 +134,8 @@ async fn two_nodes_on_identical_ports_find_each_other() {
     b.shutdown().await;
 }
 
-/// A node's own addresses may appear in its seed list — every node running
-/// the same command guarantees they will — and that must not be mistaken for
-/// having no peers to dial.
+/// A node's own addresses may appear in its seed list. That must not look like
+/// there are no peers to dial.
 #[tokio::test]
 async fn a_seed_list_of_only_this_node_is_a_single_node_cluster() {
     let port = next_port();
@@ -147,9 +145,8 @@ async fn a_seed_list_of_only_this_node_is_a_single_node_cluster() {
         !solo.own_addrs().is_empty(),
         "the node must know its own gossip address"
     );
-    // Joining is a no-op, not an error, and the maintenance heuristic must
-    // not call this degraded — otherwise a single-node install logs a
-    // "cluster appears degraded" warning every thirty seconds, forever.
+    // Joining is a no-op, not an error. Maintenance must not call this degraded,
+    // or a single-node install warns every thirty seconds.
     solo.join().await.expect("a solo join is not a failure");
     assert!(!postvec_server::cluster::should_rejoin(
         1,
@@ -170,8 +167,8 @@ async fn nodes_in_different_groups_do_not_merge() {
     ours.join().await.expect("ours joins");
     theirs.join().await.expect("theirs joins");
 
-    // Gossip does reach across — memberlist has no notion of our tag — so the
-    // filtering has to happen where membership is reported.
+    // Gossip does reach across. memberlist has no notion of the tag, so the
+    // filter is where membership is reported.
     tokio::time::sleep(Duration::from_millis(500)).await;
     for member in ours.members().await {
         assert_eq!(
@@ -191,20 +188,9 @@ async fn nodes_in_different_groups_do_not_merge() {
     theirs.shutdown().await;
 }
 
-/// A departing node announces itself, and keeps gossiping while it drains.
-///
-/// What is asserted here is the local half, because it is deterministic.
-/// How quickly a peer observes the departure is a property of the gossip
-/// transport: the announcement rides the broadcast queue over UDP, and
-/// where UDP gossip is degraded (as it is between loopback aliases in one
-/// process on some kernels) peers fall back to anti-entropy, which is
-/// thirty seconds by default. Asserting a wall clock here would be testing
-/// the host's networking.
-///
-/// The code's contribution is ordering, and `serve()` gets it right:
-/// announce first, keep gossiping through the drain window, tear down last.
-/// Announcing and shutting down in one breath is what makes peers wait out
-/// anti-entropy.
+/// Announce and keep gossiping through the drain. Tear down last.
+/// How fast a peer notices is the transport's, including anti-entropy when UDP
+/// between loopback aliases is degraded, so this asserts only the local order.
 #[tokio::test]
 async fn a_departing_node_announces_without_tearing_down_gossip() {
     let port = next_port();
@@ -221,10 +207,8 @@ async fn a_departing_node_announces_without_tearing_down_gossip() {
         "the departure was not broadcast"
     );
 
-    // Announcing does not stop the node gossiping — that is the ordering
-    // property `serve()` depends on. If the transport went down here, the
-    // announcement would have nothing to travel over and peers would be left
-    // waiting for anti-entropy.
+    // Announcing does not stop gossip. If the transport went down here, the
+    // announcement would have nothing to travel on and peers would wait out anti-entropy.
     assert!(
         !leaver.members().await.is_empty(),
         "announcing a departure must not tear the transport down"

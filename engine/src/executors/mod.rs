@@ -58,23 +58,18 @@ pub async fn build_dependencies(
         config.name,
         config.dependencies
     );
-    // Process each dependency declared in the model's configuration.
     for dep_name in &config.dependencies {
-        // A pool without its executor is not usable readiness. This can only
-        // be observed transiently while another load owns the commit gate;
-        // falling through lets `load_model` wait and re-check atomically.
+        // A pool without an executor is not ready. That only shows up while
+        // another load holds the commit gate. Fall through and let `load_model`
+        // re-check under the gate.
         if engine.is_model_ready(dep_name) {
             log::debug!("  -> Dependency '{}' is already ready.", dep_name);
             continue;
         }
-        // Re-entering `load_model` from under the load-commit gate would
-        // block this task on the non-reentrant mutex it already holds and
-        // permanently wedge all future loads. `load_model` pre-loads the
-        // full dependency list before taking the gate, so reaching this
-        // branch under the gate means a dependency was unloaded in between —
-        // fail typed and let the caller retry the whole load. (Called
-        // without the gate — startup's `build_executors` — the JIT path
-        // below remains available.)
+        // Calling `load_model` while this task holds the commit gate deadlocks
+        // the non-reentrant mutex and wedges later loads. Dependencies are
+        // pre-loaded before the gate, so this means one was unloaded. Fail
+        // and let the caller retry. Startup does not hold the gate, so it can load.
         if crate::load_commit_held() {
             return Err(EngineError::Configuration(format!(
                 "Dependency '{}' of model '{}' became unavailable while its \
@@ -87,13 +82,10 @@ pub async fn build_dependencies(
             "  -> Dependency '{}' is not loaded. Loading it from disk.",
             dep_name
         );
-        // Dependency files are resolved from local disk; the `load_model`
-        // call below fails if they are not present.
         log::debug!(
             "  -> Dependency '{}' is resolved from local disk.",
             dep_name
         );
-        // Now, instruct the engine to load the model from disk.
         engine.load_model(dep_name).await.map_err(|e| {
             EngineError::Configuration(format!(
                 "Failed to load dependency model '{}': {}",
@@ -156,12 +148,10 @@ pub fn new_executor(
     }
 }
 
-/// Shared harness for bridge-executor resolution tests: run a real
-/// `execute()` call the way the engine does (inside `spawn_blocking` on a
-/// multi-thread runtime, the executor's own generic model leased from a real
-/// deadpool pool) against an engine whose resolver indexes only `loaded`.
-/// Only the model inventory is synthetic — the failure being tested is
-/// exactly the resolution step a production request would hit.
+/// Run `execute` the way the engine does (`spawn_blocking` on a
+/// multi-thread runtime, model leased from a real pool) against a
+/// resolver that indexes only `loaded`. The inventory is synthetic.
+/// The failure under test is the resolution step a real request hits.
 #[cfg(test)]
 pub(crate) mod bridge_test_support {
     use crate::config::EngineConfig;

@@ -9,7 +9,7 @@
 
 # Debian passes "remove"/"purge"/"upgrade"; RPM passes the number of remaining
 # copies of this package (1 = an upgrade, 0 = a real removal). Say nothing
-# during an upgrade — nothing has been uninstalled.
+# during an upgrade: nothing has been uninstalled.
 case "${1:-}" in
     upgrade|failed-upgrade|1) exit 0 ;;
 esac

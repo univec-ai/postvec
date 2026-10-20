@@ -74,7 +74,7 @@ pub enum PlanStep {
         /// What the path is, for the operator ("pulled model baai-bge-m3").
         what: String,
     },
-    /// Model management (`postvec model …`).
+    /// Model management (`postvec model ...`).
     DownloadArchive {
         name: String,
         bytes: u64,
@@ -92,7 +92,7 @@ pub enum PlanStep {
         backend: String,
         from_revision: u64,
         to_revision: u64,
-        /// An embedding model, whose weights *are* its vector space, so its
+        /// An embedding model, whose weights are its vector space, so its
         /// outputs may differ from the installed revision's.
         embed: bool,
     },
@@ -126,11 +126,11 @@ pub enum PlanStep {
         /// never established for them.
         unknown_databases: Vec<String>,
     },
-    /// Not a mutation: the inverse of [`PlanStep::AcknowledgeInUse`] —
-    /// existing columns bound to this public name START sending their source
+    /// Not a mutation: the inverse of [`PlanStep::AcknowledgeInUse`].
+    /// Existing columns bound to this public name start sending their source
     /// text to an external provider once it serves the name (the
-    /// bridge-upgrade privacy event). Carried as a
-    /// step so [`Plan::in_use_models`] gates the confirmation on it.
+    /// bridge-upgrade privacy event). Carried as a step so
+    /// [`Plan::in_use_models`] gates the confirmation on it.
     AcknowledgeProviderPrivacy {
         provider: String,
         model: String,
@@ -148,10 +148,10 @@ pub enum PlanStep {
 /// records it.
 #[derive(Debug, Clone, Serialize)]
 pub struct InUseColumn {
-    /// Which model going away takes this column's route with it — one scan can
-    /// cover several at once.
+    /// Which model going away takes this column's route with it. One scan
+    /// can cover several at once.
     pub model: String,
-    /// The space the column actually declares. Often *not* `model`: a column
+    /// The space the column actually declares. Often not `model`: a column
     /// on a convert-only target is served by a converter and the
     /// `embed-bridge` executor, neither of which carries the target's name.
     pub declared_model: String,
@@ -354,13 +354,13 @@ pub struct TermsDocument {
     pub license: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// The canonical HTTPS document URL — never an archive source.
+    /// The canonical HTTPS document URL, never an archive source.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// `"none"` | `"notice"` (an `"organization"` entry is refused before a
     /// plan exists).
     pub acceptance: String,
-    /// Sorted names of every affected model — requested, dependencies and
+    /// Sorted names of every affected model: requested, dependencies and
     /// postvec companions alike.
     pub models: Vec<String>,
     /// Whether this run must obtain a local acknowledgement: a notice
@@ -468,8 +468,8 @@ impl Plan {
     /// True when the plan would change nothing.
     ///
     /// An acknowledgement step is not a mutation, so a plan carrying only
-    /// those is still a no-op — and must not be able to demand confirmation
-    /// for work it is not doing.
+    /// those is still a no-op, and must not demand confirmation for work
+    /// it is not doing.
     pub fn is_noop(&self) -> bool {
         self.steps.iter().all(|step| {
             matches!(
@@ -569,11 +569,10 @@ impl Plan {
 
 /// Whether a human can answer a question on this invocation.
 ///
-/// An explicit capability rather than a call to `isatty` inside [`confirm`]:
-/// with the probe buried in the decision, the behaviour of a confirmation
-/// depends on how the *process* was started, which makes it impossible to test
-/// both branches — and a test that happens to run with a terminal attached
-/// blocks forever waiting for input nobody is there to give.
+/// An explicit capability, not an `isatty` call inside [`confirm`]. Buried
+/// in the decision, confirmation would depend on how the process was
+/// started, so both branches could not be tested. A test with a terminal
+/// attached would block forever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prompt {
     interactive: bool,
@@ -589,7 +588,7 @@ impl Prompt {
 
     /// A caller that cannot answer questions. Real invocations reach this
     /// state through [`Prompt::from_environment`]; it is constructible directly
-    /// only in tests, so no test can depend on — or block on — the terminal it
+    /// only in tests, so no test can depend on, or block on, the terminal it
     /// happens to run under.
     #[cfg(test)]
     pub fn non_interactive() -> Self {
@@ -613,17 +612,16 @@ impl Prompt {
 /// Gate a plan that takes a model away from columns that depend on it for
 /// their embedding route.
 ///
-/// Deliberately separate from [`confirm`]'s `--yes`, and from `--force`:
+/// Separate from [`confirm`]'s `--yes`, and from `--force`:
 ///
-/// - `--yes` answers "this is the change I meant"; it cannot also answer
+/// - `--yes` answers "this is the change I meant". It cannot also answer
 ///   "I accept that these columns stop working", which the operator may not
-///   have known about when they wrote the command.
-/// - `--force` answers a different question — "break other *models* that
-///   depend on this name" — and a flag that meant both would let one
-///   acknowledgement stand in for the other.
+///   have known when they wrote the command.
+/// - `--force` answers "break other models that depend on this name". A flag
+///   that meant both would let one acknowledgement stand in for the other.
 ///
-/// Interactively the operator types the model names; non-interactively they
-/// pass `--acknowledge-in-use` **and** `--yes`. A dry run asks nothing: the
+/// Interactively the operator types the model names. Non-interactively they
+/// pass `--acknowledge-in-use` and `--yes`. A dry run asks nothing: the
 /// plan it just printed carries the warning and the exact flag.
 ///
 /// Runs before [`confirm`], so a refusal here changes nothing.
@@ -651,7 +649,7 @@ pub fn confirm_in_use(
 /// [`confirm_in_use`] with a caller-supplied consequence sentence for the
 /// non-interactive refusal (`{models}` is substituted). The provider-privacy
 /// gate shares the mechanics but not the wording: there the columns keep
-/// working — their text starts leaving the host.
+/// working and their text starts leaving the host.
 pub fn confirm_in_use_with(
     plan: &Plan,
     acknowledged: bool,
@@ -685,12 +683,11 @@ pub fn confirm_in_use_with(
 
 /// Does the typed answer name exactly the models the plan is taking away?
 ///
-/// The prompt shows the names bare, so the obvious thing to type is what is on
-/// screen — but an operator copying from the warning block may also paste
-/// quotes, commas or stray spacing. The acknowledgement exists to prove the
-/// operator read *which* models are affected, not to test their punctuation,
-/// so separators and surrounding quotes are normalized away. Order is not:
-/// the names are compared as a set.
+/// The prompt shows the names bare, so the obvious thing to type is what is
+/// on screen. An operator copying from the warning block may also paste
+/// quotes, commas or stray spacing. The acknowledgement proves which models
+/// are affected, not the operator's punctuation, so separators and
+/// surrounding quotes are normalized away. Order is not: names are a set.
 fn in_use_answer_matches(typed: &str, models: &[String]) -> bool {
     let normalize = |raw: &str| -> std::collections::BTreeSet<String> {
         raw.split([',', ' ', '\t', '\n', '\r'])
@@ -706,9 +703,9 @@ fn in_use_answer_matches(typed: &str, models: &[String]) -> bool {
 /// The interactive in-use acknowledgement: the plan has already printed which
 /// columns are affected, so this only asks the operator to type the names back.
 ///
-/// The names are printed **bare**. A `{:?}` rendering would put quotes on
-/// screen that the obvious copy-paste then has to survive — the first thing an
-/// operator does with this prompt is type what they can see.
+/// The names are printed bare. A `{:?}` rendering would put quotes on
+/// screen that the obvious copy-paste then has to survive. The first thing
+/// an operator does with this prompt is type what they can see.
 pub fn interactive_in_use_acknowledgement(models: &[String]) -> Result<String> {
     eprint!(
         "Type {} to confirm those columns will stop working: ",
@@ -717,10 +714,10 @@ pub fn interactive_in_use_acknowledgement(models: &[String]) -> Result<String> {
     read_line()
 }
 
-/// The interactive acknowledgement for a change that does *both* — some
+/// The interactive acknowledgement for a change that does both: some
 /// columns lose their route, others are handed to a different recipient. The
-/// two single-purpose prompts each describe only half of it, and a prompt
-/// that names the wrong consequence is worse than a generic one.
+/// two single-purpose prompts each describe only half, and a prompt that
+/// names the wrong consequence is worse than a generic one.
 pub fn interactive_route_change_acknowledgement(models: &[String]) -> Result<String> {
     eprint!(
         "Type {} to confirm those columns' embedding routes may change — lost for some, \
@@ -742,9 +739,9 @@ pub fn interactive_provider_privacy_acknowledgement(models: &[String]) -> Result
 
 /// Ask for confirmation, once, after the whole plan is known.
 ///
-/// A non-interactive caller without `--yes` is a usage error *before* any
-/// mutation: silently proceeding in a script would be the worst possible
-/// default for a command that restarts a database server.
+/// A non-interactive caller without `--yes` is a usage error before any
+/// mutation. Silently proceeding in a script would be the worst default
+/// for a command that restarts a database server.
 pub fn confirm(
     plan: &Plan,
     yes: bool,
@@ -811,8 +808,8 @@ pub struct ApplyJournal {
     pub succeeded_databases: Vec<String>,
     pub failed_databases: Vec<FailedDatabase>,
     /// Work the command promised but could not complete, even though nothing
-    /// failed outright — a configuration file it does not own, say. Reporting
-    /// success here would tell the operator a job is finished when it is not.
+    /// failed outright, a configuration file it does not own for example.
+    /// Reporting success here would say the job is finished when it is not.
     pub incomplete: Vec<String>,
     pub restart_deferred: bool,
 }
@@ -1192,7 +1189,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("did not match"), "{err}");
-        // …and the refusal says what would have worked.
+        // And the refusal says what would have worked.
         assert!(err.to_string().contains("baai-bge-m3"), "{err}");
 
         let right = |models: &[String]| Ok(models.join(", "));
@@ -1217,10 +1214,10 @@ mod tests {
         confirm_in_use(&ordinary, false, false, false, Prompt::interactive(), never).unwrap();
     }
 
-    /// The acknowledgement proves the operator read *which* models are
+    /// The acknowledgement proves the operator read which models are
     /// affected, not that they can punctuate. What the prompt prints must be
-    /// accepted verbatim — that is the first thing anyone types — and so must
-    /// the shapes a copy-paste from the warning block produces.
+    /// accepted as typed, because that is the first thing anyone types, and
+    /// so must a copy-paste from the warning block.
     #[test]
     fn the_acknowledgement_accepts_what_the_prompt_shows() {
         let models = vec!["baai-bge-m3".to_string(), "embed-dep".to_string()];
@@ -1352,7 +1349,7 @@ mod tests {
 
     /// Work left undone is not success. Uninstall that removes the SQL but
     /// cannot take the database out of the launcher configuration leaves a
-    /// worker still connecting to it — exit 0 would say otherwise.
+    /// worker still connecting to it. Exit 0 would say otherwise.
     #[test]
     fn unfinished_work_downgrades_the_outcome_to_partial() {
         let mut journal = ApplyJournal::default();

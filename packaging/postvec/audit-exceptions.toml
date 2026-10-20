@@ -1,14 +1,8 @@
 # Advisories accepted for one release, with an expiry.
 #
-# `cargo audit` is a release gate: a known vulnerability blocks publication.
-# That is only workable if there is a way to say "we looked at this one, it does
-# not apply, and here is when we will look again" — otherwise the gate gets
-# turned off the first time it is inconvenient, which is the failure mode this
-# file exists to prevent.
-#
-# Every entry needs the advisory id, why it does not apply *to postvec*, who
-# decided, and a review date. An expired entry fails the build exactly as the
-# advisory itself would.
+# cargo audit blocks publication. An entry needs an id, why it does not
+# apply to postvec, who decided and a review date. An expired entry fails
+# like the advisory.
 #
 #   [[accepted]]
 #   id = "RUSTSEC-0000-0000"
@@ -18,13 +12,9 @@
 
 accepted = []
 
-# Accepted by amorroxic on 2026-09-18, before the 0.1.0-1 release.
-#
-# The hickory-proto pair expires first (2026-12-31): those are real DoS
-# advisories, accepted only because the vulnerable code is never compiled into
-# any shipped artifact, and they become fixable as soon as memberlist bumps
-# agnostic. The three unmaintained crates are informational rather than
-# vulnerabilities, and expire 2027-06-30.
+# hickory-proto, review by 2026-12-31: DoS code that is not compiled into a
+# shipped artifact. The unmaintained crates are informational and expire
+# 2027-06-30.
 
 [[accepted]]
 id = "RUSTSEC-2026-0118"

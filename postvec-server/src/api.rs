@@ -3,15 +3,12 @@
 
 //! Native HTTP inference (`/api/{model}`) and the OpenAI embeddings adaptor.
 //!
-//! The native contract is the JSON the engine executors already speak: a
-//! keyed object whose keys follow `executor.inputs[].json_key` (`texts` for
-//! embed models, `embeddings` for converters). Responses use the ninference
-//! envelope `{success, data}` / `{success, error:{message}}` at HTTP 200, so
-//! a dashboard treats the envelope as the contract.
+//! Native bodies match executor JSON: keys follow `executor.inputs[].json_key`
+//! (`texts` for embed, `embeddings` for converters). Responses stay in the
+//! ninference envelope `{success, data}` / `{success, error:{message}}` at HTTP 200.
 //!
-//! `/api/openai/embeddings` rewrites an OpenAI `/v1/embeddings` body into
-//! that native payload, runs the same path, and reshapes the result. Errors
-//! there carry a real HTTP status and the OpenAI `{error:{...}}` shape.
+//! `/api/openai/embeddings` rewrites an OpenAI body onto that path. Its errors
+//! use a real HTTP status and the OpenAI `{error:{...}}` shape.
 
 use crate::limits::MAX_REQUEST_ITEMS;
 use crate::metrics::{METHOD_CONVERT, METHOD_EMBED};
@@ -112,8 +109,8 @@ pub struct ConvertPayload {
     embeddings: Value,
 }
 
-/// `POST /api/convert`: the SQL `convert(embedding, source, target)` over
-/// HTTP, resolving the converter from the pair the way `migrate()` does.
+/// `POST /api/convert`: SQL `convert(embedding, source, target)` over HTTP.
+/// The converter is resolved from the pair the way `migrate()` does.
 pub async fn convert(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
@@ -184,8 +181,7 @@ impl ApiError {
         }
     }
 
-    /// OpenAI error envelope. The `type` vocabulary and status mapping
-    /// follow aphex; unknown models get OpenAI's own `model_not_found`.
+    /// OpenAI error envelope. Types and statuses match aphex. Unknown models use `model_not_found`.
     fn into_openai(self) -> Response {
         let (status, kind, code) = match &self {
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request_error", None),
@@ -259,8 +255,7 @@ enum Output {
     Binary { data: Vec<u8>, content_type: String },
 }
 
-/// Dispatch to the engine (a ready local model) or the provider gateway,
-/// the same precedence as the gRPC service. Metrics are recorded here.
+/// Ready local model, else the provider gateway. Same precedence as gRPC. Metrics land here.
 async fn run_predict(
     state: &ServerState,
     model: &str,
@@ -407,8 +402,7 @@ async fn gateway_embed(
             ))
         }
     };
-    // The gateway has no post-processing knobs; refusing beats silently
-    // returning full-width floats to a caller that asked for something else.
+    // The gateway has no post-processing knobs. Refuse rather than return full-width floats.
     for (key, unsupported) in [("dimensions", true), ("encoding_format", false)] {
         let requested = match map.get(key) {
             None | Some(Value::Null) => false,
@@ -470,8 +464,6 @@ async fn gateway_convert(
     Ok(Output::Json(json!({ "embeddings": vectors })))
 }
 
-// ---- OpenAI adaptor ----------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 struct OpenAIEmbedPayload {
     model: String,
@@ -516,7 +508,6 @@ fn model_name(raw: &str) -> &str {
         .unwrap_or(raw)
 }
 
-/// Rewrite the OpenAI body into the native payload.
 fn openai_to_native(payload: &OpenAIEmbedPayload, texts_key: &str) -> Value {
     let mut native = Map::new();
     native.insert(texts_key.into(), json!(payload.input));
@@ -532,8 +523,7 @@ fn openai_to_native(payload: &OpenAIEmbedPayload, texts_key: &str) -> Value {
     Value::Object(native)
 }
 
-/// `{embeddings, usage?}` (or whatever the model's first output is keyed)
-/// into the OpenAI list envelope.
+/// `{embeddings, usage?}`, or the model's first array output, as the OpenAI list.
 fn native_to_openai(model: &str, data: &Value) -> Result<Value, ApiError> {
     let rows = match data {
         Value::Array(items) => Some(items),

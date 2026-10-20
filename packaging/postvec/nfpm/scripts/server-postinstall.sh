@@ -1,15 +1,9 @@
 #!/bin/sh
-# Runs after postvec-server's files are in place.
-#
-# Prints the next steps. Enabling and starting a network service is the
-# operator's decision: this package has just installed a listener that has
-# no authentication and no model to serve yet. The same rule that keeps
-# every postvec package from touching a PostgreSQL cluster keeps this one
-# from touching systemd. The commands below appear only inside the
-# here-document; scripts/verify-package.sh strips those before scanning for
-# what a maintainer script runs.
-#
-# Ends in exit 0 even if the hint cannot be written.
+# Runs after postvec-server's files are in place. Prints the next steps.
+# Does not enable or start the service: the listener has no authentication
+# yet, and no postvec package touches systemd. The commands live only in
+# the here-document. verify-package.sh strips that before it scans for
+# what a maintainer script runs. Exits 0 even if the hint cannot be written.
 
 # Debian passes "configure" on install and on upgrade with the previous
 # version as $2; RPM passes the number of installed copies (2 = an upgrade).

@@ -190,9 +190,8 @@ async fn embeddings_come_back_over_grpc() {
         "an all-zero vector means the model ran but produced nothing"
     );
 
-    // Two unrelated sentences must not land on top of each other. This is a
-    // sanity floor, not a quality claim — it catches a pooling or template
-    // path that collapsed, which is the failure mode a shape check misses.
+    // Unrelated sentences must not land on top of each other. A shape check
+    // misses a pooling or template path that collapsed.
     let similarity = cosine(&vectors[0], &vectors[1]);
     assert!(
         similarity < 0.95,
@@ -203,9 +202,8 @@ async fn embeddings_come_back_over_grpc() {
     live.stop().await;
 }
 
-/// The same text must produce the same vector. A node that is not
-/// deterministic cannot be part of a fleet: postvec round-robins, so
-/// per-node variation becomes per-request variation in a customer's index.
+/// The same text must produce the same vector. postvec round-robins, so
+/// per-node variation becomes per-request variation in an index.
 #[tokio::test]
 #[ignore = "needs a real model root; see the module docs"]
 async fn embeddings_are_deterministic() {
@@ -222,10 +220,8 @@ async fn embeddings_are_deterministic() {
     live.stop().await;
 }
 
-/// Batching must not change the answer: a two-text request has to return what
-/// two one-text requests would. postvec sub-batches, so a batch-dependent
-/// result would make a column's vectors depend on how the queue happened to
-/// group its rows.
+/// A two-text request must match two one-text requests. postvec sub-batches,
+/// so a batch-dependent result would depend on how the queue grouped its rows.
 #[tokio::test]
 #[ignore = "needs a real model root; see the module docs"]
 async fn batching_does_not_change_the_result() {
@@ -251,8 +247,7 @@ async fn batching_does_not_change_the_result() {
     live.stop().await;
 }
 
-/// The discovery envelope, rendered from a real loaded model — the shape
-/// postvec's `refresh_models()` reads to populate its SQL cache.
+/// The discovery envelope from a real loaded model, the shape `refresh_models()` caches.
 #[tokio::test]
 #[ignore = "needs a real model root; see the module docs"]
 async fn config_advertises_the_loaded_model_with_its_parameters() {

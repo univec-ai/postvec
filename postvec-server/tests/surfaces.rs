@@ -17,8 +17,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-// ---- Harness -----------------------------------------------------------
-
 struct Node {
     admin: SocketAddr,
     public: SocketAddr,
@@ -163,12 +161,9 @@ impl Node {
     }
 }
 
-// ---- The discovery contract -------------------------------------------
-//
-// A transcription of the structs `postvec/src/client/discovery.rs` actually
-// deserializes. postvec is a pgrx extension and workspace-excluded, so it
-// cannot be linked here; this is the next best gate on the one part of the
-// envelope that is a compatibility promise.
+// Local copy of the structs `postvec/src/client/discovery.rs` deserializes.
+// postvec is a pgrx extension and cannot be linked here. A break here breaks
+// every installed extension.
 
 #[derive(Debug, Deserialize)]
 struct Envelope {
@@ -191,8 +186,6 @@ struct HubModel {
     configuration: Option<Value>,
 }
 
-// ---- Read-only surfaces ------------------------------------------------
-
 #[tokio::test]
 async fn health_is_green_before_any_model_is_loaded() {
     let node = start(ServeArgs::default()).await;
@@ -202,9 +195,7 @@ async fn health_is_green_before_any_model_is_loaded() {
     assert_eq!(body["data"]["draining"], json!(false));
 }
 
-/// Liveness and readiness answer different questions, and an empty node is
-/// the case that proves it: the process is up, and nothing should route to
-/// it yet.
+/// An empty node is alive and not ready. Nothing should route to it yet.
 #[tokio::test]
 async fn readiness_is_503_until_a_model_can_answer() {
     let node = start(ServeArgs::default()).await;
@@ -218,13 +209,8 @@ async fn readiness_is_503_until_a_model_can_answer() {
     assert_eq!(body["data"]["models"], json!([]));
 }
 
-/// A node configured purely as a provider gateway holds no engine models.
-/// Counting only those left it answering 503 forever while it served
-/// `EmbedTexts` perfectly well — a load balancer would never route to a node
-/// that works.
-///
-/// Driven through the real `/ready` route over a real socket, not a copy
-/// of the predicate.
+/// A provider-only node holds no engine models and must still be ready.
+/// Counting only engine models would leave a working node at 503.
 #[tokio::test]
 async fn a_provider_only_node_is_ready() {
     use std::os::unix::fs::PermissionsExt;
@@ -331,10 +317,7 @@ async fn metrics_can_be_switched_off() {
     assert_eq!(node.get(node.public, "/health").await.0, 200);
 }
 
-// ---- The listener split ------------------------------------------------
-
-/// The property the two-listener design exists for: the socket that is
-/// published to the network carries no route that can mutate the engine.
+/// The published socket carries no route that can mutate the engine.
 #[tokio::test]
 async fn the_public_listener_has_no_admin_routes() {
     let node = start(ServeArgs::default()).await;
@@ -376,9 +359,8 @@ async fn a_routable_admin_bind_is_refused() {
     assert!(err.contains("not loopback"), "{err}");
 }
 
-/// The node-local CLI reads `/config` over plain loopback HTTP rather than
-/// negotiating TLS with a self-signed certificate against the public port,
-/// which only works because the admin listener mirrors the read-only routes.
+/// The admin listener mirrors the read-only routes, so the node-local CLI
+/// can read `/config` over plain loopback HTTP.
 #[tokio::test]
 async fn the_admin_listener_mirrors_the_read_only_routes() {
     let node = start(ServeArgs::default()).await;
@@ -388,8 +370,6 @@ async fn the_admin_listener_mirrors_the_read_only_routes() {
     assert_eq!(status, 200);
     serde_json::from_str::<Envelope>(&body).expect("the same envelope");
 }
-
-// ---- Admin admission ---------------------------------------------------
 
 #[tokio::test]
 async fn loading_a_model_that_is_not_on_disk_is_a_per_model_error() {
@@ -574,12 +554,8 @@ async fn oversized_admin_bodies_are_rejected() {
     );
 }
 
-// ---- Drain -------------------------------------------------------------
-
-/// What a rolling restart looks like from outside: readiness drops so
-/// nothing new is routed here, liveness holds so a supervisor does not kill
-/// the process mid-request, and discovery keeps its model list so a
-/// single-node deployment's SQL cache is not pruned during its own restart.
+/// Readiness drops, liveness holds and discovery keeps its model list,
+/// so a single-node restart does not prune the SQL cache.
 #[tokio::test]
 async fn draining_changes_readiness_but_not_liveness_or_discovery() {
     let node = start(ServeArgs::default()).await;
@@ -608,8 +584,6 @@ async fn draining_changes_readiness_but_not_liveness_or_discovery() {
     assert!(metrics.contains("postvec_server_draining 1"), "{metrics}");
 }
 
-// ---- Counters ----------------------------------------------------------
-
 #[tokio::test]
 async fn admin_refusals_and_config_reads_are_counted() {
     let node = start(ServeArgs::default()).await;
@@ -622,9 +596,7 @@ async fn admin_refusals_and_config_reads_are_counted() {
         metrics.contains("postvec_server_admin_refusals_total 1"),
         "{metrics}"
     );
-    // Two reads by the time this scrape happens: the one above plus any the
-    // harness made. Assert presence and a non-zero value rather than a count
-    // the harness could change.
+    // The harness may have read `/config` too. Assert a non-zero value, not an exact count.
     let line = metrics
         .lines()
         .find(|l| l.starts_with("postvec_server_config_requests_total "))
@@ -632,8 +604,6 @@ async fn admin_refusals_and_config_reads_are_counted() {
     let value: u64 = line.rsplit(' ').next().unwrap().parse().unwrap();
     assert!(value >= 1, "{line}");
 }
-
-// ---- HTTP inference ----------------------------------------------------
 
 fn dummy_embed_descriptor(name: &str) -> Value {
     json!({

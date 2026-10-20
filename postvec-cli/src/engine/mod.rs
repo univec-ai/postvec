@@ -2,13 +2,13 @@
 //!
 //! Two hard rules:
 //!
-//! - **No inference is ever executed.** A real embedding needs a model choice,
-//!   costs real compute, could expose text, and can legitimately fail for
-//!   licensing or routing reasons. Transport reachability plus a valid
-//!   `/config` inventory plus the worker's own evidence is the contract.
-//! - **No engine is ever instantiated.** Loading ONNX Runtime and models in a
-//!   diagnostic tool would consume production memory and could collide with the
-//!   launcher's listeners.
+//! - No inference is ever executed. A real embedding needs a model choice,
+//!   costs compute, could expose text and can fail for licensing or routing.
+//!   The contract is transport reachability, a valid `/config` inventory and
+//!   the worker's own evidence.
+//! - No engine is ever instantiated. Loading ONNX Runtime and models here
+//!   would consume production memory and could collide with the launcher's
+//!   listeners.
 
 pub mod embedded;
 pub mod remote;

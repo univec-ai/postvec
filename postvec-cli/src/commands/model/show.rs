@@ -1,8 +1,8 @@
 //! `postvec model show`.
 //!
-//! Offline for installed models (identity comes from the receipt and the
-//! descriptor); `--verify` hashes every installed file against the receipt —
-//! explicit, because a multi-gigabyte scan is not a metadata operation.
+//! Offline for installed models. Identity comes from the receipt and the
+//! descriptor. `--verify` hashes every installed file. That scan is explicit
+//! because it is not a metadata operation.
 
 use crate::cli::{Cli, ModelShowArgs};
 use crate::commands::model::{admin, human_bytes, resolve_target, ModelTarget};
@@ -309,12 +309,9 @@ fn kv_toned(out: &mut String, output: &Output, key: &str, value: &str, tone: cra
     out.push('\n');
 }
 
-/// The versioned-terms lines of the human report: the exact document
-/// the receipt recorded, and — when a notice was acknowledged — when and
-/// through which mechanism. "Locally acknowledged" is the whole claim: the
-/// receipt proves this host was shown the document, never an organization
-/// acceptance or assent. (JSON exposes the same fields through the
-/// serialized receipt.)
+/// The versioned-terms lines: the document the receipt recorded, and when a
+/// notice was acknowledged, when and how. "Locally acknowledged" means this
+/// host was shown the document, not an organization acceptance.
 fn terms_lines(receipt: &crate::registry::receipt::Receipt) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(version) = &receipt.license_version {

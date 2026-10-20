@@ -1,30 +1,23 @@
 #!/usr/bin/env bash
-# Build a complete postvec release for this machine's architecture, in order.
+# Build a complete postvec release for this machine's architecture.
 #
-#   release.sh                              # every PG major, Debian 12, + images
-#   release.sh --distro ubuntu2404 --pg 18  # one cell
-#   release.sh --all-distros                # everything this architecture can build
+#   release.sh
+#   release.sh --distro ubuntu2404 --pg 18
+#   release.sh --all-distros
 #   release.sh --distro debian12 --distro el9
 #   release.sh --skip-images
 #
-# `--distro` is repeatable, and `--all-distros` is every distribution the
-# packaging supports. The manifest is written once, at the end, naming every
-# distribution built — its closure check is a cross-product over
-# (distribution × major × architecture), so a per-distribution manifest would
-# reject the other distributions' artifacts sitting beside it in dist/.
+# `--distro` is repeatable. The manifest is written once, at the end.
+# Its closure is a cross-product, so a per-distribution manifest would
+# reject the other artifacts in dist/.
 #
-# This is the local equivalent of the release workflow, so the published
-# pipeline can be rehearsed end to end before a tag is pushed. CI runs the
-# same scripts in the same order.
-#
-# It builds only for the host architecture. Release artifacts for the other
-# one come from a native runner: a pgrx extension is loaded into a live
-# PostgreSQL process, and emulation is not a substitute for testing that.
+# Host architecture only. A pgrx extension loads into a live PostgreSQL,
+# so emulation is not a release build.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 # Every distribution the packaging supports. Kept here rather than in lib.sh so
-# that `distro_facts` stays the single authority on what each one *is*; this is
+# that `distro_facts` stays the single authority on what each one is; this is
 # only the set worth iterating.
 ALL_DISTROS=(debian12 ubuntu2204 ubuntu2404 el9)
 
@@ -36,7 +29,7 @@ while (($#)); do
     --pg)          PG_MAJORS+=("$2"); shift 2 ;;
     --skip-images) SKIP_IMAGES=1; shift ;;
     --skip-tests)  SKIP_TESTS=1; shift ;;
-    -h|--help)     sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,15p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -57,7 +50,7 @@ step() { printf '\n\033[1;35m▸ %s\033[0m\n' "$*" >&2; }
 
 step "release gate"
 "${PKG_DIR}/scripts/assert-versions.sh"
-# Seconds, and the only thing that exercises the closure checks themselves —
+# Seconds, and the only thing that exercises the closure checks themselves -
 # everything below proves that packages build, not that a bad one would be
 # caught. Cheap enough to run before an hour of compilation, so it does.
 "${PKG_DIR}/tests/unit-test.sh"
@@ -67,8 +60,8 @@ step "engine assets (${ARCH})"
 # The node's dashboard: architecture-independent, built in the pinned node
 # container, so no toolchain on the host either.
 "${PKG_DIR}/scripts/build-ui-bundle.sh"
-# The model bundle is deliberately *not* here. It is acquired with
-# `postvec model pull`, which needs a postvec binary — and this script must not
+# The model bundle is deliberately not here. It is acquired with
+# `postvec model pull`, which needs a postvec binary, and this script must not
 # require a Rust toolchain on the host. The first extension stage below builds
 # one, so the model step runs immediately after it, once.
 MODEL_BUNDLE_DONE=0
@@ -127,7 +120,7 @@ for DISTRO in "${DISTROS[@]}"; do
 
     if (( ! SKIP_TESTS )); then
         for major in "${PG_MAJORS[@]}"; do
-            # Minimal first — the dependency boundary a remote-mode user has —
+            # Minimal first: the dependency boundary a remote-mode user has -
             # then the full install, which starts a cluster and embeds.
             step "${DISTRO}: clean-host install test: PG ${major} (minimal)"
             "${PKG_DIR}/tests/package-install-test.sh" --minimal \
@@ -160,7 +153,7 @@ for DISTRO in "${DISTROS[@]}"; do
 done
 
 # The images are assembled from the Debian 12 packages, so they are built when
-# Debian 12 is part of this run and skipped — with a word about it — when it is
+# Debian 12 is part of this run, and skipped with a note when it is
 # not, rather than failing on packages that were never asked for.
 IMAGES_WANTED=0
 for distro in "${DISTROS[@]}"; do

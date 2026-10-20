@@ -38,10 +38,8 @@ pub enum EngineError {
     #[error("{0}")]
     ConverterNotFound(String),
 
-    /// The requested bridge target is blocked by this deployment's
-    /// restriction policy (embed-bridge `restrictions.target_models`).
-    /// A distinct variant (not `Prediction`) so it crosses gRPC as
-    /// `TARGET_RESTRICTED` and callers can fail fast instead of retrying.
+    /// Bridge target blocked by `restrictions.target_models`. Distinct from
+    /// `Prediction` so gRPC reports `TARGET_RESTRICTED` and callers don't retry.
     #[error("{0}")]
     TargetRestricted(String),
 
@@ -49,11 +47,9 @@ pub enum EngineError {
     #[error("{0}")]
     InputTypeError(String),
 
-    /// The caller's deadline elapsed before or during execution — admission
-    /// wait, pool wait, or the execution itself. A distinct variant (not
-    /// `Prediction`) so it crosses gRPC as `TIMEOUT`/DeadlineExceeded and
-    /// callers can distinguish "the engine is broken" from "my budget ran
-    /// out".
+    /// The caller's deadline elapsed (admission wait, pool wait or the run
+    /// itself). Distinct from `Prediction` so gRPC reports `TIMEOUT` and
+    /// callers can tell a broken engine from a spent budget.
     #[error("{0}")]
     Timeout(String),
 

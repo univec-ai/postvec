@@ -591,7 +591,7 @@ async fn exercise(dsn: &str) -> Result<()> {
         .await?;
     ensure!(still == 7, "connection unusable after proxy errors");
     // The rewritten call is the client's own function: its result name, its
-    // EXECUTE privilege, and the server's prepared statements all stay real.
+    // EXECUTE privilege and the server's prepared statements all stay real.
     let named = sqlx::raw_sql("SELECT postvec.embed('hello', 'fixture')")
         .fetch_one(&mut via)
         .await?;

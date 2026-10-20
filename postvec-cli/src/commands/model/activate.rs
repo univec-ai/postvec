@@ -1,15 +1,10 @@
 //! `postvec model activate`.
 //!
-//! Two facts have to agree: the installed descriptor says `enabled: true`,
-//! so later starts load it, and the running engine holds it now. Disk first,
-//! engine second, then refresh `postvec.models` in each configured database.
-//!
-//! Naming a model also enables its deactivated dependency closure. The
-//! engine refuses a load whose closure contains a deactivated model, so
-//! enabling only the named root would activate nothing usable.
-//!
-//! A bare `activate`, or `--all`, enables every eligible CLI-installed model.
-//! `--path DIR` only flips descriptors. There is no engine on that host.
+//! Disk first, then the running engine, then refresh `postvec.models`. The
+//! descriptor must say `enabled: true` so later starts load it. Naming a
+//! model also enables its deactivated dependency closure: the engine refuses
+//! a load that still contains one. `--path DIR` only flips descriptors.
+//! There is no engine on that host.
 
 use crate::cli::{Cli, ModelActivateArgs};
 use crate::commands::model::{
@@ -59,9 +54,8 @@ pub async fn run(cli: &Cli, args: ModelActivateArgs, output: &Output) -> Result<
         _ => Vec::new(),
     };
 
-    // What the engine holds right now. Unknown on a `--path` target, and a
-    // hard error on a cluster target: activation's whole job is to load, and
-    // an engine that cannot be asked cannot be shown to have done it.
+    // What the engine holds now. Unknown on `--path`. A cluster target that
+    // cannot be asked fails: activation has to show the load happened.
     let loaded: Option<BTreeSet<String>> = match &target {
         ModelTarget::Embedded { settings, .. } => {
             match admin::loaded_inventory(&settings.embedded_http_listen(), cli.timeout).await {
@@ -82,11 +76,8 @@ pub async fn run(cli: &Cli, args: ModelActivateArgs, output: &Output) -> Result<
         _ => None,
     };
 
-    // Which models this run is about. In scan mode an explicit allow-list
-    // narrows the set to what the engine could actually load — but the models
-    // it leaves out are reported below rather than silently skipped, because
-    // "activate did nothing for my model" with no explanation is the worst
-    // possible answer.
+    // Which models this run is about. An allow-list narrows scan mode to what
+    // the engine could load. Models it leaves out are reported, not skipped.
     let selection = if requested.is_empty() {
         eligible_models(&inventory, &allow_list)
     } else {
@@ -102,10 +93,8 @@ pub async fn run(cli: &Cli, args: ModelActivateArgs, output: &Output) -> Result<
     // Deactivated dependencies come along: the engine will not load a closure
     // containing one, and neither will the next restart.
     let to_enable = disabled_closure_to_enable(&inventory, &selection);
-    // Everything the allow-list excludes: models the operator explicitly named
-    // (so `selection` carries them) plus, in scan mode, the CLI-owned models
-    // `eligible_models` filtered out. Either way the fix is the same
-    // `setup --model` change, so say it once.
+    // Models the allow-list excludes, named or filtered out. One
+    // `setup --model` hint covers both.
     let unlisted: Vec<String> = if allow_list.is_empty() {
         Vec::new()
     } else {
@@ -126,10 +115,8 @@ pub async fn run(cli: &Cli, args: ModelActivateArgs, output: &Output) -> Result<
         }
         unlisted
     };
-    // A `--path` target has no engine, so nothing is loaded there and the
-    // plan must not claim otherwise. `loaded` is `Some` exactly when there is
-    // an engine to talk to; a cluster target that could not be asked already
-    // failed above.
+    // `--path` has no engine, so the plan must not claim a load. A cluster
+    // target that could not be asked already failed.
     let to_load: Vec<String> = match &loaded {
         None => Vec::new(),
         Some(resident) => selection
@@ -371,9 +358,8 @@ mod tests {
         }
     }
 
-    /// Activating a converter brings its deactivated embed model with it, and
-    /// puts the dependency first — the engine refuses a closure containing a
-    /// deactivated model, so the other order would enable nothing loadable.
+    /// Activating a converter brings its deactivated embed model with it,
+    /// dependency first. The engine refuses a closure that still contains one.
     #[test]
     fn activation_enables_the_deactivated_dependency_closure_depth_first() {
         let inventory = vec![

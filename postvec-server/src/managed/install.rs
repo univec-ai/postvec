@@ -6,30 +6,24 @@ use postvec_core::registry::quote_ident;
 use sqlx::{postgres::PgConnectOptions, Connection, Executor, PgConnection, Row};
 use std::{io::Read, str::FromStr, time::Duration};
 
-/// `UPGRADES[i]` takes an installed schema from version `i + 1` to `i + 2`,
-/// inside the install transaction. A change to a table or index in
-/// `models.sql`/`control.sql` appends one, and so does a function whose
-/// arguments or result change: the function files are re-applied with
-/// `CREATE OR REPLACE` on every install, which keeps dependent views and
-/// grants, so only a step may drop one. A step must tolerate its own starting
-/// state (`IF EXISTS`) and never builds an index: it renames the old one aside
-/// and `INDEXES` builds the replacement.
+/// `UPGRADES[i]` takes schema version `i + 1` to `i + 2` inside the install transaction.
+/// Append one when a table, index or function signature changes. Function files are
+/// reapplied with `CREATE OR REPLACE`, so only a step may drop one. A step uses
+/// `IF EXISTS`, renames the old index aside and lets `INDEXES` build the replacement.
 const UPGRADES: &[&str] = &[
     "ALTER TABLE postvec.registry ADD COLUMN IF NOT EXISTS space text;
     ALTER INDEX IF EXISTS postvec.jobs_embed_claim_order RENAME TO jobs_embed_claim_order_v1;
     DROP FUNCTION IF EXISTS postvec.search_with_vector(text,text,real[],text,integer,real,integer,integer,jsonb),
         postvec.status(), postvec._refresh_lexical_stats(bigint);",
-    // search() and embed() take the proxy's vector; the key-format pin and the
-    // rekeying of queued state are the extension's 0.3.0 upgrade, verbatim.
+    // search() and embed() take the proxy's vector. This step is the key-format pin and the rekey.
     concat!(
         "DROP FUNCTION IF EXISTS postvec.search(text,text,text,integer,real,integer,integer,jsonb),
             postvec.embed(text,text);",
         include_str!("../../../postvec/sql/postvec--0.2.0--0.3.0.sql")
     ),
 ];
-/// Run after the install commits, one statement at a time, on every install:
-/// `CONCURRENTLY`, so writers enqueueing jobs never wait on a build. Each is a
-/// no-op once applied.
+/// Run after the install commits, one statement at a time, on every install.
+/// `CONCURRENTLY`, so writers enqueueing jobs never wait. Each is a no-op once applied.
 const INDEXES: &[&str] = &[
     "CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_embed_claim_order ON postvec.jobs (registry_id, not_before, id) WHERE claimed_at IS NULL AND op = 'embed'",
     "DROP INDEX CONCURRENTLY IF EXISTS postvec.jobs_embed_claim_order_v1",
@@ -43,11 +37,10 @@ const TRIGGERS: &str = include_str!("../../../postvec/sql/managed/triggers.sql")
 const LEXICAL: &str = include_str!("../../../postvec/sql/managed/lexical.sql");
 const FUNCTIONS: &str = include_str!("../../../postvec/sql/managed/functions.sql");
 
-/// Advice for source tables, in schemas this role can use, whose owner it is
-/// not a member of: per owner, the grant a superuser can run, or the
-/// hand-over any managed platform allows (PostgreSQL 16+ lets only a
-/// superuser grant membership in another role's owner). The hand-over's
-/// GRANT needs ADMIN OPTION on this role, which its creator holds.
+/// Advice for source tables this role can use but does not own: the grant a superuser
+/// can run, or the hand-over a managed platform allows. On PostgreSQL 16+ only a
+/// superuser can grant membership in another role. The hand-over needs ADMIN OPTION
+/// on this role, which its creator holds.
 pub(super) const GRANTS: &str = "WITH t AS (
     SELECT r.rolname::text AS o, n.nspname::text AS nsp, c.relname::text AS rel,
            has_schema_privilege(n.oid, 'CREATE') AS can_create
@@ -174,11 +167,10 @@ pub(super) async fn connect(args: &ConnectionArgs) -> Result<PgConnection> {
     Ok(connection)
 }
 
-/// Serializes `install` and `uninstall` on one database for the whole run,
-/// post-commit index builds included. Polled between statements, never waited
-/// on inside one: a backend blocked in `pg_advisory_lock` holds a snapshot, and
-/// the other run's `CREATE INDEX CONCURRENTLY` waits for every older snapshot,
-/// which deadlocks. Released when the connection closes.
+/// Serializes `install` and `uninstall` on one database for the whole run, index builds included.
+/// Polled between statements, never waited on inside one: a backend blocked in
+/// `pg_advisory_lock` holds a snapshot, and the other run's `CREATE INDEX CONCURRENTLY`
+/// waits for every older snapshot. That deadlocks. Released when the connection closes.
 async fn lock_installs(connection: &mut PgConnection, timeout: u32) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout.into());
     let mut noted = false;

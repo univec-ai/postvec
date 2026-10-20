@@ -20,16 +20,10 @@ pub trait Model: Send + Sync {
     /// Run inference. One tensor per input layer.
     fn query(&self, inputs: &[GenericTensor]) -> Result<Vec<GenericTensor>, ModelError>;
 
-    /// Deadline-aware inference. The default just calls [`Model::query`], so
-    /// backends without native cancellation (generic) cannot stop mid-run.
-    /// ONNX Runtime overrides this and terminates the native run when the
-    /// deadline passes, so a timed-out caller actually recovers its model
-    /// lease and admission permit instead of sitting under a long compute.
-    ///
-    /// The bound carries a tokio runtime handle because queries run on
-    /// threads with no ambient tokio context (the embedding executor's Rayon
-    /// pool). A `Handle::try_current()` watchdog would never get scheduled
-    /// there.
+    /// Deadline-aware inference. The default calls [`Model::query`] and
+    /// cannot stop mid-run. ONNX stops the native run so a timed-out caller
+    /// gets its lease and admission permit back. The bound carries a tokio
+    /// handle: queries run on Rayon workers with no ambient runtime.
     fn query_with_deadline(
         &self,
         inputs: &[GenericTensor],

@@ -6,7 +6,7 @@
 #   refresh-pins.sh ort model rustup images
 #
 # It prints; it never edits. Changing a pin means changing what every user
-# downloads, and that is a review event — a script that silently rewrote
+# downloads, and that is a review event: a script that silently rewrote
 # versions.env would turn "verified input" into "whatever upstream serves
 # today", which is the thing the pins exist to prevent.
 #
@@ -36,7 +36,7 @@ fi
 if want model; then
     # The registry's current head for the bundled name, read by the same client
     # a user runs. Using the CLI rather than fetching the index here keeps the
-    # index URL where it belongs — a compiled-in client constant — instead of
+    # index URL where it belongs: a compiled-in client constant: instead of
     # copying it into packaging, and it applies the same channel and extraction
     # policy a real install does.
     echo "# ${BUNDLED_MODEL_NAME} — the registry's current public head"
@@ -107,7 +107,7 @@ fi
 
 # The registry API rather than `docker pull`: a digest must be resolved from the
 # registry, not from whatever is in a local image cache. `${1}` is the full
-# repository path — `library/debian` for an official image, `moby/buildkit` for
+# repository path: `library/debian` for an official image, `moby/buildkit` for
 # anything else.
 resolve() {
     local repo="$1" tag="$2" token
@@ -134,7 +134,7 @@ if want images; then
 fi
 
 if want node; then
-    # Same rule as BuildKit: the pinned node line, re-resolved — not the
+    # Same rule as BuildKit: the pinned node line, re-resolved, not the
     # newest major.
     echo "# node, for the postvec-server dashboard"
     node_ref="${NODE_IMAGE%@*}"; node_repo="${node_ref%%:*}"
@@ -143,7 +143,7 @@ if want node; then
 fi
 
 if want buildx; then
-    # Re-resolves the digest of the *currently pinned* BuildKit tag rather than
+    # Re-resolves the digest of the currently pinned BuildKit tag rather than
     # chasing the newest release: moving to a new BuildKit line is a decision,
     # and this script exists to detect a moved tag, not to make that decision.
     echo "# buildx / BuildKit (${BUILDX_VERSION})"

@@ -20,14 +20,12 @@ SELECT current_setting('data_directory') AS data_directory,
        current_setting('config_file')    AS config_file,
        current_setting('hba_file')       AS hba_file";
 
-/// The cluster's system identifier: generated at `initdb` time and shared by
-/// everything in that cluster's replication lineage.
+/// The cluster's system identifier, generated at `initdb` and shared by
+/// that cluster's replication lineage.
 ///
-/// Necessary but *not* sufficient to identify an instance: a physical standby
-/// or a copied data directory carries its primary's identifier, so this alone
-/// would happily match a primary against its own standby. It is paired with the
-/// exact postmaster start time to identify which instance, not merely which
-/// lineage. Restricted like the paths above, so it may fail.
+/// Not sufficient to identify an instance: a standby or a copied data
+/// directory carries its primary's identifier. Pair it with the postmaster
+/// start time. Restricted like the paths above, so it may fail.
 pub const SYSTEM_IDENTIFIER: &str =
     "SELECT system_identifier::text AS system_identifier FROM pg_control_system()";
 
@@ -63,8 +61,8 @@ pub const CREATE_EXTENSION: &str = "CREATE EXTENSION IF NOT EXISTS postvec CASCA
 
 pub const EXTENSION_PRESENT: &str = "SELECT extversion FROM pg_extension WHERE extname = 'postvec'";
 
-/// `postvec.build_info()` only exists from the version that added the
-/// diagnostics contract; probe before calling it.
+/// `postvec.build_info()` is absent on older extension versions. Probe
+/// before calling it.
 pub const HAS_BUILD_INFO: &str =
     "SELECT to_regprocedure('postvec.build_info()') IS NOT NULL AS present";
 
@@ -80,10 +78,9 @@ pub const BUILD_INFO: &str = "SELECT postvec.build_info() AS info";
 pub const UNINSTALL_ENTRIES: &str =
     "SELECT postvec.uninstall(drop_columns => $1, drop_destinations => $2) AS cleaned";
 
-/// Every database. Templates can carry the extension (installing into
-/// `template1` is a standard way to make new databases inherit it), and a
-/// database can be set `datallowconn = false` after the fact — both are the
-/// caller's problem to report, never to hide.
+/// Every database. Templates can carry the extension (`template1` is how
+/// new databases inherit it), and `datallowconn` can be set false later.
+/// Both are the caller's problem to report, never to hide.
 pub const LIST_DATABASES: &str = "\
 SELECT datname, datallowconn AS allow_conn, datistemplate AS is_template
   FROM pg_database
@@ -148,9 +145,9 @@ SELECT count(*)::bigint AS dead,
        ) AS reasons
   FROM postvec.jobs_dead";
 
-/// Registry entries joined to `postvec.status()` for queue/index state, plus
-/// the catalog checks `status()` does not make: does the table still exist, do
-/// both columns still exist, are the generated triggers still attached.
+/// Registry entries joined to `postvec.status()` for queue and index state,
+/// plus the catalog checks `status()` skips: table, both columns and the
+/// generated triggers.
 pub const REGISTRY_ENTRIES: &str = "\
 WITH reg AS (
     SELECT r.*,

@@ -1,28 +1,15 @@
 #!/usr/bin/env bash
-# Install the built packages on a clean target OS and assert what must be true
-# of a real system afterwards.
+# Install the built packages on a clean target and check a real system.
 #
 #   tests/package-install-test.sh --distro debian12 --pg 18
-#   tests/package-install-test.sh --distro debian12 --pg 16 --pg 18   # coexistence
+#   tests/package-install-test.sh --distro debian12 --pg 16 --pg 18
 #   tests/package-install-test.sh --distro el9 --pg 18
-#   tests/package-install-test.sh --distro debian12 --pg 18 --minimal  # no engine assets
+#   tests/package-install-test.sh --distro debian12 --pg 18 --minimal
 #
-# `verify-package.sh` already answers "is this a well-formed package" from
-# the file alone. This answers the questions only a live system can:
-#
-#   * does the documented prerequisite bootstrap work, and do dependencies
-#     then resolve from the archives it configured (PGDG, plus EPEL/CRB on
-#     EL9);
-#   * do two PostgreSQL majors coexist;
-#   * does installing leave the running database unchanged;
-#   * does the shipped library load into that distribution's PostgreSQL
-#     (`CREATE EXTENSION`, `postvec.build_info()`, and, when the engine
-#     assets are installed, a real embedding);
-#   * do `postvec setup` / `doctor` / `uninstall` work against it;
-#   * does removal leave user data alone.
-#
-# Both package families run the same assertions; only the package manager,
-# the paths and the service layout differ.
+# verify-package.sh checks the file. This checks the live host: the
+# bootstrap, dependency resolution, two majors coexisting, CREATE EXTENSION,
+# setup, doctor, uninstall and removal that leaves user data. --minimal
+# omits the engine assets.
 
 set -Eeuo pipefail
 
@@ -38,7 +25,7 @@ while (($#)); do
     --pg)      PG_MAJORS+=("$2"); shift 2 ;;
     --arch)    RELEASE_ARCH="$2"; shift 2 ;;
     --minimal) MINIMAL=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -47,7 +34,7 @@ RELEASE_ARCH="${RELEASE_ARCH:-$(host_release_arch)}"
 
 load_versions
 # The model's name, backend, dimension and package name are derived from the
-# verified registry archive the packages were built from — not from a literal
+# verified registry archive the packages were built from: not from a literal
 # here, which would keep passing after the bundled model changed.
 load_model_facts
 distro_facts "${DISTRO}"
@@ -65,7 +52,7 @@ trap 'rm -rf "${STAGE}" "${STAGE_DEBUG}"' EXIT
 # Packages come from three roots: the per-(distribution, architecture) common
 # cell, the per-distribution noarch root, and one per-(distribution, major,
 # architecture) extension cell. A test that looked only in the major's own cell
-# would find no CLI for PG 16 or 17 — and, worse, would pass on PG 18 where the
+# would find no CLI for PG 16 or 17 and, worse, would pass on PG 18 where the
 # two happen to hold the same files.
 COMMON_DIR="$(common_dist_dir "${DISTRO}" "${RELEASE_ARCH}")"
 NOARCH_DIR="$(noarch_dist_dir "${DISTRO}")"
@@ -73,8 +60,8 @@ NOARCH_DIR="$(noarch_dist_dir "${DISTRO}")"
 Build them: scripts/build-packages.sh --distro ${DISTRO} --pg 18 --arch ${RELEASE_ARCH} --only cli,onnxruntime"
 
 # Release packages only. The globs are deliberately anchored on the version
-# that follows the package name, because `postvec-cli-dbgsym_…` also matches a
-# looser `postvec-cli*` — and a "minimal" install that quietly pulled in debug
+# that follows the package name, because `postvec-cli-dbgsym_...` also matches a
+# looser `postvec-cli*`, and a "minimal" install that quietly pulled in debug
 # symbols would not be testing the minimal boundary.
 shopt -s nullglob
 release_only() {
@@ -120,7 +107,7 @@ found ${#engine_packages[@]}"
     cp "${engine_packages[@]}" "${STAGE}/"
 
     # The inference node, with the engine assets it serves: the full install
-    # is also the install a *node* host does, and the body starts the packaged
+    # is also the install a node host does, and the body starts the packaged
     # node against the packaged model to prove that distribution's OpenSSL,
     # libgomp and libc resolve for it. Not in the minimal run, which exists to
     # prove the database host's boundary.
@@ -134,13 +121,13 @@ fi
 # The debug packages go to their own mount, deliberately not /packages: the
 # release install must be exactly the release packages, and the body installs
 # these afterwards so it can check that they land where a debugger looks. A
-# minimal run does not stage them at all — that run exists to prove the minimal
+# minimal run does not stage them at all: that run exists to prove the minimal
 # boundary.
 mkdir -p "${STAGE_DEBUG}"
 if (( ! MINIMAL )); then
     # `packages_only` for the same reason `release_only` exists: CI writes an
     # SBOM next to every artifact, and `postvec-cli-dbgsym_*` matches
-    # `postvec-cli-dbgsym_….deb.spdx.json` just as happily as the package.
+    # `postvec-cli-dbgsym_....deb.spdx.json` just as happily as the package.
     packages_only() {
         local candidate
         for candidate in "$@"; do

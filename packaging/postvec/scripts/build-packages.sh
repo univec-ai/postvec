@@ -5,22 +5,14 @@
 #   build-packages.sh --distro el9 --pg 18 --arch amd64 --only extension
 #   build-packages.sh --distro debian12 --pg 18 --arch amd64 --only cli,onnxruntime,server
 #
-# `--only` names any of: extension, cli, server, onnxruntime, model. Without
-# it, everything the staged cell and the payloads allow: `server` needs a cell
-# built with `build-extension-stage.sh --with-server`, and is skipped (with a
-# warning) when the cell has no node binary — unless POSTVEC_RELEASE=1, where
-# a shared-package cell without one is a defect.
+# `--only` names extension, cli, server, onnxruntime or model. Without it,
+# package whatever the cell and payloads allow. `server` needs --with-server.
+# A missing node binary is a warning, unless POSTVEC_RELEASE=1, where a
+# shared-package cell without one is a defect.
 #
-# Reads packaging/postvec/build/<cell>/ (from build-extension-stage.sh) plus
-# the engine-asset payloads (from build-onnxruntime-bundle.sh and
-# build-model-bundle.sh), and writes .deb or .rpm files to
-# packaging/postvec/dist/<cell>/.
-#
-# One nfpm description per package produces both formats, so a dependency or
-# a file-placement rule is stated once. Where the two ecosystems genuinely
-# differ (package naming, version relations, licence directory) the
-# difference is explicit in the description's `overrides` block or in the
-# variables below.
+# Reads build/<cell>/ and the engine-asset payloads. Writes .deb or .rpm
+# under dist/. One nfpm description produces both formats. Ecosystem
+# differences live in `overrides` or the variables below.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -31,7 +23,7 @@ while (($#)); do
     --pg)     PG_MAJOR="$2"; shift 2 ;;
     --arch)   RELEASE_ARCH="$2"; shift 2 ;;
     --only)   ONLY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -88,7 +80,7 @@ fi
 # Only the roots this invocation actually writes to. An empty directory left
 # behind by `--only model` is not harmless: the next consumer globs it, finds
 # nothing, and has to decide whether that means "not built yet" or "built and
-# produced nothing" — and those need different answers.
+# produced nothing", and those need different answers.
 if wanted cli || wanted onnxruntime || wanted server; then mkdir -p "${COMMON_DIR}"; fi
 if wanted extension;                   then mkdir -p "${EXTENSION_DIR_OUT}"; fi
 if wanted model;                       then mkdir -p "${NOARCH_DIR_OUT}"; fi
@@ -106,7 +98,6 @@ for stale in "${PKG_DIR}"/dist/common/"${DISTRO}"-*/postvec-model-* \
 done
 shopt -u nullglob
 
-# ------------------------------------------------------- derived package facts
 
 # Where this PostgreSQL puts extensions is a property of the build, not a
 # guess: read it back from the staging tree cargo-pgrx laid out from the
@@ -118,8 +109,8 @@ if ((NEEDS_STAGE)); then
     mapfile -t ctl_paths < <(find "${CELL_DIR}/stage" -name postvec.control -type f | LC_ALL=C sort)
     (( ${#so_paths[@]} && ${#ctl_paths[@]} )) \
         || die "staged tree is missing postvec.so or postvec.control"
-    # More than one means the stage carries two layouts — a Debian tree and a PGDG
-    # tree, say — and picking the first would package the wrong library at the
+    # More than one means the stage carries two layouts: a Debian tree and a PGDG
+    # tree, say, and picking the first would package the wrong library at the
     # wrong path. Refuse rather than guess.
     (( ${#so_paths[@]} == 1 )) || die "the staged tree contains ${#so_paths[@]} copies of postvec.so:
 $(printf '  %s\n' "${so_paths[@]}")
@@ -155,7 +146,7 @@ deb)
     # /usr/share/common-licenses/<id>, and lintian reports repeating it as an
     # error. The verbatim licence still travels with the model under /opt.
     #
-    # The file is rendered by the bundle step from the *verified* archive's
+    # The file is rendered by the bundle step from the verified archive's
     # licence and provenance (scripts/check-model-bundle.py), so this script
     # no longer reaches into model/ for a hand-written one.
     MODEL_LICENSE_SRC="${MODEL_PAYLOAD_ROOT}${MODEL_DOC_DIR:-}/copyright"
@@ -168,7 +159,7 @@ rpm)
     LICENSE_NAME=LICENSE
     CHANGELOG_NAME=changelog.gz
     # RPM has no common-licenses directory, so /usr/share/licenses carries the
-    # full text — which is also what `rpm -qL` expects to find there.
+    # full text: which is also what `rpm -qL` expects to find there.
     MODEL_LICENSE_SRC="${MODEL_PAYLOAD_ROOT}${MODEL_DOC_DIR:-}/LICENSE"
     ;;
 esac
@@ -201,7 +192,6 @@ else
     log "  architecture-independent packages only; no compiled cell needed"
 fi
 
-# ------------------------------------------------------------------- packaging
 
 # Rendered descriptions are kept next to the artifacts: when a package turns
 # out to contain the wrong thing, the exact input that produced it is the first
@@ -220,7 +210,7 @@ render_changelog "${PKG_DIR}/changelog.Debian" "${CHANGELOG_FILE}"
 # reviewed SERVER_LICENSE pin rather than kept as a second hand-written copy.
 #
 # Debian wants a DEP-5 copyright file, and for a licence the distribution
-# ships under /usr/share/common-licenses it wants a *reference* — lintian
+# ships under /usr/share/common-licenses it wants a reference: lintian
 # reports repeating the Apache-2.0 text as an error. Any other identifier has
 # no common copy, so the crate's LICENSE is inlined, indented as DEP-5
 # requires. RPM's /usr/share/licenses takes the verbatim text either way.
@@ -308,7 +298,7 @@ A publishable build must ship postvec-cli-${DEBUG_SUFFIX}."
 fi
 if wanted server; then
     # The inference node. PostgreSQL-independent like the CLI, so it lives in
-    # the common root and comes out of the shared-package cell — which is the
+    # the common root and comes out of the shared-package cell: which is the
     # one built with `--with-server`. An extension cell has no node binary and
     # is not asked for one; a shared-package cell in a release must have one.
     if [[ -f "${CELL_DIR}/server/postvec-server" ]]; then
@@ -349,7 +339,7 @@ if wanted extension; then
         build_one postvec-extension.yaml "${EXTENSION_PACKAGE}" "${EXTENSION_DIR_OUT}"
 
     # A published release ships symbols. Both builds emit line tables, so their
-    # absence means the split silently did not happen — and a release that
+    # absence means the split silently did not happen, and a release that
     # advertises debug packages and has none is worse than one that never
     # promised them. Outside a release the absence is tolerated, because a
     # developer may be building without them on purpose.
@@ -368,7 +358,7 @@ fi
 # present. Absence is normal for a remote-only release job.
 if wanted onnxruntime; then
     if [[ -d "${ORT_PAYLOAD_ROOT}/opt/postvec/libs/onnxruntime" ]]; then
-        # Every real shared object in the payload, resolved as one set — the
+        # Every real shared object in the payload, resolved as one set: the
         # providers library needs libstdc++ even though the main one does not.
         mapfile -t ort_libs < <(
             find "${ORT_PAYLOAD_ROOT}/opt/postvec/libs/onnxruntime" \
@@ -397,14 +387,13 @@ if wanted model; then
     fi
 fi
 
-# -------------------------------------------------- distribution in the name
 
-# The package *name* must not carry the distribution (apt and dnf resolve
-# upgrades by name), but the release *filename* must, because a Debian 12 build
+# The package name must not carry the distribution (apt and dnf resolve
+# upgrades by name), but the release filename must, because a Debian 12 build
 # and an Ubuntu 24.04 build of the same version are different artifacts with
 # different glibc floors. nfpm names files from the package metadata, so the
 # distribution tag arrives via PKG_RELEASE and is already in every filename
-# below — this loop only proves it, rather than renaming anything.
+# below: this loop only proves it, rather than renaming anything.
 OUT_DIRS=()
 for dir in "${COMMON_DIR}" "${EXTENSION_DIR_OUT}" "${NOARCH_DIR_OUT}"; do
     [[ -d "${dir}" ]] && OUT_DIRS+=("${dir}")

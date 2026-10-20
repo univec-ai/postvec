@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
 
-//! Addressing: what this node advertises, and how peer strings become sockets.
+//! Addressing: what this node advertises and how peer strings become sockets.
 //!
 //! On a multi-homed host, autodetection can pick a NIC peers cannot reach.
-//! The derivation is explicit, logged and warned when it had to guess.
-//! Peer names are resolved here before they reach memberlist.
+//! The choice is logged and warned when it had to guess.
+//! Peer names are resolved here, before memberlist.
 
 use crate::config::Settings;
 use std::net::{IpAddr, SocketAddr};
 
-/// Where the advertised IP came from, so the boot log can be honest about
-/// whether it was chosen or guessed.
+/// Where the advertised IP came from, so the boot log can say whether it was chosen or guessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdvertiseSource {
     /// `--advertise` / `POSTVEC_SERVER_ADVERTISE` / the file.
@@ -54,12 +53,9 @@ pub fn resolve_advertise(settings: &Settings) -> Result<Advertise, String> {
     })
 }
 
-/// URL a human (or `postvec doctor`) can curl to reach this node's HTTP API.
-///
-/// This is the upstream engine's `frontend_address`. The reachable URL may
-/// differ from `{scheme}://{advertise}:{http_port}` under NAT, a load
-/// balancer or a DNS name. It is gossiped and echoed in `/config`; nothing
-/// dials it. The operator sets it; it is not discovered from the network.
+/// URL `postvec doctor` can curl. Gossiped and echoed in `/config`. Nothing dials it.
+/// It may differ from `{scheme}://{advertise}:{http_port}` under NAT, a load balancer or a DNS name.
+/// The operator sets it. It is not discovered from the network.
 pub fn frontend_url(settings: &Settings, advertise: IpAddr) -> String {
     if let Some(explicit) = &settings.frontend {
         return explicit.clone();
@@ -91,9 +87,8 @@ pub enum PeerTarget {
 
 /// Parse one peer entry.
 ///
-/// Accepted, in this order: `ip:port`, `[v6]:port`, a bare IP, `[v6]`, a bare
-/// name, and `name:port`. A bare entry takes the fleet-wide gossip port.
-/// `host:port` is for a deployment with a port collision.
+/// In order: `ip:port`, `[v6]:port`, a bare IP, `[v6]`, a bare name or `name:port`.
+/// A bare entry takes the fleet gossip port. `host:port` is for a port collision.
 pub fn parse_peer(raw: &str, default_port: u16) -> Result<PeerTarget, String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -141,12 +136,8 @@ pub fn parse_peer(raw: &str, default_port: u16) -> Result<PeerTarget, String> {
     }
 }
 
-/// Resolve every peer entry to socket addresses.
-///
-/// A name that resolves to several addresses contributes all of them:
-/// memberlist tries seeds in order until one answers. A name that fails to
-/// resolve is a warning. A peer that is not in DNS yet is the normal state
-/// during a rolling deploy, and the maintenance worker retries.
+/// Resolve every peer to socket addresses. Several answers from one name are all kept.
+/// A DNS miss is a warning. A peer not in DNS yet is normal during a rolling deploy.
 pub async fn resolve_peers(peers: &[String], default_port: u16) -> (Vec<SocketAddr>, Vec<String>) {
     let mut resolved: Vec<SocketAddr> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
@@ -372,8 +363,7 @@ mod tests {
         );
     }
 
-    /// A peer that is not in DNS yet is normal during a rolling deploy: it
-    /// must be reported, not fatal.
+    /// A peer missing from DNS is reported, not fatal.
     #[tokio::test]
     async fn an_unresolvable_peer_is_a_problem_not_a_panic() {
         let (addrs, problems) = resolve_peers(

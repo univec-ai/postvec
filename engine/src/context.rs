@@ -216,7 +216,6 @@ impl Context {
         self.engine.lease_model(model_name, timeout).await
     }
 
-    /// Name of the model this context is executing.
     #[allow(dead_code)]
     pub fn model_name(&self) -> &str {
         self.model.name()

@@ -1,8 +1,6 @@
-//! The public command-line contract.
-//!
-//! Everything here is declarative: parsing, value validation, and the flag
-//! relationships Clap can express. Semantic validation that needs the host
-//! (cluster discovery, filesystem, endpoints) lives in `commands/`.
+//! The public command-line contract: parsing, value checks and the flag
+//! relationships clap can express. Host checks (cluster discovery, filesystem,
+//! endpoints) live in `commands/`.
 
 use crate::error::{CliError, Result};
 use crate::validate;
@@ -83,7 +81,7 @@ pub enum Command {
     Model(ModelCommand),
     /// Manage external embedding providers (OpenAI, Gemini, Cohere, AWS
     /// Bedrock, Mistral, OpenRouter): the providers.d connector files the
-    /// inference host reads. Credentials live only in those (0600) files —
+    /// inference host reads. Credentials live only in those (0600) files,
     /// never in a GUC, catalog table or SQL argument.
     #[command(subcommand)]
     Provider(ProviderCommand),
@@ -109,12 +107,12 @@ pub enum Command {
 pub enum ModelCommand {
     /// Download models (and everything they need) from the registry into the
     /// engine root and verify them. Installing is not activating: the models
-    /// land deactivated — `postvec model activate` turns them on.
+    /// land deactivated. `postvec model activate` turns them on.
     Pull(ModelPullArgs),
     /// Replace installed models with newer registry revisions of the same
     /// name, in place. Never implicit: `pull` only ever installs.
     Upgrade(ModelUpgradeArgs),
-    /// List installed models — or, with --available, the registry catalogue.
+    /// List installed models, or with --available the registry catalogue.
     /// Neither form needs a database login when the engine root is readable.
     Ls(ModelLsArgs),
     /// Show one model: registry identity, licence, dependencies, disk and
@@ -154,9 +152,9 @@ impl ModelCommand {
 #[derive(Debug, Subcommand)]
 pub enum ProviderCommand {
     /// Configure a provider: write its providers.d file (0600), verify the
-    /// key with one live embed per model, and reload the running host.
-    /// Boxed: the add flags dwarf the other subcommands' and clap clones
-    /// the whole enum per dispatch.
+    /// key with one live embed per model and reload the running host.
+    // Boxed: the add flags dwarf the other variants, and clap clones the
+    // whole enum per dispatch.
     Add(Box<ProviderAddArgs>),
     /// List configured providers: key source (never the key), models, dims,
     /// and whether the running host currently serves them.
@@ -246,12 +244,12 @@ pub struct ProviderAddArgs {
     pub convert_target: Option<String>,
 
     /// Manual converter only: the postvec-side public name of the SOURCE
-    /// space — what a bound column's `model` says.
+    /// space, what a bound column's `model` says.
     #[arg(long, value_name = "NAME", hide = true)]
     pub source_model: Option<String>,
 
     /// Manual converter only: the postvec-side public name of the TARGET
-    /// space — what postvec.migrate() is called with.
+    /// space, what postvec.migrate() is called with.
     #[arg(long, value_name = "NAME", hide = true)]
     pub target_model: Option<String>,
 
@@ -270,7 +268,7 @@ pub struct ProviderAddArgs {
     pub api_key_file: Option<PathBuf>,
 
     /// Record this environment variable as the key source. It must be
-    /// present in the POSTMASTER's (or the server unit's) environment — not
+    /// present in the POSTMASTER's (or the server unit's) environment, not
     /// this shell's.
     #[arg(long, value_name = "VAR", conflicts_with = "key_stdin")]
     pub api_key_env: Option<String>,
@@ -461,7 +459,7 @@ pub struct ModelPullArgs {
     pub accept_license: Vec<String>,
 
     /// Skip the confirmation prompt. Required for mutation without a TTY.
-    /// Answers only the ordinary mutation confirmation — never a terms
+    /// Answers only the ordinary mutation confirmation, never a terms
     /// acknowledgement.
     #[arg(long)]
     pub yes: bool,
@@ -517,7 +515,7 @@ pub struct ModelUpgradeArgs {
     pub accept_license: Vec<String>,
 
     /// Skip the confirmation prompt. Required for mutation without a TTY.
-    /// Answers only the ordinary mutation confirmation — never a terms
+    /// Answers only the ordinary mutation confirmation, never a terms
     /// acknowledgement.
     #[arg(long)]
     pub yes: bool,
@@ -654,7 +652,7 @@ pub struct ModelRmArgs {
     pub force: bool,
 
     /// Acknowledge that managed columns lose their embedding route to this
-    /// model and will stop working — directly, or through a converter/bridge
+    /// model and will stop working, directly or through a converter/bridge
     /// chain it is part of. Required with --yes when any column is affected;
     /// never implied by --yes or --force.
     #[arg(long)]
@@ -690,8 +688,8 @@ pub struct ModelActivateArgs {
 }
 
 impl ModelActivateArgs {
-    /// The requested names. Empty means every eligible model — a bare
-    /// `activate` kept its original catch-up meaning.
+    /// The requested names. Empty means every eligible model, the same as
+    /// a bare `activate`.
     pub fn validated(&self) -> Result<Vec<String>> {
         let mut names = Vec::new();
         for raw in &self.names {
@@ -729,7 +727,7 @@ pub struct ModelDeactivateArgs {
     pub force: bool,
 
     /// Acknowledge that managed columns lose their embedding route to this
-    /// model and will stop working — directly, or through a converter/bridge
+    /// model and will stop working, directly or through a converter/bridge
     /// chain it is part of. Required with --yes when any column is affected;
     /// never implied by --yes or --force.
     #[arg(long)]
@@ -866,8 +864,8 @@ pub struct SetupArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Apply everything but leave the restart (and therefore the POSTMASTER
-    /// settings) pending. Exits 4.
+    /// Apply everything but leave the restart, and the POSTMASTER settings
+    /// it would apply, pending. Exits 4.
     #[arg(long)]
     pub no_restart: bool,
 
@@ -909,7 +907,7 @@ pub struct UninstallArgs {
     #[arg(long, requires = "drop_columns")]
     pub acknowledge_data_loss: bool,
 
-    /// EXPERIMENTAL — destructive cleanup for disposable hosts, not yet a
+    /// EXPERIMENTAL: destructive cleanup for disposable hosts, not yet a
     /// production promise. With --all: after the SQL and configuration
     /// removal, stop the cluster, delete the files postvec can positively
     /// attribute to itself on this host (pulled/manual models and CLI state
@@ -1034,12 +1032,9 @@ impl SetupArgs {
                 })
             }
             Mode::Embedded => {
-                // The packaged engine root, which is also what
-                // `postvec.path` defaults to — so on a package
-                // install `--embedded` needs no path at all. A root that is
-                // not there is caught by the engine preflight below, from the
-                // PostgreSQL account's perspective, which is the only vantage
-                // point that can answer the question.
+                // The packaged engine root, also the `postvec.path` default, so a
+                // package install needs no `--path`. A missing root is caught
+                // later, from the PostgreSQL account's view.
                 let path = self
                     .path
                     .clone()
@@ -1190,9 +1185,8 @@ mod tests {
         assert!(parse(&["setup", "--database", "d", "--model", "m"]).is_err());
     }
 
-    /// `--embedded` alone is a complete instruction on a package install:
-    /// the path defaults to where the packages put the engine root, which is
-    /// also what the extension's `postvec.path` defaults to.
+    /// `--embedded` alone is enough on a package install: the path defaults
+    /// to the packaged engine root, which is also `postvec.path`'s default.
     #[test]
     fn embedded_defaults_the_path_to_the_packaged_engine_root() {
         let cli = parse(&["setup", "--database", "d", "--embedded"]).unwrap();
@@ -1246,14 +1240,13 @@ mod tests {
 
     #[test]
     fn uninstall_targets_are_database_or_all() {
-        // Neither: a usage error at validation time (clap cannot express
-        // "one of a repeatable and a flag" without a group).
+        // Neither is a usage error at validation: clap cannot express
+        // "one of a repeatable and a flag" without a group.
         let cli = parse(&["uninstall"]).unwrap();
         let Command::Uninstall(args) = cli.command else {
             unreachable!()
         };
         assert!(args.validated().is_err());
-        // Both: refused by clap.
         assert!(parse(&["uninstall", "--all", "--database", "d"]).is_err());
         let cli = parse(&["uninstall", "--all"]).unwrap();
         let Command::Uninstall(args) = cli.command else {
@@ -1265,8 +1258,8 @@ mod tests {
     #[test]
     fn purge_needs_all_and_a_real_teardown() {
         assert!(parse(&["uninstall", "--purge"]).is_err());
-        // clap lets this one through (the conflict partner of `all` counts
-        // as satisfying `requires`); validation catches it.
+        // clap accepts this: a conflict partner of `all` satisfies `requires`.
+        // Validation refuses it.
         let cli = parse(&["uninstall", "--database", "d", "--purge"]).unwrap();
         let Command::Uninstall(args) = cli.command else {
             unreachable!()

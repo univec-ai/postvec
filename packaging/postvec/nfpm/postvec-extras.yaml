@@ -50,5 +50,5 @@ rpm:
   group: Applications/Databases
 
 umask: 0022
-# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly: an
 # explicit `mtime:` here would be parsed before environment expansion.

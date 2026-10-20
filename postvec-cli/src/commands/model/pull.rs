@@ -112,7 +112,7 @@ async fn execute(cli: &Cli, request: Request, output: &Output) -> Result<Exit> {
     let started = Instant::now();
     let started_at = crate::checks::timestamp_now();
 
-    // Malformed or duplicate terms flags fail before anything is touched —
+    // Malformed or duplicate terms flags fail before anything is touched,
     // dry run included.
     let accepted_flags = terms::parse_accept_license(&request.accept_license)?;
 
@@ -281,10 +281,10 @@ async fn execute(cli: &Cli, request: Request, output: &Output) -> Result<Exit> {
             models: to_activate.clone(),
         });
     }
-    // A fresh install lands deactivated, and the engine's startup preflight
-    // treats a *listed* model that is disabled as an error, not a skip. So a
-    // name on `postvec.embedded_models` must be activated before the next
-    // restart or the engine will not come back at all.
+    // A fresh install lands deactivated. Startup preflight treats a listed
+    // model that is disabled as an error, not a skip. A name on
+    // `postvec.embedded_models` must be activated before the next restart
+    // or the engine will not come back.
     if let ModelTarget::Embedded { settings, .. } = &target {
         let allow_list = settings.embedded_models();
         let listed_and_fresh: Vec<String> = work
@@ -591,7 +591,7 @@ async fn preflight<'a>(
                 .with_fix("install it first with `postvec model pull`"));
             }
             // A dependency the newer revision needs is installed as part of
-            // the upgrade closure — deactivated, like any other fresh install.
+            // the upgrade closure, deactivated like any other fresh install.
             work.items.push(WorkItem {
                 entry: entry.clone(),
                 action: Action::Install,
@@ -740,14 +740,12 @@ async fn preflight<'a>(
 }
 
 /// A replacement excluded by an explicit `postvec.embedded_models` list
-/// cannot be proven loadable online — the engine would never be asked to load
-/// it — so its predecessor could only be discarded on faith. Refuse, and
-/// point at the offline path. An empty list means "scan everything", so
-/// nothing is excluded.
+/// cannot be proven loadable online. The engine would never be asked to load
+/// it, so its predecessor could only be discarded on faith. Refuse, and point
+/// at the offline path. An empty list means scan everything.
 ///
-/// A **deactivated** model is exempt: its predecessor was not resident either,
-/// so the swap risks no availability and there is nothing an engine load could
-/// prove. That is the same position `--path` has always held.
+/// A deactivated model is exempt: its predecessor was not resident either,
+/// so the swap risks no availability. Same position as `--path`.
 fn check_replacements_are_loadable(allow_list: &[String], work: &PullWork<'_>) -> Result<()> {
     if allow_list.is_empty() {
         return Ok(());
@@ -795,26 +793,15 @@ struct Landed {
 
 /// Apply the whole batch as one runtime transaction.
 ///
-/// Order, and why:
+/// Stage, then check each staged descriptor against the receipt (that is
+/// the identity the engine will consume). Record the transaction before the
+/// first engine call. Quiesce, move into place, load (a replacement must
+/// report `loaded`) and only then confirm. A predecessor may be discarded
+/// only after confirm.
 ///
-/// 1. stage every archive, so a bad download leaves the root intact;
-/// 2. check each staged descriptor's identity against the install receipt.
-///    The engine consumes the descriptor, so that is the identity that
-///    could move a column's vector space;
-/// 3. record the transaction durably, before the first engine call. An
-///    unload that times out may have been applied in part, and the next
-///    command must find that state;
-/// 4. quiesce: unload every replacement, exact result set verified;
-/// 5. move everything into place;
-/// 6. load, exact result set verified, requiring a genuine `loaded` for
-///    each replacement;
-/// 7. confirm, and only now may a predecessor be discarded.
-///
-/// Any failure from step 3 onward runs the rollback protocol: quiesce
-/// everything this command could have made resident, restore the
-/// predecessors, remove fresh installs, reload the complete predecessor
-/// set, and clear the record last. If any of that cannot be proven, the
-/// record and every copy are retained and the error says so.
+/// Any failure after the record is written rolls back: quiesce, restore
+/// predecessors, remove fresh installs, reload that set and clear the
+/// record last. If that cannot be proven, the record and every copy stay.
 #[allow(clippy::too_many_arguments)]
 async fn apply(
     root: &ModelRoot,
@@ -832,7 +819,7 @@ async fn apply(
     let engine = model::engine_listen(target);
     let engine = engine.as_deref();
 
-    // 1–2. Stage everything, and bind identity to the staged descriptor.
+    // Stage everything, and bind identity to the staged descriptor.
     let mut staged = Vec::new();
     let stage_result = (|| -> Result<()> {
         for item in &work.items {
@@ -869,11 +856,11 @@ async fn apply(
         return Err(e);
     }
 
-    // The record covers the **whole** batch, not just its replacements. A
-    // fresh dependency that is installed and then made resident by a load that
-    // crashes is indistinguishable, to the next process, from one that never
-    // happened — unless it was written down first. Recovery uses the roles to
-    // decide what to restore and what to remove.
+    // The record covers the whole batch, not just its replacements. A fresh
+    // dependency installed and then made resident by a load that crashes is
+    // indistinguishable, to the next process, from one that never happened
+    // unless it was written down first. Recovery uses the roles to decide
+    // what to restore and what to remove.
     let batch: Vec<crate::registry::root::SwapModel> = work
         .items
         .iter()
@@ -901,8 +888,8 @@ async fn apply(
         .map(|item| item.entry.model.name.clone())
         .collect();
 
-    // 3. The record exists before anything can become unknown — including for
-    //    a fresh-only batch, which would otherwise have no transaction.
+    // The record exists before anything can become unknown, including a
+    // fresh-only batch, which would otherwise have no transaction.
     let mut landed = Landed::default();
     if !batch.is_empty() {
         match root.begin_swap(batch) {
@@ -1020,11 +1007,10 @@ async fn apply(
     Ok(())
 }
 
-/// The client's independent identity boundary: the
-/// **staged descriptor** — the bytes the engine will consume — must declare
-/// exactly the identity the install recorded. Preflight already compared the
-/// receipt with the index; this compares it with what actually arrived, which
-/// is what a registry cannot forge by keeping its catalogue entry stable.
+/// The staged descriptor, the bytes the engine will consume, must declare
+/// exactly the identity the install recorded. Preflight compared the receipt
+/// with the index. This compares it with what arrived, which a registry
+/// cannot forge by keeping its catalogue entry stable.
 fn check_staged_identity(root: &ModelRoot, model: &IndexModel, staged: &Identity) -> Result<()> {
     let installed = root
         .installed()?
@@ -1080,9 +1066,9 @@ async fn undo(
         .with_fix(cause.remediation().unwrap_or("resolve the cause and rerun"));
     };
 
-    // Everything that could hold new bytes, in one request: the record already
-    // names the whole batch — replacements and fresh installs alike — so no
-    // in-process bookkeeping can leave a resident model unquiesced.
+    // Everything that could hold new bytes, in one request. The record names
+    // the whole batch, replacements and fresh installs alike, so no in-process
+    // bookkeeping can leave a resident model unquiesced.
     let resident = transaction.names();
     if let Err(e) = model::quiesce(engine, &resident, timeout).await {
         landed.transaction = Some(transaction);
@@ -1232,12 +1218,10 @@ fn check_disk_space(root: &ModelRoot, wanted: &[&IndexModel]) -> Result<()> {
 /// Which of this batch's models the engine must hold when the command
 /// finishes, and which an explicit `postvec.embedded_models` list leaves out.
 ///
-/// Only **enabled** models are in either set. A fresh install lands
-/// deactivated and is nobody's business until `postvec model activate`; an
-/// upgrade of a deactivated model was never resident, and asking the engine to
-/// load a disabled descriptor is a refusal, not a load. An upgrade of an
-/// *enabled* model is in the set because the swap unloaded it and it must come
-/// back.
+/// Only enabled models are in either set. A fresh install lands deactivated
+/// until `postvec model activate`. An upgrade of a deactivated model was
+/// never resident, and loading a disabled descriptor is a refusal. An upgrade
+/// of an enabled model is in the set because the swap unloaded it.
 fn activation_set(target: &ModelTarget, work: &PullWork<'_>) -> (Vec<String>, Vec<String>) {
     let ModelTarget::Embedded { settings, .. } = target else {
         return (Vec::new(), Vec::new());
@@ -1256,8 +1240,8 @@ fn activation_set(target: &ModelTarget, work: &PullWork<'_>) -> (Vec<String>, Ve
     (eligible, unlisted)
 }
 
-/// Download every archive, ≤4 concurrently, with one aggregate progress
-/// readout. Returns `(name, part_path, source_host)` per model.
+/// Download every archive, at most 4 concurrently, with one aggregate
+/// progress readout. Returns `(name, part_path, source_host)` per model.
 async fn download_all(
     root: &ModelRoot,
     models: &[&IndexModel],
@@ -1289,9 +1273,9 @@ async fn download_all(
                 // Part files are keyed by digest, so a half-downloaded old
                 // revision can never collide with a new one.
                 let part = root.part_path(&digest_hex);
-                // Progress registration happens exactly once per model —
-                // the download call below may be retried after an
-                // auth-expiry refresh and must not re-count anything.
+                // Progress registration happens once per model. The download
+                // below may be retried after an auth-expiry refresh and must
+                // not re-count anything.
                 progress.add_total(model.archive.size);
                 let existing = tokio::fs::metadata(&part)
                     .await
@@ -1665,7 +1649,7 @@ mod tests {
             work.notes
         );
 
-        // …but the fields every receipt has are still exact.
+        // The fields every receipt has are still exact.
         let (_guard, root) = root_fixture();
         install(&root, &entry(1, "11"), None);
         let mut retyped = entry(2, "22");
@@ -1727,8 +1711,8 @@ mod tests {
 
     /// An explicit `postvec.embedded_models` list that leaves a replacement
     /// out makes an online upgrade unprovable, so it is refused before any
-    /// mutation. Fresh installs are unaffected — they have no predecessor to
-    /// risk — and an empty list means "scan everything".
+    /// mutation. Fresh installs have no predecessor to risk. An empty list
+    /// means scan everything.
     #[tokio::test]
     async fn a_replacement_outside_an_explicit_allow_list_is_refused() {
         let (_guard, root) = root_fixture();

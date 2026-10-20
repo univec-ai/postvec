@@ -12,9 +12,7 @@ use serde::{Deserialize, Serialize};
 /// One token and where it sits in the original string.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TokenWithPosition {
-    /// The index of the original word in the source text.
     pub original_word_idx: usize,
-    /// The original word from which this token (or sub-token) was derived.
     pub original_word: String,
     /// The token string itself (e.g., "token", "##izer").
     pub token_part: String,
@@ -31,13 +29,10 @@ pub struct TokenWithPosition {
 /// Token ids, masks and per-token offsets for one sequence.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransformerEncodingsWithPosition {
-    /// The attention mask tensor, indicating which tokens should be attended to.
     pub attention_mask: Vec<i64>,
-    /// The input IDs (token indices) tensor for the model.
     pub input_ids: Vec<i64>,
     /// The token type IDs (segment IDs) tensor, for models like BERT.
     pub token_type_ids: Vec<i64>,
-    /// Detailed information about each token and its position.
     pub tokens_with_positions: Vec<TokenWithPosition>,
 }
 

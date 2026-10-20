@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Unit tests for the image entrypoint's argument computation.
 #
-# The entrypoint decides four things — whether to delegate, which databases to
-# serve, which mode, and what shared_preload_libraries becomes — and then
+# The entrypoint decides four things: whether to delegate, which databases to
+# serve, which mode and what shared_preload_libraries becomes, and then
 # execs. Each of those has a failure mode that is invisible until a container
 # is running and wrong, so they are tested here against a recorder that stands
 # in for the official entrypoint. No PostgreSQL, no container, no network:
@@ -134,7 +134,7 @@ expect_arg "surrounding whitespace is ignored" \
     POSTVEC_SHARED_PRELOAD_LIBRARIES="  pg_stat_statements  " -- postgres
 
 # These are file names, not identifiers: the server does not fold their case,
-# so neither may we — `mylib` is simply a different file from `MyLib`.
+# so neither may we: `mylib` is simply a different file from `MyLib`.
 expect_arg "case is preserved" \
     "shared_preload_libraries=PG_Stat_Statements,postvec" \
     POSTVEC_SHARED_PRELOAD_LIBRARIES="PG_Stat_Statements" -- postgres

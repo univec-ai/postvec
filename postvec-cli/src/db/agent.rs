@@ -48,10 +48,10 @@ impl AgentClient {
         statement_timeout: Duration,
         request_timeout: Duration,
     ) -> Result<Self> {
-        // Exec'd as root on purpose — no `run_as` — so the kernel loads the
-        // binary with the parent's own access, and a build sitting under a
-        // directory the cluster owner cannot traverse still works. The child
-        // sheds root itself, before its first read; see [`serve`].
+        // Exec as root, with no `run_as`, so the kernel loads the binary with
+        // the parent's access. A build the cluster owner cannot traverse still
+        // works. The child sheds root itself, before its first read.
+        // See [`serve`].
         let exe = proc::self_exe()?;
         let cmd = Cmd::new(exe)
             .arg("__db-agent")
@@ -157,12 +157,10 @@ pub fn serve(drop_to: Option<&str>) -> ExitCode {
         );
         return ExitCode::from(Exit::Usage.code() as u8);
     }
-    // First thing, before any input is read or socket touched: shed root. The
-    // exec deliberately happened *without* a pre-exec drop so the kernel could
-    // load this binary as root — the target account may be unable to traverse
-    // to it (a build under a 0750 home directory, say). Nothing else here may
-    // run with that privilege. Failure goes to inherited stderr; the parent
-    // sees EOF and points the operator at it.
+    // Shed root before any input or socket. The exec skipped a pre-exec drop
+    // so the kernel could load this binary: the target account may be unable
+    // to traverse to it (a build under a 0750 home). Nothing else here runs
+    // as root. Failure goes to inherited stderr. The parent sees EOF.
     if let Some(name) = drop_to {
         let dropped = OsAccount::lookup(name).and_then(|account| match account.is_current() {
             true => Ok(()),
@@ -237,8 +235,8 @@ async fn serve_loop() -> Result<()> {
     Ok(())
 }
 
-/// A one-line description of a request, for the audit line above. Deliberately
-/// names the operation and target only — never a value that could be a secret.
+/// A one-line description of a request, for the audit line above. Names the
+/// operation and target only, never a value that could be a secret.
 fn describe(request: &DbRequest) -> String {
     match request {
         DbRequest::CreateDatabase { database } => format!("CREATE DATABASE {database:?}"),

@@ -42,19 +42,17 @@ pub const MANAGED_SETTINGS: &[&str] = &[
 pub const DEFAULT_EMBEDDED_LISTEN: &str = "127.0.0.1:33433";
 pub const DEFAULT_EMBEDDED_HTTP_LISTEN: &str = "127.0.0.1:33434";
 
-/// Where the packages install the engine root, and what
-/// `postvec.path` defaults to
+/// Packaged engine root and the `postvec.path` default
 /// (`postvec/src/gucs.rs::DEFAULT_ENGINE_PATH`).
 ///
-/// Duplicated rather than shared because the extension is a pgrx crate this
-/// one cannot link. The pair is asserted in `cli.rs`; change both together.
+/// Duplicated because the extension is a pgrx crate this one cannot link.
+/// Asserted in `cli.rs`. Change both together.
 pub const DEFAULT_ENGINE_ROOT: &str = "/opt/postvec";
 
-/// Environment override for the engine root `model` commands act on when no
-/// `--path` is given. It ranks below an explicit `--path` or `--database-url`
-/// and above cluster discovery, and it selects pure filesystem management the
-/// way `--path` does. The container images set it so `docker exec <ctr>
-/// postvec model …` needs no flags.
+/// Engine-root override for `model` commands when no `--path` is given.
+/// Ranks below `--path` or `--database-url` and above cluster discovery.
+/// Selects filesystem-only management, the way `--path` does. Container
+/// images set it so `docker exec <ctr> postvec model ...` needs no flags.
 pub const ENGINE_ROOT_ENV: &str = "POSTVEC_PATH";
 
 /// Environment override for the providers.d directory `provider` commands
@@ -87,10 +85,9 @@ pub struct RemoteSettings {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct EmbeddedSettings {
     pub path: PathBuf,
-    /// providers.d override. `None` (the default) is not rendered at all, so
-    /// the extension's own default stays in effect — unlike
-    /// `embedded_models`, an omitted value here means exactly the default
-    /// path and nothing lower-precedence can disagree with it.
+    /// providers.d override. `None` is not rendered, so the extension default
+    /// stays in effect. Unlike `embedded_models`, omitting this means exactly
+    /// the default path and nothing lower-precedence can disagree.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub providers_path: Option<PathBuf>,
     /// Empty means "scan-load every enabled model under <root>/models".
@@ -194,12 +191,10 @@ impl DesiredConfig {
                     "postvec.path = {}\n",
                     validate::config_literal(&embedded.path.display().to_string())?
                 ));
-                // Always rendered, including empty. An omitted setting cannot
-                // override a lower-precedence source, and — because activation
-                // compares only the settings the plan asserts — omitting it
-                // would let a previous explicit model list stay in effect with
-                // no restart planned. An empty value is exactly what the
-                // extension reads as "scan-load everything enabled".
+                // Always rendered, including empty. Omitting it cannot override a
+                // lower-precedence source, and activation compares only what
+                // the plan asserts, so an old explicit list would stay in
+                // effect with no restart planned. Empty means scan-load.
                 out.push_str(&format!(
                     "postvec.embedded_models = {}{}\n",
                     validate::config_literal(&guc::render_extension_list(&embedded.models))?,

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Everything that can be checked *before* dispatching a release run, in one
+# Everything that can be checked before dispatching a release run, in one
 # read-only command. It writes nothing, pushes nothing and dispatches nothing.
 #
 #   release-preflight.sh                        # for the real publication
 #   release-preflight.sh --mode rehearse        # before the full-matrix rehearsal
 #   release-preflight.sh --mode disposable-publication
 #
-# The release workflow performs all of these checks itself — that is where they
+# The release workflow performs all of these checks itself: that is where they
 # belong, because a check that only runs on a laptop is not a gate. This script
 # exists so the answer arrives in five seconds instead of after two hours of
 # compilation, and so the dispatch command at the end is one you can paste
 # rather than assemble.
 #
 # Exit status: 0 when nothing blocks the dispatch, 1 otherwise. A check that
-# could not be *performed* (no gh, no docker, no network) is reported as a skip,
+# could not be performed (no gh, no docker, no network) is reported as a skip,
 # never as a pass: "could not look" is not "nothing there".
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -123,8 +123,8 @@ if ((GH_READY)); then
             # reviewers and wait timers are public-repository-only. A private
             # repo on those plans gets the environment (deployment history,
             # environment secrets) with no protection rules at all. The
-            # remaining gates — dispatch-only, the mode/tag gate, the
-            # already-published check, immutable image tags — do not depend on
+            # remaining gates: dispatch-only, the mode/tag gate, the
+            # already-published check, immutable image tags: do not depend on
             # it, but the human pause does. Add reviewers when the repo goes
             # public, where the rule is free.
             skip "postvec-release env" "exists, no protection rules (${rules:-none}) — no approval pause"
@@ -176,7 +176,7 @@ if [[ "${MODE}" == publish ]]; then
     printf '\nimages\n'
     if command -v docker >/dev/null 2>&1; then
         existing=(); unknown=0
-        # The six database images plus the inference node's — seven versioned
+        # The six database images plus the inference node's: seven versioned
         # tags, in two repositories.
         images=()
         for major in 16 17 18; do

@@ -59,13 +59,11 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-/// Engine thread stack. Tokenizer regex recursion runs on worker and
-/// blocking threads; the blocking pool inherits this size. Matches the
-/// embedded engine.
+/// Engine thread stack. Tokenizer regex recursion runs on worker and blocking threads.
+/// The blocking pool inherits this size. Matches the embedded engine.
 const THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
-/// Blocking-pool ceiling. tokio's default of 512 would allocate hundreds
-/// of 8 MiB stacks on a predict-heavy node. Excess demand queues behind
-/// the admission limit and hits the request deadline.
+/// Blocking-pool ceiling. tokio's default of 512 would allocate hundreds of 8 MiB stacks.
+/// Excess demand queues behind admission and hits the request deadline.
 const MAX_BLOCKING_THREADS: usize = 64;
 
 pub fn run() -> ExitCode {
@@ -150,9 +148,8 @@ enum LeaseOutcome {
 }
 
 /// Lease path: SHA-256 of the canonical engine-root bytes (64 hex chars).
-/// Kept on disk so postvec-cli purge can flock the same file. Processes
-/// that share an engine root across mount namespaces must also share
-/// `/run/lock/postvec`.
+/// postvec-cli purge flocks the same file. Processes that share a root across
+/// mount namespaces must also share `/run/lock/postvec`.
 fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(canonical_root.as_os_str().as_encoded_bytes());
@@ -160,11 +157,10 @@ fn serving_lease_path(canonical_root: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/run/lock/postvec/engine-{hex}.lease"))
 }
 
-/// Take the shared side of the engine-root serving lease. Fail-closed:
-/// a missing or unwritable directory, or a refused flock, stops serving.
-/// Without the lease a concurrent `postvec uninstall --purge` cannot see
-/// this process. The shipped systemd unit and container image provide a
-/// writable `/run/lock/postvec`.
+/// Take the shared side of the engine-root serving lease. Fail-closed.
+/// A missing directory or a refused flock stops serving. Without the lease a
+/// concurrent `postvec uninstall --purge` cannot see this process.
+/// The shipped unit and container image provide a writable `/run/lock/postvec`.
 fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -185,10 +181,8 @@ fn serving_lease(root: &std::path::Path) -> LeaseOutcome {
             }
         }
     }
-    // Shared flock needs a readable descriptor. After a root-run CLI the
-    // lease is typically root:root 0644, so this unprivileged process opens
-    // it read-only. Create only when the file is missing; that failure stays
-    // fail-closed. O_NOFOLLOW on both opens.
+    // Shared flock needs a readable descriptor. A root-owned 0644 lease is opened
+    // read-only. Create only when the file is missing. Both opens use O_NOFOLLOW.
     let read_write = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -251,9 +245,8 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         metrics::features()
     );
     log::info!("engine root: {}", settings.root.display());
-    // Shared serving lease for the process lifetime. `postvec uninstall
-    // --purge` takes the exclusive side before it deletes the root, so a
-    // starting or serving node blocks that sweep. Fail-closed.
+    // Shared lease for the process lifetime. Purge takes the exclusive side first.
+    // A starting or serving node blocks that sweep. Fail-closed.
     let _serving_lease = match serving_lease(&settings.root) {
         LeaseOutcome::Held(file) => file,
         LeaseOutcome::PurgeInProgress => {
@@ -280,8 +273,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
 
     // --- 1. Identity ---------------------------------------------------
     let advertise = net::resolve_advertise(&settings)?;
-    // Autodetect warning is for clustered nodes. A single-node container
-    // has no peers to advertise to.
+    // Warn only when there are peers. A single-node container has nobody to advertise to.
     if advertise.source == AdvertiseSource::Autodetected && !settings.peers.is_empty() {
         log::warn!(
             "advertising {} to the cluster, autodetected from the routing table. On a host \
@@ -299,8 +291,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     // --- 2. Reserve every socket ---------------------------------------
     let grpc_socket = reserve("--grpc", SocketAddr::new(settings.bind, settings.grpc_port))?;
     let http_socket = reserve("--http", SocketAddr::new(settings.bind, settings.http_port))?;
-    // Admin routes mutate the engine with no authentication, so they bind
-    // loopback regardless of --bind.
+    // Admin routes have no authentication, so they bind loopback regardless of --bind.
     let admin_addr = SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), settings.admin_port);
     let admin_socket = reserve("--admin", admin_addr)?;
     let proxy_sockets = managed::reserve(&settings)?;
@@ -336,11 +327,9 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         engine_host::warm_up(&engine, &metrics).await;
     }
 
-    // One gateway per node, beside the engine. `load` isolates per-file
-    // failures so a broken provider file leaves local models serving.
-    // A missing directory is the zero-config case. If the local-model
-    // list cannot be built, no provider is mounted: a partial reservation
-    // would let a provider claim a local name.
+    // One gateway per node. A broken provider file leaves local models serving.
+    // If the local-name list cannot be built, mount no providers: a partial
+    // list would let a provider claim a local name.
     let gateway = Arc::new(
         match crate::models::reserved_local_names(&settings.root, &engine) {
             Ok(local_models) => {
@@ -442,10 +431,9 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
     log::info!("shutting down: {stop_reason}");
 
     // --- 8. Drain ---------------------------------------------------------
-    // Flip `/ready` to 503 first. Keep `/config` models so a single-node
-    // restart leaves postvec's SQL cache intact. Announce departure, wait
-    // drain-delay so the 503 is observable, then stop. A second signal
-    // skips the wait.
+    // `/ready` goes 503 first. Keep `/config` models so a single-node restart
+    // does not prune postvec's SQL cache. Announce, wait drain-delay, then stop.
+    // A second signal skips the wait.
     state.begin_drain();
     if let Some(maintenance) = maintenance {
         maintenance.abort();
@@ -464,8 +452,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
         }
     }
 
-    // Managed sessions exit when they see the drain; a session still inside
-    // a long statement is cut here.
+    // Managed sessions exit on drain. One still inside a long statement is cut here.
     for task in managed_tasks {
         task.abort();
         let _ = task.await;
@@ -486,9 +473,7 @@ async fn serve(settings: Arc<Settings>) -> Result<(), String> {
 }
 
 /// Wait for in-flight inference to finish, up to `budget`.
-///
-/// An idle node returns immediately; a node with a slow request still
-/// gets the whole budget.
+/// An idle node returns immediately. A slow request still gets the whole budget.
 async fn await_quiet(metrics: &metrics::Metrics, budget: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + budget;
     loop {
@@ -534,9 +519,8 @@ async fn wait_for_signal() -> String {
 mod serving_lease_tests {
     use super::*;
 
-    /// After a root-run CLI, the lease is a root-owned 0644 file this
-    /// service account cannot write. The shared side opens it read-only
-    /// (flock needs no write). Simulated as an existing 0444 lease file.
+    /// A root-owned 0644 lease is opened read-only. flock needs no write.
+    /// Simulated as an existing 0444 lease file.
     #[test]
     fn the_shared_side_falls_back_to_read_only_on_an_unwritable_lease() {
         use std::os::unix::fs::PermissionsExt;
@@ -579,8 +563,7 @@ mod serving_lease_tests {
         ));
     }
 
-    /// The cross-crate contract with postvec-cli
-    /// (`commands/purge.rs::serving_lease_path`): both pin this literal.
+    /// Same literal as postvec-cli `commands/purge.rs::serving_lease_path`.
     #[test]
     fn the_lease_path_derivation_matches_the_cli() {
         assert_eq!(

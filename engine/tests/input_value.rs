@@ -1,7 +1,5 @@
-//! Tests for `engine::input::InputValue` — the fallible JSON→type conversion
-//! helper used by every executor to read request fields. The
-//! `as_string_or_string_list` path encodes the contract that pre-tokenised
-//! (token-ID) inputs are explicitly rejected.
+//! `InputValue` converts a JSON field to the type an executor asked for.
+//! `as_string_or_string_list` rejects pre-tokenised (token-ID) inputs.
 
 mod common;
 
@@ -11,10 +9,6 @@ use serde_json::json;
 fn iv(v: &serde_json::Value) -> InputValue<'_> {
     InputValue::new(v)
 }
-
-// ---------------------------------------------------------------------------
-// Scalar conversions
-// ---------------------------------------------------------------------------
 
 #[test]
 fn as_string_ok_and_err() {
@@ -52,10 +46,6 @@ fn as_u8_range_checked() {
     assert!(iv(&json!(-1)).as_u8().is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Collection conversions
-// ---------------------------------------------------------------------------
-
 #[test]
 fn as_vec_and_string_list() {
     let arr = json!([1, 2, 3]);
@@ -84,10 +74,6 @@ fn as_float_vector_and_matrix() {
     assert_eq!(mat.shape(), &[2, 2]);
 }
 
-// ---------------------------------------------------------------------------
-// as_string_or_string_list — the token-ID rejection contract
-// ---------------------------------------------------------------------------
-
 #[test]
 fn single_string_becomes_one_element_list() {
     let s = json!("just one");
@@ -111,7 +97,7 @@ fn empty_array_rejected() {
 
 #[test]
 fn flat_token_id_array_rejected() {
-    // [1,2,3] looks like token IDs → explicitly unsupported.
+    // [1, 2, 3] looks like token IDs and is rejected.
     let arr = json!([1, 2, 3]);
     let err = iv(&arr).as_string_or_string_list().unwrap_err();
     assert!(
@@ -122,7 +108,7 @@ fn flat_token_id_array_rejected() {
 
 #[test]
 fn nested_token_id_array_rejected() {
-    // [[1,2],[3,4]] = batched token IDs → also unsupported.
+    // [[1, 2], [3, 4]] is a batch of token IDs and is also rejected.
     let arr = json!([[1, 2], [3, 4]]);
     let err = iv(&arr).as_string_or_string_list().unwrap_err();
     assert!(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
 
-//! Engine bring-up: which models to load, how hard to fail, and warmup.
+//! Engine bring-up: which models to load, how hard to fail and warmup.
 //!
 //! An explicit `--models` list: any failure is fatal.
 //! A scan of the root: one bad model is a warning and the rest load.
@@ -16,24 +16,22 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Executor key whose warmup payload is known and safe to synthesise.
-/// Converters need a vector of the right dimension and bridges need a
-/// resolved chain first.
+/// Executor whose warmup payload is safe to synthesise.
+/// Converters need a vector of the right dimension. Bridges need a resolved chain.
 const WARMUP_EXECUTOR: &str = "transformer-sequence-embedding";
-/// Warmup budget. A cold ONNX session on a slow disk can take a while, and
-/// this is off any caller's clock.
+/// Warmup budget. A cold ONNX session can be slow, and this is off any caller's clock.
 const WARMUP_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Default)]
 pub struct LoadReport {
     pub requested: Vec<String>,
     pub loaded: Vec<String>,
-    /// `(model, reason)` for every model that was expected to load and did
-    /// not. Non-empty only in scan mode; an explicit list fails the boot.
+    /// `(model, reason)` for models that did not load. Scan mode only.
+    /// An explicit list fails the boot.
     pub failures: Vec<(String, String)>,
 }
 
-/// Read the root, decide the load set, and load it.
+/// Read the root, decide the load set and load it.
 pub async fn build(
     settings: &Settings,
 ) -> Result<(Arc<InferenceEngine>, Inventory, LoadReport), String> {
@@ -49,9 +47,8 @@ pub async fn build(
         inventory.loadable()
     };
 
-    // Prove the resident cost of the whole set before creating one native
-    // session. Loading an arbitrary prefix and hitting the ceiling halfway
-    // would leave the node in a state no configuration describes.
+    // Prove the whole set fits before creating a native session.
+    // A partial load is a state no configuration describes.
     let index = models::descriptor_index(&settings.root)?;
     let closure = models::closure_of(&index, &roots, settings.max_resident_models)?;
     log::info!(
@@ -63,8 +60,7 @@ pub async fn build(
 
     let config = Arc::new(EngineConfig {
         root_path: settings.root.clone(),
-        // Throughput-oriented engine defaults: onnxruntime's own session
-        // threading. `--max-inflight` is the bound, applied at the transport.
+        // onnxruntime's own session threading. `--max-inflight` bounds admission.
         host_policy: Default::default(),
     });
     let engine = Arc::new(InferenceEngine::new(config));
@@ -110,9 +106,8 @@ pub async fn build(
     Ok((engine, inventory, report))
 }
 
-/// One throwaway prediction per embedding model. `/ready` is true before
-/// the first inference has run; without this the first caller pays session
-/// warmup. Failures are counted and logged.
+/// One throwaway prediction per embedding model, so the first caller does not pay session warmup.
+/// `/ready` is already true. Failures are counted and logged.
 pub async fn warm_up(engine: &Arc<InferenceEngine>, metrics: &Metrics) {
     let candidates: Vec<String> = engine
         .get_active_models()
@@ -173,8 +168,7 @@ mod tests {
         .unwrap()
     }
 
-    /// `InferenceEngine` has no `Debug`, so the tuple `build` returns cannot
-    /// go through `unwrap`/`unwrap_err`. Project it first.
+    /// `InferenceEngine` has no `Debug`, so project the `build` result before unwrapping.
     async fn build_err(settings: &Settings) -> String {
         match build(settings).await {
             Ok(_) => panic!("expected build to fail"),
@@ -199,8 +193,7 @@ mod tests {
         .unwrap();
     }
 
-    /// The preflight runs before any native session exists, so these cases
-    /// are reachable without ONNX Runtime on the test machine.
+    /// Preflight runs before any native session, so these cases need no ONNX Runtime.
 
     #[tokio::test]
     async fn an_empty_root_is_reported_rather_than_fatal() {
@@ -270,8 +263,7 @@ mod tests {
         assert!(err.contains("resident ceiling"), "{err}");
     }
 
-    /// Scan mode skips disabled and ambiguous models; the preflight sees
-    /// neither, so neither consumes a slot.
+    /// Disabled and ambiguous models are skipped, so neither consumes a resident slot.
     #[tokio::test]
     async fn scan_mode_skips_disabled_and_ambiguous_models() {
         let dir = tempfile::tempdir().unwrap();

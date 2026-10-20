@@ -97,7 +97,7 @@ for property in extension versions mode capability heartbeat model; do
 done
 
 # A NULL renders as the empty string, which is what "the heartbeat row does
-# not exist at all" looks like — the state a never-started worker is in.
+# not exist at all" looks like: the state a never-started worker is in.
 expect "an empty property value is unhealthy, not absent-therefore-fine" 1 \
     "extension=true versions=true mode=true capability=true heartbeat= model=true" \
     POSTVEC_MODE=embedded POSTVEC_EMBEDDED_MODELS=minilm
@@ -112,7 +112,7 @@ expect "a SQL error in place of a report is unhealthy" 1 \
     "ERROR:  relation \"postvec.stats\" does not exist" POSTVEC_MODE=grpc
 
 # Substring matching would accept `extension=true` inside `notextension=true`;
-# it must not accept a *different* property's truth as this one's.
+# it must not accept a different property's truth as this one's.
 expect "one property cannot satisfy another" 1 \
     "extension=true versions=true mode=true capability=true heartbeat=true" \
     POSTVEC_MODE=grpc

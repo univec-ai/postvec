@@ -4,25 +4,19 @@ use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    /// Determines which tokenizer implementation to use.
     pub tokenizer_type: TokenizerType,
     /// Type-specific parameters (vocab paths, pretrained name, ...).
     pub params: Value,
     /// Explicit truncation length in tokens, special tokens included.
-    ///
-    /// When absent, executors fill it from the model's `params.sequence_len`
-    /// via [`Config::resolve_max_length`], then fall back to
-    /// [`DEFAULT_MAX_LENGTH`] when the model declares nothing. `Some(0)`
-    /// means no truncation, same as `truncation_disabled`.
+    /// Absent: executors fill it from `params.sequence_len` via
+    /// [`Config::resolve_max_length`], else [`DEFAULT_MAX_LENGTH`].
+    /// `Some(0)` means no truncation, same as `truncation_disabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_length: Option<usize>,
-    /// Disables padding if set to true.
     #[serde(default)]
     pub padding_disabled: bool,
-    /// Converts text to lowercase before tokenization if true.
     #[serde(default)]
     pub lowercase: bool,
-    /// Disables truncation if set to true.
     #[serde(default)]
     pub truncation_disabled: bool,
     /// Which end of an over-long input is cut. Absent = the executor's default:
@@ -107,7 +101,7 @@ pub const DEFAULT_MAX_LENGTH: usize = 512;
 /// Where the effective truncation length came from. Logged at load time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxLengthSource {
-    /// `executor…tokenizer.max_length` was set in the descriptor.
+    /// `executor.tokenizer.max_length` was set in the descriptor.
     Explicit,
     /// Clamped by the engine-wide ceiling (`HostPolicy::max_sequence_len`).
     HostCap,
@@ -129,14 +123,11 @@ impl std::fmt::Display for MaxLengthSource {
 }
 
 impl Config {
-    /// Resolve the effective truncation length and store it in `max_length`.
+    /// Resolve the truncation length and store it in `max_length`.
     ///
-    /// Precedence is an explicit `max_length`, then the model's declared
-    /// `sequence_len`, then [`DEFAULT_MAX_LENGTH`]. The result is clamped to
-    /// `host_cap`, the engine-wide ceiling from
-    /// `HostPolicy::sequence_len_cap`. An explicit value above `sequence_len`
-    /// is kept, because the operator set it, and logged, because positions
-    /// past the model's limit are usually invalid.
+    /// Precedence is explicit `max_length`, then `sequence_len`, then
+    /// [`DEFAULT_MAX_LENGTH`], then clamp to `host_cap`. An explicit value
+    /// above `sequence_len` is kept and logged: past the model limit is invalid.
     pub fn resolve_max_length(
         &mut self,
         sequence_len: Option<usize>,

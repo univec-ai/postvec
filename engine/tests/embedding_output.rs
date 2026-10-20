@@ -1,5 +1,4 @@
-//! Tests for `engine::executors::{EmbeddingOutput, SingleBatchOutput}` — the
-//! post-inference pooling + normalization + token-accounting staging layer.
+//! Post-inference pooling, normalization and token accounting.
 
 mod common;
 
@@ -88,10 +87,8 @@ fn total_tokens_sums_across_batches() {
     assert_eq!(out.total_tokens(), 5);
 }
 
-/// Mirror of the production pooling+(optional)normalize pipeline, exercised
-/// through the public `export_with_transformer` plumbing. (The crate's own
-/// `default_embedding_transformer` helper is not exported, so we drive the same
-/// `pool` + `normalized` path via a closure here.)
+/// Same pool-then-maybe-normalize path as production. The crate helper
+/// is not exported, so the test drives it through a closure.
 fn pool_transformer(
     strategy: PoolingStrategy,
     normalize: bool,

@@ -1,9 +1,9 @@
-//! `postvec provider rm` — remove a provider file, or one model entry.
+//! `postvec provider rm` removes a provider file, or one model entry.
 //!
 //! Removing a provider takes an embedding route away from every column
-//! bound to its public names (unless a local model also serves the name),
-//! so the same in-use acknowledgement the `model` family uses gates it:
-//! the plan names every affected column, and `--yes` never answers it.
+//! bound to its public names, unless a local model also serves the name.
+//! The same in-use acknowledgement the model commands use gates it. The
+//! plan names every affected column, and `--yes` never answers it.
 
 use super::{
     columns_bound_to, reload_host, resolve_target, validate_provider_name, ProviderFileDoc,
@@ -78,21 +78,18 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     let structural_now =
         providers::config::served_names_if(target.dir(), &file_path, Some(&doc.body()?))
             .map_err(CliError::precondition)?;
-    // When no host answers, the files must NOT quietly stand in for the
-    // snapshot. They describe what the host *would* load, and when that
-    // directory is over a ceiling or contested they describe an empty set —
-    // while the unreachable host may well be serving the route this command
-    // is about to delete. With nothing to compare against, the only honest
-    // "now" is the conservative one: every route this file declares counts
-    // as possibly served, so its removal is gated as a loss.
+    // When no host answers, the files must not stand in for the snapshot.
+    // They describe what the host would load. Over a ceiling or contested,
+    // that set is empty, while the unreachable host may still be serving the
+    // route this command is about to delete. Every route this file declares
+    // counts as possibly served, so its removal is gated as a loss.
     let (served_now, now_source, host_unknown) = match live_served(&target, cli.timeout).await {
         Some(live) => (live, "the running host", false),
         None => {
-            // This file's own routes, with their *real* identity read from
-            // the document — not placeholders. A partial removal leaves some
-            // of these models in place, and they must compare equal to
-            // themselves afterwards or they would be reported as a handoff
-            // to their own file.
+            // This file's own routes, with their real identity read from the
+            // document, not placeholders. A partial removal leaves some of
+            // these models in place. They must compare equal to themselves
+            // afterwards or they would be reported as a handoff to this file.
             let mut conservative = structural_now;
             let provider = doc
                 .provider_type()
@@ -114,11 +111,11 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
                     .and_then(|d| u32::try_from(d).ok())
                     .unwrap_or_default()
             };
-            // ROUTE ids, not raw provider ids: a converter's identity folds
-            // in its pair, dims and postvec-side spaces via the same
-            // derivation `served_names_if` and the live descriptor use — or
-            // a partial removal would report the surviving converter as a
-            // handoff to its own file.
+            // Route ids, not raw provider ids. A converter's identity folds in
+            // its pair, dims and postvec-side spaces via the same derivation
+            // `served_names_if` and the live descriptor use. Otherwise a
+            // partial removal would report the survivor as a handoff to
+            // its own file.
             for (name, id) in doc.route_models() {
                 let dim = dim_of(&name);
                 conservative
@@ -139,12 +136,12 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
             )
         }
     };
-    // `served_now` is an *upper* bound on what is served today: right for
-    // losses (anything possibly live is possibly lost) and for drift, wrong
-    // for activations — a sibling the files describe as served may not be,
-    // on a host that loaded before it existed or refused its secret, and the
+    // `served_now` is an upper bound on what is served today. Right for
+    // losses and drift: anything possibly live is possibly lost. Wrong for
+    // activations. A sibling the files describe as served may not be, on a
+    // host that loaded before it existed or refused its secret, and the
     // reload this command asks for would then bring it online ungated. The
-    // lower bound is what the host *said* it serves; with no host that is
+    // lower bound is what the host said it serves. With no host that is
     // nothing, and everything served afterwards is treated as starting.
     let definitely_live_now = if host_unknown {
         std::collections::BTreeMap::new()
@@ -161,10 +158,10 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         after.remove_model(args.model.as_deref().expect("partial removal has --model"));
         Some(after.body()?)
     };
-    // "After" is what the host will *try* to serve at the next reload — a
+    // "After" is what the host will try to serve at the next reload. A
     // structural prediction, because this process cannot resolve the host's
-    // secrets. A file whose secret fails there will not actually serve; the
-    // gate errs toward naming it, which is the safe direction.
+    // secrets. A file whose secret fails there will not actually serve. The
+    // gate errs toward naming it.
     let served_after =
         providers::config::served_names_if(target.dir(), &file_path, prospective_body.as_deref())
             .map_err(CliError::precondition)?;
@@ -174,10 +171,9 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         drifted,
     } = diff_routes(&served_now, &definitely_live_now, &served_after);
     // With no host, a same-name handoff out of this file cannot be approved
-    // from disk identity alone: the running host may serve the name from an
-    // older snapshot whose identity is not what this file says now. Refused
-    // on the same terms as drift — compatibility is not established, and an
-    // acknowledgement does not establish it.
+    // from disk identity alone. The running host may serve the name from an
+    // older snapshot. Refused on the same terms as drift: compatibility is
+    // not established, and an acknowledgement does not establish it.
     if host_unknown {
         if let Some((name, by)) = served_after
             .iter()
@@ -275,11 +271,10 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
     if file_is_the_route && !served_after.is_empty() {
         // Nothing on disk names what the host serves from this file, and
         // something else serves afterwards. One of those unknown routes may
-        // share a public name with a survivor of a different vector identity
-        // — a semantic replacement the loss and privacy acknowledgements
+        // share a public name with a survivor of a different vector identity.
+        // That is a semantic replacement the loss and privacy acknowledgements
         // neither state nor prevent. Refused until a host can say what it
-        // serves; with no survivor there is nothing to be replaced by, and
-        // the file-route acknowledgement below is enough.
+        // serves. With no survivor there is nothing to be replaced by.
         return Err(CliError::precondition(format!(
             "{}.toml declares no model this command can recover, no running host answered, \
              and {} other route(s) would be served afterwards: one of the routes the host \
@@ -414,10 +409,9 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         });
     }
     // One confirmation, worded for what this removal actually does. The
-    // generic form substitutes every in-use model into one sentence, which
-    // reads wrongly when some columns *lose* a route and others are *handed*
-    // to a different recipient — two different events, each of which has to
-    // be stated on its own terms.
+    // generic form puts every in-use model into one sentence, which reads
+    // wrongly when some columns lose a route and others are handed to a
+    // different recipient. Those are two events, each stated on its own.
     let lost_list = truly_going_away.join(", ");
     let activated_list = activated
         .iter()
@@ -469,7 +463,7 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         super::sync_directory(target.dir(), &file_path)?;
         journal.record(format!("removed {}", file_path.display()));
         // A key `provider add --api-key-from-login` copied beside providers.d
-        // is retained like every operator key file — but named, so the
+        // is retained like every operator key file, but named, so the
         // credential does not outlive the connector unnoticed.
         let copied_key = target
             .dir()
@@ -486,10 +480,10 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
         let id_or_name = args.model.as_deref().expect("partial removal has --model");
         let (removed, remaining) = doc.remove_model(id_or_name);
         debug_assert!(removed, "matched above");
-        // The same cleanup contract as `provider add`: a staged copy of the
-        // connector (which may hold an inline key) that could not be
-        // removed, or a cleanup that is not crash-durable, is a partial
-        // outcome the result carries — never a bare error.
+        // Same cleanup contract as `provider add`. A staged copy of the
+        // connector (which may hold an inline key) that could not be removed,
+        // or a cleanup that is not crash-durable, is a partial outcome the
+        // result carries. Never a bare error.
         match doc.write(target.owner()) {
             Ok(()) => {}
             Err(write) if write.is_clean() => return Err(write.error),
@@ -547,22 +541,21 @@ pub async fn run(cli: &Cli, args: ProviderRmArgs, output: &Output) -> Result<Exi
 
 /// What a change to the served set does to the columns bound to it.
 struct RouteDiff {
-    /// Names whose recipient *changes*: not served now and served
-    /// afterwards, **or** served by a different connector, file or endpoint
-    /// afterwards. Columns bound to them start sending text somewhere that
-    /// was not receiving it a moment ago — which is the event the privacy
-    /// acknowledgement exists for, whether or not the name existed before.
-    /// Each with who serves it afterwards.
+    /// Names whose recipient changes: not served now and served afterwards,
+    /// or served by a different connector, file or endpoint afterwards.
+    /// Columns bound to them start sending text somewhere that was not
+    /// receiving it. That is what the privacy acknowledgement is for, whether
+    /// or not the name existed before. Each with who serves it afterwards.
     activated: Vec<(String, providers::config::ServedBy)>,
     /// Names served now and not afterwards: columns bound to them lose their
-    /// route. Computed from the served sets, never from a file's contents —
-    /// a name the host is not serving loses nothing when it goes.
+    /// route. Computed from the served sets, never from a file's contents.
+    /// A name the host is not serving loses nothing when it goes.
     lost: Vec<String>,
-    /// Names served on both sides under a **different semantic identity** —
-    /// connector, endpoint, upstream model id or width — `(name, now,
-    /// after)`. Not an activation: the vectors already stored under the name
-    /// can no longer be assumed to match the ones written next, which no
-    /// acknowledgement can repair. `rm` refuses these.
+    /// Names served on both sides under a different semantic identity:
+    /// connector, endpoint, upstream model id or width. `(name, now, after)`.
+    /// Not an activation. Vectors already stored under the name can no longer
+    /// be assumed to match the ones written next, and no acknowledgement
+    /// repairs that. `rm` refuses these.
     drifted: Vec<(
         String,
         providers::config::ServedBy,
@@ -570,13 +563,12 @@ struct RouteDiff {
     )>,
 }
 
-/// Same name, different vector space. The semantic identity is connector +
-/// endpoint + model id + dimension: an equal model id string and width across
-/// two connectors, or two endpoints of one connector, establishes nothing
-/// about the vectors — only the file is allowed to differ. Both identities
-/// have to be known for this to be stated; a snapshot that carries no model
-/// id or width (none does today — the gateway always emits both) falls back
-/// to the gated activation path, never to silence.
+/// Same name, different vector space. Semantic identity is connector,
+/// endpoint, model id and dimension. An equal model id and width across two
+/// connectors, or two endpoints of one connector, says nothing about the
+/// vectors. Only the file may differ. Both identities have to be known. A
+/// snapshot with no model id or width falls back to the gated activation
+/// path, never to silence. The gateway emits both.
 fn is_drift(now: &providers::config::ServedBy, after: &providers::config::ServedBy) -> bool {
     let known = |by: &providers::config::ServedBy| !by.model_id.is_empty() && by.dim != 0;
     known(now)
@@ -587,18 +579,16 @@ fn is_drift(now: &providers::config::ServedBy, after: &providers::config::Served
             || now.dim != after.dim)
 }
 
-/// Name equality is not route equality. A same-name handoff from file A
-/// to file B (a different endpoint, possibly a different company) is a
-/// real change. Treating any change of server as an activation covers
-/// both: the operator is told the name is being handed to B, and if B
-/// does not load, that warning is the closest thing to the truth this
-/// process can state. A name-only compare would also let an unloadable
-/// B hide the loss of A.
+/// Name equality is not route equality. A same-name handoff from file A to
+/// file B is a real change. Treating any change of server as an activation
+/// covers both: the operator is told the name is being handed to B, and if
+/// B does not load that warning is the closest this process can come. A
+/// name-only compare would also let an unloadable B hide the loss of A.
 ///
-/// Two bounds on "now": `possibly_now` (everything that may be served — the
-/// live snapshot, or the conservative view when no host answered) decides
-/// losses and drift; `definitely_now` (only what a host confirmed — empty
-/// without one) decides activations. With a host the two are the same map.
+/// `possibly_now` (the live snapshot, or the conservative view when no host
+/// answered) decides losses and drift. `definitely_now` (only what a host
+/// confirmed, empty without one) decides activations. With a host the two
+/// are the same map.
 fn diff_routes(
     possibly_now: &std::collections::BTreeMap<String, providers::config::ServedBy>,
     definitely_now: &std::collections::BTreeMap<String, providers::config::ServedBy>,
@@ -633,9 +623,9 @@ fn diff_routes(
     }
 }
 
-/// The provider routes the running host serves **right now**, keyed by
-/// public name, or `None` when no host could be asked. Read from `/config`,
-/// which carries each provider entry's connector type and file stem.
+/// The provider routes the running host serves right now, keyed by public
+/// name, or `None` when no host could be asked. Read from `/config`, which
+/// carries each provider entry's connector type and file stem.
 async fn live_served(
     target: &ProviderTarget,
     timeout: std::time::Duration,
@@ -709,13 +699,12 @@ mod tests {
         }
     }
 
-    /// "Now" is the live snapshot, and the live snapshot can hold a route the
-    /// files no longer describe — a reload failed and the host kept serving
-    /// what it had. Removing that file takes a *working* route away, and the
-    /// diff has to say so even though a structural model of the directory
-    /// would call the route already absent. This is the property that was
-    /// missing: the structural "now" was empty for an over-ceiling
-    /// directory, so nothing was ever "lost".
+    /// "Now" is the live snapshot. It can hold a route the files no longer
+    /// describe, because a reload failed and the host kept serving what it
+    /// had. Removing that file takes a working route away, and the diff has
+    /// to say so even though the directory no longer names the route. A
+    /// structural "now" is empty for an over-ceiling directory, so it would
+    /// report nothing lost.
     #[test]
     fn a_route_the_live_host_serves_is_lost_even_if_the_files_no_longer_describe_it() {
         let mut live_now = std::collections::BTreeMap::new();
@@ -747,8 +736,8 @@ mod tests {
             .all(|(_, by)| by.provider == "mistral" && by.file == "beta"));
     }
 
-    /// A name served by the *same* connector, file and endpoint on both
-    /// sides is neither lost nor activated.
+    /// A name served by the same connector, file and endpoint on both sides
+    /// is neither lost nor activated.
     #[test]
     fn an_unchanged_route_is_neither_lost_nor_activated() {
         let mut now = std::collections::BTreeMap::new();
@@ -759,20 +748,17 @@ mod tests {
     }
 
     /// Name equality is not route equality. The same public name served by a
-    /// different file, connector or endpoint afterwards is a handoff — the
-    /// columns' text goes somewhere new — and it has to be gated as an
-    /// activation, not read as "unchanged". This also covers an unloadable
-    /// successor hiding the loss of a working route: the operator is told
-    /// the name is being handed over, which is the closest this process can
-    /// come to the truth without the host's secrets.
+    /// different file, connector or endpoint afterwards is a handoff. The
+    /// columns' text goes somewhere new, so it is gated as an activation, not
+    /// read as unchanged. An unloadable successor can hide the loss of a
+    /// working route. The operator is told the name is being handed over.
     #[test]
     fn a_same_name_handoff_is_a_recipient_change() {
         let mut now = std::collections::BTreeMap::new();
         now.insert("shared".to_string(), by("openai", "alpha"));
 
-        // Different file, same connector, endpoint, model and width: the one
-        // same-name change that is a handoff — same vector space, possibly a
-        // different account.
+        // Different file, same connector, endpoint, model and width: a
+        // handoff in the same vector space, possibly a different account.
         let mut after = std::collections::BTreeMap::new();
         after.insert("shared".to_string(), by("openai", "beta"));
         let diff = diff_routes(&now, &now, &after);
@@ -782,7 +768,7 @@ mod tests {
         assert!(diff.drifted.is_empty());
 
         // Same file, different endpoint digest: a moved base_url is another
-        // deployment, whose vectors nothing proves compatible — drift.
+        // deployment. Nothing proves the vectors compatible. Drift.
         let mut moved = std::collections::BTreeMap::new();
         moved.insert(
             "shared".to_string(),
@@ -798,8 +784,8 @@ mod tests {
         assert!(diff.activated.is_empty());
         assert_eq!(diff.drifted.len(), 1, "an endpoint change is drift");
 
-        // Same model id string and width on a different connector: equal text
-        // establishes nothing across companies — drift.
+        // Same model id string and width on a different connector. Equal text
+        // establishes nothing across companies. Drift.
         let mut other = std::collections::BTreeMap::new();
         other.insert("shared".to_string(), by("mistral", "alpha"));
         let diff = diff_routes(&now, &now, &other);
@@ -807,9 +793,9 @@ mod tests {
         assert_eq!(diff.drifted.len(), 1, "a connector change is drift");
 
         // Same everything except the upstream model, or the width: a
-        // different vector space under the same name, which nothing
-        // downstream can detect and no acknowledgement can migrate. Not an
-        // activation — drift, which `rm` refuses outright.
+        // different vector space under the same name. Nothing downstream can
+        // detect it and no acknowledgement can migrate it. Drift, which `rm`
+        // refuses outright.
         for (model_id, dim) in [("m-v2", 4u32), ("m", 8u32)] {
             let mut swapped = std::collections::BTreeMap::new();
             swapped.insert(
@@ -838,8 +824,8 @@ mod tests {
     }
 
     /// No host answered: the upper bound says a sibling is served, the lower
-    /// bound says nothing is. The sibling is not lost (upper bound) and *is*
-    /// an activation (lower bound) — the reload may bring it online.
+    /// bound says nothing is. The sibling is not lost, and it is an
+    /// activation. The reload may bring it online.
     #[test]
     fn without_a_host_an_unchanged_sibling_is_an_activation_not_a_loss() {
         let mut possibly = std::collections::BTreeMap::new();
@@ -858,7 +844,7 @@ mod tests {
         assert!(diff.activated.is_empty());
     }
 
-    /// A same-name change of *both* recipient and space is drift first: the
+    /// A same-name change of both recipient and space is drift first. The
     /// refusal must win over the acknowledgeable handoff.
     #[test]
     fn drift_wins_over_a_handoff() {

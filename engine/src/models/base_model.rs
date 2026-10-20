@@ -60,7 +60,6 @@ impl Model for BaseModel {
             .unwrap_or(default_value)
     }
 
-    /// Retrieves a boolean parameter.
     fn param_bool_or_default(&self, param: &str, default_value: bool) -> bool {
         self.configuration
             .params
@@ -69,7 +68,6 @@ impl Model for BaseModel {
             .unwrap_or(default_value)
     }
 
-    /// Retrieves a string parameter.
     fn param_string_or_default(&self, param: &str, default_value: &str) -> String {
         self.configuration
             .params

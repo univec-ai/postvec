@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
 
-//! Model registry over HTTP: what `postvec model ls`, `ls --available`,
-//! `pull`, `activate` and `deactivate` do on the node, built on the same
-//! primitives as postvec-cli (index fetch, verified download, strict
-//! extraction, receipts, the root lock).
+//! Model registry over HTTP: `ls`, `ls --available`, `pull`, `activate` and
+//! `deactivate`, on the same primitives as postvec-cli.
 //!
 //! Reads are on every listener. Mutations are on the loopback admin listener
-//! and, with `--manage`, on the public one too, so the dashboard can drive
-//! them. Nothing here authenticates, like the rest of the node.
+//! and, with `--manage`, on the public one too. Nothing here authenticates.
 //!
-//! `pull` installs deactivated, as the CLI does: activating is a second
-//! step, which also loads the model. A pull runs detached, one at a time,
-//! and is followed through `GET /api/registry/pulls`. `remove` unloads
-//! first, then deletes the directory.
+//! `pull` installs deactivated. Activating is a second step and also loads.
+//! A pull runs detached, one at a time, followed through `GET /api/registry/pulls`.
+//! `remove` unloads first, then deletes the directory.
 
 use crate::admin::{load_models, model_result, unload_models};
 use crate::models::validate_model_name;
@@ -69,8 +65,7 @@ impl PullJob {
 #[derive(Deserialize)]
 struct Request {
     models: Vec<String>,
-    /// `<license>@<version>` tokens acknowledging notice-policy terms, the
-    /// same words as `postvec model pull --accept-license`.
+    /// `<license>@<version>` tokens, the same words as `postvec model pull --accept-license`.
     #[serde(default)]
     accept_license: Vec<String>,
 }
@@ -136,10 +131,8 @@ async fn installed(state: &ServerState) -> Result<Vec<InstalledModel>, String> {
     blocking(move || root.installed()).await
 }
 
-/// Key the caller sends for this request only (`Authorization: Bearer`,
-/// what the dashboard does). It lives in the request. Absent means the
-/// node's own credential: `POSTVEC_API_KEY` or the service account's
-/// `postvec login`.
+/// Bearer key for this request only. Absent means the node's own credential:
+/// `POSTVEC_API_KEY` or the service account's `postvec login`.
 fn request_key(headers: &HeaderMap) -> Result<Option<Credential>, (StatusCode, String)> {
     let Some(raw) = headers.get(header::AUTHORIZATION) else {
         return Ok(None);
@@ -174,8 +167,6 @@ async fn fetch_index(request: Option<Credential>) -> Result<(Index, Option<Crede
         .map_err(|e| e.to_string())?;
     Ok((index, credential))
 }
-
-// ---- reads --------------------------------------------------------------
 
 async fn models(State(state): State<Arc<ServerState>>) -> Response {
     respond(
@@ -261,8 +252,6 @@ async fn pulls(State(state): State<Arc<ServerState>>) -> Response {
     respond(Ok(json!({ "pulls": jobs })))
 }
 
-// ---- pull ---------------------------------------------------------------
-
 fn register_pull(
     jobs: &mut Vec<PullJob>,
     models: Vec<String>,
@@ -341,8 +330,7 @@ async fn run_pull(
     let (index, credential) = fetch_index(key).await?;
     let closure = index::expand_closure(&index, &request.models).map_err(|e| e.to_string())?;
     let root = root(state);
-    // The root lock is what serializes this against a `postvec model pull`
-    // on the same host; it is held until the job ends.
+    // The root lock serializes this against `postvec model pull` on this host, until the job ends.
     let (_lock, installed) = {
         let root = root.clone();
         blocking(move || Ok((root.lock_exclusive()?, root.installed()?))).await?
@@ -497,8 +485,6 @@ async fn install_one(
     .await
 }
 
-// ---- activate / deactivate ---------------------------------------------
-
 fn installed_model<'a>(
     installed: &'a [InstalledModel],
     name: &str,
@@ -509,9 +495,8 @@ fn installed_model<'a>(
         .ok_or_else(|| format!("{name:?} is not installed; pull it first"))
 }
 
-/// Enable on disk first, then load: a model that failed to load is still
-/// activated, which is what a restart would honour. Any installed model
-/// qualifies, receipt or not.
+/// Enable on disk first, then load. A failed load stays activated, which a restart honours.
+/// Any installed model qualifies, receipt or not.
 async fn activate(State(state): State<Arc<ServerState>>, Json(request): Json<Request>) -> Response {
     respond(
         async {

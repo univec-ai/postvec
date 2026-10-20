@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 #
-# RHEL-family (EL9) builder. Same contract as Dockerfile.deb — pinned inputs,
-# a clean /out, no packaging — but a different PostgreSQL layout: PGDG RPMs
+# RHEL-family (EL9) builder. Same contract as Dockerfile.deb: pinned inputs,
+# a clean /out, no packaging: but a different PostgreSQL layout: PGDG RPMs
 # install under /usr/pgsql-<major>/ rather than /usr/lib/postgresql/<major>/,
 # so the staging tree cargo-pgrx produces is shaped differently and the package
 # descriptions read it through pg_config rather than assuming paths.
@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
 # shadows the PGDG packages.
 # PGDG's EL9 packages depend on EPEL and CRB (postgresqlNN-devel needs
 # perl(IPC::Run), which lives there). This is the documented PGDG-on-EL9
-# prerequisite, not an optimisation — without it the install simply fails.
+# prerequisite, not an optimisation: without it the install simply fails.
 RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     set -eux; \
     arch="$(uname -m)"; \

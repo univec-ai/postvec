@@ -4,9 +4,8 @@
 #
 #   build-image.sh --pg 18 --variant local [--arch amd64] [--load|--push]
 #
-# The image is a composition step, not a build step: it installs the exact
-# .deb files this commit produced. If they are not there, that is the error —
-# the image must never quietly compile a second, unverified copy.
+# The image installs the exact .deb files this commit produced. If they are
+# not there, that is the error. It must never compile a second copy.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -17,17 +16,14 @@ while (($#)); do
     --pg)      PG_MAJOR="$2"; shift 2 ;;
     --variant) VARIANT="$2"; shift 2 ;;
     --arch)    RELEASE_ARCH="$2"; shift 2 ;;
-    # The repository the versioned tag is built under. Defaults to
-    # IMAGE_REPOSITORY; named explicitly so the disposable publication rehearsal
-    # can build into a throwaway namespace and have the image it *tests* be the
-    # image it pushes. Without this the release job would smoke-test a tag that
-    # was never created.
+    # Repository for the versioned tag. A disposable rehearsal builds into a
+    # throwaway namespace so the image it tests is the image it pushes.
     --repository) REPOSITORY="$2"; shift 2 ;;
     --tag)     EXTRA_TAGS+=("$2"); shift 2 ;;
     --load)    OUTPUT=--load; shift ;;
-    # Accepted only to give a clear refusal; see below.
+    # Accepted only so the refusal below can name it.
     --push)    OUTPUT=--push; shift ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -50,10 +46,8 @@ POSTVEC_MODE=embedded / postvec setup --embedded."
 *) die "--variant must be ${REMOTE_IMAGE_VARIANT} or ${LOCAL_IMAGE_VARIANT}" ;;
 esac
 
-# Only the local image carries a model, and the facts that describe it are
-# derived from the verified registry archive rather than from versions.env.
-# The remote image knows nothing about a model and is deliberately buildable
-# without one.
+# Only the local image carries a model. Facts come from the verified archive,
+# not versions.env. The remote image builds without a model.
 model_args=()
 if [[ "${VARIANT}" == "${LOCAL_IMAGE_VARIANT}" ]]; then
     load_model_facts
@@ -68,13 +62,10 @@ fi
 digest_var="POSTGRES_IMAGE_PG${PG_MAJOR}_DIGEST"
 POSTGRES_IMAGE_DIGEST="${!digest_var}"
 
-# The build context is a small staging directory rather than the repository:
-# an image build has no business seeing source code, and a narrow context is
-# also a fast one.
+# A small context. The image build must not see the source tree.
 CONTEXT="${PKG_DIR}/build/image-context-pg${PG_MAJOR}-${RELEASE_ARCH}"
-# The images are built from the Debian 12 packages, which live in three roots:
-# the shared per-architecture cell, the per-distribution noarch root, and the
-# per-major extension cell.
+# Debian 12 packages live in three roots: the shared cell, the noarch root
+# and the per-major extension cell.
 COMMON_CELL="$(common_dist_dir debian12 "${RELEASE_ARCH}")"
 EXTENSION_CELL="$(extension_dist_dir debian12 "${PG_MAJOR}" "${RELEASE_ARCH}")"
 NOARCH_CELL="$(noarch_dist_dir debian12)"
@@ -97,9 +88,8 @@ extension=("${EXTENSION_CELL}"/postgresql-"${PG_MAJOR}"-postvec_*.deb)
 cp "${cli[@]}" "${extension[@]}" "${CONTEXT}/dist/packages/"
 
 if [[ "${VARIANT}" == "${LOCAL_IMAGE_VARIANT}" ]]; then
-    # ONNX Runtime is architecture-specific; the model bundle and the
-    # metapackage are `all` and live in the noarch root, not in whichever
-    # architecture's cell happened to build them.
+    # ONNX Runtime is per architecture. The model and the metapackage are
+    # noarch and do not live in an architecture cell.
     extras=(
         "${COMMON_CELL}"/postvec-onnxruntime_*.deb
         "${NOARCH_CELL}"/postvec-model-*.deb
@@ -124,14 +114,10 @@ cp "${PKG_DIR}/docker/postvec-entrypoint.sh" \
 
 TAG_SUFFIX="${REMOTE_IMAGE_SUFFIX}"
 [[ "${VARIANT}" == "${LOCAL_IMAGE_VARIANT}" ]] && TAG_SUFFIX="${LOCAL_IMAGE_SUFFIX}"
-# The versioned tag carries the packaging revision (0.1.0-1-pg18-local), so a
-# packaging-only rebuild produces a new tag rather than overwriting one
-# somebody is already running.
-#
-# The moving tag (`pg18-local` or `pg18-remote`) is deliberately *not* applied
-# here. It is advanced by
-# the release job, last, after the release has been verified — a local build
-# that tagged it could publish a moving tag for an image nothing has tested.
+# The versioned tag includes the packaging revision (0.1.0-1-pg18-local) so a
+# rebuild does not overwrite a tag somebody is running.
+# The moving tag is not applied here. The release job advances it last, after
+# verification. A local build must not publish an untested moving tag.
 REPOSITORY="${REPOSITORY:-${IMAGE_REPOSITORY}}"
 # Held to the same grammar as the pinned value: this ends up in `docker tag`.
 [[ "${REPOSITORY}" =~ ^([a-z0-9]+([.-][a-z0-9]+)*(:[0-9]{1,5})?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$ ]] \
@@ -148,13 +134,8 @@ for tag in "${TAGS[@]}"; do tag_args+=(--tag "${tag}"); done
 log "building the ${VARIANT} image for PG ${PG_MAJOR} (${RELEASE_ARCH})"
 for tag in "${TAGS[@]}"; do log "  ${tag}"; done
 
-# buildx where it exists (it is what a release runner has, and the only way to
-# push or to build for another platform); the classic builder otherwise, so a
-# developer without the plugin can still build and test an image locally. The
-# image Dockerfile is deliberately plain enough for both.
-# Pushing from here would bypass the release job's gates entirely — the
-# preflight, the native per-architecture tests, the draft-and-verify sequence.
-# The release pushes staging images itself; this script builds and loads.
+# buildx when present, for push and cross builds. The classic builder otherwise.
+# --push is refused. Publishing belongs to the release workflow.
 if [[ "${OUTPUT}" == --push ]]; then
     die "build-image.sh does not push.
 Publishing is the release workflow's job: it pushes per-architecture images to

@@ -8,9 +8,8 @@ use postvec_cli::{commands, config, db};
 
 /// Name the flag whose value arrived empty.
 ///
-/// `--path "$ROOT"` with ROOT unset is a real empty argv token. Clap then
-/// says the flag was missing, which looks like a bare `--path`. The fix is
-/// in the caller's shell.
+/// An unset `$ROOT` in `--path "$ROOT"` is a real empty argv token. Clap
+/// then reports the flag as missing. The fix is in the caller's shell.
 fn empty_flag_value(args: &[std::ffi::OsString]) -> Option<String> {
     args.windows(2).find_map(|pair| {
         let (flag, value) = (pair[0].to_str()?, &pair[1]);
@@ -22,9 +21,8 @@ fn main() -> std::process::ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
-            // Only ever consulted once clap has already refused: an empty
-            // value is a legitimate string elsewhere, and this must not
-            // change what parses.
+            // Only after clap has refused. An empty value is legal elsewhere,
+            // so this must not change what parses.
             if e.kind() == clap::error::ErrorKind::InvalidValue {
                 if let Some(flag) = empty_flag_value(&std::env::args_os().collect::<Vec<_>>()) {
                     eprintln!("postvec: {flag} was given an empty value");
@@ -35,8 +33,8 @@ fn main() -> std::process::ExitCode {
                     return std::process::ExitCode::from(Exit::Usage.code() as u8);
                 }
             }
-            // Clap already renders help/usage; keep its output and map its
-            // "this was informational" cases to success.
+            // Clap already rendered help or usage. Keep it, and treat those
+            // informational cases as success.
             let _ = e.print();
             return match e.kind() {
                 clap::error::ErrorKind::DisplayHelp
@@ -49,21 +47,18 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    // The privilege-dropped database agent is a plain synchronous stdin/stdout
-    // loop; it must not inherit the parent's signal handling or output
-    // conventions, so it is dispatched before anything else is set up.
+    // The dropped-privilege database agent is a sync stdin/stdout loop.
+    // Dispatch it before signal handling or output setup so it inherits neither.
     if let Command::DbAgent(args) = &cli.command {
         return db::agent::serve(args.drop_to.as_deref());
     }
 
-    // Pure string work for the container entrypoint: no cluster, no database,
-    // no async runtime. It lives here rather than in a shell function because
-    // `shared_preload_libraries` uses the server's quoting and case-folding
-    // grammar, and one implementation of that is enough.
+    // String-only preload merge for the container entrypoint: no cluster,
+    // no database, no async runtime. One implementation of the server's
+    // quoting and case-folding grammar.
     if let Command::PreloadMerge(args) = &cli.command {
-        // Validate before merging. Repairing malformed syntax here would turn
-        // a value the postmaster refuses into one it accepts, and the operator
-        // would never learn their input was wrong.
+        // Validate before merging. Repairing bad syntax would turn a value
+        // the postmaster refuses into one it accepts.
         if let Err(e) = config::guc::validate_library_list(&args.value) {
             eprintln!("postvec: {e}");
             eprintln!("postvec:   value: {}", args.value);

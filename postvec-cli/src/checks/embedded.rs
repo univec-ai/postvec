@@ -1,14 +1,12 @@
 //! Checks over an embedded-mode installation.
 //!
-//! The value here is the three-way reconciliation the extension cannot do for
-//! itself: **descriptors on disk** vs **models the engine actually loaded** vs
-//! **the `postvec.models` cache**. Those three drift independently, and today
-//! diagnosing that means reading the server log.
+//! The three-way reconciliation the extension cannot do itself: descriptors
+//! on disk, models the engine loaded and the `postvec.models` cache. Those
+//! three drift independently.
 //!
-//! The launcher hosts the engine and has no database connection, so its
-//! initialization errors only exist in the PostgreSQL log. This module never
-//! scrapes logs; it infers what it can from direct checks and, when those pass
-//! while the listener is down, prints the exact log command to run.
+//! The launcher has no database connection, so its init errors exist only in
+//! the PostgreSQL log. This module never scrapes logs. When the direct checks
+//! pass and the listener is down, it prints the log command to run.
 
 use super::CheckResult;
 #[cfg(test)]
@@ -272,7 +270,7 @@ fn requested_models(input: &EmbeddedInput<'_>) -> Option<CheckResult> {
             ),
         ));
     }
-    // An explicit entry names a model *directory*: that is how the engine
+    // An explicit entry names a model directory: that is how the engine
     // resolves a requested model.
     let directories = input.probe.directory_names();
     let missing: Vec<&String> = input
@@ -363,7 +361,7 @@ fn listeners(input: &EmbeddedInput<'_>) -> Vec<CheckResult> {
 
 /// What to do when a listener is down but every direct check passed. The
 /// launcher's engine-init failures live only in the server log, so name the
-/// command rather than guessing — and never run it.
+/// command rather than guessing, and never run it.
 fn engine_down_hint(input: &EmbeddedInput<'_>) -> String {
     let mut hint = String::from(
         "the launcher hosts the engine and retries initialization every 30 seconds; \

@@ -21,7 +21,7 @@ while (($#)); do
     --cli)     CLI="$2"; shift 2 ;;
     --from)    FROM_DIR="$2"; shift 2 ;;
     --refresh) REFRESH=1; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -35,7 +35,6 @@ PAYLOAD="${PKG_DIR}/build/payload-common"
 # same digest still hits the cache after the live head moves.
 CACHE_ROOT="${PKG_DIR}/build/model-cache/sha256-${BUNDLED_MODEL_ARCHIVE_SHA256}"
 
-# ------------------------------------------------------------------- the CLI
 
 resolve_cli() {
     if [[ -n "${CLI}" ]]; then
@@ -75,36 +74,20 @@ with: cargo build -p postvec-cli"
 fi
 log "postvec CLI: ${CLI} ($("${CLI}" --version))"
 
-# ---------------------------------------------------------------- the source
 
 # A completed pull is promoted into the digest-keyed cache only after it has
 # been verified against the pin, so the directory name can never lie about its
 # contents, and a moved head can never destroy an older valid cache.
 PULL_ROOT=""
 PROMOTE=0
-# Explicitly `return 0`: under `set -e` a trap whose first command reports
-# failure never reaches its second, so a no-op cleanup would leave the metadata
-# directory behind *and* make a successful build exit non-zero.
+# return 0: under set -e a trap that fails on its first command never
+# reaches the rest, so a no-op cleanup would fail a successful build.
 cleanup() { [[ -n "${PULL_ROOT}" ]] && rm -rf "${PULL_ROOT}"; return 0; }
 trap cleanup EXIT
 
-# Finish an interrupted promotion.
-#
-# Promotion is two same-filesystem renames (old cache aside, new cache into
-# place). A kill or a power loss between them leaves the canonical cache
-# absent with a complete copy sitting in `.replaced`. Nothing is corrupt, but
-# the next run would pull again, which is the one thing that needs the
-# network. So the previous cache is put back.
-#
-# `.replaced` exists only if staging had already completed, so it is a
-# complete cache by construction. `.incoming` is not: an interrupted
-# cross-filesystem copy leaves a partial one, and there is no way to tell
-# the two apart, so it is removed as debris and a fresh pull is the right
-# answer.
-#
-# Recovery is not a trust decision either way: a restored cache goes through
-# `postvec model show --verify` and check-model-bundle.py below exactly like a
-# live pull, so a wrong or damaged one still fails closed.
+# Finish an interrupted promotion. `.replaced` is a complete cache (put it
+# back, or the next run needs the network). `.incoming` may be partial, so
+# delete it. A restored cache is still verified before it is trusted.
 if [[ ! -d "${CACHE_ROOT}" && -d "${CACHE_ROOT}.replaced" ]]; then
     warn "an earlier run was interrupted mid-promotion; restoring the previous cache"
     mv "${CACHE_ROOT}.replaced" "${CACHE_ROOT}"
@@ -128,7 +111,6 @@ else
     fi
 fi
 
-# ------------------------------------------------- exactly one model, one backend
 
 mapfile -t INSTALLED < <(
     find "${SOURCE_ROOT}/models" -mindepth 2 -maxdepth 2 -type d -printf '%P\n' \
@@ -147,22 +129,10 @@ INSTALLED_NAME="${INSTALLED[0]#*/}"
     || die "the engine root holds ${INSTALLED_NAME}, not the pinned ${BUNDLED_MODEL_NAME}"
 SOURCE_MODEL_DIR="${SOURCE_ROOT}/models/${BACKEND}/${INSTALLED_NAME}"
 
-# ------------------------------------------------------------------ activation
 
-# `postvec model pull` installs deactivated by design: the descriptor's
-# `enabled` field is the operator's persistent power switch, and `postvec
-# model activate` is the only sanctioned way to flip it. The bundled model is
-# the one the local image must serve at startup, so packaging makes the
-# same explicit choice an operator would — through the CLI, which updates the
-# receipt's recorded hash with it, so the verification below still proves
-# "archive bytes plus exactly this one recorded flip".
-#
-# Skip when the descriptor is already active: a fresh pull is activated here
-# in its 0700 temp root and then promoted, so the cache always holds the
-# activated state — and re-activating the cache would trip the CLI's
-# engine-root trust policy on an ordinary group-writable build/ directory
-# (mode 775), which is a check about managed serving roots, not about this
-# staging area.
+# Pull leaves the model deactivated. Activate through the CLI so the receipt
+# hash covers that one flip. Skip if already active: build/ is mode 775, and
+# re-activating trips the CLI's engine-root trust check.
 if python3 - "${SOURCE_MODEL_DIR}/ninference.hub.json" <<'PY'
 import json, sys
 sys.exit(0 if json.load(open(sys.argv[1])).get("enabled") is True else 1)
@@ -175,7 +145,6 @@ else
         || die "postvec model activate failed for ${BUNDLED_MODEL_NAME} at ${SOURCE_ROOT}"
 fi
 
-# ------------------------------------------------------------- integrity, then facts
 
 # The shared, offline Receipt::verify_files implementation: cache corruption, a
 # modified --from root, a missing file and an unrecorded file all fail here,
@@ -189,14 +158,8 @@ trap 'cleanup; rm -rf "${META}"' EXIT
 "${PKG_DIR}/scripts/check-model-bundle.py" "${SOURCE_MODEL_DIR}" "${META}" \
     || die "the pulled model does not satisfy this release's pins and policy"
 
-# Promote only now: the bytes have been proved to be the pinned archive.
-#
-# Staged on the *destination* filesystem first, then renamed into place. The
-# cross-filesystem case (a TMPDIR elsewhere) is a copy, and a copy can be
-# interrupted or run out of disk — so it must not be the thing that overwrites
-# a good cache. Only the final rename touches ${CACHE_ROOT}, and a rename
-# within one filesystem is atomic: an interrupted promotion leaves the previous
-# cache intact and a `.incoming` directory the next run removes.
+# Promote only after the bytes match the pin. Stage on the destination
+# filesystem, then rename. A cross-filesystem copy must not overwrite a good cache.
 if (( PROMOTE )); then
     mkdir -p "$(dirname "${CACHE_ROOT}")"
     STAGE="${CACHE_ROOT}.incoming"
@@ -231,7 +194,6 @@ parse_env_file "${META}/model-facts.env" model-facts.env
 MODEL_DIR="${PAYLOAD}/opt/postvec/models/${MODEL_BACKEND}/${MODEL_NAME}"
 DOC="${PAYLOAD}/usr/share/doc/${MODEL_PKG_NAME}"
 
-# ------------------------------------------------------------------ the payload
 
 # Every previous bundle goes, including one built under a different model name
 # or package name: a leftover tree would be packaged by the `type: tree` entry
@@ -247,8 +209,7 @@ for rel in "${ARCHIVE_FILES[@]}"; do
     cp "${SOURCE_MODEL_DIR}/${rel}" "${MODEL_DIR}/${rel}"
 done
 
-# What landed must be exactly what the receipt listed — no more (the receipt is
-# not package content) and no less.
+# What landed must be exactly what the receipt listed. The receipt is not package content.
 mapfile -t COPIED < <(cd "${MODEL_DIR}" && find . -type f -printf '%P\n' | LC_ALL=C sort)
 if [[ "$(printf '%s\n' "${COPIED[@]}")" != "$(printf '%s\n' "${ARCHIVE_FILES[@]}")" ]]; then
     diff <(printf '%s\n' "${ARCHIVE_FILES[@]}") <(printf '%s\n' "${COPIED[@]}") >&2 || true
@@ -261,12 +222,9 @@ for rel in "${COPIED[@]}"; do
     esac
 done
 
-# ---------------------------------------------------------- provenance and digests
 
-# The archive always carries a licence — the publisher adds one when the model
-# directory lacks it — so its absence is a publication defect rather than
-# something packaging may substitute for. check-model-bundle.py has already
-# refused that case; this is the copy.
+# The archive always carries a licence. Absence is a publication defect.
+# Do not substitute one. check-model-bundle.py already refused that case.
 cp "${MODEL_DIR}/LICENSE" "${DOC}/LICENSE"
 cp "${META}/SOURCE.json"  "${DOC}/SOURCE.json"
 cp "${META}/copyright"    "${DOC}/copyright"

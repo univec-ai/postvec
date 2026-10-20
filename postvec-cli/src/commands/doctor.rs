@@ -1,14 +1,8 @@
-//! `postvec doctor` — read-only diagnosis.
+//! `postvec doctor` is read-only.
 //!
-//! Read-only at every layer, and structurally so:
-//!
-//! - the database handle is a [`crate::db::ReadOnlyDb`], which has no mutating
-//!   method at all (so no `refresh_models()`, no `pg_reload_conf()`);
-//! - configuration is inspected with `postgres -C`, which parses a candidate
-//!   configuration without touching the running server;
-//! - the host lock is taken *shared* and only if it already exists, so a
-//!   diagnosis leaves no trace on the filesystem;
-//! - no inference engine is instantiated and no embedding is ever executed.
+//! The database handle cannot mutate. `postgres -C` does not touch the running
+//! server. The host lock is shared and only if it already exists. No engine
+//! is started.
 
 use super::{collect, Context};
 use crate::checks::{self, Report, SCHEMA_VERSION};
@@ -23,13 +17,9 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
     let started_at = checks::timestamp_now();
     let requested = args.validated()?;
 
-    // A cluster that will not accept a connection is the single most common
-    // thing an operator runs `doctor` about, so refusing to produce a report
-    // is the least useful possible response. The filesystem and `postgres -C`
-    // still answer a good deal — including, often, *why* it will not start.
-    //
-    // `Context::open` is left strict: every mutating command still requires a
-    // live connection, and nothing about their behaviour changes.
+    // A cluster that will not connect is still worth a report. Filesystem
+    // reads and `postgres -C` often show why. `Context::open` stays strict
+    // for every mutating command.
     let mut context = match Context::open(cli, output).await {
         Ok(context) => context,
         Err(error) => {
@@ -37,9 +27,8 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
         }
     };
 
-    // Shared, and only if the lock file already exists: doctor must not create
-    // state. Without it a concurrent change cannot be excluded, and the report
-    // says so rather than pretending otherwise.
+    // Shared, and only if the lock already exists. Doctor must not create
+    // state. Without the lock the report says a concurrent change is possible.
     let lock = context
         .owned_paths()
         .ok()
@@ -66,10 +55,8 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
         crate::checks::database::fresh_threshold(&snapshot.settings),
     )
     .await?;
-    // A probe that cannot even be constructed must not take the rest of the
-    // report with it — but it must not vanish either: it becomes a failing
-    // check, so the report cannot come back green with the inference side
-    // silently unexamined.
+    // A probe that cannot be built is a failing check, not a missing one
+    // and not a reason to drop the rest of the report.
     let inference =
         match collect::inference_probe(&context, &snapshot.settings, args.tls, args.path.clone())
             .await
@@ -80,13 +67,11 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
             },
         };
 
-    // Pairing a URI with a local cluster is allowed, but the report must say
-    // whether they are actually the same instance rather than quietly mixing
-    // one server's database state with another's files.
+    // A URI may be paired with a local cluster. The report says whether they
+    // are the same instance.
     let identity = context.prove_database_is_the_selected_cluster().await;
 
-    // Registry reachability is the one network probe outside the cluster and
-    // its engine; it runs only under --deep, and only observes.
+    // Registry reachability runs only under --deep and only observes.
     let registry = collect::registry_probe(args.deep, context.timeout).await;
 
     let mut results = collect::evaluate(
@@ -119,8 +104,8 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
         duration_ms: started.elapsed().as_millis() as u64,
         summary: checks::Summary::of(&results),
         checks: results,
-        // Only meaningful where the CLI owns the configuration: elsewhere there
-        // is no `postvec setup` that could be running against this cluster.
+        // Only where the CLI owns the configuration. Elsewhere no setup can
+        // be running against this cluster.
         concurrent_change_possible: lock.is_none()
             && snapshot
                 .ownership
@@ -133,14 +118,11 @@ pub async fn run(cli: &Cli, args: DoctorArgs, output: &Output) -> Result<Exit> {
     Ok(exit)
 }
 
-/// Diagnose as much as possible of a cluster that could not be connected to.
+/// Report what can be read without a connection.
 ///
-/// `Context::open` builds a `Cluster` and drops it on the way out, so discovery
-/// is repeated here — it is read-only (`pg_lsclusters` + `pg_config`), cheap,
-/// and happens only on this path. If discovery *also* fails, the original
-/// error was never "cannot connect" (no cluster, an unusable selection, a host
-/// with no `pg_lsclusters`), and it is returned unchanged: inventing a report
-/// for a cluster that was never identified would be worse than the error.
+/// Discovery is repeated because `Context::open` drops the cluster. It is
+/// read-only. If discovery fails too, the original error is returned: there
+/// is no identified cluster to report on.
 async fn offline_report(
     cli: &Cli,
     output: &Output,
@@ -160,9 +142,8 @@ async fn offline_report(
         return Err(connection_error);
     };
 
-    // Named neutrally: "not accepting connections" would be a diagnosis, and
-    // the error may be on our side of the socket (a privilege drop that could
-    // not exec, say) while the server is up and answering `psql` fine.
+    // Neutral wording. The failure may be on our side of the socket while
+    // the server is up.
     output.note(&format!(
         "no connection to cluster {} ({connection_error}) — reporting what can be read \
          without one",
@@ -195,9 +176,8 @@ async fn offline_report(
         cluster: checks::ReportCluster {
             id: cluster.identity.id.clone(),
             postgres_major: Some(cluster.identity.major),
-            // Both come from the running server, which is the thing that is
-            // missing. Reporting the binary's version as the server's would be
-            // a guess presented as an observation.
+            // Both come from the running server, which is down. The binary
+            // version is not a substitute.
             postgres_version: None,
             mode: None,
         },
@@ -205,13 +185,11 @@ async fn offline_report(
         duration_ms: started.elapsed().as_millis() as u64,
         summary: checks::Summary::of(&results),
         checks: results,
-        // Nothing could be running against a cluster that is not up, and no
-        // lock was taken, so there is no concurrent change to warn about.
+        // The cluster is down and no lock was taken, so no concurrent change.
         concurrent_change_possible: false,
     };
     output.show_report(&report)?;
-    // `cluster.reachable` is a required failure, so this is Failure whatever
-    // else was found. Asserted in the tests below rather than assumed.
+    // `cluster.reachable` is a required failure, so this exits Failure.
     Ok(report.exit(args.strict))
 }
 
@@ -239,8 +217,7 @@ mod tests {
         }
     }
 
-    /// The exit contract, restated at the command level because it is what
-    /// automation depends on.
+    /// Exit codes automation depends on.
     #[test]
     fn exit_code_contract() {
         assert_eq!(

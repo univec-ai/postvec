@@ -1,6 +1,5 @@
-//! `postvec provider ls` — configured providers, key *sources* (never a
-//! key), models with dimensions, and whether the running host currently
-//! serves them.
+//! `postvec provider ls`: configured providers, key sources (never a key),
+//! models with dimensions, and whether the running host serves them.
 
 use super::{resolve_target, ProviderFileDoc};
 use crate::cli::{Cli, ProviderLsArgs};
@@ -39,10 +38,8 @@ struct LsProvider {
     key_source: String,
     file: String,
     /// `Some(reason)` when the serving host refuses this file outright.
-    /// Without it a broken file's models read as `NOT served (reload or
-    /// restart the host)` — the one remedy that cannot work, which is
-    /// exactly the misdiagnosis `doctor` stopped making when it started
-    /// running the loader's own rules.
+    /// Without it a broken file reads as needing a reload, which cannot fix
+    /// a file the loader rejects.
     #[serde(skip_serializing_if = "Option::is_none")]
     refused: Option<String>,
     models: Vec<LsModel>,
@@ -237,14 +234,12 @@ pub async fn run(cli: &Cli, args: ProviderLsArgs, output: &Output) -> Result<Exi
     Ok(Exit::Success)
 }
 
-/// `*.toml` files, lexicographic, dot-files skipped — the loader's rule.
+/// `*.toml` files, lexicographic, dot-files skipped. The loader's rule.
 ///
 /// A directory that exists but cannot be scanned, or an entry that cannot be
-/// read, is an **error** and not an empty list. Returning nothing there made
-/// `ls` and doctor describe an unreadable providers.d as "no provider is
-/// configured" — indistinguishable from the zero-config state, for a
-/// directory the serving host also refuses to scan. A missing directory is
-/// still the ordinary empty case.
+/// read, is an error, not an empty list. An empty list would look like
+/// zero-config, and the serving host also refuses to scan that directory.
+/// A missing directory is still the ordinary empty case.
 pub fn provider_files(
     dir: &std::path::Path,
 ) -> std::result::Result<Vec<std::path::PathBuf>, String> {
@@ -270,7 +265,6 @@ pub fn provider_files(
     Ok(files)
 }
 
-// ---- `provider ls --available`: what a provider OFFERS ---------------------
 
 #[derive(Serialize)]
 struct AvailableModel {
@@ -333,11 +327,10 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
         .provider
         .as_deref()
         .map(|p| providers::catalog::canonical_provider(&p.to_lowercase()));
-    // A directory is optional — the catalogue needs only the network, the
-    // same way `model ls --available` works with no engine root — but only
-    // when nothing was *asked for*. An explicit --path, --database-url,
-    // --cluster or POSTVEC_PROVIDERS_PATH that cannot be honoured is an
-    // error, not a silent degrade to `configured: ?`.
+    // A directory is optional. The catalogue needs only the network, the same
+    // way `model ls --available` works with no engine root, but only when
+    // nothing was asked for. An explicit --path, --database-url, --cluster
+    // or POSTVEC_PROVIDERS_PATH that cannot be honoured is an error.
     let explicit = args.path.is_some()
         || cli.database_url.is_some()
         || cli.cluster.is_some()
@@ -423,8 +416,8 @@ async fn run_available(cli: &Cli, args: &ProviderLsArgs, output: &Output) -> Res
             });
         }
     }
-    // Nothing configured for the request: the named connector, or UniVec —
-    // the one catalogue the tree exists to promote, and it costs nothing.
+    // Nothing configured for the request: the named connector, or UniVec.
+    // That catalogue costs nothing.
     let bare = wanted.clone().unwrap_or_else(|| "univec".to_string());
     let named_file_is_broken = broken.iter().any(|b| Some(&b.name) == wanted.as_ref());
     if (sources.is_empty() && !named_file_is_broken)

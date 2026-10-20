@@ -22,7 +22,7 @@ while (($#)); do
     --tag)        EXTRA_TAGS+=("$2"); shift 2 ;;
     --load)       OUTPUT=--load; shift ;;
     --push)       OUTPUT=--push; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -47,7 +47,7 @@ build_first="Build them first:
 [[ -d "${NOARCH_CELL}" ]] || die "no architecture-independent packages at ${NOARCH_CELL}. ${build_first}"
 
 # Release packages only: the globs are anchored on the version that follows
-# the name, so `postvec-server-dbgsym_…` and `….deb.spdx.json` stay out.
+# the name, so `postvec-server-dbgsym_...` and `....deb.spdx.json` stay out.
 shopt -s nullglob
 server=("${COMMON_CELL}"/postvec-server_[0-9]*.deb)
 cli=("${COMMON_CELL}"/postvec-cli_[0-9]*.deb)
@@ -101,8 +101,8 @@ versioned manifest. A push from here would skip all of that."
 fi
 
 # `--load`, because this image exists to be `docker run` on this machine.
-# Under the `docker-container` driver — what CI provisions — a build with no
-# output flag writes to the builder's cache and leaves *nothing* in the local
+# Under the `docker-container` driver: what CI provisions: a build with no
+# output flag writes to the builder's cache and leaves nothing in the local
 # image store; the test then fails much later with "pull access denied" for an
 # image that was never meant to be pulled.
 DOCKERFILE="${PKG_DIR}/docker/Dockerfile.postvec-server"
@@ -139,7 +139,7 @@ fi
 
 rm -rf "${CONTEXT}"
 
-# A build that reported success but left no image is a real failure mode —
+# A build that reported success but left no image is a real failure mode -
 # see the `--load` note above. Assert the postcondition, so whatever the
 # builder or its flags do, the failure names itself here.
 docker image inspect "${TAGS[0]}" >/dev/null 2>&1 || die "the build succeeded but ${TAGS[0]} is not in the local image store.

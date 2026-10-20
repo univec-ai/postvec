@@ -1,13 +1,8 @@
-//! The explicitly selected installation (`--pg-config`).
-//!
-//! For a source build, a vendor layout, or a pgrx-managed development cluster
-//! there is no reliable way to learn the service name, so this adapter
-//! deliberately has **no restart command**: mutating commands must be run with
-//! `--no-restart` and the operator restarts the cluster themselves.
-//!
-//! Configuration can still be written, but only into a directory the operator
-//! names with `--config-dir` and that `postgresql.conf` already includes — the
-//! CLI will not add an `include_dir` line to a file it does not own.
+//! Explicit installation (`--pg-config`). No discoverable service name, so
+//! there is no restart command: mutating commands pass `--no-restart` and the
+//! operator restarts. Configuration is written only into a `--config-dir`
+//! that `postgresql.conf` already includes. The CLI will not add `include_dir`
+//! to a file it does not own.
 
 use super::{read_pg_config, Cluster, ClusterKind};
 use crate::error::{CliError, Result};
@@ -60,8 +55,8 @@ pub async fn discover(
             name: "explicit".to_string(),
         },
         kind: ClusterKind::Explicit,
-        // Peer authentication then uses the caller's own identity; the CLI does
-        // not guess which account owns a hand-built installation.
+        // Peer auth uses the caller's identity. The CLI does not guess the
+        // owner of a hand-built installation.
         owner: None,
         pg_config: pg_config.to_path_buf(),
         bindir,
@@ -69,8 +64,8 @@ pub async fn discover(
         pkglibdir,
         binary_major,
         conf_dir,
-        // Both come from the running server, which is authoritative and does
-        // not require guessing where a hand-built cluster keeps its files.
+        // Filled from the running server. A hand-built cluster's paths are
+        // not guessed.
         config_file: None,
         data_dir: None,
         port: DEFAULT_PORT,
@@ -91,16 +86,10 @@ pub fn apply_server_facts(cluster: &mut Cluster, facts: &crate::facts::ServerFac
         cluster.config_file = Some(PathBuf::from(file));
     }
 
-    // Discovery leaves `owner` unset: which account owns a hand-built
-    // installation is not knowable from a pg_config path. Once the server
-    // has told us its data directory, the directory's owner is the account
-    // PostgreSQL requires to be running as.
-    //
-    // `postgres -C`, which is how the CLI validates a candidate
-    // configuration offline, exits with "must be started under an
-    // unprivileged user ID" when run as root. Without this, every
-    // `sudo postvec setup --pg-config ...` on a PGDG-RPM host fails at
-    // validation.
+    // Owner is unknown from a pg_config path. Once the server reports its
+    // data directory, that directory's owner is the account PostgreSQL runs
+    // as. `postgres -C` refuses root, so without this every
+    // `sudo postvec setup --pg-config` fails validation.
     if cluster.owner.is_none() {
         if let Some(dir) = &cluster.data_dir {
             cluster.owner = OsAccount::owning(dir).ok();
@@ -126,8 +115,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_missing_config_dir_is_a_usage_error() {
-        // Use the real pg_config on this host if present, otherwise the check
-        // above already covers the ordering.
+        // No local pg_config: the missing-file test already covers that path.
         let pg_config = Path::new("/usr/lib/postgresql/18/bin/pg_config");
         if !pg_config.is_file() {
             return;
@@ -186,15 +174,13 @@ mod tests {
             cluster.config_file,
             Some(PathBuf::from("/srv/pg/data/postgresql.conf"))
         );
-        // The directory does not exist here, so no owner can be read — and the
-        // absence must be tolerated rather than fatal.
+        // The directory does not exist, so no owner can be read. That absence
+        // is not fatal.
         assert_eq!(cluster.owner, None);
     }
 
-    /// The owner of an explicit installation is read from its data directory,
-    /// not guessed. Without it, `postgres -C` runs as root and PostgreSQL
-    /// refuses ("must be started under an unprivileged user ID"), which breaks
-    /// the whole `--pg-config` flow under `sudo`.
+    /// The data-directory owner is the account `postgres -C` must run as.
+    /// Guessing, or running as root, breaks `--pg-config` under sudo.
     #[test]
     fn the_owner_is_read_from_the_data_directory() {
         let dir = tempfile::tempdir().unwrap();

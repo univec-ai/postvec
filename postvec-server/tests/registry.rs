@@ -360,7 +360,7 @@ async fn pull_activate_deactivate_through_the_admin_port() {
     assert_eq!(body["data"]["results"][0]["status"], json!("error"));
     assert!(manual.exists());
 
-    // Names the registry does not know, and bad requests, are refusals.
+    // Unknown names and bad requests are refusals.
     let (status, body) = node
         .post(
             node.admin,

@@ -21,7 +21,6 @@ step() { printf '\n%s\n' "$*"; }
 
 FIRST_MAJOR="$(awk '{print $1}' <<<"${PG_MAJORS}")"
 
-# ---------------------------------------------------------------- distro glue
 #
 # Everything below this block is family-independent. The differences are real
 # but small: the package manager, where PGDG puts PostgreSQL, and how a cluster
@@ -33,7 +32,7 @@ deb)
     PKG_REMOVE()   { apt-get remove -y -qq "$@" >/dev/null; }
     PKG_OWNER()    { dpkg -S "$1" 2>/dev/null | cut -d: -f1; }
     PKG_LIST()     { dpkg-query -W -f='${Package}\n' "$1" 2>/dev/null || true; }
-    # What a package *declares* it installs, which is not the same as what a
+    # What a package declares it installs, which is not the same as what a
     # minimal image kept: see the doc-policy note further down.
     PKG_FILES()    { dpkg -L "$1" 2>/dev/null || true; }
     # The licence a package declares, from its copyright file (Debian has no
@@ -67,15 +66,15 @@ esac
 
 step "prerequisites"
 
-# The documented bootstrap, run from the *same script* the documentation tells
-# a user to run — not a reimplementation of it beside the documentation.
+# The documented bootstrap, run from the same script the documentation tells
+# a user to run: not a reimplementation of it beside the documentation.
 #
 # This matters more than it looks. postvec's packages name an exact PostgreSQL
 # major and pgvector 0.8, which no supported distribution ships in its own
 # archives, so a user's very first command fails on an untouched host unless
 # PGDG (and, on EL9, EPEL and CRB) is configured first. When the test did that
 # itself, the test passed and the documented path did not exist. Now the
-# documented path *is* the tested path, and a bootstrap that stops working
+# documented path is the tested path, and a bootstrap that stops working
 # fails here.
 if [[ ! -x /postvec-prerequisites.sh && ! -f /postvec-prerequisites.sh ]]; then
     echo "the prerequisite script was not mounted; see tests/package-install-test.sh" >&2
@@ -97,7 +96,7 @@ else
     bad "the prerequisite script fails when run a second time"
 fi
 
-# Tools this *test* needs, which a user does not: process inspection and a JSON
+# Tools this test needs, which a user does not: process inspection and a JSON
 # reader for the doctor assertions below. Installed separately and after the
 # bootstrap, so they cannot quietly become part of what the bootstrap provides.
 if [[ "${DIST_FAMILY}" == deb ]]; then
@@ -106,13 +105,13 @@ else
     PKG_INSTALL procps-ng findutils jq
 fi
 
-# PostgreSQL itself is deliberately *not* preinstalled. The extension package
+# PostgreSQL itself is deliberately not preinstalled. The extension package
 # declares a dependency on it, and the whole point of installing on a clean
 # host is to find out whether that dependency names the right thing. Installing
 # PostgreSQL first would satisfy it in advance and the name would never be
-# tested — which is exactly how a package ships depending on
+# tested: which is exactly how a package ships depending on
 # `postgresql-18-server` on a distribution that calls it `postgresql-18`.
-# Precisely the server packages the extension depends on — a wildcard would
+# Precisely the server packages the extension depends on: a wildcard would
 # also match `postgresql-common`, which is a different thing entirely.
 preinstalled=""
 for major in ${PG_MAJORS}; do
@@ -201,7 +200,7 @@ else
     # The CLI's install receipt is deliberately not shipped: it records
     # `installed_at`, so a package carrying one would differ on every clean
     # rebuild. Package integrity comes from dpkg/rpm, from
-    # model-files.sha256, and from the release checksums — so `model show
+    # model-files.sha256, and from the release checksums: so `model show
     # --verify` having nothing to verify here is the designed outcome, not a
     # gap.
     [[ -e "${MODEL_ROOT}/.postvec-install.json" ]] \
@@ -230,12 +229,12 @@ else
     fi
 
     # Package integrity for a package-owned model tree is dpkg/rpm plus these
-    # digests — there is deliberately no CLI receipt to verify against.
+    # digests: there is deliberately no CLI receipt to verify against.
     #
     # Minimal container images do not install documentation: Debian's slim
     # images carry `path-exclude=/usr/share/doc/*` in /etc/dpkg/dpkg.cfg.d, and
-    # the EL images set `tsflags=nodocs`. The file is *in* the package —
-    # `dpkg -L` lists it and verify-package.sh asserts it — so its absence here
+    # the EL images set `tsflags=nodocs`. The file is in the package -
+    # `dpkg -L` lists it and verify-package.sh asserts it: so its absence here
     # is the image's documentation policy, not a defect, and saying so beats
     # both a false failure and a silent pass.
     digests="/usr/share/doc/${MODEL_PKG_NAME}/model-files.sha256"
@@ -271,8 +270,8 @@ got=$(EXTENSION_PACKAGES | grep -c . || true)
 step "the package changed nothing"
 
 # postvec's own packages must start nothing. PostgreSQL's Debian packaging
-# does create and start a default cluster from its postinst — that is its
-# business, not postvec's — so this checks for a postvec-managed cluster, not
+# does create and start a default cluster from its postinst: that is its
+# business, not postvec's: so this checks for a postvec-managed cluster, not
 # for any postgres process at all.
 if [[ -d /etc/postgresql ]] && find /etc/postgresql -name '*postvec*' 2>/dev/null | grep -q .; then
     bad "a postvec configuration file appeared during package installation"
@@ -305,7 +304,6 @@ version="$(postvec --version 2>&1 || true)"
     && ok "postvec --version reports ${POSTVEC_VERSION}" \
     || bad "postvec --version said: ${version}"
 
-# ---------------------------------------------------------- the runtime check
 #
 # The point of the whole exercise: this distribution's PostgreSQL must be able
 # to load the library this distribution's package installed. A package that is
@@ -320,7 +318,7 @@ DATA=/var/lib/postvec-test/data
 CONF_D=/etc/postvec-test/conf.d
 SOCKET_DIR=/var/run/postgresql
 # initdb refuses a non-empty directory, so the configuration directory lives
-# outside the data directory — which is also how a real deployment is laid out.
+# outside the data directory: which is also how a real deployment is laid out.
 mkdir -p "$(dirname "${DATA}")" "${CONF_D}" "${SOCKET_DIR}"
 chown -R "${PG_USER}:${PG_USER}" "$(dirname "${DATA}")" "${CONF_D}" "${SOCKET_DIR}"
 # Do not inherit the Docker daemon's umask for security-sensitive fixtures.
@@ -340,7 +338,7 @@ as_pg "${BIN}/initdb -D ${DATA} -A trust --username=${PG_USER}" >/tmp/initdb.log
 # flow, and it is identical on both families.
 #
 # The socket directory and port are left at their defaults so the CLI's own
-# connection defaults reach this cluster — that is the flow an operator has.
+# connection defaults reach this cluster: that is the flow an operator has.
 cat >> "${DATA}/postgresql.conf" <<EOF
 include_dir = '${CONF_D}'
 unix_socket_directories = '${SOCKET_DIR}'
@@ -381,7 +379,7 @@ capable="$(psql_ "-c \"SELECT (postvec.build_info()->'features'->>'embedded')::b
 step "postvec setup / doctor / uninstall"
 
 # The explicit-installation flow: no postgresql-common anywhere in it, so it is
-# the same on both families. `--no-restart` exits 4 by contract — the operator
+# the same on both families. `--no-restart` exits 4 by contract: the operator
 # owns the restart when the CLI cannot own the service.
 setup_status=0
 postvec setup \
@@ -421,11 +419,10 @@ done
 [[ "${beat}" == t ]] && ok "the background worker is running and beating" \
                      || bad "no worker heartbeat within 30s: $(tail -5 /tmp/pg.log)"
 
-# ------------------------------------------------------------------- doctor
 #
 # A report is not a diagnosis. Accepting "some JSON was printed" lets a doctor
 # that has stopped evaluating anything satisfy the package gate by printing an
-# empty check list — so what is asserted here is the *verdict*: which checks
+# empty check list: so what is asserted here is the verdict: which checks
 # ran, what each concluded, and whether the exit code agrees with the state the
 # cluster is actually in.
 
@@ -462,7 +459,7 @@ else
     bad "postvec doctor produced no usable report: $(tail -3 /tmp/doctor.err)"
 fi
 
-# Everything about the *installation* must be healthy at this point: the files
+# Everything about the installation must be healthy at this point: the files
 # are in place, the library loaded, the extension is installed at the version
 # the package carries, and the worker the preload bought is beating.
 doctor_must_pass "remote mode, no engine" \
@@ -470,8 +467,8 @@ doctor_must_pass "remote mode, no engine" \
     cluster.preload extension.installed extension.version extension.build-info \
     worker.heartbeat
 
-# …and the one thing that is genuinely wrong — there is no inference host on this
-# host — must be what doctor reports, with the exit code to match. A doctor that
+# ...and the one thing that is genuinely wrong: there is no inference host on this
+# host: must be what doctor reports, with the exit code to match. A doctor that
 # returned success here would be worse than useless.
 blocking="$(doctor_blocking)"
 if [[ "${doctor_status}" == 1 ]]; then
@@ -484,10 +481,10 @@ if grep -qE '(^| )remote\.' <<<"${blocking}"; then
 else
     bad "doctor did not report the missing engine; blocking checks were: ${blocking:-<none>}"
 fi
-# Nothing *else* may be blocking. A doctor that fails checks unrelated to the
+# Nothing else may be blocking. A doctor that fails checks unrelated to the
 # fault teaches operators to ignore it.
 # `|| true`: grep exits 1 when it filters everything out, which here is the
-# *good* outcome — and under `set -e` a command substitution that fails takes
+# good outcome, and under `set -e` a command substitution that fails takes
 # the whole test down before it can report anything.
 unexpected="$(tr ' ' '\n' <<<"${blocking}" \
     | grep -vE '^(remote\.|inference\.|models\.|$)' | tr '\n' ' ' || true)"
@@ -495,11 +492,10 @@ unexpected="$(tr ' ' '\n' <<<"${blocking}" \
     && ok "no unrelated check is blocking" \
     || bad "unrelated blocking checks: ${unexpected}"
 
-# --------------------------------------------------------------- inference
 #
 # Only meaningful when the engine assets are installed. This is the assertion
-# that proves the whole embedded stack — package, ONNX Runtime, model bundle,
-# descriptor — works on this distribution, not just on the one it was built on.
+# that proves the whole embedded stack: package, ONNX Runtime, model bundle,
+# descriptor: works on this distribution, not just on the one it was built on.
 
 if (( MINIMAL )); then
     step "inference"
@@ -545,12 +541,12 @@ else
         grep -iE 'postvec|engine|onnx' /tmp/pg.log | tail -15 | sed 's/^/          /'
     fi
 
-    # The other half of the doctor contract: a *healthy* verdict once the
+    # The other half of the doctor contract: a healthy verdict once the
     # installation is actually complete. Asserting only that doctor reports
     # faults would be satisfied by a doctor that reports faults unconditionally.
     #
     # Polled, because the model cache refreshes on the worker's own cadence
-    # shortly after the engine comes up — but bounded, so "it never became
+    # shortly after the engine comes up: but bounded, so "it never became
     # healthy" is a failure and not a wait.
     for _ in $(seq 1 30); do
         doctor_run
@@ -568,8 +564,8 @@ else
         embedded.loaded-models embedded.cache-consistency models.cache
 
     # `inference.probe` exists only to report that the engine could not be
-    # probed at all — when the probe succeeds, the per-mode `embedded.*` checks
-    # above are what it produces instead. So its *absence* is the assertion
+    # probed at all: when the probe succeeds, the per-mode `embedded.*` checks
+    # above are what it produces instead. So its absence is the assertion
     # here, and its presence would mean doctor reported healthy while knowing
     # nothing about the inference side.
     probe="$(doctor_status_of inference.probe)"
@@ -577,13 +573,12 @@ else
         && ok "doctor probed the engine (no inference.probe fallback in the report)" \
         || bad "doctor fell back to inference.probe=${probe}; the engine was not examined"
 
-    # ----------------------------------------------------- external providers
     #
     # Files only: no provider is contacted (`--no-verify`), because a package
     # test must not need an API key or the internet. What it proves is the
-    # packaging-shaped half — that the released CLI can create the credential
+    # packaging-shaped half: that the released CLI can create the credential
     # directory the packages deliberately do not ship, with the right mode and
-    # owner, and round-trip a connector file through the shipped binary — and,
+    # owner, and round-trip a connector file through the shipped binary, and,
     # since this full cell has a live embedded host, that host and CLI agree
     # honestly about a key source that cannot resolve.
     step "external providers (no network)"
@@ -606,7 +601,7 @@ else
         --api-key-env POSTVEC_PACKAGE_TEST_KEY \
         --no-verify --yes >/tmp/provider-add.log 2>&1 || provider_status=$?
     # The embedded host is up (asserted just above) and reads the file at
-    # reload — and POSTVEC_PACKAGE_TEST_KEY is deliberately not exported in
+    # reload, and POSTVEC_PACKAGE_TEST_KEY is deliberately not exported in
     # the postmaster's environment. The designed outcome is therefore partial
     # (exit 3): the host fails closed on the unresolvable key source, serves
     # nothing from the file, and the CLI reports that instead of claiming
@@ -644,10 +639,9 @@ else
         || ok "provider rm removed the connector file"
 fi
 
-# ------------------------------------------------------------ the inference node
 #
-# The full install is also what a *node* host installs, so the packaged node
-# is started here against the packaged runtime and model — the one place
+# The full install is also what a node host installs, so the packaged node
+# is started here against the packaged runtime and model: the one place
 # where this distribution's OpenSSL, libgomp and libc are proven to resolve for
 # the postvec-server binary, and where the packaged unit's engine root
 # (/opt/postvec, via the drop-in) is proven to hold what the node needs.
@@ -655,7 +649,7 @@ fi
 # No systemd in a container, so the unit is not started: the assertions are
 # that the package laid out what the unit needs (account, unit, drop-in,
 # configuration, lease directory contract), and then the binary is run the way
-# the unit would run it — as the service account, with the packaged config,
+# the unit would run it: as the service account, with the packaged config,
 # `--insecure` because the test provisions no certificate.
 
 if (( MINIMAL )); then
@@ -709,7 +703,7 @@ else
 
     # What the unit's ExecStartPre does, and `setpriv` for its User=. Not
     # `runuser`: that opens a PAM session that, on SIGTERM, kills the child
-    # after a grace period rather than letting it drain — the test would then
+    # after a grace period rather than letting it drain: the test would then
     # be measuring runuser. setpriv just drops privileges and execs, so the
     # PID below is the node itself. curl and openssl are test tools, like jq
     # above; a node host needs neither.
@@ -722,8 +716,8 @@ else
     else
         PKG_INSTALL openssl
     fi
-    # A certificate pair the way an operator supplies one — absolute paths on
-    # the command line override the packaged config's relative defaults — so
+    # A certificate pair the way an operator supplies one: absolute paths on
+    # the command line override the packaged config's relative defaults: so
     # the discovery listener is exercised over TLS, as it is in production.
     install -d -m 0750 -o postvec-server -g postvec-server /tmp/node-certs
     openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=postvec-server" \
@@ -770,7 +764,6 @@ else
     fi
 fi
 
-# ------------------------------------------------------------ detached symbols
 #
 # The debug packages are mandatory in a release, so they are tested the way
 # someone debugging a crashed backend would use them: install, then check that

@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
-# The release gate that runs before anything is compiled.
-#
-# One version number identifies a postvec release: it appears in the extension
-# crate, the CLI crate, the reviewed pins, the extension control file and the
-# git tag. Any disagreement between those is a mis-release — usually a partially
-# bumped version — and it is far cheaper to catch here than in a published
-# artifact whose CLI refuses to talk to its own extension.
+# Refuse a release whose version disagrees across the crates, the pins, the
+# control file and the git tag. A partial bump ships a CLI that will not
+# talk to its own extension.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -22,8 +18,7 @@ check() {
     fi
 }
 
-# Read `version` from a crate manifest via cargo, not a regex: `cargo metadata`
-# is the parser Cargo itself uses, so a moved or duplicated key cannot fool it.
+# cargo metadata, not a regex: a moved or duplicated key must not fool this.
 crate_version() {
     local manifest="$1" name="$2"
     need cargo jq
@@ -38,32 +33,21 @@ check "postvec/Cargo.toml" "${POSTVEC_VERSION}" \
 check "postvec-cli/Cargo.toml" "${POSTVEC_VERSION}" \
     "$(crate_version "${REPO_ROOT}/postvec-cli/Cargo.toml" postvec-cli)"
 
-# The control file must defer to the crate version rather than carrying its
-# own: cargo-pgrx substitutes @CARGO_VERSION@ at package time, and a literal
-# version here would silently win over the crate's.
+# The control file must use @CARGO_VERSION@. A literal would win over the crate.
 control="${REPO_ROOT}/postvec/postvec.control"
 check "postvec.control default_version" "default_version = '@CARGO_VERSION@'" \
     "$(grep -E "^default_version" "${control}" | tr -s ' ')"
 
-# The licence the packages ship, and the metadata that names it. Every crate
-# that is compiled into a shipped artifact must declare it: the extension and
-# CLI (headline), the forked engine and shared (linked into postvec.so in
-# embedded mode), providers (the gateway, linked into postvec.so and
-# postvec-server), and registry-schema (linked into the CLI).
+# Every crate linked into a shipped artifact must declare PostgreSQL:
+# extension, CLI, engine, shared, providers and registry-schema.
 [[ -f "${REPO_ROOT}/postvec/LICENSE" ]] || { echo "  FAIL  postvec/LICENSE is missing"; fail=1; }
 for manifest in core postvec postvec-cli engine shared providers registry/schema; do
     licence="$(grep -E '^license = ' "${REPO_ROOT}/${manifest}/Cargo.toml" | head -1 | cut -d'"' -f2)"
     check "${manifest} license" "PostgreSQL" "${licence}"
 done
 
-# postvec-server is the exception, and asserting it is the point: it is a
-# separate program under a separate grant, sitting in a tree where every
-# neighbour is PostgreSQL-licensed. A copy-paste from one of them would
-# relicense it silently, and the LICENSING.md index would then be wrong
-# about a file nobody re-read. All four statements of the fact have to
-# agree: the reviewed pin (SERVER_LICENSE, which is what the postvec-server
-# package declares), the crate manifest, the licence text, and the root
-# index.
+# postvec-server is separately licensed. The pin, the crate, the licence
+# text and the LICENSING.md index must agree, or a copy-paste relicenses it.
 [[ -f "${REPO_ROOT}/postvec-server/LICENSE" ]] \
     || { echo "  FAIL  postvec-server/LICENSE is missing"; fail=1; }
 check "postvec-server license" "${SERVER_LICENSE}" \
@@ -75,33 +59,22 @@ while IFS= read -r -d '' source; do
     fi
 done < <(find "${REPO_ROOT}/postvec-server/src" -type f -name '*.rs' -print0)
 
-# The index row in LICENSING.md is `| `postvec-server/` | <name> | ... |`; the
-# name is mapped to its SPDX id and compared literally, dots and all.
+# LICENSING.md row: `| `postvec-server/` | <name> | ... |`. Map the name to its SPDX id.
 index_licence="$(sed -nE 's#^\| `postvec-server/` \| ([^|]+) \|.*$#\1#p' "${REPO_ROOT}/LICENSING.md" | head -1 | sed -e 's/ *$//' -e 's/^Business Source License 1\.1$/BUSL-1.1/' -e 's/^Elastic License 2\.0$/Elastic-2.0/' -e 's/^Apache License 2\.0$/Apache-2.0/')"
 check "LICENSING.md index (postvec-server)" "${SERVER_LICENSE}" "${index_licence:-<not listed in LICENSING.md>}"
-# And the version: the node speaks exactly the wire contract this commit's
-# extension was compiled against, and its package carries POSTVEC_VERSION.
+# The node package carries POSTVEC_VERSION: it speaks this commit's wire contract.
 check "postvec-server/Cargo.toml" "${POSTVEC_VERSION}" \
     "$(crate_version "${REPO_ROOT}/postvec-server/Cargo.toml" postvec-server)"
 
-# Tag discipline, when running in a tag build. A local run has no tag and skips
-# this check rather than inventing one.
-#
-# POSTVEC_RELEASE_TAG wins over GITHUB_REF_NAME, not the other way round.
-# `workflow_dispatch` sets GITHUB_REF_NAME to the branch or tag the *workflow
-# file* was selected from, which is not necessarily what is being released — so
-# the caller's explicit statement of the release tag is the authority, and the
-# ambient one is only a fallback for a plain tag build.
+# A local run has no tag and skips this rather than inventing one.
+# POSTVEC_RELEASE_TAG wins: workflow_dispatch sets GITHUB_REF_NAME to the
+# workflow file's ref, which may not be the release.
 tag="${POSTVEC_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 if [[ -n "${tag}" && "${tag}" == postvec-rehearsal-v* ]]; then
-    # The disposable-publication namespace. Same identity, different name, so a
-    # rehearsal can never occupy the release the real publication needs.
+    # A different name, so a rehearsal cannot occupy the real release tag.
     check "rehearsal tag" "${REHEARSAL_TAG}" "${tag}"
 elif [[ -n "${tag}" && "${tag}" == postvec-v* ]]; then
-    # The packaging revision is part of the tag: postvec-v0.1.0-1. A rebuild
-    # that only changes packaging is a distinct release with distinct
-    # artifacts, and giving it a distinct name is what keeps published tags
-    # immutable.
+    # The packaging revision is in the tag (postvec-v0.1.0-1) so a rebuild cannot overwrite a published tag.
     check "release tag" "${RELEASE_TAG}" "${tag}"
 elif [[ -n "${tag}" ]]; then
     printf '  skip  release tag                 %s (not a postvec release tag)\n' "${tag}"
@@ -109,14 +82,9 @@ else
     printf '  skip  release tag                 <not a tag build>\n'
 fi
 
-# Upgrade scripts. Every older product version this project has released
-# needs a path of postvec--FROM--TO.sql files to the version being built.
-# Without one, an operator on that release parks the worker forever after
-# `apt upgrade`. Newer tags (a 0.2.0 already in the repo while cutting a
-# 0.1.1 hotfix) are ignored.
-#
-# The set of released versions is the set of postvec-v* tags. Packaging
-# revisions collapse: 0.1.0-1 and 0.1.0-2 ship the same SQL.
+# Every older released product version needs postvec--FROM--TO.sql up to
+# this one, or apt upgrade parks the worker. Packaging revisions share SQL.
+# Newer tags are ignored. Released versions are the postvec-v* tags.
 check_upgrade_graph() {
     local released=() missing=() line versions unreachable
     # Command substitution so a git failure fails the gate.
@@ -125,9 +93,7 @@ check_upgrade_graph() {
         [[ -n "${line}" ]] && released+=("${line}")
     done <<<"${versions}"
     if (( ${#released[@]} == 0 )); then
-        # First release has no upgrade graph. The second one needs
-        # postvec--<old>--<new>.sql and a native upgrade test; that is not
-        # something to discover from users.
+        # The first release has no upgrade graph. The next one must ship the SQL path.
         printf '  skip  upgrade graph               no previous release tags (first release)\n'
         printf '        from the second release on, every older released version needs a path of\n'
         printf '        postvec--<old>--<new>.sql scripts, proven by postvec/upgrade_test.sh.\n'
@@ -149,9 +115,7 @@ check_upgrade_graph() {
             "${#released[@]}" "${POSTVEC_VERSION}"
     fi
 
-    # Freeze every upgrade script the previous release identity already
-    # shipped. --identity includes a same-version packaging predecessor
-    # (0.2.0-1 when building 0.2.0-2), which the product-version query skips.
+    # Freeze upgrade scripts the previous identity shipped. --identity includes a same-version packaging predecessor.
     local previous changes rc=0
     previous="$("${PKG_DIR}/scripts/previous-release.sh" --identity)"
     [[ -n "${previous}" ]] || return 0

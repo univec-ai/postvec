@@ -533,15 +533,10 @@ struct Shared {
     resolved: tokio::sync::Notify,
 }
 
-/// A reply the backend owes, in order: ParseComplete (`1`), CloseComplete
-/// (`3`), the ParameterDescription (`t`) of a statement Describe, the
-/// PREPARE or DEALLOCATE command tag of SQL naming a statement (`x`), and the
-/// Sync (`S`) or Query (`Q`) a ReadyForQuery answers. `statements` names the
-/// client statements the reply creates (`Some` rewrite) or removes (`None`),
-/// applied only when it arrives: a Parse the server rejects replaces nothing.
-/// `extra` is how many proxy parameters a ParameterDescription must hide.
-/// `seq` numbers a Parse among the extended messages; a Sync or Query holds
-/// how many were sent before it.
+/// Backend replies in order: ParseComplete (`1`), CloseComplete (`3`),
+/// ParameterDescription (`t`), PREPARE or DEALLOCATE tag (`x`), Sync (`S`) or Query (`Q`).
+/// Applied only on arrival. A rejected Parse replaces nothing. `extra` hides proxy parameters.
+/// `seq` numbers a Parse. A Sync or Query stores how many extended messages preceded it.
 struct Reply {
     kind: u8,
     extra: usize,
@@ -849,11 +844,10 @@ struct Prepared {
     lifecycle: Vec<String>,
 }
 
-/// Statements the proxy cannot rewrite are forwarded untouched: the managed
-/// schema's own `search()` and `embed()` raise the explanatory error. A
-/// rewritten Parse takes one extra text parameter per call; each Bind embeds
-/// and appends them. The client's statements, portals and their lifetimes
-/// stay the server's. Errors run in the database, in order with its replies.
+/// Statements the proxy cannot rewrite are forwarded untouched. The schema's own
+/// `search()` and `embed()` then raise. A rewritten Parse takes one extra text
+/// parameter per call. Each Bind embeds and appends them. Statement and portal
+/// lifetimes stay the server's. Errors run in the database, in order with its replies.
 async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     proxy: &Proxy,
     mut r: R,
@@ -1031,12 +1025,10 @@ async fn client_to_backend<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// A Bind of a rewritten statement with the vectors appended as text
-/// parameters: an array literal each, or `!message` when inference failed,
-/// which `postvec._proxy_vector()` raises. A `$n` call's vector is prefixed
-/// with the SHA-256 of the text embedded, which `_proxy_vector` compares
-/// with PostgreSQL's own text of `$n`. `None` leaves a Bind that does not
-/// match the statement to the server, which rejects it.
+/// Append each call's vector as a text parameter: an array literal, or `!message`
+/// when inference failed, which `postvec._proxy_vector()` raises. A `$n` call's
+/// vector is prefixed with the SHA-256 of the text embedded, which `_proxy_vector`
+/// compares with PostgreSQL's own text of `$n`. `None` leaves a mismatched Bind to the server.
 async fn rebind(
     proxy: &Proxy,
     shared: &Shared,
@@ -1139,7 +1131,7 @@ fn param_types(types: &[u8]) -> Vec<u32> {
 }
 
 /// A Bind after its portal and statement names: the parameter format codes,
-/// the values (text and binary carry the same bytes for text types), and the
+/// the values (text and binary carry the same bytes for text types) and the
 /// result-format tail.
 type BindParts<'a> = (Vec<u16>, Vec<Option<&'a [u8]>>, &'a [u8]);
 fn bind_parts(rest: &[u8]) -> Result<BindParts<'_>> {

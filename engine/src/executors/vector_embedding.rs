@@ -1,9 +1,9 @@
 //! Batch of embedding vectors through a model, batch of embeddings back.
 //!
-//! Input rows are L2-normalized before the model runs (`executor.params.normalize_input`,
-//! default `true`): the univec converters are trained on unit-length embeddings while
-//! callers may send unnormalized vectors (eq truncated Matryoshka dimensions or embed models
-//! without l2norm output).
+//! Input rows are L2-normalized before the model runs
+//! (`executor.params.normalize_input`, default true). Converters are trained
+//! on unit-length embeddings. Callers may send unnormalized vectors, for
+//! example truncated Matryoshka dimensions.
 
 use crate::context::Context;
 use crate::error::EngineError;
@@ -12,10 +12,6 @@ use crate::models::ModelConfiguration;
 use serde_json::{json, Value};
 use shared::vectors::{FloatMatrix, IntoGenericTensorExt};
 
-/// The `VectorEmbeddingExecutor`.
-///
-/// This executor passes embedding data through an underlying model, L2-normalizing
-/// the input rows first unless `normalize_input` is off.
 pub struct VectorEmbeddingExecutor {
     normalize_input: bool,
     /// The descriptor's `params.source_dim`, the fallback input width when the

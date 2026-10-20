@@ -1,21 +1,14 @@
 //! `postvec provider add`.
 //!
-//! Write (or extend) one providers.d file, verify the key with one live
-//! single-input embed per model (opt-out `--no-verify`; the probe costs a
-//! paid API call), and nudge the running host to reload. For `univec`,
-//! names, kinds and dimensions come from the public catalogue
-//! (`super::univec`), and the probe proves the key plus one added route per
-//! kind.
+//! Write or extend one providers.d file, verify the key with one live embed
+//! per model (`--no-verify` opts out; the probe is a paid call) and nudge the
+//! host to reload. For `univec`, names and dimensions come from the catalogue
+//! and the probe proves the key plus one added route per kind.
 //!
-//! Two gates run before anything is written:
-//!
-//! - the ordinary confirmation, because this changes what a running host
-//!   serves;
-//! - the privacy acknowledgement: any existing column bound to a name this
-//!   command makes live starts sending its source text to the provider on
-//!   the next worker cycle, with no SQL change and no further notice (the
-//!   bridge-upgrade event). `--acknowledge-in-use` or the typed
-//!   confirmation answers that; `--yes` does not.
+//! Two gates run before anything is written. Ordinary confirmation, because
+//! this changes what a running host serves. The privacy acknowledgement,
+//! because a column this command makes live starts sending source text to the
+//! provider on the next worker cycle. `--yes` does not answer that.
 
 use super::{
     columns_bound_to, read_secret_file, reload_host, require_private_secret_file,
@@ -30,16 +23,16 @@ use providers::catalog;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// Where the key for this file comes from — written to the TOML verbatim
-/// as a *source*, with the inline variant being the only one that stores a
-/// value (in the 0600 file; documented as the least preferred).
+/// Where the key for this file comes from. Written to the TOML as a source.
+/// The inline variant is the only one that stores a value, in the 0600 file,
+/// and it is the least preferred.
 pub(super) enum KeySpec {
     File(PathBuf),
     Env(String),
     Inline(String),
     /// univec: the `postvec login` key, copied into `path` at apply time
-    /// and referenced as `api_key_file` — never inline, so it cannot
-    /// silently outlive a `logout`.
+    /// and referenced as `api_key_file`. Never inline, so it cannot outlive
+    /// a `logout`.
     /// `destination` is what preflight found there; it drives the plan step,
     /// the write and the rollback.
     Login {
@@ -55,9 +48,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     let started = Instant::now();
     let started_at = crate::checks::timestamp_now();
 
-    // ---- Validate the request before any host access ----
-    // The connector list is the loader's, not a second copy of it: the whole
-    // point of a `provider add` refusal is that it predicts the host.
+    // The connector list is the loader's, not a second copy. A refusal here
+    // predicts what the host will refuse.
     let typed = args.provider_type.to_lowercase();
     let canonical = catalog::canonical_provider(&typed);
     if !providers::config::SUPPORTED_PROVIDERS.contains(&canonical.as_str()) {
@@ -123,7 +115,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         ));
     }
 
-    // ---- Resolve the target and the existing file ----
     let mut target = resolve_target(cli, args.path.as_deref(), output, true).await?;
     // Held for the whole read-modify-write. Two concurrent `provider add`
     // runs would otherwise both load the file, both append, and the second
@@ -172,9 +163,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         })
         .unwrap_or_default();
 
-    // ---- The key source ----
-    // Before the catalogue: an interactive run's prompt order is key, then
-    // discovery progress — not the other way round.
+    // Before the catalogue: an interactive run asks for the key, then shows
+    // discovery progress. Not the other way round.
     let key = resolve_key_spec(
         &args,
         &canonical,
@@ -195,11 +185,10 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         ));
     }
 
-    // Read the effective values *from the document*, not from the flags: a
-    // rerun that adds a model to an existing file with a custom `base_url`
-    // does not repeat `--base-url`, and everything downstream — the
-    // catalogue, the probe, the privacy scan — has to reason about the
-    // endpoint that will serve, not the one the command line mentioned.
+    // Read the effective values from the document, not the flags. A rerun
+    // that adds a model to a file with a custom `base_url` does not repeat
+    // `--base-url`. The catalogue, the probe and the privacy scan have to
+    // use the endpoint that will serve, not the one the command line named.
     let recorded = |field: &str| {
         existing.as_ref().and_then(|doc| {
             doc.value
@@ -213,7 +202,6 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     let base_url_changes = args.base_url.is_some() && args.base_url != recorded("base_url");
     let region_changes = args.region.is_some() && args.region != recorded("region");
 
-    // ---- UniVec's catalogue ----
     // Unauthenticated and unbilled, so a dry run fetches it too. `None` means
     // "not consulted": another connector, --no-catalog, or unreachable
     // with selectors that can do without it.
@@ -343,10 +331,9 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     }
     refuse_wrong_width(&new_models, &target, cli.timeout).await?;
     // Converters: the manual entry, or the catalogue selection. A rerun
-    // with the same route is a no-op note, exactly like an embed id the
-    // file already declares; the same name with a DIFFERENT route is a
-    // refusal — which entry wins would decide what a migration converts
-    // through.
+    // with the same route is a no-op note, like an embed id the file already
+    // declares. The same name with a different route is a refusal. Which
+    // entry wins would decide what a migration converts through.
     let mut converters: Vec<NewModel> = converter.into_iter().collect();
     if let Some(catalogue) = &catalogue {
         for listed in selectors.converters(catalogue)? {
@@ -416,12 +403,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         .with_fix("narrow the selection with --convert-to / --convert-from / --model, or write a second file with --name"));
     }
 
-    // ---- Whether a verification probe will run ----
-    // The probe is deferred until after both confirmation gates below. It
-    // is a live, billed request that puts the key on the network, and until
-    // the operator has answered the plan — the privacy acknowledgement in
-    // particular — this command has no mandate to spend either. A dry run
-    // never probes at all; the plan says what the real run would do.
+    // The probe waits until both confirmation gates below. It is a live,
+    // billed request that puts the key on the network. Until the operator
+    // has answered the plan, including the privacy acknowledgement, this
+    // command has no mandate to spend either. A dry run never probes. The
+    // plan says what the real run would do.
     let probe = !args.no_verify && !args.dry_run;
     for model in &new_models {
         // A dry run may legitimately reach here with no dimension yet: the
@@ -444,24 +430,21 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         }
     }
 
-    // ---- What this run actually changes ----
     // Moving base_url or region on an existing file is a recipient change:
     // same public names, different destination. The privacy gate must
     // cover those names, not only newly added models. A brand-new file is
     // an ordinary add over its new names.
     let endpoint_changes = existing.is_some() && (base_url_changes || region_changes);
-    // A new key source for the same endpoint is not a recipient change: the
-    // text goes to the same place. It does change what the host will do, so
-    // it is worth *verifying*, but it must not demand a privacy
-    // acknowledgement — over-prompting is how a gate stops being read.
+    // A new key source for the same endpoint is not a recipient change. The
+    // text goes to the same place. It is worth verifying, but it must not
+    // demand a privacy acknowledgement. Over-prompting is how a gate stops
+    // being read.
     let credential_changes = !matches!(key, KeySpec::Existing);
 
-    // ---- Privacy gate + plan ----
-    // Text-egress names only: a converter's own name never binds a column
-    // and no source text flows through it — vectors do, and only when an
-    // operator explicitly calls postvec.migrate()/convert(), which is where
-    // its consent moment lives (the migrate-time NOTICE naming the
-    // provider). Putting converter names through this gate would make the
+    // Text-egress names only. A converter's own name never binds a column
+    // and no source text flows through it. Vectors do, and only when an
+    // operator calls postvec.migrate() or convert(), which is where consent
+    // is asked. Putting converter names through this gate would make the
     // acknowledgement assert something false.
     let new_names: Vec<(String, String)> = new_models
         .iter()
@@ -646,12 +629,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         ));
     }
 
-    // ---- What the verification will bill, stated before confirmation ----
     // New catalogued entries: one probe per kind. Other new entries: one
-    // each. A rotated key: one representative existing embed and one
-    // existing converter — the key is account-wide, so one call per kind
-    // proves it. A moved endpoint: every existing entry, because every route
-    // changed. The plan states the exact counts.
+    // each. A rotated key: one existing embed and one existing converter.
+    // The key is account-wide, so one call per kind proves it. A moved
+    // endpoint: every existing entry, because every route changed. The plan
+    // states the exact counts.
     let already_embed: Vec<(String, String)> = already_declared
         .iter()
         .filter(|(name, _)| !existing_converters.contains(name))
@@ -672,9 +654,9 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     ) = if endpoint_changes {
         (already_embed.clone(), existing_convert_descriptors.clone())
     } else if credential_changes && canonical == "univec" {
-        // UniVec keys are account-wide (aphex), so one call per kind proves
-        // a rotated key. No other connector documents that contract —
-        // project- or model-restricted keys exist — so they keep every route.
+        // UniVec keys are account-wide, so one call per kind proves a rotated
+        // key. No other connector documents that contract. Project- or
+        // model-restricted keys exist, so they keep every route.
         (
             already_embed.iter().take(1).cloned().collect(),
             existing_convert_descriptors
@@ -771,18 +753,16 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     )?;
     plan::confirm(&plan, args.yes, None, Prompt::from_environment())?;
 
-    // ---- Verification probe (and dimension inference) ----
-    // Deliberately after both gates: the first thing this command does that
+    // After both gates: the first thing this command does that
     // costs money and sends the key over the network happens only once the
     // operator has said yes to the plan. Nothing has been written yet, so a
     // probe failure still leaves the host exactly as it was.
     if probe {
         let secret = probe_secret(&key, existing_for_probe.as_ref())?;
-        // The configuration the *host* will serve with, not the one the
-        // command line mentioned. Probing `args.base_url` meant that adding a
-        // model to a file with a custom endpoint verified the public default
-        // and then wrote and reloaded the custom one — a green check for a
-        // request that was never made against the endpoint that matters.
+        // The configuration the host will serve, not the one the command line
+        // mentioned. Probing the flag's base URL would verify the public
+        // default and then write the custom one: a green check for a request
+        // that was never made against the endpoint that matters.
         let config = providers::ProviderConfig {
             provider: canonical.clone(),
             api_key: (canonical != "aws").then(|| secret.clone()),
@@ -806,12 +786,11 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
             univec::identity_check(effective_base_url.as_deref(), &secret, cli.timeout, output)
                 .await?;
         }
-        // Catalogue-sourced entries have their dimensions; the probe's job
-        // is to prove the key and that one added route of each kind
-        // serves — one billed call per kind, against something THIS run
-        // adds (the cheapest embed among them), never a catalogue member
-        // outside the selection. A width that disagrees with the catalogue
-        // is refused, not patched.
+        // Catalogue-sourced entries have their dimensions. The probe proves
+        // the key and that one added route of each kind serves: one billed
+        // call per kind, against something this run adds, never a catalogue
+        // member outside the selection. A width that disagrees with the
+        // catalogue is refused, not patched.
         if let Some(model) = new_models
             .iter()
             .filter(|m| m.catalogued && m.convert.is_none())
@@ -897,8 +876,7 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
 
     refuse_wrong_width(&new_models, &target, cli.timeout).await?;
 
-    // ---- Apply: finish the document, write, reload ----
-    // Every entry is already present and already validated; only the
+    // Every entry is already present and already validated. Only the
     // dimensions the probe measured are still placeholders. `write` runs the
     // same rules once more over the finished file, with the real values.
     let mut journal = ApplyJournal::default();
@@ -944,10 +922,8 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
         journal.succeeded(model.public_name.clone());
     }
     // A parked file is the operator's choice and the write completed, so the
-    // exit is success — `incomplete` (partial) would claim the command did
-    // not finish, which is false. The machine-readable statement goes in
-    // `next_step`, the field that exists for "this is done; here is what
-    // serves it": a caller checks one field rather than parsing prose.
+    // exit is success. `incomplete` would claim the command did not finish.
+    // The machine-readable statement goes in `next_step`.
     let next_step = (!file_enabled).then(|| {
         format!(
             "set enabled = true in {} to serve the {} model(s) written to it",
@@ -977,10 +953,10 @@ pub async fn run(cli: &Cli, args: ProviderAddArgs, output: &Output) -> Result<Ex
     }
 
     reload_host(&target, cli.timeout, &mut journal).await;
-    // The host now serves the model; the databases do not know it exists.
-    // `enable()` resolves through `postvec.models`, so without this the
-    // documented `provider add` → `enable` sequence fails until the worker's
-    // next discovery cycle (up to a minute plus jitter). A `--path` target
+    // The host now serves the model. The databases do not know it exists.
+    // `enable()` resolves through `postvec.models`, so without this
+    // `provider add` then `enable` fails until the worker's next discovery
+    // cycle (up to a minute plus jitter). A `--path` target
     // has no cluster and is skipped inside.
     super::refresh_databases(&mut target, &mut journal).await;
 
@@ -1044,8 +1020,8 @@ pub(super) struct NewModel {
 pub(super) struct ConvertSpec {
     /// Provider-side id of the SOURCE space.
     pub provider_source_id: String,
-    /// Postvec-side public name of the source space (the resolver's
-    /// vocabulary — what a bound column's `model` says).
+    /// Postvec-side public name of the source space. That is what a bound
+    /// column's `model` says.
     pub source_model: String,
     /// Postvec-side public name of the target space.
     pub target_model: String,
@@ -1229,11 +1205,11 @@ fn commit(
     }
 }
 
-/// A connector write with no key of ours in play (a non-login key source,
-/// or a login key already in place): success, a committed-but-unsynced
-/// file, a clean durable failure, or a partial one — a staged copy (which
-/// may hold an inline API key) that could not be removed, or a cleanup
-/// that is not crash-durable. The partial ones end `Commit::Partial`.
+/// A connector write with no key of ours in play: success, a
+/// committed-but-unsynced file, a clean durable failure, or a partial one.
+/// Partial means a staged copy (which may hold an inline API key) that
+/// could not be removed, or a cleanup that is not crash-durable. Those end
+/// `Commit::Partial`.
 fn connector_only(
     outcome: std::result::Result<(), super::WriteError>,
     journal: &mut ApplyJournal,
@@ -1403,9 +1379,9 @@ fn converter_new_model(args: &ProviderAddArgs, canonical: &str) -> Result<Option
     }))
 }
 
-/// The route id this converter will have — the same derivation the loader,
-/// the serving descriptor and `provider rm` use, so "already declared with
-/// this exact route" is decided by identity, not by field-by-field guesses.
+/// The route id this converter will have. Same derivation the loader, the
+/// serving descriptor and `provider rm` use, so "already declared" is
+/// identity, not a field-by-field guess.
 fn converter_route_id(model: &NewModel) -> String {
     let convert = model.convert.as_ref().expect("a converter NewModel");
     providers::config::route_model_id(
@@ -1420,8 +1396,8 @@ fn converter_route_id(model: &NewModel) -> String {
 
 /// The loader-schema view of a new converter entry, for the shared convert
 /// probe. `None` for embed models. The dimension is the declared one when
-/// known, else the placeholder — the probe uses it only to size its response
-/// budget; declared-vs-measured is the caller's comparison.
+/// known, else the placeholder. The probe uses it only to size its response
+/// budget. Declared versus measured is the caller's comparison.
 fn probe_descriptor(model: &NewModel) -> Option<providers::config::ModelDescriptor> {
     let convert = model.convert.as_ref()?;
     Some(providers::config::ModelDescriptor {
@@ -1502,8 +1478,8 @@ fn model_entry(model: &NewModel) -> toml::Value {
 }
 
 /// Models that get a live verification call: the uncatalogued ones being
-/// added, plus `reverify` — the existing entries the connector-change
-/// policy selected (all on an endpoint move, one on a key rotation).
+/// added, plus `reverify`, the existing entries the connector-change policy
+/// selected. All of them on an endpoint move, one on a key rotation.
 fn probe_targets(
     new_models: &[NewModel],
     reverify: &[(String, String)],
@@ -1638,8 +1614,8 @@ fn apply_key_spec(table: &mut toml::map::Map<String, toml::Value>, canonical: &s
 }
 
 /// The secret value the verification probe uses. `--api-key-env` resolves
-/// from *this* shell (the natural place a verifying operator has it);
-/// `Existing` re-resolves whatever the file records.
+/// from this shell, where a verifying operator has it. `Existing`
+/// re-resolves whatever the file records.
 fn probe_secret(key: &KeySpec, existing: Option<&ProviderFileDoc>) -> Result<String> {
     match key {
         KeySpec::Inline(value) | KeySpec::Login { key: value, .. } => Ok(value.clone()),
@@ -1834,8 +1810,8 @@ mod tests {
             "uv_new_key_0000000"
         );
 
-        // …and with a connector that does commit, the key's own error rides
-        // along as an incomplete entry while the connector is written to match.
+        // With a connector that does commit, the key's own error rides along
+        // as an incomplete entry while the connector is written to match.
         std::fs::set_permissions(&providers, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_file(&path).unwrap();
         super::super::set_failpoint(Some("sync"));
@@ -1928,10 +1904,10 @@ mod tests {
         assert!(journal.incomplete.is_empty());
     }
 
-    /// A connector write that never committed but left residue or an
-    /// unsynced cleanup is `Commit::Partial` for every key source — an
-    /// identical login key and a non-login source alike — with the residue
-    /// and cause in the journal; a clean failure stays an ordinary error.
+    /// A connector write that never committed but left residue or an unsynced
+    /// cleanup is `Commit::Partial` for every key source, an identical login
+    /// key and a non-login source alike. The residue and cause go in the
+    /// journal. A clean failure stays an ordinary error.
     #[test]
     fn a_connector_refusal_with_residue_is_partial_for_every_key_source() {
         use std::os::unix::fs::PermissionsExt;

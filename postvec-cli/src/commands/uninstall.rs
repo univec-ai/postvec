@@ -89,9 +89,8 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     };
 
     // Which databases. `--all` is every database the launcher is configured
-    // to serve — from the live setting, the owned file and the CLI's memory —
-    // plus any other database in the cluster that has the extension installed
-    // (a `CREATE EXTENSION` by hand, or a database `setup` never saw).
+    // to serve, from the live setting, the owned file and the CLI's memory,
+    // plus any other database that has the extension installed.
     let (targets, facts, uninspectable) = if args.all {
         discover_all(&mut context, &snapshot, &ownership, output).await?
     } else {
@@ -174,8 +173,8 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         }
     }
 
-    // The host sweep, planned now so the operator confirms every path, and
-    // applied last — after the restart, when nothing runs from those files.
+    // The host sweep is planned now so the operator confirms every path, and
+    // applied last, after the restart, when nothing runs from those files.
     let mut purge_plan = match (&args.purge, &paths) {
         (true, Some(paths)) => {
             if context.cluster.restart.is_none() {
@@ -251,8 +250,8 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
             Some("rerun without --dry-run to apply this plan".to_string()),
         );
         output.show_result(&result)?;
-        // The dry run changed nothing, but it still predicts the outcome — and
-        // the process exit must agree with the exit_code in the report.
+        // The dry run changed nothing, but it still predicts the outcome. The
+        // process exit must agree with the exit_code in the report.
         let exit = Exit::from_code(result.exit_code);
         context.close().await;
         return Ok(exit);
@@ -268,7 +267,6 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
         Prompt::from_environment(),
     )?;
 
-    // --- apply ------------------------------------------------------------
     let mut journal = ApplyJournal::default();
     let mut messages = Vec::new();
     // A host-level fatal condition (the cluster may be down) outranks any
@@ -380,11 +378,10 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                     "postvec: removed {} (revealing the configuration that was there before)",
                     paths.config.display()
                 ));
-                // Nothing postvec-managed is left on this host, so this is the
-                // moment the provider credentials become orphaned. Teardown
-                // never destroys what it did not create, and it never deletes
-                // credentials silently either — so say where they are. With
-                // --purge they are in the confirmed plan instead.
+                // Nothing postvec-managed is left, so provider credentials are
+                // now orphaned. Teardown never deletes credentials it did not
+                // create, and it never deletes them silently. Say where they
+                // are. With --purge they are in the confirmed plan instead.
                 if purge_plan.is_none() {
                     if let Some(note) = leftover_provider_files(&snapshot.settings) {
                         messages.push(format!("postvec: {note}"));
@@ -438,10 +435,10 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     }
 
     if let Some((roots, confirmed)) = purge_plan.as_mut() {
-        // Purge follows a *completed* restart and a fresh reading of the
-        // effective configuration — never the pre-apply prediction. A
-        // deferred restart, a database that failed to clean up, or any
-        // configuration source still naming postvec stops it here.
+        // Purge follows a completed restart and a fresh reading of the
+        // effective configuration, never the pre-apply prediction. A deferred
+        // restart, a database that failed to clean up or any source still
+        // naming postvec stops it here.
         let mut blocker = None;
         if !host_clear {
             blocker = Some(
@@ -476,16 +473,15 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                 }
             }
         }
-        // The sweep runs with the cluster **stopped**: after the final
-        // inventory, no SQL session can install the extension again, and no
-        // backend can load the library, while the files go. The offline
-        // configuration is re-read once the postmaster is down, then the
-        // cluster is started again and proven to serve.
-        // From the moment the stop command is issued until the recovery
-        // start below, NOTHING may early-return (`?`) out of this scope: a
-        // failure after the stop must still reach the start attempt, or a
-        // production database stays down. Every fallible step in between
-        // converts its error into `blocker`.
+        // The sweep runs with the cluster stopped. After the final inventory,
+        // no SQL session can install the extension again and no backend can
+        // load the library while the files go. The offline configuration is
+        // re-read once the postmaster is down, then the cluster is started
+        // again and proven to serve.
+        // From the stop until the recovery start below, nothing may return
+        // early out of this scope. A failure after the stop must still reach
+        // the start attempt, or a production database stays down. Every
+        // fallible step in between becomes `blocker`.
         let mut stop_issued = false;
         // A guard that cannot be armed blocks the sweep rather than aborting
         // the command: at this point the databases are already clean and the
@@ -602,9 +598,8 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
                     journal.record("started the cluster again");
                 }
                 (Err(command_error), Ok(server)) => {
-                    // The desired postcondition holds; the command failure is
-                    // still worth a line — something about the service setup
-                    // is off.
+                    // The desired postcondition holds. The command failure is still
+                    // worth a line: something about the service setup is off.
                     context.server = server;
                     journal.record("the cluster is running again");
                     messages.push(format!(
@@ -666,10 +661,9 @@ pub async fn run(cli: &Cli, args: UninstallArgs, output: &Output) -> Result<Exit
     }
 
     let mut result = result_for(&context, plan, journal, started, started_at, messages, None);
-    // The journal grades a failed recovery beside successful databases as
-    // partial (exit 3); a possibly-stopped cluster must be exit 1 — decided
-    // BEFORE the one result envelope is emitted, so human and JSON output
-    // carry the same exit_code and nothing prints twice.
+    // A failed recovery beside successful databases is partial (exit 3). A
+    // possibly-stopped cluster is exit 1. That is decided before the one
+    // result envelope, so human and JSON output share an exit code.
     if host_fatal {
         result.exit_code = Exit::Failure.code();
     }
@@ -763,9 +757,9 @@ async fn discover_all(
     Ok((targets, facts, uninspectable))
 }
 
-/// After the restart: is any database in the cluster still carrying — or
-/// possibly carrying — the extension? Every `pg_database` row is inspected
-/// again; a database that cannot be inspected counts as a blocker.
+/// After the restart, is any database still carrying the extension, or
+/// possibly carrying it? Every `pg_database` row is inspected again. One
+/// that cannot be inspected is a blocker.
 async fn final_database_inventory(context: &mut Context) -> Result<Option<String>> {
     let listings = match context.db.list_databases().await {
         Ok(listings) => listings,
@@ -805,10 +799,9 @@ async fn final_database_inventory(context: &mut Context) -> Result<Option<String
     }))
 }
 
-/// After the restart: does anything still configure postvec? Returns what
-/// does, for the operator. Reads the live values *and* every file row, so a
-/// setting that lost to a later source is caught too (it would win once the
-/// winning file goes away).
+/// After the restart, does anything still configure postvec? Returns what
+/// does. Reads the live values and every file row, so a setting that lost
+/// to a later source is caught. It would win once the winning file goes.
 fn still_configured(settings: &SettingsSnapshot) -> Option<String> {
     let names_postvec =
         |value: &str| config::guc::list_contains_postvec(&config::guc::parse_library_list(value));
@@ -838,9 +831,8 @@ fn still_configured(settings: &SettingsSnapshot) -> Option<String> {
     })
 }
 
-/// Is the effective value of `guc` one this CLI may act on — the built-in
-/// default, or set by the CLI-owned snippet? A value from any other source
-/// (postgresql.auto.conf, a hand-written include, `ALTER SYSTEM`) is not
+/// Is the effective value of `guc` one this CLI may act on: the built-in
+/// default, or set by the CLI-owned snippet? Any other source is not
 /// evidence the CLI created what the path names.
 fn setting_is_ours(settings: &SettingsSnapshot, guc: &str, owned_config: &Path) -> bool {
     match settings.get(guc) {
@@ -855,7 +847,7 @@ fn setting_is_ours(settings: &SettingsSnapshot, guc: &str, owned_config: &Path) 
 }
 
 /// Whether, after `change` is applied, nothing on this host configures
-/// postvec any more — the precondition for deleting its files.
+/// postvec. That is the precondition for deleting its files.
 fn host_will_be_clear(
     change: &ConfigChange,
     ownership: &Ownership,
@@ -880,9 +872,9 @@ fn purge_roots(
     ownership: &Ownership,
     paths: &crate::config::owned::OwnedPaths,
 ) -> purge::PurgeRoots {
-    // `preload_was_already_present`: postvec was in shared_preload_libraries
-    // from a file the CLI does not own before setup ran, and removing the
-    // owned snippet leaves it there — the library must stay.
+    // `preload_was_already_present`: postvec is in shared_preload_libraries
+    // from a file the CLI does not own, and removing the owned snippet leaves
+    // it there. The library must stay.
     let foreign_preload = match ownership.state() {
         Some(state) => state.preload_was_already_present,
         None => config::guc::list_contains_postvec(&settings.preload_items()),
@@ -1003,8 +995,8 @@ fn plan_config_change(
     }
     let Some(state) = ownership.state() else {
         // With no ownership record the CLI cannot promise to remove the
-        // setting, and it will not guess — but only when the setting actually
-        // names a database being removed is there anything to warn about.
+        // setting, and it will not guess. Warn only when the setting names a
+        // database being removed.
         let configured = snapshot.settings.configured_databases();
         if !configured.iter().any(|name| removing.contains(name)) {
             return Ok(ConfigChange::None { note: None });
@@ -1051,9 +1043,9 @@ fn plan_config_change(
         .cloned()
         .collect();
     // A preserved name is one the CLI found already configured rather than
-    // added. Removing it from the file it owns does stop that database being
-    // served — but whatever configured it originally is still there and will
-    // reappear if the owned file is ever removed, so say so.
+    // added. Removing it from the owned file stops that database being
+    // served, but the original configuration is still there and will
+    // reappear if the owned file is removed. Say so.
     let preserved: Vec<String> = state
         .preserved_databases
         .iter()
@@ -1135,10 +1127,9 @@ fn rewrite_database_list(previous: &str, databases: &[String]) -> Result<String>
     Ok(out)
 }
 
-/// Report — never remove — provider connector files left behind by a
-/// teardown. They hold credentials this command did not create, so deleting
-/// them is the operator's call; saying nothing would leave API keys on a host
-/// nobody is looking at any more.
+/// Report provider connector files left behind. Never remove them. They hold
+/// credentials this command did not create. Saying nothing would leave API
+/// keys on a host nobody is looking at.
 fn leftover_provider_files(settings: &SettingsSnapshot) -> Option<String> {
     if settings.mode() != Some(crate::cli::Mode::Embedded) {
         return None;
@@ -1146,8 +1137,8 @@ fn leftover_provider_files(settings: &SettingsSnapshot) -> Option<String> {
     let dir = settings.providers_path();
     let files = match crate::commands::provider::ls::provider_files(&dir) {
         Ok(files) => files,
-        // An unreadable directory is not an empty one: say so, because the
-        // whole point of this note is that credentials may remain.
+        // An unreadable directory is not an empty one. Say so: credentials
+        // may remain.
         Err(problem) => {
             return Some(format!(
                 "{problem}; external-provider connector files may remain in {} and are never \
@@ -1564,7 +1555,7 @@ postvec.http_endpoints = 'https://192.0.2.2:22222'
     }
 
     /// Teardown must name orphaned credentials and leave every one of them on
-    /// disk — the same rule as shadow columns, applied to API keys.
+    /// disk. Same rule as shadow columns, applied to API keys.
     #[test]
     fn teardown_reports_leftover_provider_files_without_deleting_them() {
         let dir = tempfile::tempdir().expect("tempdir");

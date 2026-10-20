@@ -112,7 +112,7 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
         });
     }
     // Driven by the difference between the desired settings and the ones in
-    // effect — not by whether the file changed on this run. After
+    // effect, not by whether the file changed on this run. After
     // `setup --no-restart` a rerun writes nothing and still owes the restart.
     match activation(&desired, &snapshot.settings) {
         Activation::Restart => match &context.cluster.restart {
@@ -165,7 +165,6 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
     }
     crate::plan::confirm(&plan, args.yes, None, Prompt::from_environment())?;
 
-    // --- apply ------------------------------------------------------------
     let mut journal = ApplyJournal::default();
     let expectation = ExtensionExpectation {
         require_embedded_build: mode == Mode::Embedded,
@@ -202,10 +201,10 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
         ));
     }
 
-    // A database that failed to install must not reach postvec.database: its
-    // worker would then fail to connect and be respawned every ~15 seconds
-    // forever. The configuration is therefore rebuilt from what succeeded, not
-    // from what was requested.
+    // A database that failed to install must not reach postvec.database. Its
+    // worker would fail to connect and be respawned every ~15 seconds. The
+    // configuration is rebuilt from what succeeded, not from what was
+    // requested.
     let installed = journal.succeeded_databases.clone();
     if installed.len() != plan.databases.len() {
         output.progress(&format!(
@@ -359,7 +358,6 @@ pub async fn run(cli: &Cli, args: SetupArgs, output: &Output) -> Result<Exit> {
         Activation::None => {}
     }
 
-    // --- verify -----------------------------------------------------------
     let smoke = smoke_check(&mut context, &installed, mode, &args, output)
         .await
         .map_err(|error| {
@@ -418,8 +416,8 @@ fn activation(desired: &DesiredConfig, snapshot: &SettingsSnapshot) -> Activatio
                 config::guc::parse_library_list(active)
                     != config::guc::parse_library_list(&expected)
             }
-            // An unset postvec.mode *is* 'embedded' to the extension, so
-            // writing that out explicitly must not cost a restart.
+            // An unset postvec.mode is 'embedded' to the extension, so writing
+            // that out explicitly must not cost a restart.
             "postvec.mode" => normalized_mode(active) != normalized_mode(&expected),
             _ => active != expected,
         };
@@ -797,9 +795,9 @@ fn build_desired(
     let preload = if preload_already_present {
         None
     } else {
-        // The base is everything *except* postvec, from whatever source. When
-        // the owned file is the current source, the recorded base is the
-        // authoritative history; otherwise the active list is.
+        // The base is everything except postvec, from whatever source. When
+        // the owned file is the current source, the recorded base is what
+        // to restore. Otherwise the active list is.
         let base = ownership
             .state()
             .filter(|_| owned_sets_preload)
@@ -1076,8 +1074,8 @@ async fn smoke_check(
     // Already proven before any mutation; restated here so the smoke report
     // carries the same evidence doctor would.
     let identity = context.prove_database_is_the_selected_cluster().await;
-    // `registry: None` — setup's smoke check never performs registry network
-    // access; the registry.reachable check reports SKIP.
+    // `registry: None`. Setup's smoke check does no registry network access.
+    // The registry.reachable check reports SKIP.
     let mut results = collect::evaluate(
         context, &snapshot, &facts, &inference, &identity, None, true, false,
     );
@@ -1124,11 +1122,10 @@ async fn wait_for_worker(context: &mut Context, database: &str, deadline: Durati
         };
         if let Ok(sample) = sample {
             if let (Some(_pid), Some(age)) = (sample.pid, sample.age_s) {
-                // A reading younger than the one before it means a new beat was
-                // written between the two samples. That is the only evidence
-                // that proves the worker is running *now*: the heartbeat row
-                // survives a dead worker, so both its presence and a single
-                // fresh-looking age can be left over from one that has died.
+                // A younger reading means a new beat was written between the two
+                // samples. That is the only proof the worker is running now.
+                // The heartbeat row survives a dead worker, so presence or one
+                // fresh age can be left over from one that has died.
                 if previous.is_some_and(|last| age < last) {
                     return Ok(());
                 }
@@ -1447,10 +1444,9 @@ mod tests {
         assert_eq!(activation(&desired, &database_changed), Activation::Restart);
     }
 
-    /// An unset `postvec.mode` means the extension's default, which is
-    /// **embedded**, so rendering that explicitly must not manufacture an
-    /// outage — while switching an unconfigured cluster to remote genuinely
-    /// is a change and must cost the restart it needs.
+    /// An unset `postvec.mode` means the extension's default, embedded, so
+    /// rendering that explicitly must not manufacture an outage. Switching an
+    /// unconfigured cluster to remote is a real change and must restart.
     #[test]
     fn writing_the_default_mode_explicitly_does_not_cost_a_restart() {
         let unset = |extra: &[(&str, &str)]| {
@@ -1560,9 +1556,8 @@ mod tests {
         assert!(!installed.render("0.1.0").unwrap().contains("analytics"));
     }
 
-    /// A database that was already being served keeps being served even if this
-    /// run failed to touch it — the command must not make things worse than it
-    /// found them.
+    /// A database that was already being served keeps being served even if
+    /// this run failed to touch it. Do not make things worse than found.
     #[test]
     fn an_already_configured_database_survives_a_failed_rerun() {
         let snapshot = snapshot(

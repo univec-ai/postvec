@@ -1,14 +1,14 @@
 //! Per-database checks: extension presence and versions, worker liveness,
 //! queue health, model cache, registry integrity, migrations.
 //!
-//! Two judgement rules run through all of it:
+//! Two judgement rules:
 //!
-//! - **Queue depth is meaningless on its own.** Pending jobs with a live worker
-//!   and a reachable engine are normal operation; the same depth with a dead
-//!   worker, or with no reachable inference path, is a failure.
-//! - **`worker_last_error` is prose, not a code.** It is reported as evidence
-//!   and can raise a warning, but only structured checks (liveness,
-//!   reachability, queue, catalog) decide FAIL.
+//! - Queue depth is meaningless on its own. Pending jobs with a live worker
+//!   and a reachable engine are normal. The same depth with a dead worker,
+//!   or with no reachable inference path, is a failure.
+//! - `worker_last_error` is prose, not a code. It is evidence and can warn,
+//!   but only structured checks (liveness, reachability, queue, catalog)
+//!   decide FAIL.
 
 use super::CheckResult;
 #[cfg(test)]
@@ -27,7 +27,7 @@ pub struct DatabaseInput<'a> {
     pub facts: &'a DatabaseFacts,
     pub settings: &'a SettingsSnapshot,
     pub mode: Option<Mode>,
-    /// Whether *some* inference discovery path is currently usable.
+    /// Whether some inference discovery path is currently usable.
     /// `None` when it was not determined (nothing configured to probe, or
     /// probing was skipped).
     pub inference_reachable: Option<bool>,
@@ -1247,7 +1247,7 @@ mod tests {
     fn heartbeat_freshness_scales_with_the_configured_cadences() {
         let mut facts = healthy();
         // Within the default 30s liveness interval: healthy even though it is
-        // many poll ticks old — idle heartbeats are change-gated.
+        // many poll ticks old. Idle heartbeats are change-gated.
         facts.worker.as_mut().unwrap().last_beat_age_s = Some(20.0);
         assert_eq!(
             status(&run(&facts, Some(true)), "worker.heartbeat"),

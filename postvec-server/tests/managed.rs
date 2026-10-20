@@ -474,10 +474,9 @@ async fn table_contract(db: &mut PgConnection) -> Result<Vec<String>> {
     "#).fetch_all(db).await?)
 }
 
-/// The managed-provider role layout: a non-superuser administrator with
-/// CREATEROLE owns the database and the application tables, and creates the
-/// worker role. The ownership hand-over the installer prints must let the
-/// worker enable those tables while the administrator keeps writing to them.
+/// A non-superuser administrator with CREATEROLE owns the database and the
+/// application tables. It creates the worker role. The hand-over the installer
+/// prints must let the worker enable those tables while the administrator keeps writing.
 #[tokio::test]
 #[ignore = "POSTVEC_MANAGED_TEST_DSN must name a disposable PostgreSQL 18 admin database with pgvector installed on disk"]
 async fn provider_roles() -> Result<()> {
@@ -588,9 +587,8 @@ async fn provider_roles() -> Result<()> {
     result.and(cleanup)
 }
 
-/// State written before the key-format pin (here by a Europe/Dublin writer)
-/// is rekeyed by the upgrade to schema v3, and cursor checkpoints restart
-/// instead of skipping rows in the new key order.
+/// Schema v3 rekeys state written under another zone and restarts cursor
+/// checkpoints instead of skipping rows in the new key order.
 #[tokio::test]
 #[ignore = "POSTVEC_MANAGED_TEST_DSN must name a disposable PostgreSQL 18 admin database with pgvector installed on disk"]
 async fn legacy_keys_are_rekeyed() -> Result<()> {
@@ -696,7 +694,7 @@ async fn legacy_keys_are_rekeyed() -> Result<()> {
             zoned == ("2026-06-15 00:30:00+00".into(), "15/06/2026 01:30:00 IST".into()),
             "a zone abbreviation was read in the database's zone: {zoned:?}"
         );
-        // An observed entry keeps its evidence, is not queued again, and its
+        // An observed entry keeps its evidence, is not queued again and its
         // ambiguous dead letter is not retried as a guess.
         let observed: (i64, i64, String) = sqlx::query_as(
             "SELECT (SELECT count(*) FROM postvec.jobs WHERE registry_id = 5), dead_id, last_error

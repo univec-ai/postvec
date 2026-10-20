@@ -13,7 +13,6 @@ use std::collections::HashMap;
 /// One JSON field from `Context::input_json`.
 #[derive(Clone, Copy)]
 pub struct InputValue<'a> {
-    /// A reference to the underlying JSON value from the request payload.
     value: &'a Value,
 }
 

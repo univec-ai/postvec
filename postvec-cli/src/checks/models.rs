@@ -1,10 +1,10 @@
 //! Model-store checks: the CLI-managed half of an engine root.
 //!
-//! Pure over [`ModelStoreFacts`] / [`RegistryProbeFacts`] — the hashing and
-//! the one optional network probe happen in `collect`, gated on `--deep`.
+//! Pure over [`ModelStoreFacts`] and [`RegistryProbeFacts`]. Hashing and the
+//! optional network probe happen in `collect`, gated on `--deep`.
 //! `registry.reachable` warns rather than fails when unreachable: an
-//! intentionally offline deployment is a supported shape, not an unhealthy
-//! one; only `--strict` promotes it.
+//! intentionally offline deployment is supported, not unhealthy. Only
+//! `--strict` promotes it.
 
 use super::CheckResult;
 use crate::facts::{ModelStoreFacts, RegistryProbeFacts};
@@ -180,14 +180,12 @@ fn receipts(store: &ModelStoreFacts) -> CheckResult {
 
 /// Is anything the engine holds marked deactivated on disk?
 ///
-/// The two facts have to agree in both directions. This one is the dangerous
-/// direction: the model is serving now but a restart will not bring it back,
-/// so a column depending on it fails at the least convenient moment. It means
-/// a `deactivate` whose unload did not complete — or, on a shared engine root,
-/// another host's flip.
+/// The dangerous direction: the model is serving now but a restart will not
+/// bring it back. A `deactivate` whose unload did not finish, or another
+/// host's flip on a shared engine root.
 ///
-/// A **deactivated** model that is simply not loaded is not a finding at all:
-/// that is the state `postvec model deactivate` exists to produce.
+/// A deactivated model that is simply not loaded is not a finding. That is
+/// the state `postvec model deactivate` exists to produce.
 fn enabled_drift(
     store: &ModelStoreFacts,
     loaded: Option<&std::collections::BTreeSet<String>>,
@@ -451,14 +449,13 @@ mod tests {
         );
         assert_eq!(result.status, CheckStatus::Pass);
 
-        // Unknown loaded set → SKIP, not a false warning.
+        // Unknown loaded set: SKIP, not a false warning.
         let result = unactivated(&store(vec![stored("mine", true)]), None, &[]);
         assert_eq!(result.status, CheckStatus::Skip);
     }
 
-    /// The dangerous direction of the disk/engine disagreement: serving now,
-    /// gone after a restart. The ordinary "deactivated and not loaded" state
-    /// is not a finding — it is exactly what `deactivate` produces.
+    /// The dangerous direction: serving now, gone after a restart. Deactivated
+    /// and not loaded is not a finding. That is what `deactivate` produces.
     #[test]
     fn a_loaded_but_deactivated_model_fails_while_a_quiet_one_passes() {
         let mut off = stored("off", true);
@@ -483,8 +480,8 @@ mod tests {
         );
     }
 
-    /// A freshly pulled (therefore deactivated) model must not read as
-    /// "forgot to activate": pull deliberately stops short of serving.
+    /// A freshly pulled model is deactivated and must not read as "forgot to
+    /// activate". Pull stops short of serving.
     #[test]
     fn a_deactivated_model_is_not_reported_as_unactivated() {
         let mut fresh = stored("fresh", true);
@@ -494,9 +491,9 @@ mod tests {
         assert_eq!(result.status, CheckStatus::Pass);
     }
 
-    /// An activated model that did not load is a warning whose fix is to
-    /// activate again — never "restart", which reloads exactly the same
-    /// descriptors and would repeat the failure.
+    /// An activated model that did not load warns to activate again, never
+    /// to restart. A restart reloads the same descriptors and repeats the
+    /// failure.
     #[test]
     fn the_unactivated_fix_names_activate_not_a_restart() {
         let nothing_loaded: BTreeSet<String> = BTreeSet::new();

@@ -1,9 +1,8 @@
 //! The `postgresql-common` (Debian/Ubuntu/PGDG) cluster adapter.
 //!
-//! This layout is the one the CLI can fully automate, because every piece it
-//! needs is discoverable rather than guessed: `pg_lsclusters` reports the
-//! version, name, port, status, owner and data directory; the configuration
-//! lives at a fixed path with a `conf.d`; and there is a known service unit.
+//! Fully automatable: `pg_lsclusters` reports version, name, port, status,
+//! owner and data directory. Configuration lives at a fixed path with
+//! `conf.d`. The service unit is known.
 
 use super::{is_supported_major, read_pg_config, Cluster, ClusterKind, RestartCommand};
 use crate::error::{CliError, Result};
@@ -42,11 +41,9 @@ impl ClusterListing {
     }
 }
 
-/// Parse `pg_lsclusters --no-header` output.
-///
-/// Columns: Ver, Cluster, Port, Status, Owner, Data directory, Log file. The
-/// status column can be multi-word (`down,binaries_missing`) but never contains
-/// spaces, and paths may, so the tail is split from the right.
+/// Parse `pg_lsclusters --no-header`. Status has no spaces
+/// (`down,binaries_missing` is one field). Paths may, so the tail splits
+/// from the right.
 pub fn parse_lsclusters(stdout: &str) -> Vec<ClusterListing> {
     let mut out = Vec::new();
     for line in stdout.lines() {
@@ -64,9 +61,8 @@ pub fn parse_lsclusters(stdout: &str) -> Vec<ClusterListing> {
         let Ok(port) = fields[2].parse::<u16>() else {
             continue;
         };
-        // The data directory is the second-to-last field when a log file is
-        // present, and the last otherwise. Both are absolute paths, so take
-        // the first path-looking field after the owner.
+        // Data directory is the last field, or the one before a trailing log
+        // path. Both are absolute, so take the first path after the owner.
         let data_dir = fields[5..]
             .iter()
             .find(|f| f.starts_with('/'))
@@ -86,18 +82,14 @@ pub fn parse_lsclusters(stdout: &str) -> Vec<ClusterListing> {
 
 /// Choose the cluster to act on.
 ///
-/// Auto-selection happens only when exactly one supported cluster is online.
-/// Anything else is a usage error that lists what was found — silently picking
-/// the newest major would eventually reconfigure the wrong database server.
+/// Auto-select only when exactly one supported cluster is online. Anything
+/// else is a usage error that lists what was found. Silently picking the
+/// newest major would reconfigure the wrong server.
 ///
-/// `allow_offline` relaxes *only* the online requirement, and only for
-/// read-only diagnosis (`doctor`): a stopped cluster is the thing an operator
-/// most wants diagnosed, and refusing to look at it is unhelpful when the
-/// filesystem and `postgres -C` can still answer most of the question.
-/// Ambiguity is never relaxed — with more than one candidate it is still a
-/// usage error, because guessing which stopped server was meant is exactly the
-/// mistake this function exists to prevent. Mutating commands always pass
-/// `false`.
+/// `allow_offline` relaxes only the online requirement, and only for
+/// read-only diagnosis (`doctor`). A stopped cluster is still diagnosable
+/// from the filesystem and `postgres -C`. Ambiguity is never relaxed: more
+/// than one candidate is still a usage error. Mutating commands pass `false`.
 pub fn select<'a>(
     listings: &'a [ClusterListing],
     requested: Option<&str>,
@@ -166,12 +158,8 @@ pub fn select<'a>(
                     .with_fix("choose one with --cluster <major>/<name>")),
                 }
             } else {
-                // With exactly one candidate the tool already knows which
-                // cluster is meant, so it names it and the command that
-                // starts it. A `<major>/<name>` placeholder makes the reader
-                // go and look up what to substitute — for the overwhelmingly
-                // common single-cluster host, that is a lookup the message
-                // can just do for them.
+                // One candidate: name it and the start command, instead of a
+                // `<major>/<name>` placeholder the operator would have to fill in.
                 let fix = match supported.as_slice() {
                     [only] => format!(
                         "start it with `sudo pg_ctlcluster {} {} start`, or inspect it as it is \
@@ -200,10 +188,9 @@ pub fn select<'a>(
 
 const SUPPORTED_MAJORS_TEXT: &str = "16, 17 or 18";
 
-/// Every cluster `pg_lsclusters` reports; empty when postgresql-common is
-/// not installed (there is nothing to enumerate). **Strict**: a row that
-/// does not parse is an error, because a caller deciding what is safe to
-/// delete cannot claim to have examined every cluster otherwise.
+/// Every cluster `pg_lsclusters` reports. Empty when postgresql-common is
+/// not installed. A row that does not parse is an error: a caller deciding
+/// what is safe to delete cannot claim to have examined every cluster.
 pub async fn list_clusters(timeout: Duration) -> Result<Vec<ClusterListing>> {
     if !Path::new(PG_LSCLUSTERS).is_file() {
         return Ok(Vec::new());
@@ -519,8 +506,7 @@ Ver Cluster Port Status Owner    Data directory              Log file
         assert_eq!(select(&mixed, None, true).unwrap().id(), "17/live");
     }
 
-    /// `allow_offline` relaxes the *online* requirement, never the supported
-    /// -major one.
+    /// `allow_offline` relaxes the online requirement, never the supported-major one.
     #[test]
     fn offline_selection_does_not_admit_an_unsupported_major() {
         let unsupported = vec![listing(15, "main", "down")];
@@ -564,8 +550,8 @@ Ver Cluster Port Status Owner    Data directory              Log file
     #[test]
     fn restart_uses_the_cluster_specific_unit_or_pg_ctlcluster() {
         let restart = restart_command(18, "main");
-        // Whichever branch this host takes, the command must name *this*
-        // cluster, never `postgresql.service` (which would restart all of them).
+        // Either branch must name this cluster, never `postgresql.service`
+        // (that unit would restart every cluster).
         assert!(restart.display().contains("18"));
         assert!(restart.display().contains("main"));
         assert!(!restart.args.iter().any(|a| a == "postgresql.service"));

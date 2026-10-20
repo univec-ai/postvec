@@ -1,101 +1,54 @@
 #!/usr/bin/env bash
 # Configure the package repositories postvec's packages need.
+# It does not install postvec, create clusters or edit PostgreSQL.
 #
-#   gh attestation verify postvec-prerequisites.sh --repo <repo>   # first
-#   less postvec-prerequisites.sh                                  # then read it
+#   gh attestation verify postvec-prerequisites.sh --repo <repo>
+#   less postvec-prerequisites.sh
 #
-#   sudo bash ./postvec-prerequisites.sh --pg 18          # do it, after asking
-#   sudo bash ./postvec-prerequisites.sh --pg 18 --yes    # do it, unattended
-#        bash ./postvec-prerequisites.sh --pg 18 --print  # show the commands only
+#   sudo bash ./postvec-prerequisites.sh --pg 18
+#   sudo bash ./postvec-prerequisites.sh --pg 18 --yes
+#   bash ./postvec-prerequisites.sh --pg 18 --print
 #
-# On a distribution postvec does not test, it prints the commands and stops;
+# Use `bash ./...`: a GitHub release asset drops the executable bit.
+# On a distribution this does not test, it prints the commands and stops.
 # `--force-untested` runs them anyway.
 #
-# Use `bash ./...`: a GitHub release asset does not keep its executable bit,
-# so a freshly downloaded copy is not directly runnable.
+# Debian and Ubuntu: the PGDG signing key in /usr/share/keyrings
+# (downloaded, fingerprint-checked and rechecked if a keyring is already
+# there), one apt source and apt update.
 #
-# ---------------------------------------------------------------------------
+# RHEL family: CodeReady Builder (`crb` on the rebuilds,
+# `codeready-builder-for-rhel-9-<arch>-rpms` through subscription-manager
+# on RHEL); EPEL (`epel-release` on the rebuilds, plus `epel-next-release`
+# on CentOS Stream, Fedora's release RPM by URL on RHEL); the PGDG
+# repository RPM, signature-checked against the fingerprint-verified key;
+# and `module disable postgresql`, which otherwise shadows every PGDG
+# package.
 #
-# postvec's packages name an exact PostgreSQL major (`postgresql-18-postvec`
-# depends on `postgresql-18` and `postgresql-18-pgvector`) and no supported
-# distribution ships that combination in its own archives at the versions
-# required. Debian 12 carries PostgreSQL 15; Ubuntu 22.04 carries 14; EL9
-# carries 13 in a module that shadows anything else; pgvector 0.8 is not in
-# any of them for every major. `apt install ./postgresql-18-postvec_*.deb`
-# on an untouched host fails at dependency resolution. The PostgreSQL
-# project's own instructions require the same repositories:
+# Tested on Debian 12, Ubuntu 22.04, Ubuntu 24.04, AlmaLinux 9 and Rocky 9.
+# CentOS Stream 9 and subscribed RHEL 9 are generated but not executed
+# unless `--force-untested` is set.
 #
-#   https://www.postgresql.org/download/linux/debian/
-#   https://www.postgresql.org/download/linux/redhat/
-#
-# This script does what those pages tell you to do, and stops. It leaves
-# postvec packages, clusters and PostgreSQL configuration alone; `postvec
-# setup` is the command that changes a database.
-#
-# `--print` still runs this program. The commands it prints are short
-# enough to follow by hand after you have read the script.
-#
-# What it changes:
-#
-#   Debian / Ubuntu   the PGDG signing key in /usr/share/keyrings
-#                     (downloaded, fingerprint-verified, and re-verified if
-#                     a keyring is already there), one apt source, and apt
-#                     update
-#   RHEL family       CodeReady Builder (`crb` on the rebuilds,
-#                     `codeready-builder-for-rhel-9-<arch>-rpms` through
-#                     subscription-manager on RHEL itself); EPEL (the
-#                     `epel-release` package on the rebuilds, plus
-#                     `epel-next-release` on CentOS Stream, Fedora's
-#                     release RPM by URL on RHEL); the PGDG repository RPM,
-#                     signature-checked against PGDG's fingerprint-verified
-#                     RPM key before install; and `module disable postgresql`,
-#                     which otherwise shadows every PGDG package
-#
-# Tested on Debian 12, Ubuntu 22.04, Ubuntu 24.04, AlmaLinux 9 and Rocky 9
-# by tests/bootstrap-test.sh in CI: twice, in a clean container, asserting
-# the fingerprint check ran and PostgreSQL resolves afterwards. Rocky is
-# on the list because it is run.
-#
-# CentOS Stream 9 and subscribed RHEL 9 differ: RHEL has no `epel-release`
-# package and needs Fedora's release RPM by URL; CentOS Stream also wants
-# `epel-next-release`. The commands are generated correctly for each and
-# asserted by tests/unit-test.sh. They are printed; `--force-untested`
-# executes them.
-#
-# Idempotent: running it twice changes nothing the second time.
+# Idempotent: a second run changes nothing.
 
 set -Eeuo pipefail
 
-# PGDG's signing keys, and the fingerprints that make them *the* keys.
-#
-# Downloading a key over TLS proves you reached a host. Checking its fingerprint
-# against a value published somewhere the host does not control is what makes it
-# the key you meant. Both are kept identical to versions.env
-# (PGDG_DEBIAN_KEY_FINGERPRINT, PGDG_RPM_KEY_FINGERPRINT), which
-# tests/unit-test.sh asserts, so the two copies cannot drift.
+# Fingerprints are the trust root. TLS only proves which host answered.
+# Kept identical to the PGDG fingerprint pins in versions.env.
 PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 PGDG_KEY_URL=https://www.postgresql.org/media/keys/ACCC4CF8.asc
 PGDG_RPM_KEY_FINGERPRINT=D4BF08AE67A0B4C7A1DBCCD240BCA2B408B40D20
 PGDG_RPM_KEY_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-RHEL
-# PGDG signs each architecture with its own key and publishes them as separate
-# files: the x86_64 repository RPM is signed by ...08B40D20 above, the aarch64
-# one by ...B9738825 here. A key verifies exactly one architecture, so this is
-# selected the way the repository RPM URL already is — by machine, not by
-# distribution. Verifying an aarch64 download against the x86_64 fingerprint
-# fails closed, which is correct behaviour and a completely useless message.
+# aarch64 has its own key and file. Select by machine, same as the repository RPM URL.
 PGDG_RPM_KEY_AARCH64_FINGERPRINT=B031F89FC983E98262906B6E177B343BB9738825
 PGDG_RPM_KEY_AARCH64_URL=https://download.postgresql.org/pub/repos/yum/keys/PGDG-RPM-GPG-KEY-AARCH64-RHEL
 KEYRING=/usr/share/keyrings/postgresql-archive-keyring.gpg
 SOURCES=/etc/apt/sources.list.d/pgdg.list
 
-# Overridable so the command-generation tests can cover every declared
-# distribution without a container per distribution. It changes what is *read*,
-# never what is written.
+# Overridable so tests can cover every distribution. It changes what is read, never what is written.
 OS_RELEASE="${POSTVEC_OS_RELEASE:-/etc/os-release}"
 
-# Read once, and overridable for the same reason: the signing key, the CRB
-# repository name and the repository RPM's URL all vary by machine, and a test
-# runner only ever has one of the two architectures under it.
+# Overridable: the signing key, the CRB name and the repository RPM URL vary by machine.
 ARCH="${POSTVEC_UNAME_M:-$(uname -m)}"
 if [[ "${ARCH}" == aarch64 ]]; then
     PGDG_RPM_KEY_FINGERPRINT="${PGDG_RPM_KEY_AARCH64_FINGERPRINT}"
@@ -107,7 +60,7 @@ ASSUME_YES=0
 PRINT_ONLY=0
 FORCE_UNTESTED=0
 
-usage() { sed -n '2,64p' "$0"; }
+usage() { sed -n '2,32p' "$0"; }
 
 while (($#)); do
     case "$1" in
@@ -125,19 +78,12 @@ say()  { printf '\033[1;36m==>\033[0m %s\n' "$*" >&2; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# --------------------------------------------------------------- what we are on
-
 [[ -r "${OS_RELEASE}" ]] || die "cannot read ${OS_RELEASE}; this is not a supported host"
 # shellcheck disable=SC1090,SC1091
 . "${OS_RELEASE}"
 
-# `FAMILY` selects the package manager. `CRB_METHOD` selects how the builder
-# repository PGDG depends on is enabled, which is *not* a property of the family:
-# every EL9 rebuild calls it `crb` and enables it with dnf, but subscribed RHEL
-# calls it `codeready-builder-for-rhel-9-<arch>-rpms` and enables it through
-# subscription-manager. Getting that wrong produces a script that works on
-# AlmaLinux, is advertised for RHEL, and fails there — so the two are separate
-# decisions here.
+# FAMILY picks the package manager. CRB_METHOD is separate: EL9 rebuilds use
+# `crb` via dnf, subscribed RHEL uses subscription-manager.
 FAMILY=""; CRB_METHOD=""; EPEL_METHOD=""; TESTED=0
 case "${ID}:${VERSION_ID%%.*}" in
 debian:12)           FAMILY=deb; TESTED=1 ;;
@@ -146,8 +92,7 @@ almalinux:9|rocky:9) FAMILY=rpm; CRB_METHOD=dnf; EPEL_METHOD=package; TESTED=1 ;
 centos:9)            FAMILY=rpm; CRB_METHOD=dnf; EPEL_METHOD=package-with-next ;;
 rhel:9)              FAMILY=rpm; CRB_METHOD=subscription-manager; EPEL_METHOD=url ;;
 *)
-    # Not a refusal: PGDG supports more than postvec tests, and an operator on
-    # a near neighbour knows more about their host than this script does.
+    # Not a refusal. PGDG covers more than postvec tests.
     case "${ID_LIKE:-}" in
     *debian*)        FAMILY=deb ;;
     *rhel*|*fedora*) FAMILY=rpm; CRB_METHOD=dnf; EPEL_METHOD=package ;;
@@ -163,11 +108,7 @@ if [[ -n "${PG_MAJOR}" && ! "${PG_MAJOR}" =~ ^(16|17|18)$ ]]; then
     die "--pg must be 16, 17 or 18 (got '${PG_MAJOR}')"
 fi
 
-# ------------------------------------------------------------------ the plan
-#
-# Built as text first and *shown* before anything runs, because a script that
-# configures package repositories as root should be readable before it is
-# trusted — and because `--print` has to produce something a person can paste.
+# Build the plan as text and show it before anything runs. `--print` pastes this.
 
 plan_deb() {
     local codename="${VERSION_CODENAME:-}"
@@ -191,8 +132,7 @@ apt-get update
 EOF
 }
 
-# The CodeReady Builder repository, by the name and mechanism this distribution
-# actually uses. Every EL9 rebuild calls it `crb`; subscribed RHEL does not.
+# CodeReady Builder: `crb` on EL9 rebuilds, subscription-manager on RHEL.
 plan_crb() {
     case "${CRB_METHOD}" in
     subscription-manager)
@@ -203,10 +143,7 @@ plan_crb() {
     esac
 }
 
-# EPEL, likewise. `dnf install epel-release` works on the rebuilds because they
-# carry the package in `extras`; **subscribed RHEL does not**, and the documented
-# path there is Fedora's release RPM by URL. CentOS Stream additionally wants
-# `epel-next-release`, which carries builds against the *next* minor.
+# EPEL: the package on rebuilds, a URL on RHEL, plus epel-next-release on CentOS Stream.
 EPEL_RELEASE_URL=https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 plan_epel() {
     case "${EPEL_METHOD}" in
@@ -265,15 +202,7 @@ printf '\n\033[1mpostvec prerequisites — %s\033[0m\n\n' "${PRETTY_NAME:-${ID} 
 printf '%s\n' "${PLAN}" | sed 's/^/    /' >&2
 printf '\n' >&2
 
-# An unrehearsed path is printed, not executed.
-#
-# Configuring system repositories as root on a distribution this project has
-# never actually run against is not a thing to do on a user's behalf on the
-# strength of "the commands look right". The commands above *are* the documented
-# ones for this system and are asserted by tests/unit-test.sh — but generating
-# the right text and surviving execution are different claims, and only one of
-# them has evidence. So: run them yourself, or say explicitly that you accept an
-# untested path.
+# An untested distribution is printed, not executed, unless --force-untested.
 if (( ! TESTED )) && (( ! FORCE_UNTESTED )); then
     die "postvec has not rehearsed this bootstrap on ${PRETTY_NAME:-${ID} ${VERSION_ID}}.
 
@@ -296,13 +225,8 @@ Run with --yes to proceed unattended, or --print to see the commands only."
     case "${reply}" in [yY]|[yY][eE][sS]) ;; *) die "nothing was changed" ;; esac
 fi
 
-# ----------------------------------------------------------------- do the work
-
-# Every fingerprint in a key file, armoured or binary. Captured rather than
-# piped into `grep -q`: under `set -o pipefail` that pipeline reports the
-# *producer's* death by SIGPIPE when grep exits early on a match, so the shape
-# that reads most naturally is the shape that fails on success. Not a thing to
-# risk on a signing key.
+# Capture fingerprints. grep -q on a pipe under pipefail dies with SIGPIPE
+# on a match, so the natural pipeline fails on success.
 fingerprints_of() {
     gpg --show-keys --with-colons "$1" 2>/dev/null | awk -F: '$1 == "fpr" {print $10}' || true
 }
@@ -326,8 +250,7 @@ configure_deb() {
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg >/dev/null
 
-    # Check the fingerprint of whatever is about to be trusted: a file just
-    # downloaded, or a keyring already on disk.
+    # Check the fingerprint of a new download or a keyring already on disk.
     local tmp; tmp="$(mktemp -d)"
     trap 'rm -rf "${tmp}"' RETURN
 
@@ -370,8 +293,7 @@ configure_rpm() {
     say "installing dnf-plugins-core"
     dnf install -y -q dnf-plugins-core >/dev/null
 
-    # CodeReady Builder first, then EPEL: on RHEL, EPEL's own instructions
-    # require CRB to be enabled before its release RPM is installed.
+    # CodeReady Builder before EPEL. On RHEL the EPEL RPM install requires it.
     case "${CRB_METHOD}" in
     subscription-manager)
         say "enabling codeready-builder-for-rhel-9-${ARCH}-rpms"
@@ -386,11 +308,7 @@ subscription; on a rebuild such as AlmaLinux or Rocky the repository is called
         dnf config-manager --set-enabled crb >/dev/null ;;
     esac
 
-    # `dnf install epel-release` resolves on the rebuilds, which ship the
-    # package in `extras`. On subscribed RHEL it does not exist under that name
-    # and the documented path is Fedora's release RPM by URL — a difference that
-    # only shows up when the script actually runs, which is why the untested
-    # distributions do not run it by default (see the gate above).
+    # Rebuilds ship epel-release. Subscribed RHEL needs Fedora's release RPM by URL.
     case "${EPEL_METHOD}" in
     url)
         say "installing EPEL from ${EPEL_RELEASE_URL}"
@@ -408,13 +326,8 @@ subscription; on a rebuild such as AlmaLinux or Rocky the repository is called
     if grep -q '^pgdg' <<<"${repos}"; then
         say "the PGDG repository is already configured"
     else
-        # The Debian path verifies a pinned key fingerprint before trusting an
-        # archive; this is the same thing for RPM. The repository RPM's own
-        # digest is *not* the pin here: upstream's documented URL is `-latest`
-        # and moves by design, so pinning it would break on republication. The
-        # key does not move, so the key is the trust root — imported after its
-        # fingerprint is checked, and then used to check the RPM's signature
-        # before anything is installed.
+        # The repository URL is -latest and moves. The key is the trust root:
+        # check its fingerprint, then the RPM signature, before install.
         say "fetching the PGDG RPM signing key"
         curl -fsSL --retry 3 --retry-delay 2 -o "${tmp}/pgdg-rpm.key" "${PGDG_RPM_KEY_URL}" \
             || die "could not download ${PGDG_RPM_KEY_URL}"
@@ -427,15 +340,8 @@ subscription; on a rebuild such as AlmaLinux or Rocky the repository is called
             "https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-${ARCH}/pgdg-redhat-repo-latest.noarch.rpm" \
             || die "could not download the PGDG repository RPM"
 
-        # Checked against **only** the key just verified.
-        #
-        # `rpm --checksig` against the host database proves the package is
-        # signed by *some* key the host already trusts, which on a machine with
-        # other vendors' keys installed is a much weaker statement than it
-        # looks — and importing the PGDG key into the host database first makes
-        # it weaker still, because then the check cannot distinguish "signed by
-        # PGDG" from "signed by anything else already there". So the signature
-        # is checked in a throwaway RPM database that contains exactly one key.
+        # Check the signature in a throwaway RPM database that holds only this
+        # key. The host database would accept any key it already trusts.
         local checkdb="${tmp}/rpmdb"
         mkdir -p "${checkdb}"
         rpm --dbpath "${checkdb}" --initdb
@@ -460,19 +366,14 @@ deb) configure_deb ;;
 rpm) configure_rpm ;;
 esac
 
-# ------------------------------------------------------------------- confirm it
-#
-# "The commands did not fail" is not the same as "the packages are now
-# reachable". This asks the package manager the question the next command will
-# ask, so a misconfiguration surfaces here rather than three commands later.
+# Confirm the packages resolve. A command that exited 0 is not the same thing.
 
 check_available() {
     local major="$1" name found=1 policy
     case "${FAMILY}" in
     deb)
         for name in "postgresql-${major}" "postgresql-${major}-pgvector"; do
-            # Captured rather than piped into `grep -q`; see the fingerprint
-            # check above for why that pipeline lies under `pipefail`.
+            # Captured, not piped into grep -q: pipefail plus SIGPIPE fails on a match.
             policy="$(apt-cache policy "${name}" 2>/dev/null)" || policy=""
             if [[ "${policy}" == *"Candidate:"* && "${policy}" != *"Candidate: (none)"* ]]; then
                 say "  ${name} is available"

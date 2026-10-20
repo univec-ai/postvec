@@ -7,13 +7,13 @@
 #
 # `postvec-prerequisites.sh` refuses to execute on a distribution this project
 # has not rehearsed. That refusal is only honest if "rehearsed" means something,
-# and the thing it has to mean is *this*: the script ran, on that distribution,
+# and the thing it has to mean is this: the script ran, on that distribution,
 # and the packages postvec depends on resolved afterwards.
 #
 # It is separate from tests/package-install-test.sh because it answers a
 # different question much more cheaply. The install test proves a built package
-# installs and loads on Debian 12 and EL9 — minutes per cell, and it needs
-# packages to have been built. This proves the *first command a user runs* works
+# installs and loads on Debian 12 and EL9: minutes per cell, and it needs
+# packages to have been built. This proves the first command a user runs works
 # on every distribution the script will execute on, needs nothing built, and is
 # the only evidence behind the `TESTED=1` list in that script.
 
@@ -25,11 +25,11 @@ BOOTSTRAP="${PKG_DIR}/scripts/postvec-prerequisites.sh"
 
 # The distributions postvec-prerequisites.sh marks TESTED=1, and the image that
 # stands in for each. Rocky is here for the same reason it is TESTED there: it
-# is claimed, so it is run — "same rebuild as AlmaLinux" is a reason to expect
+# is claimed, so it is run: "same rebuild as AlmaLinux" is a reason to expect
 # it to work, not evidence that it does.
 #
 # These are tags rather than digests on purpose: the point is that the bootstrap
-# keeps working against what these distributions are *now*, including a PGDG or
+# keeps working against what these distributions are now, including a PGDG or
 # EPEL change upstream. A digest-pinned base would freeze exactly the thing this
 # test exists to notice.
 DISTROS=(
@@ -49,7 +49,7 @@ while (($#)); do
     case "$1" in
     --distro) ONLY="$2"; shift 2 ;;
     --pg)     PG_MAJOR="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
 done
@@ -90,7 +90,7 @@ for entry in "${DISTROS[@]}"; do
         continue
     fi
 
-    # It has to have *verified* something, not merely succeeded. A bootstrap
+    # It has to have verified something, not merely succeeded. A bootstrap
     # that stopped checking fingerprints would still exit 0.
     if grep -q "fingerprint verified" "${log}"; then
         ok "a signing key fingerprint was verified"

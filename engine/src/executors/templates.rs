@@ -21,8 +21,7 @@ impl TemplateSet {
     /// value. Each entry's value is a path (relative or absolute) to a Jinja
     /// template file.
     ///
-    /// Returns `Ok(None)` when `templates` is absent / null / empty so callers
-    /// can keep the legacy "no templates configured" path cleanly.
+    /// Returns `Ok(None)` when `templates` is absent, null or empty.
     pub fn load(
         templates_value: Option<&Value>,
         model_dir: &Path,
@@ -91,7 +90,6 @@ impl TemplateSet {
         &self.names
     }
 
-    /// True if a template for this `input_type` is configured.
     pub fn contains(&self, name: &str) -> bool {
         self.names.iter().any(|n| n == name)
     }
@@ -117,10 +115,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Create a temp model dir with the given (filename, contents) template files.
     fn temp_model_dir(files: &[(&str, &str)]) -> PathBuf {
-        // Use a name unique to this process + a counter derived from the inputs to
-        // avoid collisions between tests within the same binary.
+        // Pid plus file-name lengths so tests in one binary don't share a directory.
         let dir = std::env::temp_dir().join(format!(
             "engine_templates_{}_{}",
             std::process::id(),
@@ -143,9 +139,7 @@ mod tests {
         assert!(TemplateSet::load(Some(&json!({})), &dir).unwrap().is_none());
     }
 
-    // NOTE: `TemplateSet` has no `Debug` impl (it wraps a minijinja
-    // `Environment`), so the error cases use `matches!` rather than
-    // `unwrap_err()` (which would require `T: Debug`).
+    // `TemplateSet` has no `Debug` impl, so these cases use `matches!` not `unwrap_err()`.
     #[test]
     fn load_rejects_non_object() {
         let dir = std::env::temp_dir();

@@ -3,10 +3,9 @@
 
 //! Node-local subcommands: `status`, `load`, `unload`.
 //!
-//! All three talk to `127.0.0.1` on the admin port. `status --fleet` is
-//! read-only: it compares alive peers' `/config` inventories. postvec
-//! round-robins its gRPC endpoints, so a missing converter on one node
-//! looks like a fluke.
+//! All three talk to `127.0.0.1` on the admin port. `status --fleet` compares
+//! alive peers' `/config` inventories. postvec round-robins gRPC endpoints, so
+//! a missing converter on one node looks like a fluke.
 //!
 //! Exit codes: `0` healthy, `1` reachable but degraded, `2` unreachable.
 
@@ -34,12 +33,11 @@ fn timeout(args: &LocalArgs) -> Duration {
     Duration::from_secs(args.timeout.unwrap_or(DEFAULT_TIMEOUT_SECONDS).max(1))
 }
 
-/// One HTTP client for the whole invocation.
+/// One HTTP client for the invocation.
 ///
-/// Invalid certificates are accepted because peers serve `/config` with a
-/// self-signed certificate on a private network. The trust boundary is the
-/// network. It only matters for `--fleet`; the local calls are plain
-/// loopback HTTP.
+/// Invalid certificates are accepted: peers serve `/config` with a self-signed
+/// certificate on a private network. The trust boundary is the network. Only
+/// `--fleet` uses TLS. Local calls are plain loopback HTTP.
 fn http_client(args: &LocalArgs) -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -56,20 +54,14 @@ fn unreachable_hint(args: &LocalArgs, error: &dyn std::fmt::Display) -> String {
     )
 }
 
-// ---- status ------------------------------------------------------------
-
 /// The subset of `/config` this client reads.
 struct NodeReport {
     models: Vec<String>,
-    /// Provider-backed entries: public name -> connector type, from the
-    /// entry's top-level `provider` extra. The serving truth is a providers.d
-    /// file, so descriptor-drift checks skip them and the fleet report labels
-    /// them.
+    /// Public name to connector type, from the `provider` extra.
+    /// Serving truth is a providers.d file, so descriptor checks skip these.
     providers: BTreeMap<String, String>,
-    /// Public name -> the secret-free routing identity behind it. Name
-    /// parity alone misses two nodes serving one name from different files,
-    /// model ids or dimensions. Round-robin then produces intermittent
-    /// dimension failures, or same-dimension vectors from a different model.
+    /// Public name to a secret-free routing identity. Name parity misses
+    /// two nodes serving one name from different files, ids or dimensions.
     fingerprints: BTreeMap<String, String>,
     server: Value,
     cluster: Value,
@@ -118,14 +110,10 @@ fn parse_config(body: &Value) -> NodeReport {
     }
 }
 
-/// The secret-free routing identity of one provider-backed `/config` entry.
+/// Secret-free routing identity of one provider-backed `/config` entry.
 ///
-/// Everything here decides what a caller actually gets back, and nothing here
-/// is a credential: the connector type, the providers.d file stem, the id the
-/// provider's API is asked for, and the declared dimension. `base_url` is
-/// deliberately absent — it is operator-supplied and can carry an internal
-/// hostname, and the three fields above already separate every case a fleet
-/// can get wrong.
+/// Connector type, providers.d stem, provider model id and declared dimension.
+/// `base_url` is omitted: it is operator-supplied and can carry an internal hostname.
 fn fingerprint(entry: &Value) -> String {
     let field = |name: &str| {
         entry
@@ -152,13 +140,8 @@ fn fingerprint(entry: &Value) -> String {
 
 /// Names every node advertises but does not agree on.
 ///
-/// Set parity answers "is this name everywhere"; it cannot answer "is it the
-/// same thing everywhere". Two nodes serving `openai-text-embedding-3-small`
-/// from different files, model ids or dimensions are *identical* to a
-/// name-set comparison, while round-robin endpoint selection hands one
-/// caller each. A dimension mismatch shows up as intermittent dead letters;
-/// a same-dimension model mismatch shows up as nothing at all, and poisons
-/// the column silently.
+/// Set parity cannot see two nodes serving one name from different files,
+/// ids or dimensions. Round-robin then hands callers either one.
 fn fingerprint_drift(nodes: &[(String, BTreeMap<String, String>)]) -> Vec<String> {
     if nodes.len() < 2 {
         return Vec::new();
@@ -190,7 +173,7 @@ fn fingerprint_drift(nodes: &[(String, BTreeMap<String, String>)]) -> Vec<String
     drift
 }
 
-/// Peers worth querying: alive, in this group, and not this node.
+/// Alive peers that are not this node.
 fn peer_addresses(cluster: &Value) -> Vec<String> {
     cluster
         .get("nodes")
@@ -213,14 +196,9 @@ fn peer_addresses(cluster: &Value) -> Vec<String> {
 
 /// Names one node advertises but another does not, in both directions.
 ///
-/// This is the check `postvec doctor` cannot do today: its own consistency
-/// check unions every node's models before comparing, which hides exactly
-/// this — a name missing from one node looks identical to a name present
-/// everywhere.
-/// `provider_of` labels provider-backed names in the drift lines: a
-/// provider model missing from one node is not a missing model *file* but a
-/// missing (or broken) providers.d entry/key on that node, and the fix is
-/// different enough to be worth naming.
+/// `postvec doctor` unions every node's models first, which hides a name
+/// missing from one node. `provider_of` labels a missing providers.d entry
+/// so it is not reported as a missing model file.
 fn inventory_drift(
     nodes: &[(String, Vec<String>)],
     provider_of: &BTreeMap<String, String>,
@@ -278,8 +256,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
     };
     let report = parse_config(&body);
 
-    // `/ready` answers 503 when it is not ready and the body carries the
-    // reason, so the status code must not be allowed to discard it.
+    // `/ready` answers 503 with the reason in the body. Do not drop the body on that status.
     let ready_body: Value = match client.get(format!("{base}/ready")).send().await {
         Ok(response) => response.json().await.unwrap_or(Value::Null),
         Err(_) => Value::Null,
@@ -290,8 +267,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    // The on-disk half. The server reports its own root, so an operator does
-    // not have to remember which one this node was started with.
+    // On-disk half. Prefer the root the server reports.
     let root = local.root.clone().or_else(|| {
         report
             .server
@@ -303,7 +279,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
 
     let loaded: BTreeSet<&str> = report.models.iter().map(String::as_str).collect();
     let mut warnings: Vec<String> = Vec::new();
-    // Policy, not a problem: reported, but it does not make the node degraded.
+    // Reported, but it does not make the node degraded.
     let mut policy_note: Option<String> = None;
     let mut on_disk: Vec<(String, bool, bool)> = Vec::new(); // name, enabled, loaded
     match &inventory {
@@ -318,9 +294,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
                     loaded.contains(model.name.as_str()),
                 ));
             }
-            // A node started with `--models` excludes everything outside
-            // that list on purpose. Reporting those as "not loaded" would
-            // turn a deliberate policy into a page of warnings.
+            // `--models` excludes names on purpose. Do not warn about them.
             let allow_list: Vec<String> = report
                 .server
                 .get("models_allowed")
@@ -358,10 +332,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
                 ));
             }
             for name in &report.models {
-                // Provider-backed models have no on-disk descriptor by
-                // design: their serving truth is a providers.d file, which
-                // survives a restart. The descriptor checks are for engine
-                // models only.
+                // Provider models have no descriptor. Their serving truth is a providers.d file.
                 if report.providers.contains_key(name) {
                     continue;
                 }
@@ -382,11 +353,9 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
         None => {}
     }
 
-    // The fleet half.
     let mut fleet: Vec<(String, Vec<String>)> = Vec::new();
     let mut drift: Vec<String> = Vec::new();
-    // Set separately from `drift`: a name absent from one node is a report,
-    // a name that means two different things is a readiness failure.
+    // A missing name is a report. A name that means two things is a readiness failure.
     let mut fleet_incompatible = false;
     if args.fleet {
         let own = report
@@ -396,8 +365,7 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
             .unwrap_or("this node")
             .to_string();
         fleet.push((own.clone(), report.models.clone()));
-        // Any node's provider marker labels the union entry: a name that is
-        // provider-backed anywhere gets the providers.d diagnosis.
+        // A provider marker on any node labels the name in the drift lines.
         let mut fleet_providers = report.providers.clone();
         let mut fleet_prints = vec![(own, report.fingerprints.clone())];
         for address in peer_addresses(&report.cluster) {
@@ -415,13 +383,8 @@ pub async fn status(args: &StatusArgs) -> anyhow::Result<i32> {
             }
         }
         drift = inventory_drift(&fleet, &fleet_providers);
-        // Same name, different thing. Reported alongside the absent-from
-        // lines because the fix is the same kind of work — make providers.d
-        // agree — but treated more harshly in the exit code: a name missing
-        // from one node is what a rolling restart looks like, while a name
-        // that *means* two things is a fleet that hands callers vectors from
-        // two different models under one identity. The first is a report;
-        // the second is a readiness failure.
+        // Same name, different routing identity. A missing name can be a rolling
+        // restart. A name that means two things fails readiness.
         let incompatible = fingerprint_drift(&fleet_prints);
         fleet_incompatible = !incompatible.is_empty();
         drift.extend(incompatible);
@@ -569,8 +532,6 @@ fn field_of(value: &Value, key: &str) -> String {
         .to_string()
 }
 
-// ---- load / unload -----------------------------------------------------
-
 pub async fn load(args: &ModelArgs) -> anyhow::Result<i32> {
     admin_call(args, "load").await
 }
@@ -682,11 +643,7 @@ mod tests {
         assert_eq!(peer_addresses(&cluster), ["https://b:22222"]);
     }
 
-    /// Set parity answers "is this name everywhere". It cannot answer "is it
-    /// the same thing everywhere" — and with round-robin endpoint selection
-    /// the second question is the one that decides whether a caller gets a
-    /// usable vector. A dimension mismatch surfaces as intermittent dead
-    /// letters; a same-dimension model mismatch surfaces as nothing at all.
+    /// Same name, different file, id or dimension is drift. One node is not a fleet.
     #[test]
     fn same_name_different_provider_settings_is_drift() {
         let node = |file: &str, id: &str, dim: i64| {
@@ -758,8 +715,7 @@ mod tests {
         assert!(fingerprint_drift(&dims[..1]).is_empty());
     }
 
-    /// The check `postvec doctor` cannot make today, because its own
-    /// consistency check unions every node's models before comparing.
+    /// A name missing from one node is named, not hidden by a union.
     #[test]
     fn drift_names_the_nodes_a_model_is_missing_from() {
         let nodes = vec![
@@ -799,9 +755,7 @@ mod tests {
         assert!(inventory_drift(&nodes, &BTreeMap::new()).is_empty());
     }
 
-    /// A `/config` with a provider entry: the name lands in `models` (so the
-    /// existing comparison covers it with no new machinery) AND in the
-    /// provider map (so reports can label it).
+    /// A provider entry lands in `models` and in the provider map.
     #[test]
     fn parse_config_extracts_provider_markers() {
         let body = json!({
@@ -825,10 +779,7 @@ mod tests {
         assert!(!report.providers.contains_key("embed"));
     }
 
-    /// The two-node parity case the fleet report exists for: one node
-    /// missing the provider file shows a drift line labeled with the
-    /// provider and the providers.d diagnosis — a missing key is an ops
-    /// problem on that node, not a missing model file.
+    /// A node missing the provider file is labeled as providers.d drift, not a missing model file.
     #[test]
     fn a_node_missing_the_provider_file_shows_a_labeled_diff() {
         let nodes = vec![

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Prove what the produced binaries actually depend on, instead of assuming it.
+# Prove what the produced binaries depend on.
 #
-#   inspect-elf.sh --arch amd64 --library …/postvec.so --binary …/postvec
+#   inspect-elf.sh --arch amd64 --library path/postvec.so --binary path/postvec
 #
-# The rules below encode the properties a postvec release artifact must have.
-# The interesting one is the ONNX Runtime rule: embedded mode dlopen()s
-# libonnxruntime at runtime from the engine root, so a *link-time* dependency
-# on it would mean every installation — including every remote-mode one —
-# needs the runtime present just to load the extension.
+# Embedded mode dlopen()s libonnxruntime from the engine root. A link-time
+# dependency would force every install, including remote mode, to carry the
+# runtime just to load the extension.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -19,15 +17,10 @@ while (($#)); do
     --distro)  DISTRO="$2"; shift 2 ;;
     --library) LIBRARY="$2"; shift 2 ;;
     --binary)  BINARY="$2"; shift 2 ;;
-    # A soname the target's *bare* base image does not carry but a package
-    # the artifact will declare a dependency on does — OpenSSL for the
-    # inference node's TLS listener. The resolution check runs in the base
-    # image so that a missing dependency cannot hide behind a fat builder;
-    # this names the one kind of "not found" that is the dependency working
-    # as designed, and it is still checked to be a real NEEDED entry, so a
-    # stale allowance cannot outlive the dependency it excuses. Repeatable.
+    # A soname the bare base image lacks but a declared dependency provides
+    # (OpenSSL on the node). Still checked as a real NEEDED entry. Repeatable.
     --provided-by-package) PROVIDED_BY_PACKAGE+=("$2"); shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -48,7 +41,7 @@ pass()    { printf '  ok    %s\n' "$*"; }
 
 # The oldest glibc each supported distribution provides. A binary that needs a
 # newer symbol version installs cleanly and then fails to dlopen with
-# "GLIBC_x.y not found" — at CREATE EXTENSION time, on the user's machine.
+# "GLIBC_x.y not found": at CREATE EXTENSION time, on the user's machine.
 glibc_floor_for() {
     case "$1" in
     deb12)       echo 2.36 ;;   # Debian 12 bookworm

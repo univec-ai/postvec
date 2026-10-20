@@ -19,7 +19,7 @@ vendor: ${VENDOR}
 # file instead.
 homepage: ${SOURCE_REPOSITORY}
 license: ${MODEL_LICENSE}
-# Every line of the extended description must stay under 80 characters *after*
+# Every line of the extended description must stay under 80 characters after
 # substitution, which is why the long values (the model name, the archive
 # digest, the doc path) each start a line of their own.
 description: |
@@ -70,5 +70,5 @@ rpm:
   group: Applications/Databases
 
 umask: 0022
-# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly: an
 # explicit `mtime:` here would be parsed before environment expansion.

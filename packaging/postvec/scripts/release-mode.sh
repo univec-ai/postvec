@@ -84,7 +84,7 @@ esac
 # The workflow file's own version, for anything that publishes.
 #
 # Absent is not "skip the check". A missing POSTVEC_DISPATCH_REF means this gate
-# has been wired up wrongly — and a security check that passes when it cannot
+# has been wired up wrongly, and a security check that passes when it cannot
 # tell is not a check. GitHub always supplies `github.ref_name`; if it ever
 # stops, or a caller forgets to pass it, publication stops with it.
 if [[ "${publish}" == true && -z "${DISPATCH_REF}" ]]; then
@@ -94,8 +94,8 @@ if [[ "${publish}" == true && -z "${DISPATCH_REF}" ]]; then
 fi
 
 if [[ "${publish}" == true && "${DISPATCH_REF}" != "${RELEASE_REF}" ]]; then
-    # The remedy, complete enough to paste — including the inputs the mode
-    # requires, because an invocation that is missing them fails the *next*
+    # The remedy, complete enough to paste: including the inputs the mode
+    # requires, because an invocation that is missing them fails the next
     # check and sends someone round the loop again.
     extra=""
     if [[ "${MODE}" == disposable-publication ]]; then

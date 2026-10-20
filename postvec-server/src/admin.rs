@@ -8,8 +8,6 @@
 //! only. The per-request peer check is a second line behind that bind.
 //! Read-only routes are mirrored so the node-local CLI can hit `/config`
 //! over plain loopback HTTP.
-//!
-//! `postvec-server load` catches one node's engine up to disk.
 
 use crate::models::{self, DescriptorIndex};
 use crate::state::ServerState;
@@ -24,10 +22,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// Request body cap. Generous for 32 short names; anything larger is not a
-/// request this API has a shape for.
+/// Body cap. 32 short names fit. Anything larger is not a request this API accepts.
 const BODY_LIMIT: usize = 64 * 1024;
-/// At most this many models per request.
 const MAX_MODELS_PER_REQUEST: usize = 32;
 
 #[derive(serde::Deserialize)]
@@ -35,8 +31,7 @@ struct AdminRequest {
     models: Vec<String>,
 }
 
-/// A request-level refusal: `{success: false, error}` on a 4xx — the shape
-/// the client decodes even for error statuses.
+/// `{success: false, error}` on a 4xx. The client decodes this shape for errors too.
 fn refusal(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
     (status, Json(json!({ "success": false, "error": message })))
 }
@@ -56,8 +51,7 @@ fn results_envelope(results: Vec<Value>) -> (StatusCode, Json<Value>) {
     )
 }
 
-/// Defence in depth behind the loopback bind. The listener bind and the
-/// request peer are checked in different places.
+/// Loopback peer check, separate from the listener bind.
 fn peer_check(peer: SocketAddr) -> Result<(), (StatusCode, Json<Value>)> {
     if peer.ip().is_loopback() {
         Ok(())
@@ -69,8 +63,7 @@ fn peer_check(peer: SocketAddr) -> Result<(), (StatusCode, Json<Value>)> {
     }
 }
 
-/// Decode and bound a request body. An oversized or non-UTF-8 body is
-/// re-wrapped into the JSON envelope.
+/// Decode and bound a request body. Oversized or non-UTF-8 is re-wrapped as JSON.
 fn parse_request(
     body: Result<String, StringRejection>,
 ) -> Result<Vec<String>, (StatusCode, Json<Value>)> {
@@ -99,8 +92,6 @@ fn parse_request(
     Ok(request.models)
 }
 
-// ---- /admin/load -------------------------------------------------------
-
 async fn admin_load(state: Arc<ServerState>, names: Vec<String>) -> (StatusCode, Json<Value>) {
     match load_models(state, names).await {
         Ok(results) => results_envelope(results),
@@ -113,8 +104,7 @@ pub(crate) async fn load_models(
     state: Arc<ServerState>,
     names: Vec<String>,
 ) -> Result<Vec<Value>, String> {
-    // Detach the load. If the client disconnects, this task still holds
-    // the lifecycle lock and finishes.
+    // Detach the load. A disconnect still finishes under the lifecycle lock.
     let lifecycle = state.lifecycle.clone();
     let root = state.settings.root.clone();
     let outcome = tokio::spawn(async move {
@@ -144,8 +134,7 @@ pub(crate) async fn load_models(
 }
 
 async fn load_one(state: &ServerState, index: &Arc<DescriptorIndex>, name: &str) -> Value {
-    // `--models` is the eligibility policy for admin loads too. Empty
-    // means any enabled descriptor.
+    // `--models` gates admin loads too. Empty means any enabled descriptor.
     let allowed = &state.settings.models;
     if !allowed.is_empty() && !allowed.iter().any(|a| a == name) {
         return model_result(
@@ -206,14 +195,12 @@ async fn load_one(state: &ServerState, index: &Arc<DescriptorIndex>, name: &str)
         );
     }
 
-    // Readiness is pool AND executor, so a load in its brief optimistic
-    // registration window does not report "already-loaded".
+    // Ready means pool and executor, so a load still registering is not already loaded.
     if state.engine.is_model_ready(name) {
         return model_result(name, "already-loaded", None);
     }
 
-    // The resident ceiling counts the whole not-yet-ready dependency
-    // closure, because the requested name alone undercounts a bridge chain.
+    // Count the whole not-yet-ready closure. The name alone undercounts a bridge chain.
     let closure_index = index.clone();
     let closure_name = name.to_string();
     let closure = match tokio::task::spawn_blocking(move || {
@@ -261,11 +248,8 @@ async fn load_one(state: &ServerState, index: &Arc<DescriptorIndex>, name: &str)
     }
 }
 
-// ---- /admin/unload -----------------------------------------------------
-
-/// Best-effort direct-dependency edges, read from the same descriptors
-/// `load_model` parses. A missing or broken descriptor skips ordering
-/// for that model; the unload still proceeds.
+/// Direct dependencies from the descriptors `load_model` parses.
+/// A missing or broken descriptor skips ordering for that model. Unload still proceeds.
 fn request_dependencies(index: &DescriptorIndex, names: &[String]) -> HashMap<String, Vec<String>> {
     let mut deps = HashMap::new();
     for name in names {
@@ -278,10 +262,9 @@ fn request_dependencies(index: &DescriptorIndex, names: &[String]) -> HashMap<St
     deps
 }
 
-/// Order the requested set so a dependent unloads before anything it
-/// depends on, the reverse of `load_model`'s dependencies-first recursion.
-/// Duplicates collapse to their first occurrence; a cycle falls back to
-/// request order. Quadratic, and fine: at most [`MAX_MODELS_PER_REQUEST`] names.
+/// Unload a dependent before anything it depends on, the reverse of `load_model`.
+/// Duplicates keep the first occurrence. A cycle falls back to request order.
+/// Quadratic is fine: at most [`MAX_MODELS_PER_REQUEST`] names.
 fn reverse_dependency_order(names: &[String], deps: &HashMap<String, Vec<String>>) -> Vec<String> {
     let mut remaining: Vec<&str> = Vec::new();
     for name in names {
@@ -334,8 +317,7 @@ pub(crate) async fn unload_models(
 
         let mut results = Vec::with_capacity(names.len());
         for name in reverse_dependency_order(&names, &deps) {
-            // `unload_model` is synchronous: it takes the engine write
-            // locks and tears down native sessions as the pool drops.
+            // Synchronous: takes the engine write locks and drops native sessions with the pool.
             let engine: Arc<InferenceEngine> = state.engine.clone();
             let model = name.clone();
             let result = tokio::task::spawn_blocking(move || engine.unload_model(&model)).await;
@@ -355,24 +337,17 @@ pub(crate) async fn unload_models(
     outcome.map_err(|e| format!("admin unload task failed: {e}"))
 }
 
-// ---- /admin/providers/reload --------------------------------------------
-
-/// Rescan providers.d and swap the gateway snapshot in atomically.
-/// `postvec provider add/rm --path <root>` calls this after writing
-/// files; a restart also picks changes up. A failed structural reload
-/// keeps the previous snapshot.
+/// Rescan providers.d and swap the gateway snapshot atomically.
+/// A failed structural reload keeps the previous snapshot.
 async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) {
     let gateway = state.gateway.clone();
     let path = state.settings.providers_path.clone();
-    // Read fresh at reload time, not at boot: a provider file claiming a name
-    // the engine now owns must be refused now.
+    // Reread now. A provider file claiming a name the engine now owns must be refused.
     let engine = state.engine.clone();
     let root = state.settings.root.clone();
-    // Directory this node reads. Reported in the body so `postvec provider
-    // ... --path DIR` can tell which loopback host answered.
+    // Path this node reads, so `postvec provider --path DIR` can tell which host answered.
     let served_path = path.display().to_string();
-    // providers.d scanning is filesystem work (stat, read, key files) —
-    // keep it off the serving runtime's workers like the other admin routes.
+    // providers.d scanning is filesystem work. Keep it off the serving runtime.
     let outcome = tokio::task::spawn_blocking(move || {
         // Fail closed: a scan failure keeps the previous snapshot.
         let local = models::reserved_local_names(&root, &engine)?;
@@ -403,14 +378,11 @@ async fn providers_reload(state: Arc<ServerState>) -> (StatusCode, Json<Value>) 
     }
 }
 
-// ---- Listener ----------------------------------------------------------
-
 pub fn router(state: Arc<ServerState>) -> Router {
     let load_state = state.clone();
     let unload_state = state.clone();
     let reload_state = state.clone();
-    // Read-only routes ride along so the node-local CLI can read `/config`
-    // over plain loopback HTTP.
+    // Mirror read-only routes so the node-local CLI can read `/config` over loopback HTTP.
     let router = crate::http::router(state.settings.metrics, true)
         .merge(crate::managed::routes())
         .route(
@@ -583,8 +555,6 @@ mod tests {
         assert_eq!(ordered, names(&["solo"]));
     }
 
-    /// The reload route swaps the gateway snapshot in and widens the
-    /// ingress permits by the new provider budget.
     #[tokio::test]
     async fn providers_reload_swaps_the_gateway_and_widens_ingress() {
         use std::os::unix::fs::PermissionsExt;
@@ -625,13 +595,11 @@ mod tests {
         let ingress = state.gateway.ingress(1);
         assert_eq!(ingress.available_permits(), 1);
 
-        // The operator adds the first provider file, then reloads.
         std::fs::create_dir_all(&providers_path).unwrap();
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `create_dir_all` honours the umask.
         std::fs::set_permissions(&providers_path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        // …and its parent: the loader refuses a providers.d whose ancestor is
-        // group-writable, and `tempfile`/`create_dir_all` honour the umask.
+        // And its parent: the loader refuses a providers.d whose ancestor is group-writable.
         if let Some(parent) = &providers_path.parent() {
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -652,8 +620,7 @@ mod tests {
             ingress.available_permits(),
             1 + state.gateway.inflight_budget()
         );
-        // The directory this node reads, so `postvec provider … --path DIR`
-        // can tell "I reloaded your files" from "some other host answered".
+        // The directory this node reads, so the caller can tell this host answered.
         assert_eq!(
             body["data"]["path"],
             json!(providers_path.display().to_string())

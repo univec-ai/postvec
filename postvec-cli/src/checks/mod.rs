@@ -1,10 +1,9 @@
-//! The diagnostic framework: check results, ordering, and aggregation.
+//! The diagnostic framework: check results, ordering and aggregation.
 //!
-//! Checks are **data, not print statements**, and every check function in this
-//! module tree is **pure** — it takes observed [`crate::facts`] and returns
-//! results. That is what lets `setup`'s preflight, `setup`'s post-restart smoke
-//! checks and `doctor` share one definition of "healthy", and what makes the
-//! logic testable without a cluster.
+//! Checks are data, not print statements. Every check function is pure: it
+//! takes observed [`crate::facts`] and returns results. That is what lets
+//! `setup` preflight, `setup` smoke checks and `doctor` share one definition
+//! of healthy, and what makes the logic testable without a cluster.
 
 pub mod cluster;
 pub mod database;
@@ -180,7 +179,7 @@ pub const CHECK_ORDER: &[&str] = &[
     "embedded.http-listener",
     "embedded.loaded-models",
     "embedded.cache-consistency",
-    // external providers (postvec provider …)
+    // external providers (postvec provider ...)
     "provider.directory",
     "provider.file",
     "provider.key-source",
@@ -188,7 +187,7 @@ pub const CHECK_ORDER: &[&str] = &[
     "provider.catalogue",
     "provider.space-dim",
     "provider.space-priority",
-    // model store (postvec model …)
+    // model store (postvec model ...)
     "models.receipts",
     "models.unactivated",
     "models.enabled-drift",

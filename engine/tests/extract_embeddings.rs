@@ -1,6 +1,4 @@
-//! Tests for `engine::utils::extract_embeddings` — the helper bridge executors
-//! (convert-bridge / embed-bridge) use to pull the embedding payload out of a
-//! sub-model's `ExecutorOutput` regardless of its shape.
+//! `extract_embeddings` pulls the embedding payload out of an executor output.
 
 use engine::executors::{ExecutionMetadata, ExecutorOutput};
 use engine::utils::extract_embeddings;
@@ -67,7 +65,7 @@ fn json_uses_configured_output_key() {
 #[test]
 fn json_falls_back_to_embeddings_key_when_no_config() {
     let out = ExecutorOutput::Json(json!({"embeddings": [[3.0]]}));
-    // No outputs configured → defaults to the "embeddings" key.
+    // No outputs configured: default to the "embeddings" key.
     assert_eq!(
         extract_embeddings(out, &ModelConfiguration::default()).unwrap(),
         json!([[3.0]])
@@ -79,7 +77,7 @@ fn json_missing_key_returns_whole_object() {
     let obj = json!({"unexpected": [[1.0]]});
     let out = ExecutorOutput::Json(obj.clone());
     let cfg = config_with_output_key("vectors");
-    // Key not present → the entire object is returned as a fallback.
+    // Key not present: return the whole object.
     assert_eq!(extract_embeddings(out, &cfg).unwrap(), obj);
 }
 

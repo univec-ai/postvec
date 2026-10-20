@@ -142,7 +142,7 @@ pub struct Context {
     /// True when database work goes through an operator-supplied URI rather
     /// than the selected cluster's own socket. The two can point at different
     /// servers, so any command that changes host configuration has to prove
-    /// they do not — see [`Context::require_database_is_the_selected_cluster`].
+    /// they do not. See [`Context::require_database_is_the_selected_cluster`].
     pub database_url_supplied: bool,
 }
 
@@ -151,9 +151,8 @@ impl Context {
     /// installation) fill in the paths only the server knows.
     pub async fn open(cli: &Cli, output: &Output) -> Result<Self> {
         // A URI on its own says nothing about this machine. Pairing it with
-        // whatever cluster happens to be installed here would mix one server's
-        // settings with another's package assets, ownership state and offline
-        // configuration — so that pairing has to be asked for explicitly, with
+        // whatever cluster is installed here would mix one server's settings
+        // with another's files. That pairing has to be asked for, with
         // --cluster or --pg-config, and is then verified.
         let selection_is_explicit = cli.cluster.is_some() || cli.pg_config.is_some();
         if let (Some(url), false) = (&cli.database_url, selection_is_explicit) {
@@ -222,10 +221,9 @@ impl Context {
 
     /// Decide how to reach the database, and as whom.
     ///
-    /// An operator-supplied URI is used as given and the CLI does not touch its
-    /// identity — they chose password or certificate authentication
-    /// deliberately. A local socket means peer authentication, which needs the
-    /// cluster owner's OS identity.
+    /// An operator-supplied URI is used as given. The CLI does not change its
+    /// identity: the operator chose that authentication. A local socket means
+    /// peer authentication, which needs the cluster owner's OS identity.
     fn resolve_target(cli: &Cli, cluster: &Cluster) -> (DbTarget, Option<OsAccount>) {
         if let Some(url) = &cli.database_url {
             return (DbTarget::Url(url.clone()), None);
@@ -241,8 +239,8 @@ impl Context {
             port: cluster.port,
             user,
         };
-        // Privileges only need dropping when we are somebody else — normally
-        // root, because writing /etc/postgresql requires it.
+        // Drop privileges only when we are somebody else, normally root.
+        // Writing /etc/postgresql requires it.
         let identity = owner.filter(|account| !account.is_current());
         (target, identity)
     }
@@ -270,29 +268,24 @@ impl Context {
     }
 
     /// Whether the connected server is the instance the selected cluster's
-    /// own socket reaches.
+    /// socket reaches. Without this, `setup` could install into one server
+    /// and restart another.
     ///
-    /// Discovery owns the host. `--database-url` owns the database. Without
-    /// this check, `setup` could install into one server and restart another.
-    ///
-    /// A second connection through the cluster socket is compared on two SQL
-    /// values: the system identifier (replication lineage; a standby shares
-    /// its primary's) and the exact postmaster start time (this instance).
-    /// Line 3 of `postmaster.pid` is `MyStartTime` in whole seconds, captured
-    /// earlier than `pg_postmaster_start_time()`, so a pid-file comparison
-    /// would reject the right postmaster across a second boundary and accept
-    /// a different same-lineage postmaster that started in the same second.
+    /// Compared on system identifier (lineage; a standby shares its primary's)
+    /// and exact postmaster start time. Line 3 of `postmaster.pid` is a
+    /// whole-second stamp captured earlier than `pg_postmaster_start_time()`,
+    /// so it would reject the right postmaster across a second boundary.
     pub async fn prove_database_is_the_selected_cluster(&self) -> IdentityProof {
         if !self.database_url_supplied || self.cluster.kind == ClusterKind::Remote {
-            // A socket target is the cluster's own socket; a remote-only
+            // A socket target is the cluster's own socket. A remote-only
             // context has no host side to disagree with.
             return IdentityProof::NotApplicable;
         }
         if self.cluster.kind == ClusterKind::Explicit {
             // The port and socket directory of an explicitly selected
-            // installation are defaults, not discoveries — and one of them is
-            // filled in from the supplied connection itself, so probing them
-            // would ask the same server twice.
+            // installation are defaults, not discoveries. One of them comes
+            // from the supplied connection, so probing them would ask the
+            // same server twice.
             return IdentityProof::Unprovable {
                 reason: "an installation selected with --pg-config has no independently known \
                          local endpoint to compare against"
@@ -429,11 +422,10 @@ impl Context {
     }
 }
 
-/// Compare a connection's identity against the local instance's.
+/// Compare a connection's identity against the local instance.
 ///
-/// Split out from the IO so both outcomes can be tested — in particular the
-/// primary/standby case, which is the whole reason the start time is compared
-/// as well as the system identifier.
+/// Start time is compared as well as the system identifier. A standby shares
+/// its primary's lineage.
 fn compare_identity(
     connected_identifier: &str,
     connected_start: &str,
@@ -448,9 +440,9 @@ fn compare_identity(
             ),
         };
     }
-    // Same lineage is exactly where a primary and its standby agree, so the
-    // running instance has to be identified separately. Both sides answer the
-    // same question here, so this is an exact comparison of one value.
+    // Same lineage is where a primary and its standby agree, so the running
+    // instance is identified separately. Both sides answer the same question,
+    // so the comparison is exact.
     if connected_start != local_start {
         return IdentityProof::Mismatch {
             detail: format!(
@@ -636,11 +628,9 @@ mod tests {
         }
     }
 
-    /// The case the system identifier alone cannot catch, and the reason the
-    /// postmaster start time is compared too: a physical standby carries its
-    /// primary's identifier, so "same lineage" is not "same instance". This is
-    /// also the most plausible way to reconfigure the wrong host — a URI
-    /// pointing at the primary, run on the standby.
+    /// A standby carries its primary's system identifier, so same lineage is
+    /// not the same instance. A URI for the primary, run on the standby, would
+    /// reconfigure the wrong host.
     #[test]
     fn a_standby_is_not_its_primary() {
         let lineage = "7558833644402126636";
@@ -661,10 +651,10 @@ mod tests {
         }
     }
 
-    /// Both sides answer the *same* question, so the comparison is exact.
-    /// Comparing a whole-second `postmaster.pid` timestamp against
-    /// `pg_postmaster_start_time()` would reject this pairing outright, because
-    /// PostgreSQL captures those two values at different moments.
+    /// Both sides answer the same question, so the comparison is exact.
+    /// A whole-second `postmaster.pid` stamp against
+    /// `pg_postmaster_start_time()` would reject this pairing. PostgreSQL
+    /// captures those two values at different moments.
     #[test]
     fn sub_second_precision_is_compared_exactly() {
         let lineage = "7558833644402126636";
@@ -748,7 +738,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_socket_target_needs_no_proof() {
-        // Without --database-url the connection *is* the cluster's own socket.
+        // Without --database-url the connection is the cluster's own socket.
         let context = context_for(server_at(None, None, 5432, None), cluster(None), false);
         assert_eq!(
             context.prove_database_is_the_selected_cluster().await,

@@ -1,21 +1,13 @@
-# Hash-locked dependency set for the release-manifest schema validator.
-#
-# `pip install jsonschema==4.23.0` pins one distribution and leaves attrs,
-# referencing, rpds-py and their own dependencies resolved from whatever PyPI
-# serves that minute. The validator is what stands between a malformed manifest
-# and a published release, so it is pinned the way every other release input is:
-# by content.
+# Hash-locked dependencies for the release-manifest schema validator.
 #
 #   pip install --require-hashes -r packaging/postvec/requirements-schema.txt
 #
-# Every distribution PyPI publishes for each pinned version is listed, so the
-# file works on any runner architecture and Python version without becoming a
-# claim about which one CI happens to use. Regenerate with
-# `scripts/refresh-pins.sh python` and review the diff — a changed hash here is
-# a changed validator.
+# Every distribution PyPI publishes for each pinned version is listed, so
+# this is not a claim about one runner. Regenerate with
+# scripts/refresh-pins.sh python. A changed hash is a changed validator.
 #
-# jsonschema 3.x silently treats a Draft 2020-12 schema as Draft 7, which is why
-# the version floor matters at all; see write-release-manifest.sh.
+# jsonschema 3.x treats a Draft 2020-12 schema as Draft 7. The version
+# floor is what stops that.
 
 jsonschema==4.23.0 \
     --hash=sha256:d71497fef26351a33265337fa77ffeb82423f3ea21283cd9467bb03999266bc4 \

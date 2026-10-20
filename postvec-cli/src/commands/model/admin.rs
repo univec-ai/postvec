@@ -1,10 +1,8 @@
 //! Client for the embedded engine's loopback admin endpoints
 //! (`POST /admin/load`, `POST /admin/unload`).
 //!
-//! The listener is the launcher's `postvec.embedded_http_listen` (default
-//! `127.0.0.1:33434`), loopback-only and unauthenticated: local OS users are
-//! trusted in v1, which is exactly the trust the loopback gRPC listener
-//! already extends. The wire shape mirrors the `/config` envelope.
+//! `postvec.embedded_http_listen` (default `127.0.0.1:33434`) is loopback-only
+//! and unauthenticated. Local OS users are trusted, same as loopback gRPC.
 
 use crate::error::{CliError, Result};
 use serde::Deserialize;
@@ -96,14 +94,12 @@ pub async fn load(listen: &str, models: &[String], timeout: Duration) -> Result<
     post(listen, "load", models, timeout).await
 }
 
-/// Every requested name must come back **exactly once**, with one of the
-/// statuses that name accepts. Anything else — an `error` outcome, a missing,
-/// duplicate or unrequested result — fails the caller before it mutates
-/// anything.
+/// Every requested name must come back exactly once, with a status that name
+/// accepts. An error, a missing name, a duplicate or an extra result fails
+/// the caller before it mutates anything.
 ///
-/// The accepted set is per name because one request can mix intents: a
-/// replacement must report a genuine `loaded`, while a model that was never
-/// resident may equally report `already-loaded`.
+/// The accepted set is per name. A replacement must report `loaded`. A model
+/// that was never resident may report `already-loaded`.
 pub fn verify_outcomes(
     expected: &[(String, &'static [&'static str])],
     outcomes: &[AdminOutcome],

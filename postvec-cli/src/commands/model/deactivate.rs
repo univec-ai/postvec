@@ -1,22 +1,15 @@
 //! `postvec model deactivate`.
 //!
-//! Unload the model, then set `enabled: false` on the installed descriptor
-//! so a restart leaves it unloaded. Bytes and stored vectors stay. `model rm`
-//! deletes them.
+//! Unload first, then set `enabled: false`. Bytes and vectors stay. A crash
+//! after a proven unload leaves the model enabled, so a restart reloads it.
+//! The reverse can leave a disabled descriptor still serving. An error means
+//! the model is still on.
 //!
-//! Unload first, flip second. A crash after a proven unload leaves the model
-//! out of memory but still enabled, so a restart reloads it and a rerun
-//! finishes. The reverse order can leave a disabled descriptor still serving.
-//! An error from this command means the model is still on.
-//!
-//! Refused, in order: not installed, ambiguous across backends, package-owned
-//! or manual (a package upgrade rewrites the descriptor), named in
-//! `postvec.embedded_models` (a disabled explicit root fails startup), or
-//! required by another enabled model (`--force` overrides after naming it).
-//!
-//! Columns that would lose their route need `--acknowledge-in-use`. `--force`
-//! does not answer that. A convert-only space is served by a converter plus
-//! `embed-bridge`, and neither directory is named for that space.
+//! Refused when missing, ambiguous, package-owned or manual, named in
+//! `postvec.embedded_models` or required by an enabled model (`--force`
+//! overrides the last). Columns that lose their route need
+//! `--acknowledge-in-use`. `--force` does not. A convert-only space is a
+//! converter plus `embed-bridge`. Neither directory is named for that space.
 
 use crate::cli::{Cli, ModelDeactivateArgs};
 use crate::commands::model::{
@@ -108,9 +101,8 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
         selected.push(model.dir_name.clone());
     }
 
-    // Which columns lose their embedding route? A `--path` target has no
-    // cluster in scope, so this is genuinely not applicable rather than
-    // unknown — the same position `model rm --path` has always taken.
+    // Which columns lose their embedding route? `--path` has no cluster, so
+    // this is not applicable rather than unknown.
     let scanned = matches!(target, ModelTarget::Embedded { .. });
     let (columns, unknown_databases) = if scanned {
         in_use_columns(&mut target, &selected, &inventory).await
@@ -171,9 +163,9 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
         return Ok(Exit::Success);
     }
 
-    // A flag that acknowledged nothing is reported rather than refused (see
-    // `Plan::in_use_models`), and the report says *why* it was unnecessary —
-    // "nothing is affected" and "nothing was looked at" are different facts.
+    // A flag that acknowledged nothing is reported, not refused. See
+    // `Plan::in_use_models`. "Nothing is affected" and "nothing was looked at"
+    // are different facts.
     if args.acknowledge_in_use && plan.in_use_models().is_empty() {
         output.note(if scanned {
             "--acknowledge-in-use was not needed: no managed column loses its embedding route \
@@ -198,7 +190,7 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
 
     let mut journal = ApplyJournal::default();
 
-    // Phase 1 — one batched unload, verified, before any descriptor changes.
+    // One batched unload, verified, before any descriptor changes.
     if let ModelTarget::Embedded { settings, .. } = &target {
         let listen = settings.embedded_http_listen();
         let outcomes = admin::unload(&listen, &selected, cli.timeout)
@@ -228,7 +220,7 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
         }
     }
 
-    // Phase 2 — the persistent flip.
+    // Persistent flip, only after the unload is proven.
     for name in &selected {
         let model = resolve_unambiguous(&inventory, name, &root.models_dir())?;
         match root.set_enabled(model, false) {
@@ -247,7 +239,7 @@ pub async fn run(cli: &Cli, args: ModelDeactivateArgs, output: &Output) -> Resul
         }
     }
 
-    // Phase 3 — SQL caches, so the model stops resolving for new work.
+    // Refresh SQL caches so the model stops resolving for new work.
     refresh_databases(&mut target, &mut journal).await;
 
     let result = finish(&target, plan, journal, Vec::new(), started, started_at);
@@ -326,8 +318,8 @@ mod tests {
         }
     }
 
-    /// A column served *through* a model it does not name must say so, or the
-    /// warning reads as a false positive and gets acknowledged without thought.
+    /// A column served through a model it does not name must say so. Otherwise
+    /// the warning reads as a false positive.
     #[test]
     fn a_bridged_column_explains_why_it_is_affected() {
         let bridged = InUseColumn {
@@ -351,8 +343,8 @@ mod tests {
         assert_eq!(direct, "app: public.notes.body (active)");
     }
 
-    /// Only an **enabled** dependant blocks: a deactivated one is not going to
-    /// be loaded, so nothing breaks. Names in the same batch are exempt.
+    /// Only an enabled dependant blocks. A deactivated one will not be loaded.
+    /// Names in the same batch are exempt.
     #[test]
     fn only_enabled_dependants_block_a_deactivation() {
         let inventory = vec![
@@ -422,8 +414,8 @@ mod tests {
         assert_eq!(plan.in_use_models(), ["m", "other"]);
     }
 
-    /// A model nothing declares, on a fully readable cluster, adds no step at
-    /// all — the acknowledgement exists for real breakage only.
+    /// A model nothing declares, on a fully readable cluster, adds no step.
+    /// The acknowledgement is for real breakage only.
     #[test]
     fn an_unused_model_needs_no_acknowledgement() {
         let mut plan = Plan::new("model deactivate", "18/main");

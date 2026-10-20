@@ -43,10 +43,10 @@ pub struct ClusterInput<'a> {
 
 /// What can still be observed when the cluster will not accept a connection.
 ///
-/// Every field here comes from the filesystem or from `postgres -C`, so all of
-/// it is readable while the server is stopped — which is exactly when an
-/// operator most needs it, because a bad preload list or a missing `.so` is a
-/// common *reason* a cluster will not start.
+/// Every field here comes from the filesystem or from `postgres -C`, so it
+/// is readable while the server is stopped. That is when an operator most
+/// needs it: a bad preload list or a missing `.so` is a common reason a
+/// cluster will not start.
 pub struct OfflineClusterInput<'a> {
     pub identity: &'a ClusterIdentity,
     /// Why the connection failed, verbatim, and what to do about it.
@@ -59,21 +59,14 @@ pub struct OfflineClusterInput<'a> {
 
 /// The report for a cluster that could not be connected to.
 ///
-/// Two properties are load-bearing and are asserted in the tests below:
-///
-/// 1. `cluster.reachable` fails, so the run cannot exit 0. A diagnostic
-///    tool that returns green on a stopped server is worse than one that
-///    refuses to run.
-/// 2. Everything that needed the connection becomes a required skip.
-///    `SettingsSnapshot`'s accessors all return `None`/empty when a setting
-///    is absent, so feeding the normal checks an empty snapshot would
-///    quietly report "mode: not set", "no databases configured" and similar
-///    as ordinary findings, indistinguishable from a cluster that is
-///    genuinely misconfigured. Those checks are not run at all.
+/// `cluster.reachable` fails, so the run cannot exit 0. Everything that
+/// needed the connection is a required skip. An empty snapshot would report
+/// "mode: not set" and similar as ordinary findings, indistinguishable from
+/// a cluster that is genuinely misconfigured. Those checks are not run.
 pub fn offline_checks(input: &OfflineClusterInput<'_>) -> Vec<CheckResult> {
-    // The message carries the underlying error verbatim: "cannot connect" on
-    // its own reads as "the server is down", which is a guess — the failure
-    // may equally be authentication, a privilege drop, or a socket path.
+    // The message carries the underlying error verbatim. "Cannot connect" on
+    // its own reads as "the server is down", which is a guess. The failure
+    // may equally be authentication, a privilege drop or a socket path.
     let mut unreachable = CheckResult::fail(
         "cluster.reachable",
         SCOPE,
@@ -151,12 +144,12 @@ fn connection(input: &ClusterInput<'_>) -> CheckResult {
     }))
 }
 
-/// Whether a paired connection and cluster are actually the same instance.
+/// Whether a paired connection and cluster are the same instance.
 ///
-/// `doctor` may pair them (`--database-url` with an explicit `--cluster`), and
-/// a report that mixes one server's settings with another's package assets and
-/// ownership state is worse than no report. It does not abort — every other
-/// check still runs — but it says so, and blocks.
+/// `doctor` may pair them (`--database-url` with an explicit `--cluster`).
+/// Mixing one server's settings with another's files is worse than no report.
+/// It does not abort. Every other check still runs, but this one says so
+/// and blocks.
 fn identity(input: &ClusterInput<'_>) -> Option<CheckResult> {
     use crate::commands::IdentityProof;
     match &input.instance_identity {
@@ -329,15 +322,10 @@ fn assets_vector(assets: Option<&AssetFacts>, identity: &ClusterIdentity) -> Che
 
 /// `cluster.config.parse` without a connection.
 ///
-/// The online version starts from `pg_file_settings`, a live view. With the
-/// server down there is only `postgres -C`, which parses the configuration a
-/// restart *would* read — often the most valuable single fact when a cluster
-/// will not come up.
-///
-/// The difference that matters: the online version treats "no live errors
-/// reported" as a pass. Here, having observed nothing, "nothing was wrong" is
-/// not a conclusion the code is entitled to draw, so an unobservable
-/// configuration is a skip.
+/// With the server down there is only `postgres -C`, which parses the
+/// configuration a restart would read. The online check treats "no live
+/// errors" as a pass. Here, having observed nothing, "nothing was wrong" is
+/// not a conclusion, so an unobservable configuration is a skip.
 fn offline_config_parse(offline_preload: Option<&OfflineSetting>) -> CheckResult {
     match offline_preload {
         Some(OfflineSetting::Error(detail)) => CheckResult::fail(
@@ -480,7 +468,7 @@ fn preload(input: &ClusterInput<'_>) -> CheckResult {
     }
 }
 
-/// Compare the *offline* candidate value with the active one.
+/// Compare the offline candidate value with the active one.
 ///
 /// `pending_restart` alone is not enough: after `setup --no-restart` the server
 /// has not read the new file at all, so it has nothing to mark pending.
@@ -871,8 +859,8 @@ mod tests {
     }
 
     /// A report that pairs one server's database state with another's files
-    /// describes no single system. It still runs every other check — the
-    /// findings may be exactly what the operator needs — but it must not stay
+    /// describes no single system. It still runs every other check, because
+    /// the findings may be what the operator needs, but it must not stay
     /// silent about the mixture.
     #[test]
     fn a_paired_connection_that_is_a_different_instance_blocks_the_report() {
@@ -1346,7 +1334,7 @@ mod tests {
     }
 
     /// The unreachable check carries the driver's own error and the fix, so
-    /// the report says *why* rather than only *that*.
+    /// the report says why, not only that it failed.
     #[test]
     fn the_failure_carries_the_cause_and_the_fix() {
         let results = offline(None, None);
@@ -1375,8 +1363,8 @@ mod tests {
             .contains("pg_ctlcluster"));
     }
 
-    /// Everything needing a connection is one honest required skip — never a
-    /// pass, and never silently absent.
+    /// Everything needing a connection is one honest required skip, never a
+    /// pass and never silently absent.
     #[test]
     fn live_only_checks_become_a_required_skip() {
         let results = offline(None, None);
@@ -1432,9 +1420,8 @@ mod tests {
         );
     }
 
-    /// Having observed nothing, "nothing was wrong" is not a conclusion the
-    /// code may draw — the online version's `None => pass` would have been a
-    /// vacuous pass here.
+    /// An unobserved configuration is a skip. Passing it would claim nothing
+    /// was wrong without having looked.
     #[test]
     fn an_unobserved_configuration_is_a_skip_not_a_pass() {
         assert_eq!(

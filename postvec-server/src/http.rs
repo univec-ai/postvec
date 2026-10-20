@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Univec Ltd. See postvec-server/LICENSE.
 
 //! Public HTTP listener: discovery, health, metrics, native `/api/{model}`,
-//! the OpenAI embeddings adaptor, and the optional SPA.
+//! the OpenAI embeddings adaptor and the optional SPA.
 //!
 //! Admin mutation routes live on the loopback listener in [`crate::admin`].
 //!
@@ -32,8 +32,7 @@ use tower_http::services::{ServeDir, ServeFile};
 /// How long a graceful shutdown waits for in-flight HTTP work.
 pub const GRACEFUL_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The `models` array, byte-compatible with what `discovery::parse_config`
-/// expects. Pure, so the wire shape is testable without an engine.
+/// The `models` array `discovery::parse_config` expects. Pure, so the shape needs no engine.
 pub fn config_models(configs: &[ModelConfiguration]) -> Vec<Value> {
     configs
         .iter()
@@ -49,11 +48,8 @@ pub fn config_models(configs: &[ModelConfiguration]) -> Vec<Value> {
         .collect()
 }
 
-/// [`config_models`] plus the provider gateway's descriptors (already in
-/// the nested HubModel shape), appended after the engine's own models. The
-/// gateway refuses a connector file naming a local model at (re)load; a model
-/// pulled and loaded since the last reload is skipped here, as the gRPC
-/// dispatch does, until the next reload refuses the file.
+/// Engine models, then provider descriptors. A name the engine now holds is skipped
+/// until the next reload refuses the connector file. Same rule as gRPC dispatch.
 pub fn merged_config_models(
     configs: &[ModelConfiguration],
     gateway: &providers::gateway::Gateway,
@@ -62,7 +58,7 @@ pub fn merged_config_models(
     for descriptor in gateway.models() {
         let name = descriptor["name"].as_str().unwrap_or_default();
         if configs.iter().any(|cfg| cfg.name == name) {
-            // Debug: `/config` is polled on every discovery refresh.
+            // `/config` is polled on every discovery refresh.
             log::debug!(
                 "provider model {name:?} is now served by a local engine model; \
                  reload providers to refuse its connector file"
@@ -83,9 +79,8 @@ fn loaded_configs(engine: &InferenceEngine) -> Vec<ModelConfiguration> {
         .collect()
 }
 
-/// Loaded model configuration with `params.sequence_len` set to the length
-/// the engine truncates at, so discovery advertises the served length.
-/// Models whose executor does not tokenize are left unchanged.
+/// Sets `params.sequence_len` to the length the engine truncates at.
+/// Executors that do not tokenize are left unchanged.
 pub(crate) fn served_configuration(
     engine: &InferenceEngine,
     cfg: &ModelConfiguration,
@@ -98,11 +93,7 @@ pub(crate) fn served_configuration(
     cfg
 }
 
-/// Memory, from `/proc/meminfo` where it exists.
-///
-/// Every resident model is a set of native sessions, so a discovery read
-/// that already costs a round trip carries the figures. Zeroes when the
-/// host cannot measure.
+/// Memory from `/proc/meminfo`, or zeroes when the host cannot measure.
 fn system_object() -> Value {
     let (total, available) = read_meminfo().unwrap_or((0, 0));
     json!({
@@ -133,19 +124,16 @@ fn server_object(state: &ServerState) -> Value {
         "draining": state.draining(),
         "manage": state.settings.manage,
         "predict_timeout_ms": state.settings.predict_timeout.as_millis() as u64,
-        // Engine root, so `postvec-server status` can read the on-disk
-        // inventory without a second flag.
+        // Engine root, so `status` can read the on-disk inventory without a second flag.
         "root": state.settings.root.to_string_lossy(),
         "frontend": state.identity.frontend,
-        // `--models` allow-list, empty when there is none. A client comparing
-        // disk against loaded uses this to skip names that were excluded.
+        // `--models` allow-list, empty when there is none. Clients skip excluded names.
         "models_allowed": state.settings.models,
         "managed": state.managed.snapshot(),
     })
 }
 
-/// This node as a cluster member. Used when gossip is down so the UI still
-/// has a peer to send `/api/{model}` at (this process).
+/// This node as a cluster member, so the UI still has a peer when gossip is down.
 fn current_member(state: &ServerState) -> ClusterMember {
     ClusterMember {
         address: state.identity.api_address.clone(),
@@ -163,9 +151,8 @@ async fn cluster_object(state: &ServerState) -> Value {
         Some(cluster) => cluster.members().await,
         None => Vec::new(),
     };
-    // A node that could not start gossip, or that has not yet seen itself in
-    // the memberlist, still serves. The dashboard queries `cluster.nodes`;
-    // an empty list would look like no live nodes on a working process.
+    // Gossip may be down, or this node may not have seen itself yet.
+    // An empty `cluster.nodes` would look like no live nodes.
     if !nodes.iter().any(|n| n.current) {
         nodes.insert(0, current_member(state));
     }
@@ -200,9 +187,7 @@ async fn handle_config(State(state): State<Arc<ServerState>>) -> Json<Value> {
     Json(config_envelope(&state).await)
 }
 
-/// Liveness. Stays 200 through a drain: the process is alive and finishing
-/// work, and a supervisor that restarts it now would kill requests that were
-/// about to succeed.
+/// Liveness. Stays 200 through a drain, so a supervisor does not kill in-flight work.
 async fn handle_health(State(state): State<Arc<ServerState>>) -> Json<Value> {
     Json(json!({
         "success": true,
@@ -214,9 +199,7 @@ async fn handle_health(State(state): State<Arc<ServerState>>) -> Json<Value> {
     }))
 }
 
-/// Readiness. 503 while draining, and 503 before any model can answer, so a
-/// compose healthcheck or load balancer waits for a node that has actually
-/// finished loading.
+/// Readiness. 503 while draining and before any model can answer.
 async fn handle_ready(State(state): State<Arc<ServerState>>) -> Response {
     let models = state.ready_models();
     let draining = state.draining();
@@ -275,9 +258,8 @@ async fn handle_metrics(State(state): State<Arc<ServerState>>) -> Response {
 /// Where the packages install the dashboard, relative to the engine root.
 pub const WEB_UI_DIR: &str = "server/ui";
 
-/// Locate the built dashboard (a directory with `index.html`). An explicit
-/// `--web-ui` / `web_ui` / `POSTVEC_SERVER_WEB_UI` is the only candidate
-/// when set; otherwise `<root>/server/ui`, where the packages put it.
+/// Directory with `index.html`. An explicit path is the only candidate when set.
+/// Otherwise `<root>/server/ui`, where the packages put it.
 pub fn resolve_web_ui(explicit: Option<&Path>, root: &Path) -> Option<PathBuf> {
     let dir = explicit
         .map(Path::to_path_buf)
@@ -301,15 +283,12 @@ async fn no_spa() -> Json<Value> {
     }))
 }
 
-/// Shared routes (discovery, health, native `/api/{model}`, OpenAI adaptor,
-/// the registry). The public listener adds CORS and the SPA fallback; the
-/// admin listener merges mutation routes and serves the dashboard without
-/// cross-origin access. `manage` mounts the registry's mutating routes:
-/// always on the admin listener, on the public one only by explicit choice.
+/// Shared routes. The public listener adds CORS and the SPA. The admin listener
+/// adds mutations and serves the dashboard without CORS. `manage` mounts registry
+/// writes on the public listener. The admin listener always has them.
 pub fn router(metrics_enabled: bool, manage: bool) -> Router<Arc<ServerState>> {
-    // Native `/api/{model}`, the OpenAI adaptor and the registry share this
-    // nest. Their static paths are two segments, so they never collide with
-    // `/{model_name}`. Body cap matches the gRPC decode ceiling.
+    // Static paths are two segments, so they never collide with `/{model_name}`.
+    // Body cap matches the gRPC decode ceiling.
     let api = crate::registry::router(manage)
         .route("/openai/embeddings", post(api::openai_embeddings))
         .route("/convert", post(api::convert))
@@ -444,9 +423,8 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
-    // Local discovery envelope. postvec cannot be linked from here
-    // (pgrx, workspace-excluded). If a change here breaks these
-    // structs, it breaks every installed extension.
+    // Local copy of the discovery envelope. postvec is a pgrx extension and
+    // cannot be linked here. A break here breaks every installed extension.
 
     #[derive(Debug, Deserialize)]
     struct Envelope {
@@ -557,7 +535,7 @@ mod tests {
         assert_eq!(convert.params.source_dim, Some(768));
     }
 
-    /// The additions are additions: an older parser ignores them.
+    /// Extra keys are ignored by an older parser.
     #[test]
     fn extra_envelope_keys_do_not_disturb_the_parser() {
         let mut envelope = full_envelope();
@@ -567,8 +545,7 @@ mod tests {
         assert_eq!(parsed.data.unwrap().models.len(), 2);
     }
 
-    /// A disabled model still appears; the parser is what filters it. The
-    /// server leaves that choice to each consumer.
+    /// A disabled model is still rendered. Each consumer filters it.
     #[test]
     fn disabled_models_are_rendered_and_filtered_by_the_consumer() {
         let raw = json!({
@@ -602,10 +579,8 @@ mod tests {
         assert_eq!(object["priority_explicit"], json!(false));
     }
 
-    /// Provider entries merge after the engine's own models in the nested
-    /// HubModel shape, collisions resolve local-wins, and the transcribed
-    /// postvec parser reads the provider row exactly like a local embed
-    /// model (with the provider recorded as a top-level extra).
+    /// Provider rows append after engine models. A name collision keeps the local row.
+    /// A provider row is read like a local embed, with `provider` as a top-level extra.
     #[test]
     fn provider_models_merge_into_the_envelope_and_local_wins() {
         use std::os::unix::fs::PermissionsExt;
@@ -613,7 +588,7 @@ mod tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `tempfile` honours the umask.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        // …and its parent (`/tmp` is sticky, so only the tempdir matters).
+        // The parent is left alone. `/tmp` is sticky, so only this directory's mode matters.
         let path = dir.path().join("openai.toml");
         std::fs::write(
             &path,
@@ -656,8 +631,7 @@ mod tests {
             Some("openai-text-embedding-3-small")
         );
         assert_eq!(cfg.params.target_dim, Some(1536));
-        // The provider marker rides as a top-level extra (raw.extra in
-        // postvec's cache) — what the NOTICE and the fleet labeling read.
+        // The provider marker is a top-level extra. The NOTICE and the fleet report read it.
         assert_eq!(provider.rest.get("provider"), Some(&json!("openai")));
     }
 

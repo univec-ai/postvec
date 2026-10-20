@@ -1,17 +1,5 @@
-//! End-to-end `postvec model pull` against a local registry fixture.
-//!
-//! Runs the real binary with the (test-only) index-URL override pointing at a
-//! minimal HTTP server that serves an index and archives built with the same
-//! deterministic writer the publisher uses. Covers the client acceptance
-//! criteria that need a live transport: a full anonymous pull, idempotence,
-//! resume from a partial file, the 200-in-reply-to-Range restart and a
-//! digest mismatch failing closed.
-//!
-//! Gated on `registry-test-overrides`: the override this suite depends on
-//! only exists in a build with that feature, so run it as
-//! `cargo test -p postvec-cli --features registry-test-overrides`. In a
-//! default build this file compiles to nothing, and the binary contains no
-//! override to test.
+//! End-to-end `postvec model pull` against a local registry fixture, running the real binary.
+//! The index-URL override exists only with `registry-test-overrides`. A default build compiles this file to nothing.
 #![cfg(feature = "registry-test-overrides")]
 
 use postvec_cli::registry::archive::{write_deterministic, ArchiveInput};
@@ -33,8 +21,7 @@ fn binary() -> PathBuf {
     path.join("postvec")
 }
 
-/// A registry fixture: one model, one archive, one index — plus switches for
-/// hostile-mirror behaviors.
+/// One model, one archive and one index, plus switches for a hostile mirror.
 struct Fixture {
     address: String,
     index_body: Vec<u8>,
@@ -44,21 +31,16 @@ struct Fixture {
     ignore_range: Arc<AtomicBool>,
     /// Serve an archive whose bytes do not match the advertised digest.
     corrupt: Arc<AtomicBool>,
-    /// The index the registry currently serves. Publishing a new revision
-    /// swaps it; previously published archives stay served forever, which is
-    /// the immutability the whole design rests on.
+    /// The index currently served. A new revision swaps it. Previously published archives stay served at their own digest.
     index: Arc<Mutex<Vec<u8>>>,
-    /// digest hex → archive bytes, create-only in spirit: entries are added,
-    /// never replaced or removed.
+    /// Digest hex to archive bytes. Entries are added and never replaced or removed.
     archives: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
-    /// The document served at `/auth/v1/index.json` — the authenticated
-    /// channel, for whoami/entitlement tests. `None` → 404.
+    /// The document at `/auth/v1/index.json`, the authenticated channel. `None` answers 404.
     auth_index: Arc<Mutex<Option<Vec<u8>>>>,
     /// Answer 401 on the authenticated index, as aphex does for a revoked
     /// key: the client must fail, never fall back to the public catalogue.
     reject_auth: Arc<AtomicBool>,
-    /// Every archive GET served, so a test can prove a refusal happened
-    /// **before** any download.
+    /// Count of archive GETs, so a refusal can be shown to happen before any download.
     archive_requests: Arc<std::sync::atomic::AtomicUsize>,
     _thread: std::thread::JoinHandle<()>,
 }
@@ -244,8 +226,7 @@ impl Fixture {
         self.archive_requests.load(Ordering::SeqCst)
     }
 
-    /// Publish a revision whose entry carries a versioned notice-policy
-    /// terms document. Same head-motion semantics as `publish_revision`.
+    /// Publish a revision that carries a versioned notice-policy document. The head moves as in `publish_revision`.
     fn publish_notice_revision(
         &self,
         work: &Path,
@@ -290,9 +271,7 @@ impl Fixture {
         format!("http://{}/auth/v1/index.json", self.address)
     }
 
-    /// Serve an authenticated-channel document — what aphex builds after
-    /// filtering: `channel: "private"`, `authenticated: true`, plus the
-    /// viewer block it stamps for this caller.
+    /// Serve the authenticated index: private channel, `authenticated: true` and the viewer block for this caller.
     fn serve_authenticated_index(&self, viewer: serde_json::Value) {
         let mut body: serde_json::Value =
             serde_json::from_slice(&self.index.lock().unwrap().clone()).unwrap();
@@ -327,8 +306,7 @@ impl Fixture {
 }
 
 impl Fixture {
-    /// Serve an archive whose descriptor disagrees with the index entry that
-    /// advertises it — the shape a compromised or buggy registry produces.
+    /// Serve an archive whose descriptor disagrees with the index entry that advertises it.
     fn publish_lying_archive(&self, work: &Path) {
         let src = work.join("lying").join("fixture-src");
         std::fs::create_dir_all(src.join("onnx")).unwrap();
@@ -430,9 +408,7 @@ fn http_status(url: &str) -> u16 {
 fn engine_root(work: &Path) -> PathBuf {
     let root = work.join("engine-root");
     std::fs::create_dir_all(root.join("models/onnx-runtime")).unwrap();
-    // The trust gates refuse group-writable roots AND ancestors, and the
-    // ancestor gate wants a canonical path. Give the fixture the shape a
-    // real install has, including the tempdir ancestor itself.
+    // Trust gates refuse a group-writable root or ancestor, including this tempdir, and want a canonical path.
     for dir in [work, root.as_path(), root.join("models").as_path()] {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -607,8 +583,7 @@ fn a_mirror_that_ignores_range_causes_a_clean_restart_not_appending() {
     )
     .unwrap();
 
-    // If the client appended the 200 body to the partial, the digest could
-    // not verify; success proves truncate-and-restart.
+    // Success proves truncate-and-restart. Appending the 200 body would fail the digest.
     let output = run_pull(&fixture, &root, &[]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
@@ -664,10 +639,7 @@ fn a_first_pull_creates_models_inside_an_existing_root() {
     assert!(!missing.exists());
 }
 
-/// The whole feature, end to end: publish revision 1, install it, publish
-/// revision 2 of the SAME name, watch `pull` refuse to replace it, upgrade
-/// explicitly, and confirm that revision 1's archive is still retrievable
-/// forever (which is what keeps offline verification and rollback possible).
+/// `pull` will not replace an installed revision. `upgrade` does, in place, and the old archive stays retrievable.
 #[test]
 fn a_published_revision_is_installed_then_upgraded_in_place() {
     let work = tempfile::tempdir().unwrap();
@@ -676,7 +648,7 @@ fn a_published_revision_is_installed_then_upgraded_in_place() {
     let model_dir = root.join("models/onnx-runtime").join(MODEL);
     let weight = model_dir.join("onnx/model.onnx");
 
-    // Revision 1 installs the way it always has.
+    // Revision 1 installs.
     let output = run_pull(&fixture, &root, &[]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(installed_revision(&model_dir), 1);
@@ -706,8 +678,7 @@ fn a_published_revision_is_installed_then_upgraded_in_place() {
     assert_eq!(installed_revision(&model_dir), 2);
     assert_eq!(std::fs::read(&weight).unwrap()[0], 7);
 
-    // Exactly one directory holds this name. A successor-name convention
-    // would leave two.
+    // One directory holds this name. Upgrade replaces in place.
     assert_eq!(
         std::fs::read_dir(root.join("models/onnx-runtime"))
             .unwrap()
@@ -733,7 +704,7 @@ fn a_published_revision_is_installed_then_upgraded_in_place() {
     // Revision 1's bytes are still there: archives are never rebound.
     assert_eq!(http_status(&first_archive_url), 200);
 
-    // Nothing left to do.
+    // The head is already installed, so a second upgrade has nothing to do.
     let output = run_upgrade(&fixture, &root, &["--all"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let reported = format!(
@@ -765,13 +736,8 @@ fn run_model(root: &Path, args: &[&str]) -> Output {
         .expect("run postvec")
 }
 
-/// Installing is not activating.
-///
-/// The published archive is `enabled: true` and immutable; the installed copy
-/// lands `false`, so the model is neither hot-loaded now nor scan-loaded at
-/// the next PostgreSQL restart. Leaving the published bit in place and merely
-/// skipping the hot load would defer activation to the next restart, which is
-/// activation through another door.
+/// A pull lands `enabled: false` even though the archive is `enabled: true`.
+/// Leaving the published bit set would activate the model at the next restart.
 #[test]
 fn a_pull_installs_deactivated_and_activate_is_what_turns_it_on() {
     let work = tempfile::tempdir().unwrap();
@@ -785,8 +751,7 @@ fn a_pull_installs_deactivated_and_activate_is_what_turns_it_on() {
         !descriptor_enabled(&model_dir),
         "a fresh install must land deactivated"
     );
-    // The receipt covers the descriptor that was actually installed, so a
-    // deactivated model does not read as tampered-with.
+    // The receipt covers the installed descriptor, so a deactivated model still verifies.
     let output = run_model(&root, &["show", MODEL, "--verify"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let reported = format!(
@@ -796,7 +761,7 @@ fn a_pull_installs_deactivated_and_activate_is_what_turns_it_on() {
     );
     assert!(reported.contains("deactivated"), "{reported}");
 
-    // …and `ls` says the same word.
+    // `ls` says the same word.
     let listed = run_model(&root, &["ls"]);
     assert!(listed.status.success(), "{}", stderr(&listed));
     assert!(
@@ -811,8 +776,7 @@ fn a_pull_installs_deactivated_and_activate_is_what_turns_it_on() {
         "{reported}"
     );
 
-    // Activation flips the persistent bit. `--path` has no engine to load
-    // into, which is exactly the air-gapped staging shape.
+    // Activation flips the persistent bit. `--path` has no engine to load into.
     let output = run_model(&root, &["activate", MODEL, "--yes"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(descriptor_enabled(&model_dir));
@@ -838,9 +802,7 @@ fn a_pull_installs_deactivated_and_activate_is_what_turns_it_on() {
     assert!(!descriptor_enabled(&model_dir));
 }
 
-/// Replacing a model's bytes is not a decision about whether it should serve,
-/// so an upgrade carries the previous copy's power switch forward in both
-/// positions.
+/// An upgrade keeps the previous activation state. Replacing bytes does not decide whether the model should serve.
 #[test]
 fn an_upgrade_preserves_the_activation_state() {
     let work = tempfile::tempdir().unwrap();
@@ -852,7 +814,7 @@ fn an_upgrade_preserves_the_activation_state() {
     assert!(run_pull(&fixture, &root, &[]).status.success());
     assert!(!descriptor_enabled(&model_dir));
 
-    // Deactivated → upgrade is a pure filesystem swap and stays deactivated.
+    // A deactivated model stays deactivated across the upgrade.
     fixture.publish_revision(work.path(), 2, 7);
     let output = run_upgrade(&fixture, &root, &["--all"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -866,7 +828,7 @@ fn an_upgrade_preserves_the_activation_state() {
         .status
         .success());
 
-    // Activated → upgrade keeps it activated.
+    // An activated model stays activated across the upgrade.
     assert!(run_model(&root, &["activate", MODEL, "--yes"])
         .status
         .success());
@@ -884,10 +846,8 @@ fn an_upgrade_preserves_the_activation_state() {
         .success());
 }
 
-/// The flip is CLI-owned content only. A directory with no receipt has
-/// nothing to keep `--verify` truthful against, and package content would be
-/// rewritten by the next package upgrade — so a persisted flip there would be
-/// a promise the CLI cannot keep.
+/// Activation only rewrites an install this CLI made.
+/// A directory with no receipt cannot keep `--verify` true, and a package upgrade would overwrite the bit.
 #[test]
 fn activation_refuses_a_directory_this_cli_did_not_install() {
     let work = tempfile::tempdir().unwrap();
@@ -915,8 +875,7 @@ fn activation_refuses_a_directory_this_cli_did_not_install() {
     assert!(body.contains(r#""enabled":true"#), "{body}");
 }
 
-/// An upgrade never invents an install, and a stale index never walks one
-/// backwards.
+/// An upgrade never invents an install, and a stale index never walks one backwards.
 #[test]
 fn upgrade_refuses_absent_installs_and_older_heads() {
     let work = tempfile::tempdir().unwrap();
@@ -931,8 +890,7 @@ fn upgrade_refuses_absent_installs_and_older_heads() {
         stderr(&output)
     );
 
-    // Install revision 2, then serve revision 1 again (a stale cache, or an
-    // index rolled back by hand).
+    // Install revision 2, then serve revision 1 again (a stale cache or an index rolled back by hand).
     fixture.publish_revision(work.path(), 2, 7);
     assert!(run_pull(&fixture, &root, &[]).status.success());
     fixture.publish_revision(work.path(), 1, 42);
@@ -973,10 +931,8 @@ fn installed_revision(model_dir: &Path) -> u64 {
         .expect("receipts record their revision")
 }
 
-/// `upgrade --all` must take the lock and recover **before** it decides what
-/// is outdated. An interrupted upgrade has already put the head revision on
-/// disk, so a pre-lock scan would find nothing to do and report success while
-/// leaving the transaction unsettled.
+/// `upgrade --all` takes the lock and recovers before it decides what is outdated.
+/// A pre-lock scan of an interrupted upgrade would see the head already installed and leave the transaction open.
 #[test]
 fn upgrade_all_recovers_before_deciding_nothing_is_outdated() {
     let work = tempfile::tempdir().unwrap();
@@ -989,9 +945,8 @@ fn upgrade_all_recovers_before_deciding_nothing_is_outdated() {
     assert!(run_upgrade(&fixture, &root, &["--all"]).status.success());
     assert_eq!(installed_revision(&model_dir), 2);
 
-    // Simulate a crash after the swap landed but before anything proved it:
-    // revision 2 is installed, revision 1 is parked, the record says
-    // "swapping". A pre-lock scan sees head == installed and nothing to do.
+    // Crash after the swap: revision 2 is installed, revision 1 is parked and the record says "swapping".
+    // A pre-lock scan would see the head already installed and do nothing.
     let swap = root.join("models/.swap/onnx-runtime").join(MODEL);
     std::fs::create_dir_all(&swap).unwrap();
     std::fs::write(
@@ -1033,8 +988,7 @@ fn upgrade_all_recovers_before_deciding_nothing_is_outdated() {
 
 const TEST_KEY: &str = "uv_integration_test_key_000000";
 
-/// A command against the authenticated channel: key from the environment,
-/// authenticated index pointed at the fixture.
+/// Run against the authenticated channel: key from the environment, auth index pointed at the fixture.
 fn run_authenticated(fixture: &Fixture, args: &[&str]) -> Output {
     Command::new(binary())
         .args(args)
@@ -1050,10 +1004,7 @@ fn run_authenticated(fixture: &Fixture, args: &[&str]) -> Output {
         .expect("run postvec")
 }
 
-/// `whoami` reports each served entitlement's id, source and expiry in
-/// the human output and in `--format json`, straight from the index
-/// response's viewer block. `ls --available` shows exactly the served
-/// view (an entry the gateway filtered out simply is not there).
+/// `whoami` reports each served entitlement's id, source and expiry. `ls --available` shows only the served view.
 #[test]
 fn whoami_reports_served_entitlements_and_ls_shows_the_served_view() {
     let work = tempfile::tempdir().unwrap();
@@ -1083,7 +1034,7 @@ fn whoami_reports_served_entitlements_and_ls_shows_the_served_view() {
     );
     assert_eq!(document["channel"], "private");
 
-    // `ls --available` renders the served view — nothing more.
+    // `ls --available` renders the served view and nothing more.
     let output = run_authenticated(&fixture, &["model", "ls", "--available"]);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let listing = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -1091,9 +1042,7 @@ fn whoami_reports_served_entitlements_and_ls_shows_the_served_view() {
     assert!(!listing.contains("postvec-catalog"), "{listing}");
 }
 
-/// An anonymous `whoami` never invents a viewer or an entitlement: the
-/// public document has no viewer (the shared schema refuses one there), and
-/// the report omits the field entirely.
+/// An anonymous `whoami` invents no viewer and no entitlement. The public document has none, and the report omits the field.
 #[test]
 fn an_anonymous_whoami_reports_no_entitlements() {
     let work = tempfile::tempdir().unwrap();
@@ -1116,8 +1065,7 @@ fn an_anonymous_whoami_reports_no_entitlements() {
     assert!(document.get("entitlements").is_none(), "{document}");
 }
 
-/// A failing credential fails the command — it never degrades to the public
-/// catalogue. `logout` remains the only path to anonymous.
+/// A failing credential fails the command and never falls back to the public catalogue. `logout` is the only path to anonymous.
 #[test]
 fn a_failing_credential_never_falls_back_to_the_public_catalogue() {
     let work = tempfile::tempdir().unwrap();
@@ -1125,8 +1073,7 @@ fn a_failing_credential_never_falls_back_to_the_public_catalogue() {
     fixture.reject_auth.store(true, Ordering::SeqCst);
     let root = engine_root(work.path());
 
-    // The public fixture would happily serve this model; the pull must
-    // still fail on the rejected credential rather than downgrade.
+    // The public fixture would serve this model. The pull must still fail on the rejected credential.
     let output = run_authenticated(
         &fixture,
         &[
@@ -1146,8 +1093,7 @@ fn a_failing_credential_never_falls_back_to_the_public_catalogue() {
     );
     assert!(!root.join("models/onnx-runtime").join(MODEL).exists());
 
-    // whoami surfaces the failing credential as a finding (non-zero exit),
-    // not as an anonymous session.
+    // `whoami` reports the failing credential and exits non-zero, not as an anonymous session.
     let output = run_authenticated(&fixture, &["whoami"]);
     assert_ne!(output.status.code(), Some(0));
     let human = format!(
@@ -1158,9 +1104,7 @@ fn a_failing_credential_never_falls_back_to_the_public_catalogue() {
     assert!(human.contains("FAILS authentication"), "{human}");
 }
 
-/// An authenticated pull of a name absent from the served view (demoted,
-/// filtered or never published) gets the one non-leaking message
-/// pointing at `whoami` and the dashboard.
+/// An authenticated pull of a name absent from the served view gets one non-leaking message pointing at `whoami` and the dashboard.
 #[test]
 fn an_absent_name_on_the_authenticated_view_is_reported_without_leaking() {
     let work = tempfile::tempdir().unwrap();
@@ -1195,10 +1139,7 @@ fn receipt_json(model_dir: &Path) -> serde_json::Value {
         .unwrap()
 }
 
-/// Notice-policy document end to end: named in the plan with its exact
-/// flag, `--yes` alone is not an acknowledgement, stale flags refuse,
-/// receipt records evidence, same-document upgrade is silent, a new
-/// document asks again.
+/// `--yes` is not a notice acknowledgement. A stale flag refuses, the same document stays quiet and a new document asks again.
 #[test]
 fn a_notice_document_gates_pull_and_upgrade_end_to_end() {
     let work = tempfile::tempdir().unwrap();
@@ -1209,8 +1150,7 @@ fn a_notice_document_gates_pull_and_upgrade_end_to_end() {
     // Revision 1 under a versioned notice document.
     fixture.publish_notice_revision(work.path(), 1, 42, "2026-08-09");
 
-    // Dry run: the plan names the document and the exact flag, asks
-    // nothing, downloads nothing, changes nothing.
+    // Dry run names the document and the exact flag, and changes nothing.
     let output = run_pull(&fixture, &root, &["--dry-run"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let plan = stderr(&output);
@@ -1226,9 +1166,7 @@ fn a_notice_document_gates_pull_and_upgrade_end_to_end() {
     assert!(!model_dir.exists());
     assert_eq!(fixture.archive_request_count(), 0);
 
-    // `--yes` alone (run_pull always passes it) is not an acknowledgement:
-    // the non-interactive run fails before any archive request, printing
-    // the exact flag and pointing at --yes for the separate confirmation.
+    // `--yes`, which `run_pull` always passes, is not the notice acknowledgement, and nothing is downloaded.
     let output = run_pull(&fixture, &root, &[]);
     assert!(!output.status.success());
     let message = stderr(&output);
@@ -1254,8 +1192,7 @@ fn a_notice_document_gates_pull_and_upgrade_end_to_end() {
     assert!(stderr(&output).contains("stale"), "{}", stderr(&output));
     assert_eq!(fixture.archive_request_count(), 0);
 
-    // The exact flag acknowledges, downloads, installs, and records the
-    // evidence in the receipt.
+    // The exact flag acknowledges, downloads, installs and records the evidence in the receipt.
     let output = run_pull(
         &fixture,
         &root,
@@ -1276,10 +1213,8 @@ fn a_notice_document_gates_pull_and_upgrade_end_to_end() {
         .expect("acknowledgement recorded")
         .to_string();
 
-    // Same document, newer revision: the installed receipt's evidence
-    // satisfies the notice, so a non-interactive upgrade with --yes alone
-    // succeeds — and the replacement receipt preserves the original
-    // acknowledgement verbatim.
+    // Same document, newer revision: the installed evidence satisfies the notice, so `--yes` alone upgrades.
+    // The replacement receipt keeps the original acknowledgement.
     fixture.publish_notice_revision(work.path(), 2, 7, "2026-08-09");
     let output = run_upgrade(&fixture, &root, &["--all"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -1312,9 +1247,7 @@ fn a_notice_document_gates_pull_and_upgrade_end_to_end() {
     assert!(receipt["license_accepted_at"].is_string());
 }
 
-/// The client's independent trust boundary: a registry may keep its catalogue
-/// entry stable while serving an archive whose descriptor declares another
-/// shape. The engine would believe the descriptor, so the install must not.
+/// The install refuses an archive whose descriptor disagrees with the stable index entry. The engine would believe the descriptor.
 #[test]
 fn an_archive_whose_descriptor_contradicts_the_index_is_refused() {
     let work = tempfile::tempdir().unwrap();

@@ -1,11 +1,9 @@
-//! `postvec login` / `logout` / `whoami`.
+//! `postvec login`, `logout` and `whoami`.
 //!
-//! `login` accepts the key from a hidden interactive prompt, `--api-key-file`,
-//! or non-TTY stdin — never from argv, which is world-observable. It proves
-//! the key against the authenticated index before storing anything, and it
-//! states plainly that a `uv_` key can also authorize billable API requests.
-//! `whoami` succeeds anonymously and reports exactly where a credential
-//! search looked.
+//! `login` reads the key from a hidden prompt, `--api-key-file` or non-TTY
+//! stdin, never from argv. It proves the key before storing it. A `uv_` key
+//! can also authorize billable API requests. `whoami` succeeds anonymously
+//! and reports where it looked.
 
 use crate::cli::{Cli, LoginArgs, WhoamiArgs};
 use crate::config::owned;
@@ -129,10 +127,8 @@ struct WhoamiDocument {
     channel: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     models: Option<usize>,
-    /// The entitlements the served index's `viewer` block reported — id,
-    /// source and optional expiry, nothing else. Present only when an
-    /// authenticated response carried a viewer; an anonymous `whoami` never
-    /// invents one.
+    /// Entitlements from the index `viewer` block: id, source and optional
+    /// expiry. Set only when an authenticated response carried one.
     #[serde(skip_serializing_if = "Option::is_none")]
     entitlements: Option<Vec<EntitlementReport>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -147,9 +143,8 @@ struct EntitlementReport {
     expires_at: Option<String>,
 }
 
-/// The human rendering of a reported entitlement list. Pure, so the format
-/// is pinned by unit tests: id, source, optional expiry — never billing or
-/// subscription language.
+/// Human text for an entitlement list: id, source and optional expiry.
+/// No billing or subscription language.
 fn describe_entitlements(entitlements: &[EntitlementReport]) -> String {
     if entitlements.is_empty() {
         return "Entitlements: none.\n".to_string();
@@ -192,9 +187,7 @@ pub async fn whoami(cli: &Cli, args: WhoamiArgs, output: &Output) -> Result<Exit
                 Ok(index) => {
                     document.channel = Some(index.channel.clone());
                     document.models = Some(index.models.len());
-                    // The viewer block rides the index request the client
-                    // already makes: no second endpoint. Absent on a
-                    // pre-entitlement gateway; reported when present.
+                    // The viewer rides the index fetch. Absent on an older gateway.
                     document.entitlements = index.viewer.as_ref().map(|viewer| {
                         viewer
                             .entitlements
@@ -209,8 +202,7 @@ pub async fn whoami(cli: &Cli, args: WhoamiArgs, output: &Output) -> Result<Exit
                     Exit::Success
                 }
                 Err(e) => {
-                    // A present-but-failing credential is exactly what whoami
-                    // exists to surface; it is a finding, not a crash.
+                    // A failing credential is a finding, not a crash.
                     document.error = Some(e.to_string());
                     Exit::Failure
                 }
@@ -281,9 +273,7 @@ mod tests {
         }
     }
 
-    /// `whoami` reports each entitlement's id, source and optional
-    /// expiry. No billing, subscription or action-required language, and
-    /// an honest "none" when the viewer is empty.
+    /// Id, source and optional expiry. No billing language. Empty is "none".
     #[test]
     fn entitlements_are_described_with_id_source_and_expiry() {
         assert_eq!(
@@ -301,10 +291,8 @@ mod tests {
         assert_eq!(describe_entitlements(&[]), "Entitlements: none.\n");
     }
 
-    /// The JSON document mirrors the human report: id/source/expiry only,
-    /// with `expires_at` omitted when absent — and the whole field omitted
-    /// when no viewer was served (an anonymous `whoami`, or a
-    /// pre-entitlement gateway, never invents one).
+    /// JSON keeps id, source and expiry. `expires_at` is omitted when absent.
+    /// `entitlements` is omitted when no viewer was served.
     #[test]
     fn the_whoami_document_serializes_entitlements_faithfully() {
         let mut document = WhoamiDocument {

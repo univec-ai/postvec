@@ -12,7 +12,6 @@ ARG PG_MAJOR=18
 ARG DEBIAN_CODENAME=bookworm
 ARG POSTGRES_IMAGE_DIGEST
 
-# ---------------------------------------------------------------------- remote
 
 FROM postgres:${PG_MAJOR}-${DEBIAN_CODENAME}@${POSTGRES_IMAGE_DIGEST} AS remote
 
@@ -21,7 +20,7 @@ ARG POSTVEC_VERSION
 ARG SOURCE_DATE_EPOCH
 
 # CI stages one architecture's packages here. They have already passed
-# checksum, content and ELF verification — this is an install, not a download.
+# checksum, content and ELF verification: this is an install, not a download.
 COPY dist/packages/ /tmp/postvec-packages/
 
 # `apt-get install ./file.deb` (not `dpkg -i`) so pgvector and the CLI's own
@@ -76,7 +75,6 @@ LABEL org.opencontainers.image.title="postvec" \
       ai.univec.postvec.variant="remote" \
       ai.univec.postvec.mode="grpc"
 
-# ---------------------------------------------------------------------- local
 
 FROM remote AS local
 
@@ -104,9 +102,9 @@ RUN set -eux; \
 
 # The embedded host reads connector files from /etc/postvec/providers.d
 # (postvec.providers_path's default). Nothing packages that directory, so
-# create it for the postgres uid: files `docker exec <ctr> postvec provider …`
+# create it for the postgres uid: files `docker exec <ctr> postvec provider ...`
 # writes inherit its owner, and POSTVEC_PROVIDERS_PATH lets that run
-# flag-free — this image has no pg_lsclusters cluster for the CLI to find.
+# flag-free: this image has no pg_lsclusters cluster for the CLI to find.
 RUN install -d -o postgres -g postgres -m 0700 /etc/postvec/providers.d
 
 # LD_LIBRARY_PATH is for ONNX Runtime's own adjacent libraries; the extension
@@ -118,7 +116,7 @@ ENV POSTVEC_MODE=embedded \
     LD_LIBRARY_PATH=/opt/postvec/libs/onnxruntime/lib
 
 # The model label is <name>@<registry revision>, which is the identity a reader
-# can look up in the registry — a package version is a packaging fact and says
+# can look up in the registry: a package version is a packaging fact and says
 # nothing about which bytes are inside.
 LABEL ai.univec.postvec.mode="embedded" \
       ai.univec.postvec.variant="local" \

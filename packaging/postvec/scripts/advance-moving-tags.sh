@@ -20,7 +20,7 @@ PLAN=""
 while (($#)); do
     case "$1" in
     --recovery-hint) RECOVERY_HINT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     -*) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
     *) PLAN="$1"; shift ;;
     esac
@@ -28,9 +28,8 @@ done
 
 [[ -n "${PLAN}" && -f "${PLAN}" ]] || { echo "usage: advance-moving-tags.sh <plan-file>" >&2; exit 2; }
 
-# The registry client, overridable so the failure paths can be tested without a
-# registry. Split into an array because it is a command *and* its subcommand
-# prefix ("docker buildx imagetools"), not a single word.
+# Overridable so failure paths can be tested without a registry. An array
+# because this is a command plus a subcommand prefix, not one word.
 read -r -a IMAGETOOLS <<<"${POSTVEC_IMAGETOOLS:-docker buildx imagetools}"
 
 say()  { printf '%s\n' "$*" >&2; }
@@ -39,11 +38,7 @@ err()  { printf '::error::%s\n' "$*" >&2; }
 
 digest_of() { "${IMAGETOOLS[@]}" inspect "$1" --format '{{.Manifest.Digest}}' 2>/dev/null; }
 
-# ------------------------------------------------------------------- the plan
-
-# `<repository>@sha256:<64 lowercase hex>`, anchored at both ends. A substring
-# test for `@sha256:` is not this check: it accepts `repo@sha256:not-a-digest`
-# and `@sha256:` alike, and "it contains the word digest" is not "it is pinned".
+# Anchored digest. A substring test for `@sha256:` accepts `repo@sha256:not-a-digest`.
 SOURCE_SHAPE='^([^@[:space:]]+)@(sha256:[0-9a-f]{64})$'
 DIGEST_SHAPE='^sha256:[0-9a-f]{64}$'
 
@@ -51,10 +46,7 @@ declare -a MOVING=() SOURCE=() EXPECTED=()
 while read -r moving source expected _rest; do
     [[ -n "${moving}" ]] || continue
 
-    # Every one of these is checked before *any* write, because the contract
-    # this helper offers is that a malformed plan changes nothing. Discovering a
-    # bad entry at verification time would mean the registry had already been
-    # written — which is precisely the state a moving tag must never be left in.
+    # Validate the whole plan before any write. A later failure would leave a moving tag half-updated.
     if [[ ! "${source}" =~ ${SOURCE_SHAPE} ]]; then
         err "plan entry for ${moving} is not pinned: ${source}"
         err "A moving tag may only be pointed at <repository>@sha256:<64 lowercase hex>."
@@ -68,10 +60,7 @@ while read -r moving source expected _rest; do
         exit 1
     fi
 
-    # The two halves of a plan entry are "write this" and "then it should be
-    # this". If they disagree, one of them is wrong and there is no way to tell
-    # which — so writing the source and *then* reporting the mismatch would
-    # leave a moving tag pointing somewhere nobody chose. Refuse instead.
+    # Source and expected digest must match. Writing one side would point the tag somewhere nobody chose.
     if [[ "${source_digest}" != "${expected}" ]]; then
         err "plan entry for ${moving} contradicts itself:"
         err "  source   ${source_repository}@${source_digest}"
@@ -86,27 +75,20 @@ done < "${PLAN}"
 (( ${#MOVING[@]} )) || { err "the plan is empty"; exit 1; }
 say "advancing ${#MOVING[@]} moving tag(s)"
 
-# ------------------------------------------------------------------ the writes
-#
-# Every one attempted, whatever the previous one did.
+# Attempt every write. A failure does not stop the rest.
 
 write_failures=0
 for i in "${!MOVING[@]}"; do
     say "  ${MOVING[i]} -> ${EXPECTED[i]}"
     if ! "${IMAGETOOLS[@]}" create --tag "${MOVING[i]}" "${SOURCE[i]}"; then
-        # Noted, not fatal. Whether it *matters* is a question about the
-        # registry's final state, which the verification pass below asks.
+        # Noted, not fatal. The verification pass reads the registry.
         err "could not write ${MOVING[i]}"
         write_failures=$((write_failures + 1))
     fi
 done
 (( write_failures )) && say "${write_failures} write(s) reported a failure; verifying all tags anyway"
 
-# ------------------------------------------------------------- what landed
-#
-# All of them, including the ones whose write failed: a tag that already pointed
-# at the right digest is correct regardless of what the write said, and a tag
-# whose write claimed success is not correct until the registry agrees.
+# Judge every tag by what the registry holds, including writes that failed.
 
 wrong=0
 for i in "${!MOVING[@]}"; do

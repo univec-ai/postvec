@@ -86,11 +86,8 @@ $(manifest_of_tree "${DEST}" | awk '{printf "    \"%s\": \"%s\",\n", $2, $1}' | 
 }
 JSON
 
-# The payload is package-manager-owned and read-only: PostgreSQL only needs to
-# read it, and nothing in the running system should be able to replace a
-# runtime library in place. `normalize_tree` also pins mtimes for
-# reproducibility — but the .so must stay executable-bit-free and yet loadable,
-# which is fine: dlopen needs read, not execute.
+# Package-owned and read-only. normalize_tree pins mtimes. The .so stays
+# mode 0644: dlopen needs read, not execute.
 normalize_tree "${PAYLOAD}"
 
 log "ONNX Runtime ${ORT_VERSION} (${RELEASE_ARCH}) payload ready"

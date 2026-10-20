@@ -1,5 +1,5 @@
-//! Tests for `engine::pooling` — CLS / mean / last-token pooling and the
-//! `PoolingStrategy` enum (serde + default). Pure tensor math, no model needed.
+//! CLS, mean and last-token pooling, plus `PoolingStrategy` serde.
+//! Tensor math only. No model.
 
 mod common;
 
@@ -11,13 +11,9 @@ fn token_embeddings(shape: [usize; 3], data: Vec<f32>) -> Array<f32, IxDyn> {
     Array::from_shape_vec(IxDyn(&shape), data).unwrap()
 }
 
-// ---------------------------------------------------------------------------
-// CLS pooling
-// ---------------------------------------------------------------------------
-
 #[test]
 fn cls_pooling_takes_first_token() {
-    // batch=1, seq=3, hidden=2. CLS = first token => [10, 11].
+    // batch=1, seq=3, hidden=2. CLS is the first token: [10, 11].
     let t = token_embeddings([1, 3, 2], vec![10.0, 11.0, 20.0, 21.0, 30.0, 31.0]);
     let pooled = cls_pooling(&t.view()).unwrap();
     assert_eq!(pooled.shape(), &[1, 2]);
@@ -39,13 +35,9 @@ fn cls_pooling_rejects_1d() {
     assert!(cls_pooling(&t.view()).is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Mean pooling
-// ---------------------------------------------------------------------------
-
 #[test]
 fn mean_pooling_averages_unmasked_tokens() {
-    // batch=1, seq=3, hidden=2; all tokens real → plain average.
+    // batch=1, seq=3, hidden=2. Every token is real, so this is a plain average.
     let t = token_embeddings([1, 3, 2], vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
     let mask = Array2::<i64>::from_shape_vec((1, 3), vec![1, 1, 1]).unwrap();
     let pooled = mean_pooling(&t.view(), &mask).unwrap();
@@ -55,7 +47,7 @@ fn mean_pooling_averages_unmasked_tokens() {
 
 #[test]
 fn mean_pooling_ignores_padding() {
-    // Third token is padding (mask 0); mean should be over first two only → 1.5.
+    // The third token is padding, so the mean is over the first two: 1.5.
     let t = token_embeddings([1, 3, 2], vec![1.0, 1.0, 2.0, 2.0, 99.0, 99.0]);
     let mask = Array2::<i64>::from_shape_vec((1, 3), vec![1, 1, 0]).unwrap();
     let pooled = mean_pooling(&t.view(), &mask).unwrap();
@@ -64,7 +56,7 @@ fn mean_pooling_ignores_padding() {
 
 #[test]
 fn mean_pooling_fully_masked_is_zero_not_nan() {
-    // All padding → clamped denominator avoids division by zero (result ~0).
+    // All padding. The clamped denominator avoids division by zero (result ~0).
     let t = token_embeddings([1, 2, 2], vec![5.0, 5.0, 6.0, 6.0]);
     let mask = Array2::<i64>::from_shape_vec((1, 2), vec![0, 0]).unwrap();
     let pooled = mean_pooling(&t.view(), &mask).unwrap();
@@ -82,13 +74,9 @@ fn mean_pooling_2d_passthrough() {
     common::assert_slice_close(pooled.as_slice().unwrap(), &[7.0, 8.0, 9.0]);
 }
 
-// ---------------------------------------------------------------------------
-// Last-token pooling
-// ---------------------------------------------------------------------------
-
 #[test]
 fn last_token_pooling_picks_last_real_token() {
-    // seq=3, two real tokens then padding → last real token is index 1 = [20,21].
+    // seq=3, two real tokens then padding. The last real token is index 1: [20, 21].
     let t = token_embeddings([1, 3, 2], vec![10.0, 11.0, 20.0, 21.0, 0.0, 0.0]);
     let mask = Array2::<i64>::from_shape_vec((1, 3), vec![1, 1, 0]).unwrap();
     let pooled = last_token_pooling(&t.view(), &mask).unwrap();
@@ -116,10 +104,6 @@ fn last_token_pooling_handles_batch() {
     // seq1 last real = index 0 = [1,1]; seq2 last real = index 1 = [4,4].
     common::assert_slice_close(pooled.as_slice().unwrap(), &[1.0, 1.0, 4.0, 4.0]);
 }
-
-// ---------------------------------------------------------------------------
-// PoolingStrategy enum
-// ---------------------------------------------------------------------------
 
 #[test]
 fn pooling_strategy_default_is_cls() {

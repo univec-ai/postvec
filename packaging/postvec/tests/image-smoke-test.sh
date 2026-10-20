@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Live test of a built postvec image: the user journey, the container contract,
-# and the failure modes that must fail *fast* rather than quietly.
+# and the failure modes that must fail fast rather than quietly.
 #
 #   tests/image-smoke-test.sh ghcr.io/univec-ai/postvec:0.1.0-1-pg18-local
 #   tests/image-smoke-test.sh --variant remote \
 #       --server-image postvec-server:amd64 \
 #       ghcr.io/univec-ai/postvec:0.1.0-1-pg18-remote
 #
-# Everything runs against the exact image reference given — pass a digest in a
+# Everything runs against the exact image reference given: pass a digest in a
 # release job, so what is tested is bit-for-bit what will be published.
 
 set -Eeuo pipefail
@@ -18,8 +18,8 @@ set -Eeuo pipefail
 # the wrong model, or fails on a correct one whose vectors are a different width.
 #
 # The name comes from the reviewed pin in versions.env. The dimension is
-# *derived* from the verified registry archive, so it comes from the facts the
-# bundle step wrote — the same file the packages were built from. `--model` and
+# derived from the verified registry archive, so it comes from the facts the
+# bundle step wrote: the same file the packages were built from. `--model` and
 # `--dims` still override both, which is what keeps the test runnable against an
 # image somebody hands you from a checkout that need not match it.
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,7 +49,7 @@ while (($#)); do
     --http)    REMOTE_HTTP="$2"; shift 2 ;;
     # A locally built postvec-server image; the test starts it itself.
     --server-image) SERVER_IMAGE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
     *)         IMAGE="$1"; shift ;;
     esac
 done
@@ -59,8 +59,8 @@ local|remote) ;;
 *) echo "--variant must be local or remote" >&2; exit 2 ;;
 esac
 
-# No default, and no guess. A wrong dimension either fails a correct image or —
-# worse, if it were merely skipped — passes a broken one.
+# No default, and no guess. A wrong dimension either fails a correct image or -
+# worse, if it were merely skipped: passes a broken one.
 [[ -n "${DIMS}" ]] || { cat >&2 <<EOF
 the bundled model's dimension is unknown.
 
@@ -130,7 +130,7 @@ wait_healthy() {
 
 sql() { docker exec --interactive "${RUN_ID}" psql -U app -d app -tAX -v ON_ERROR_STOP=1 "$@"; }
 
-# The worker's first /config poll is jittered 0–15 s so a cluster start does
+# The worker's first /config poll is jittered 0-15 s so a cluster start does
 # not fire every database at once. Remote health does not wait for the cache
 # (the engine may come up later), so callers that need a model must poll.
 wait_for_model() {
@@ -154,7 +154,7 @@ echo "boot"
 start_container
 if wait_healthy; then ok "becomes healthy"; else bad "never became healthy"; fi
 
-# One process tree, PostgreSQL as PID 1 — no supervisor, no second service.
+# One process tree, PostgreSQL as PID 1: no supervisor, no second service.
 init="$(docker exec "${RUN_ID}" cat /proc/1/comm 2>/dev/null || echo unknown)"
 [[ "${init}" == postgres ]] && ok "PostgreSQL is PID 1" || bad "PID 1 is '${init}', not postgres"
 
@@ -196,7 +196,7 @@ if [[ "${VARIANT}" == local ]]; then
     # claim a provider feature is able to break silently: an image that shipped
     # a connector file, or a host that advertised a provider-backed model
     # without one, would still pass every check below it. The -local image
-    # creates an empty providers.d for `docker exec … postvec provider add`.
+    # creates an empty providers.d for `docker exec ... postvec provider add`.
     if docker exec "${RUN_ID}" sh -c 'ls /etc/postvec/providers.d/*.toml' >/dev/null 2>&1; then
         bad "the image ships provider files in /etc/postvec/providers.d — providers must be opt-in"
     else
@@ -253,7 +253,7 @@ SQL
     [[ "${filled}" == 3 ]] && ok "the worker filled all three vectors" \
                             || bad "only ${filled}/3 vectors filled within 60s"
 
-    # The row that should win shares no keyword with the query — if it ranks
+    # The row that should win shares no keyword with the query: if it ranks
     # first, the semantic leg is genuinely working.
     top="$(sql -c "SELECT s.pk_value FROM postvec.search('smoke','body',
                      'switching AI models without redoing the work') s
@@ -268,7 +268,7 @@ if [[ "${VARIANT}" == remote ]]; then
     echo
     echo "remote mode"
 
-    # Without a reachable engine the worker must *degrade*, not fail: it keeps
+    # Without a reachable engine the worker must degrade, not fail: it keeps
     # beating, queues work without burning retry attempts, and search falls
     # back to full text. That is the documented behaviour and it is what makes
     # a temporarily unreachable inference host survivable.
@@ -280,7 +280,7 @@ SQL
     # Heartbeats are change-gated: an idle worker writes once per
     # postvec.heartbeat_interval_ms (default 30 s), not once per poll tick.
     # A four-second double sample only observes that deliberate quiet and
-    # false-alarms. Freshness — the same budget doctor uses — is the proof
+    # false-alarms. Freshness: the same budget doctor uses: is the proof
     # of life.
     beat_ok="$(sql <<'SQL'
 SELECT (s.worker_last_beat IS NOT NULL
@@ -291,7 +291,7 @@ SELECT (s.worker_last_beat IS NOT NULL
   FROM postvec.stats() s
 SQL
 )"
-    # ::text, not psql's default boolean, so this is 'true'/'false' — the
+    # ::text, not psql's default boolean, so this is 'true'/'false': the
     # same spelling the healthcheck compares against. 't' is what you get
     # from an uncast boolean and is how this check false-alarmed.
     [[ "${beat_ok}" == true ]] \
@@ -304,7 +304,7 @@ SQL
         || bad "${dead} dead-lettered job(s) — an unreachable engine must not burn attempts"
 
     # Degradation is half the contract; the other half is that it works when
-    # an engine *is* reachable. That needs a real inference node — either one
+    # an engine is reachable. That needs a real inference node: either one
     # the caller names, or a postvec-server image, which the test brings up
     # itself on a private network.
     if [[ -n "${SERVER_IMAGE}" ]]; then
@@ -316,7 +316,7 @@ SQL
             --network-alias postvec-server "${SERVER_IMAGE}" >/dev/null
 
         # postvec-server's healthcheck is /ready, which is 503 until a model
-        # can actually answer — so "healthy" here means it can serve, not
+        # can actually answer: so "healthy" here means it can serve, not
         # merely that it is listening.
         deadline=$(( SECONDS + 300 ))
         until [[ "$(docker inspect --format '{{.State.Health.Status}}' "${SERVER}" 2>/dev/null)" == healthy ]]; do
@@ -412,8 +412,8 @@ if wait_healthy; then ok "survives a restart" ; else bad "did not become healthy
 after="$(sql -c "SELECT count(*) FROM pg_extension WHERE extname='postvec'")"
 [[ "${before}" == "${after}" ]] && ok "the extension is still installed" || bad "extension lost across restart"
 
-# Recreating the container on the same volume must keep the data — and must
-# *not* re-run the initialisation scripts.
+# Recreating the container on the same volume must keep the data, and must
+# not re-run the initialisation scripts.
 docker rm --force "${RUN_ID}" >/dev/null
 start_container
 if wait_healthy; then ok "a fresh container on the same volume is healthy"; else bad "recreate failed"; fi

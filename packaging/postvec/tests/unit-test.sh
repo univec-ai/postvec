@@ -38,7 +38,6 @@ case_() {
     printf '\n\033[1m%s\033[0m\n' "${CURRENT}"
 }
 
-# ---------------------------------------------------------------- the fixtures
 
 DISTRO_IDS=(debian12 ubuntu2204 ubuntu2404 el9)
 MAJORS=(16 17 18)
@@ -51,9 +50,9 @@ ARCHES=(amd64 arm64)
 MODEL_PKG_NAME="postvec-model-${BUNDLED_MODEL_PKG_SUFFIX}"
 MODEL_PKG_VERSION="${BUNDLED_MODEL_REGISTRY_REVISION}.${BUNDLED_MODEL_BUNDLE_VERSION}.0"
 
-# The fixture facts a release *would* have if it had built this model. Written
+# The fixture facts a release would have if it had built this model. Written
 # into every scenario's build root so the manifest reads them the way it reads
-# a real payload — and so this suite still needs no network and no 90 MB
+# a real payload, so this suite still needs no network and no 90 MB
 # download.
 FIXTURE_ARCHIVE_SIZE=91195392
 FIXTURE_TARGET_DIM=384
@@ -208,8 +207,8 @@ fixture=1.0
 INFO
 }
 
-# Seven image descriptors — six database images plus the inference node's, in
-# its own repository — each with one SBOM per child manifest.
+# Seven image descriptors: six database images plus the inference node's, in
+# its own repository: each with one SBOM per child manifest.
 make_images() {
     local out="$1"
     python3 - "$out" "${POSTVEC_VERSION}" "${PACKAGE_RELEASE}" "${IMAGE_REPOSITORY}" \
@@ -258,13 +257,12 @@ open(out, "w").write(json.dumps(images))
 PY
 }
 
-# ------------------------------------------------------------------ the runner
 
 # Build a manifest from a fixture and report whether it was accepted. Output is
-# captured so a case can assert *why* a rejection happened.
+# captured so a case can assert why a rejection happened.
 LAST_OUTPUT=""
 
-# `run_manifest_with <extra args…> -- <dist> <build-info> [images]`
+# `run_manifest_with <extra args...> -- <dist> <build-info> [images]`
 EXTRA_MANIFEST_ARGS=()
 run_manifest_with() {
     EXTRA_MANIFEST_ARGS=()
@@ -350,7 +348,7 @@ if case_ "package closure: RPM architectures are canonicalised"; then
     expect_accepted "el9 x86_64/aarch64 packages satisfy amd64/arm64" \
         "${s}/dist" "${s}/build" "${s}/images.json"
 
-    # …and canonicalising is not the same as accepting anything. A file name the
+    # ...and canonicalising is not the same as accepting anything. A file name the
     # identity grammar cannot read is refused rather than waved through: the
     # closure is only as strong as its willingness to say "I cannot tell".
     s="$(scenario rpm-arch-unparseable)"
@@ -402,7 +400,7 @@ fi
 if case_ "package closure: the noarch packages live in the noarch root"; then
     # `all`/`noarch` content written into one architecture's cell is invisible
     # to the other architecture. The manifest walks the whole tree, so the file
-    # is still found — what this asserts is that the *release* keeps exactly one
+    # is still found: what this asserts is that the release keeps exactly one
     # copy of it, which is what breaks the moment a second architecture's job
     # writes its own.
     s="$(scenario noarch-duplicated)"
@@ -554,7 +552,7 @@ json.dump(images, open(sys.argv[1], "w"))
     expect_rejected "a release without the server image is refused" \
         "missing image: PG None server" "${s}/dist" "${s}/build" "${s}/images.json"
 
-    # …and it is its own product: a node recorded under the database images'
+    # ...and it is its own product: a node recorded under the database images'
     # repository, or carrying a PostgreSQL major, is a descriptor for
     # something the release does not publish.
     s="$(scenario image-server-repo)"
@@ -581,8 +579,8 @@ json.dump(images, open(sys.argv[1], "w"))
     expect_rejected "a server image claiming a PostgreSQL major is refused" \
         "it has no major" "${s}/dist" "${s}/build" "${s}/images.json"
 
-    # The node sits on the pinned Debian 12 base — the builder its packages
-    # came from — not on a postgres image.
+    # The node sits on the pinned Debian 12 base: the builder its packages
+    # came from: not on a postgres image.
     s="$(scenario image-server-base)"
     python3 -c '
 import json, sys
@@ -714,13 +712,13 @@ check_versions_env() {
 }
 
 if case_ "release mode: which runs may publish, and where"; then
-    # The whole mode × tag × override cross-product, against the real gate.
-    # Validating the tag *grammar* elsewhere is not the same as proving that
+    # The whole mode, tag and override cross-product, against the real gate.
+    # Validating the tag grammar elsewhere is not the same as proving that
     # `publish` refuses a rehearsal tag and `disposable-publication` refuses a
-    # production one — that is a property of this decision, and it now lives
+    # production one: that is a property of this decision, and it now lives
     # somewhere it can be run.
     #
-    # `mode_is <label> <expected: publish|refuse> [KEY=VALUE …]`
+    # `mode_is <label> <expected: publish|refuse> [KEY=VALUE ...]`
     mode_is() {
         local label="$1" want="$2"; shift 2
         local output status=0
@@ -778,14 +776,14 @@ if case_ "release mode: which runs may publish, and where"; then
         POSTVEC_MODE=publish POSTVEC_RELEASE_REF="${REAL_TAG}" POSTVEC_DISPATCH_REF=main
 
     # Absent is not "skip the check". A gate that passes when it cannot tell is
-    # not a gate — and this one is only ever wired up by a workflow, so the
+    # not a gate, and this one is only ever wired up by a workflow, so the
     # failure mode is a caller that forgets, not a user that lies.
     mode_is "publishing with no dispatch ref at all is refused" refuse \
         POSTVEC_MODE=publish POSTVEC_RELEASE_REF="${REAL_TAG}" POSTVEC_DISPATCH_REF=
     mode_is "disposable-publication with no dispatch ref is refused" refuse \
         POSTVEC_MODE=disposable-publication POSTVEC_RELEASE_REF="${SCRATCH_TAG}" \
         POSTVEC_DISPATCH_REF= "${OV[@]}"
-    # …but a rehearsal never publishes, so it has nothing to bind and may run
+    # ...but a rehearsal never publishes, so it has nothing to bind and may run
     # without one.
     mode_is "a rehearsal does not need a dispatch ref" rehearse \
         POSTVEC_MODE=rehearse POSTVEC_RELEASE_REF=main POSTVEC_DISPATCH_REF=
@@ -859,7 +857,7 @@ FAKE
         done
     }
 
-    # `advance <label> <expected: pass|fail> [env…]`
+    # `advance <label> <expected: pass|fail> [env...]`
     ADVANCE_OUTPUT=""
     advance() {
         local dir="${WORK}/moving-$1"
@@ -911,8 +909,8 @@ FAKE
         || ok "a tag whose state is unknown fails the command"
 
     # The preflight guard everything else rests on. Its contract is not "reject
-    # eventually" but "change nothing" — so each case asserts both the refusal
-    # *and* that no write was attempted.
+    # eventually" but "change nothing": so each case asserts both the refusal
+    # and that no write was attempted.
     #
     # `refuses_plan <label> <plan line>`
     refuses_plan() {
@@ -961,7 +959,7 @@ if case_ "release identity: the tag states which kind of release this is"; then
     # The two publication modes must not be able to produce each other's
     # release. A scratch tag dispatched as `publish` would advance the
     # production moving tags; a real tag dispatched as `disposable-publication`
-    # would occupy the GitHub release the real publication needs — and a release
+    # would occupy the GitHub release the real publication needs, and a release
     # is published once.
     #
     # The workflow refuses each combination by tag prefix; this asserts the
@@ -986,17 +984,17 @@ if case_ "release identity: the tag states which kind of release this is"; then
     assert_tag "a rehearsal tag for another revision is refused" \
         "postvec-rehearsal-v${POSTVEC_VERSION}-$((PACKAGE_RELEASE + 1))" refuse
 
-    # `workflow_dispatch` sets GITHUB_REF_NAME to the ref the *workflow file*
+    # `workflow_dispatch` sets GITHUB_REF_NAME to the ref the workflow file
     # came from, which need not be what is being released. The explicit tag has
-    # to win, or a dispatch from `main` would be validated as — and recorded
-    # as — a release of `main`.
+    # to win, or a dispatch from `main` would be validated and recorded
+    # as a release of `main`.
     output="$(GITHUB_REF_NAME=main POSTVEC_RELEASE_TAG="postvec-v${RELEASE_ID}" \
               "${PKG_DIR}/scripts/assert-versions.sh" 2>&1)" || output="FAILED: ${output}"
     grep -qF -- "ok    release tag" <<<"${output}" \
         && ok "POSTVEC_RELEASE_TAG wins over an ambient GITHUB_REF_NAME" \
         || bad "the ambient GITHUB_REF_NAME overrode the stated release tag"
 
-    # …and the manifest records the tag it was told, not the ambient one.
+    # ...and the manifest records the tag it was told, not the ambient one.
     s="$(scenario git-tag)"
     if GITHUB_REF_NAME=main run_manifest_with --git-tag "postvec-v${RELEASE_ID}" \
         -- "${s}/dist" "${s}/build" "${s}/images.json"; then
@@ -1054,7 +1052,7 @@ fi
 if case_ "versions.env: publication metadata has a grammar"; then
     # These reach registry commands in jobs that hold package-write permission.
     # They are reviewed repository content rather than workflow input, so a
-    # grammar is a second line — but "reviewed" is a process and this is a check.
+    # grammar is a second line: but "reviewed" is a process and this is a check.
     check_versions_env "a tagged image repository is refused" \
         "IMAGE_REPOSITORY is not a plain container repository" \
         's|^IMAGE_REPOSITORY=.*|IMAGE_REPOSITORY=ghcr.io/univec-ai/postvec:latest|'
@@ -1153,7 +1151,7 @@ if case_ "the prerequisite bootstrap emits the right commands per distribution";
         bad "the RHEL plan installs EPEL before enabling CodeReady Builder"
     fi
 
-    # Every RPM plan verifies the repository RPM against *only* the pinned key.
+    # Every RPM plan verifies the repository RPM against only the pinned key.
     # `rpm --checksig` against the host database proves the package is signed by
     # some key the host already trusts, which is a much weaker statement.
     expect_plan "the EL plan checks the repository RPM in an isolated rpmdb" almalinux9-sig \
@@ -1170,7 +1168,7 @@ fi
 
 if case_ "the prerequisite plan follows PGDG's per-architecture signing keys"; then
     # PGDG signs x86_64 and aarch64 with different keys. Verifying an aarch64
-    # repository RPM against the x86_64 fingerprint fails closed — correctly,
+    # repository RPM against the x86_64 fingerprint fails closed: correctly,
     # and only on an arm64 runner twenty minutes into a packaging job. This
     # asserts it from either architecture, in the fast job.
     el9_osr="${WORK}/os-release-el9-arch"
@@ -1215,7 +1213,7 @@ if case_ "the prerequisite bootstrap pins the same PGDG key as the builders"; th
     else
         bad "the bootstrap pins ${arm_fpr:-<nothing>}, versions.env pins ${PGDG_RPM_KEY_AARCH64_FINGERPRINT}"
     fi
-    # …and it must still refuse to run anything unattended without consent.
+    # ...and it must still refuse to run anything unattended without consent.
     if output="$(printf '' | bash "${PKG_DIR}/scripts/postvec-prerequisites.sh" --pg 18 2>&1)"; then
         bad "the bootstrap proceeded without --yes on a non-terminal"
     elif grep -qF -- "nothing was changed" <<<"${output}"; then
@@ -1234,8 +1232,8 @@ if case_ "the prerequisite bootstrap pins the same PGDG key as the builders"; th
     # an untested host must still stop.
     osr="${WORK}/os-release-untested"
     printf 'ID="rhel"\nVERSION_ID="9.6"\nPRETTY_NAME="Red Hat Enterprise Linux 9.6"\n' > "${osr}"
-    # The exact refusal, not merely *a* refusal. The invariant is that the
-    # unrehearsed check fires **before** the root check — otherwise a root
+    # The exact refusal, not merely a refusal. The invariant is that the
+    # unrehearsed check fires **before** the root check: otherwise a root
     # operator on RHEL, which is the case that matters, would sail past it. A
     # test that accepted "must run as root" would pass whether or not that
     # ordering held, which is the same as not testing it.
@@ -1247,7 +1245,7 @@ if case_ "the prerequisite bootstrap pins the same PGDG key as the builders"; th
     else
         bad "the untested-distribution refusal did not fire first: ${output##*error: }"
     fi
-    # …and that the escape hatch is spelled out rather than implied.
+    # ...and that the escape hatch is spelled out rather than implied.
     grep -qF -- "--force-untested" "${PKG_DIR}/scripts/postvec-prerequisites.sh" \
         && ok "the refusal names the deliberate override" \
         || bad "there is no documented way to proceed on an untested distribution"
@@ -1270,7 +1268,7 @@ if case_ "model facts: a payload built from different pins is refused"; then
     # `load_model_facts` is what stops one model being packaged under another
     # one's name or version. Checking only the model name and the archive
     # digest let a changed package suffix, registry revision or bundle version
-    # through — same bytes, stale package identity, and a package that
+    # through: same bytes, stale package identity, and a package that
     # installs cleanly and upgrades wrongly.
     facts_refused() {
         local label="$1" expected="$2" mutation="$3"
@@ -1317,7 +1315,7 @@ if case_ "model facts: a payload built from different pins is refused"; then
         "MODEL_DOC_DIR:" \
         's|^MODEL_DOC_DIR=.*|MODEL_DOC_DIR=/usr/share/doc/postvec-model-stale|'
 
-    # …and the unmutated fixture must still be accepted, or the six cases above
+    # ...and the unmutated fixture must still be accepted, or the six cases above
     # would pass against a helper that refuses everything.
     d="${WORK}/facts-good"
     mkdir -p "${d}"
@@ -1334,8 +1332,8 @@ fi
 #
 # scripts/check-model-bundle.py is the trust decision between "the registry
 # served us something" and "this may be packaged and redistributed". It is
-# network-free by construction, so it can be driven from fixtures — which is
-# the only way to test what it *refuses*, since a real pull is always correct.
+# network-free by construction, so it can be driven from fixtures: which is
+# the only way to test what it refuses, since a real pull is always correct.
 #
 # Each case starts from a valid installed model, breaks exactly one thing, and
 # asserts both the refusal and the reason for it.
@@ -1687,7 +1685,7 @@ fi
 
 if case_ "bundled model: an interrupted cache promotion is recovered"; then
     # Promotion is two same-filesystem renames. A kill between them leaves the
-    # canonical cache absent and a complete copy in `.replaced` — nothing
+    # canonical cache absent and a complete copy in `.replaced`: nothing
     # corrupt, but the next build would pull again, which is the one step that
     # needs the network. This is the offline-rebuild path, so it has to survive
     # that.
@@ -1829,7 +1827,7 @@ fi
 # The reviewed files that a `.gitignore` can silently swallow.
 #
 # The repository root ignores `*.txt`, so each of these needs an explicit
-# negation in packaging/postvec/.gitignore to be committed at all — and when
+# negation in packaging/postvec/.gitignore to be committed at all, and when
 # one is missing, nothing fails on the machine that wrote it. It fails in CI,
 # in whichever job first reads the file: for the lintian list that was the
 # twenty-minute `packages` job, reporting three dozen errors that looked like a
@@ -1846,7 +1844,7 @@ if case_ "reviewed policy files are present and committed"; then
             continue
         fi
         # `git check-ignore` answers the question that matters: not "is it here"
-        # — it is, that is why nobody noticed — but "would a commit include it".
+        #: it is, that is why nobody noticed: but "would a commit include it".
         if git -C "${PKG_DIR}" check-ignore -q "${path}" 2>/dev/null; then
             bad "${relative} exists but is ignored by .gitignore, so CI will not have it"
         else
@@ -2137,7 +2135,6 @@ if case_ "shipped upgrade scripts stay byte-identical"; then
         || bad "unknown tag returned ${rc}, expected 2"
 fi
 
-# ---------------------------------------------------------------------- summary
 
 rm -rf "${PKG_DIR}/build/.unit-test-release"
 

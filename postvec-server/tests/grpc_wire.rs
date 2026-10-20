@@ -111,9 +111,7 @@ fn error_code(status: &tonic::Status) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The refusal a misconfigured deployment meets most often, and the one whose
-/// classification matters most: postvec must read it as permanent, not as a
-/// transport blip to retry.
+/// The usual misconfiguration. postvec must read it as permanent, not as a blip to retry.
 #[tokio::test]
 async fn embedding_an_unloaded_model_is_a_permanent_refusal() {
     let server = Server::start().await;
@@ -159,10 +157,7 @@ async fn converting_with_an_unloaded_model_is_a_permanent_refusal() {
     server.stop().await;
 }
 
-/// Inference requests never load models — that is what keeps a client on the
-/// network from expanding the resident set past every configured ceiling.
-/// The refusal above *is* the proof, so this asserts the complement: nothing
-/// became resident.
+/// A refused request loads nothing. That is what keeps a client from growing the resident set.
 #[tokio::test]
 async fn a_refused_request_leaves_nothing_resident() {
     let server = Server::start().await;
@@ -210,10 +205,8 @@ async fn an_oversized_batch_is_refused_by_the_item_ceiling() {
     server.stop().await;
 }
 
-/// A caller's `grpc-timeout` is a ceiling the server honours, not a hint. An
-/// already-expired one must be refused before any work happens — including
-/// before the readiness check, which would otherwise answer a different
-/// error and prove work ran after the budget was gone.
+/// An already-expired `grpc-timeout` is refused before any work, including the
+/// readiness check. That check would answer a different error and prove work ran late.
 #[tokio::test]
 async fn an_expired_deadline_is_refused_before_anything_else() {
     let server = Server::start().await;
@@ -232,11 +225,8 @@ async fn an_expired_deadline_is_refused_before_anything_else() {
         .embed_texts(request)
         .await
         .expect_err("an exhausted deadline must be refused");
-    // What the *client* sees is ambiguous here: tonic enforces the same
-    // header on its own side, so it may surface `Cancelled` before the
-    // server's `DeadlineExceeded` arrives. The assertion that matters is
-    // server-side — the refusal was classified as a deadline, not as the
-    // MODEL_NOT_LOADED the readiness check would have produced had it run.
+    // The client may see `Cancelled`: tonic enforces the same header itself.
+    // The server must have classified it as a deadline, not `MODEL_NOT_LOADED`.
     assert!(
         matches!(
             status.code(),
@@ -266,8 +256,7 @@ async fn an_expired_deadline_is_refused_before_anything_else() {
     server.stop().await;
 }
 
-/// Every request, refused or not, must release its in-flight slot and land in
-/// exactly one counter.
+/// Every request, refused or not, releases its in-flight slot and lands in one counter.
 #[tokio::test]
 async fn refusals_are_counted_and_release_their_slot() {
     let server = Server::start().await;
@@ -315,9 +304,8 @@ async fn refusals_are_counted_and_release_their_slot() {
     server.stop().await;
 }
 
-/// A shutdown signal stops the listener. Existing connections finish; new
-/// ones are refused, which is the transport error postvec already retries
-/// against the next endpoint in its round-robin.
+/// A shutdown signal stops the listener. Existing connections finish.
+/// New ones are refused, the transport error postvec retries on the next endpoint.
 #[tokio::test]
 async fn the_shutdown_signal_stops_the_listener() {
     let mut server = Server::start().await;

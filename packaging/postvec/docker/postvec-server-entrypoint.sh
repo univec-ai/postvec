@@ -60,7 +60,7 @@ EOF
     fi
     # The SANs cover the ways a container is reached: its compose service name,
     # localhost for a healthcheck, and the hostname Docker assigns it. `bash`
-    # supplies HOSTNAME itself — the `hostname` binary is not among the four
+    # supplies HOSTNAME itself: the `hostname` binary is not among the four
     # packages this image installs, and a substitution that came back empty
     # would hand openssl a malformed SAN list.
     echo "postvec-server: generating a self-signed certificate in ${CERTS}" >&2

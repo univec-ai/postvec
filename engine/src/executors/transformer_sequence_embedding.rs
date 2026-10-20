@@ -195,7 +195,6 @@ pub struct TransformerForSequenceEmbedding {
 }
 
 impl TransformerForSequenceEmbedding {
-    /// Build the executor from the model configuration.
     pub fn new(engine: &InferenceEngine, config: &ModelConfiguration) -> Result<Self, EngineError> {
         let params = &config.executor.params;
         let mut tokenizer_config: TokenizerConfig = serde_json::from_value(

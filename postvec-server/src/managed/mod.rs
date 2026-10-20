@@ -340,10 +340,9 @@ pub fn start(
     tasks
 }
 
-/// One database session: stand by until the leader lock is free, then drain
-/// until the connection or the schema is lost. The lock is session-scoped, so
-/// losing the connection is losing leadership; the heartbeat notifies `lost`
-/// when the database no longer sees this session holding it.
+/// Stand by until the leader lock is free, then drain until the connection or the schema is lost.
+/// The lock is session-scoped, so losing the connection loses leadership. The heartbeat
+/// notifies `lost` when the database no longer sees this session holding it.
 async fn session(
     state: &Arc<ServerState>,
     db: &ManagedDb,

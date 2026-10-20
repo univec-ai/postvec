@@ -54,8 +54,8 @@ trap 'rm -rf "${STAGE}"' EXIT
 mkdir -p "${STAGE}/old" "${STAGE}/new" "${STAGE}/download"
 
 # The two packages per side, by exact family naming. Anchoring on the version
-# digit right after the name keeps debug-symbol packages (…-dbgsym_…,
-# …-debuginfo-…) and SBOMs out.
+# digit right after the name keeps debug-symbol packages (...-dbgsym_...,
+# ...-debuginfo-...) and SBOMs out.
 case "${DIST_FAMILY}" in
 deb)
     CLI_GLOB="postvec-cli_[0-9]*+${DIST_ID}_${DEB_ARCH}.deb"
@@ -65,7 +65,7 @@ rpm)
     EXT_GLOB="postgresql${MAJOR}-postvec-[0-9]*.${DIST_ID}.${RPM_ARCH}.rpm" ;;
 esac
 
-pick() {  # <dest> <search-root> — copy exactly one CLI and one extension package
+pick() {  # <dest> <search-root>: copy exactly one CLI and one extension package
     local dest="$1" root="$2" glob found
     for glob in "${CLI_GLOB}" "${EXT_GLOB}"; do
         mapfile -t found < <(find "${root}" -type f -name "${glob}" | LC_ALL=C sort)
@@ -75,7 +75,6 @@ $(printf '  %s\n' "${found[@]}")"
     done
 }
 
-# ------------------------------------------------------- the previous release
 if [[ -n "${FROM_TAG}" ]]; then
     need gh
     REPO="${REPO:-${GH_REPO:-${SOURCE_REPOSITORY#https://github.com/}}}"
@@ -90,7 +89,6 @@ else
     pick "${STAGE}/old" "${FROM_DIR}"
 fi
 
-# ------------------------------------------------------------- this release
 pick "${STAGE}/new" "${PKG_DIR}/dist"
 
 version_in() {  # the product version inside a package filename

@@ -26,7 +26,7 @@ while (($#)); do
     case "$1" in
     --dist)           DIST="$2"; shift 2 ;;
     # Where the per-cell build-info.txt files live. Named rather than assumed,
-    # so the build records are as much an explicit input as the artifacts —
+    # so the build records are as much an explicit input as the artifacts -
     # and so the closure checks can be exercised against a fixture.
     --build-info)     BUILD_INFO="$2"; shift 2 ;;
     --images)         IMAGES_JSON="$2"; shift 2 ;;
@@ -48,7 +48,7 @@ while (($#)); do
     # working tree. The release workflow never passes it, and a manifest built
     # this way names a commit that is not what was built.
     --allow-dirty)    ALLOW_DIRTY=1; shift ;;
-    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -56,7 +56,7 @@ done
 load_versions
 # The bundled model's package name, version and registry identity come from the
 # facts the bundle step derived from the verified archive, not from versions.env
-# — so the manifest's `bundled_model` block and its package closure describe the
+#: so the manifest's `bundled_model` block and its package closure describe the
 # model that was actually built. They are read from the same build root the
 # build-cell records come from, which is what `--build-info` names.
 load_model_facts "${BUILD_INFO}/payload-common"
@@ -81,7 +81,7 @@ if [[ -n "${REQUIRE_IMAGES}" && -z "${IMAGES_JSON}" ]]; then
 records no images cannot support the documented image verification steps"
 fi
 
-# A publishable release describes a commit, so it has to *be* one. A dirty tree
+# A publishable release describes a commit, so it has to be one. A dirty tree
 # means the manifest's git_commit names something that is not what was built.
 if [[ -n "${REQUIRE_IMAGES}" ]] && (( ! ALLOW_DIRTY )); then
     if [[ -n "$(git -C "${REPO_ROOT}" status --porcelain 2>/dev/null)" ]]; then
@@ -91,7 +91,6 @@ describe exactly one commit"
     fi
 fi
 
-# ------------------------------------------------------- flat release directory
 #
 # Built into a fresh directory and moved into place at the end. Writing into
 # an existing one would let a leftover artifact from an earlier run (a
@@ -104,7 +103,7 @@ mkdir -p "$(dirname "${OUT}")"
 STAGING="$(mktemp -d "$(dirname "${OUT}")/.postvec-release.XXXXXX")"
 trap 'rm -rf "${STAGING}"' EXIT
 
-# Every artifact, once, in one directory — the layout a user downloads into and
+# Every artifact, once, in one directory: the layout a user downloads into and
 # the layout `sha256sum --check` expects. Duplicate basenames with different
 # content are a build bug and stop the release here.
 log "collecting artifacts into ${OUT}"
@@ -136,11 +135,11 @@ done < <(find "${DIST}" -type f -name '*.spdx.json' | LC_ALL=C sort)
 (( ${#SEEN[@]} )) || die "no .deb or .rpm artifacts under ${DIST}"
 log "  ${#SEEN[@]} artifact(s)"
 
-# The prerequisite bootstrap is a release *asset*, not a build artifact: it is
+# The prerequisite bootstrap is a release asset, not a build artifact: it is
 # the first thing a user runs, before any package exists on their host, so it is
 # published with the release rather than linked out of a branch that can move
 # under them. Collected here, before the manifest is computed, so it is recorded
-# in postvec-release.json and in SHA256SUMS — and, in the release workflow,
+# in postvec-release.json and in SHA256SUMS. In the release workflow,
 # attested in its own right. A user is told to run it; "it hashes to what an
 # attested checksum file says" is a chain, and the thing they execute deserves a
 # signature of its own.
@@ -164,7 +163,7 @@ MODEL_SOURCE_JSON="${BUILD_INFO}/payload-common${MODEL_DOC_DIR}/SOURCE.json"
 
 # What the builders actually resolved, as opposed to what was asked for. PGDG
 # publishes no snapshots, so the exact PostgreSQL and toolchain versions a cell
-# used are only knowable from the cell itself — and are exactly what someone
+# used are only knowable from the cell itself, and are exactly what someone
 # reproducing or auditing a release needs.
 BUILD_CELLS_JSON="$(mktemp)"
 python3 - "${BUILD_INFO}" > "${BUILD_CELLS_JSON}" <<'PY'
@@ -265,23 +264,12 @@ def sha256(path):
             digest.update(chunk)
     return digest.hexdigest()
 
-# Artifacts are discovered, not listed: a package that was built but forgotten
-# in a hand-written list is a package with no published checksum.
-# Everything is described by its own file name, which is the only thing a user
-# holding a download has. deb: <name>_<version>_<arch>.deb, where the version
-# carries the distribution tag (`0.1.0-1+deb12`); rpm:
-# <name>-<version>-<release>.<arch>.rpm, where the release does (`1.el9`).
+# Discover artifacts from the directory. A forgotten name would ship with no checksum.
+# Identity comes from the file name. A deb version carries +deb12. An rpm release carries .el9.
 DISTRO_TAG = re.compile(r"(deb\d+|ubuntu[\d.]+|el\d+)")
 
-# One spelling across the manifest. Each ecosystem names architectures its own
-# way in file names — `x86_64` and `amd64` are the same machine — and a manifest
-# that reported both would make "which architectures does this release cover"
-# unanswerable without knowing the packaging conventions.
-#
-# Every place that compares an architecture goes through this, including the
-# closure check below. Comparing a raw file-name architecture against a
-# canonicalised one is a check that can only fail, and it failed silently for
-# every RPM in the release.
+# One architecture spelling. x86_64 and amd64 are the same machine.
+# Compare only through this map. A raw file-name arch against a canonical one fails every RPM.
 ARCH_ALIASES = {
     "x86_64": "amd64", "amd64": "amd64",
     "aarch64": "arm64", "arm64": "arm64",
@@ -339,10 +327,8 @@ if not artifacts:
     sys.exit("no .deb or .rpm artifacts under %s" % dist)
 artifacts.sort(key=lambda a: a["name"])
 
-# Release assets that are not packages. Today that is one file, and it is the
-# one a user is told to execute — so it is described here rather than only
-# appearing as a line in SHA256SUMS, and the release workflow attests it
-# directly.
+# The bootstrap script is a release asset a user is told to run, so it is
+# attested here and not only listed in SHA256SUMS.
 release_assets = []
 BOOTSTRAP = "postvec-prerequisites.sh"
 bootstrap_path = dist / BOOTSTRAP
@@ -359,10 +345,8 @@ elif os.environ.get("REQUIRE_IMAGES"):
     sys.exit("%s is missing: a release publishes the bootstrap its own "
              "instructions tell users to run" % BOOTSTRAP)
 
-# The bundled model, as the registry describes it. The derived facts come from
-# model-facts.env; the free-form provenance (`source`) comes from the payload's
-# own SOURCE.json, which the bundle step rendered from the verified receipt —
-# never from a shell variable, because free text read by shell is code.
+# Model facts come from model-facts.env. Free-form provenance comes from
+# SOURCE.json, never a shell variable: free text read by the shell is code.
 model = {
     "name": env("MODEL_NAME"),
     "backend": env("MODEL_BACKEND"),
@@ -599,9 +583,8 @@ if wanted is not None:
           % (len(wanted), len(expected_debug) if require_debug else len(debug_by_tuple),
              VERSION, REVISION))
 
-# The build cells: the exact set, for the same reason. 24 extension cells
-# (distro × major × arch) plus 8 shared-package builders (distro × arch), each
-# of which compiles its own PG 18 cell to produce the CLI.
+# Build cells: one record per distribution, major and architecture, plus
+# one shared-package builder per distribution and architecture.
 if wanted is not None and os.environ.get("REQUIRE_IMAGES"):
     distro_ids = (os.environ.get("EXPECT_DISTROS") or "").split()
     expect_majors = [int(m) for m in (os.environ.get("EXPECT_MAJORS") or "").split()]
@@ -625,17 +608,9 @@ if wanted is not None and os.environ.get("REQUIRE_IMAGES"):
         sys.exit("the release does not describe exactly the expected build cells")
     print("build cells verified: %d record(s)" % len(present_cells))
 
-# The build cells' recorded *facts*, not just their names.
-#
-# A cell-name set proves that 32 files arrived. It says nothing about what is
-# in them, and the fields those files carry — the PostgreSQL version the cell
-# resolved, the base it ran on, the compiler — are the whole reason the records
-# exist: PGDG publishes no snapshots, so this is the only durable statement of
-# what an artifact was built against. A fact that nothing checks is
-# documentation, and documentation drifts.
-#
-# `base` is `${ID}-${VERSION_ID}` from the builder's own /etc/os-release, so an
-# EL9 cell reports a point release (`almalinux-9.8`) and the check is a prefix.
+# Check the recorded facts, not only the cell names. PGDG publishes no
+# snapshots, so this is the only record of what the cell resolved.
+# base is ID-VERSION_ID from the builder, so an EL9 point release matches as a prefix.
 DISTRO_BASE_PREFIX = {
     "debian12": "debian-12",
     "ubuntu2204": "ubuntu-22.04",

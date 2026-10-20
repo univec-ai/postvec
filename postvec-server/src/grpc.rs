@@ -31,11 +31,9 @@ use tower::{Layer, Service};
 const MAX_DECODE_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 const MAX_ENCODE_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
-/// Inbound gRPC deadline from the `grpc-timeout` request header (tonic
-/// surfaces it as metadata): 1-8 ASCII digits plus a unit. `predict_timeout`
-/// (postvec.embed_timeout_ms, default 30 s) is a ceiling for callers that
-/// send no deadline. A 2 s `search()` must drop native work and the admission
-/// permit when the SQL caller has given up.
+/// Inbound `grpc-timeout`: 1-8 ASCII digits plus a unit. `predict_timeout`
+/// is the ceiling when the caller sends none. An expired budget drops native
+/// work and the admission permit.
 fn inbound_deadline(md: &tonic::metadata::MetadataMap) -> Option<Duration> {
     let raw = md.get("grpc-timeout")?.to_str().ok()?;
     parse_grpc_timeout(raw)
@@ -46,8 +44,7 @@ fn parse_grpc_timeout(raw: &str) -> Option<Duration> {
         return None;
     }
     let (digits, unit) = raw.split_at(raw.len() - 1);
-    // gRPC's wire grammar permits at most eight decimal digits. That also
-    // keeps a hostile saturating duration out of Instant arithmetic.
+    // At most eight digits. That also keeps a hostile duration out of Instant arithmetic.
     if digits.is_empty() || digits.len() > 8 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -67,8 +64,7 @@ fn parse_grpc_timeout(raw: &str) -> Option<Duration> {
 struct AbsoluteDeadline(std::time::Instant);
 
 fn deadline_from_budget(now: std::time::Instant, budget: Duration) -> std::time::Instant {
-    // `budget` is clamped to the configured server ceiling before this call,
-    // but keep arithmetic total if that ceiling is ever made operator-sized.
+    // Already clamped to the server ceiling. Keep the arithmetic total anyway.
     now.checked_add(budget).unwrap_or(now)
 }
 
@@ -81,29 +77,21 @@ fn request_deadline<T>(request: &Request<T>, ceiling: Duration) -> std::time::In
     deadline_from_budget(std::time::Instant::now(), budget)
 }
 
-/// Ceiling on the transient input/output trees one loopback request may
-/// build. Input accounting charges the decoded f32 plus JSON `Value`; output
-/// accounting charges the coexisting JSON plus prost values, using their
-/// actual Rust sizes plus per-row overhead. 96 MiB keeps tree amplification
-/// below the wire ceiling.
+/// Ceiling on the transient input and output trees one request may build.
+/// Input charges decoded f32 plus JSON. Output charges the coexisting JSON and prost trees.
+/// 96 MiB keeps that amplification below the wire ceiling.
 const OUTPUT_TREE_BUDGET_BYTES: u64 = 96 * 1024 * 1024;
 
-/// Estimated per-item container overhead in a decoded request + JSON tree:
-/// a prost message + `Vec` header on the wire side and a
-/// `Value::Array(Vec<Value>)` row on the JSON side. Deliberately generous.
+/// Per-item overhead for a prost message plus a JSON row. Deliberately generous.
 const TREE_ITEM_OVERHEAD_BYTES: u64 = 256;
 
-/// Aggregate resident ceiling, in MiB, for provider responses that have been
-/// built but not yet written. The largest batch any supported descriptor can
-/// ask for (512 x 3072) encodes to roughly 24 MiB of prost tree, so this
-/// holds several concurrent maxima. A client that opens calls and leaves
-/// them unread is capped at a number that fits beside the engine envelopes.
+/// Resident ceiling, in MiB, for provider responses built but not yet written.
+/// 512 x 3072 is about 24 MiB of prost tree, so this holds several concurrent maxima.
+/// A client that never reads is capped beside the engine envelopes.
 const PROVIDER_RESPONSE_BUDGET_MIB: u32 = 256;
 
-/// What a provider response of this shape will occupy once built, in MiB,
-/// rounded up and clamped into the budget. The estimate uses the same
-/// per-component and per-item constants the envelope check uses, so the
-/// permit and the refusal agree about what a response weighs.
+/// MiB a provider response of this shape will occupy, rounded up and clamped.
+/// Same per-component constants as the envelope check, so the permit and the refusal agree.
 fn provider_response_mib(rows: usize, dim: i32) -> u32 {
     let components = (rows as u64).saturating_mul(dim.max(0) as u64);
     let bytes = components
@@ -122,15 +110,12 @@ const INPUT_COMPONENT_TRANSIENT_BYTES: u64 =
 const OUTPUT_COMPONENT_TRANSIENT_BYTES: u64 = JSON_COMPONENT_BYTES + PROST_COMPONENT_BYTES;
 const DEADLINE_CHECK_COMPONENTS: u64 = 65_536;
 
-/// Upper bound on a resolved response dimension. No real embedding model
-/// is within two orders of magnitude of this. A larger value in a model's
-/// configuration is corrupt or hostile; the request is refused.
+/// Upper bound on a resolved response dimension. A larger value is corrupt or hostile.
 const MAX_PLAUSIBLE_DIM: i64 = 100_000;
 
-/// Response dimension for a request: the model's own `target_dim`, or the
-/// bridge chain's converter (resolved as the executor will). `Ok(None)` is
-/// unknown; callers use the conservative 16,000-dim guard. A resolved value
-/// above [`MAX_PLAUSIBLE_DIM`] is a refusal.
+/// The model's `target_dim`, or the bridge chain's converter.
+/// `Ok(None)` is unknown: callers use the 16,000-dim guard.
+/// A value above [`MAX_PLAUSIBLE_DIM`] is a refusal.
 #[allow(clippy::result_large_err)]
 fn resolved_response_dim(
     engine: &InferenceEngine,
@@ -166,19 +151,14 @@ pub(crate) struct InferenceService {
     engine: Arc<InferenceEngine>,
     metrics: Arc<Metrics>,
     predict_timeout: Duration,
-    /// Permit moved into the HTTP response body so a slow reader cannot
-    /// pile up prost trees after Tower has released the request future.
-    /// Engine path only; the provider path skips this slot.
+    /// Moved into the HTTP body so a slow reader cannot pile up prost trees
+    /// after Tower releases the request future. Engine path only.
     response_slots: Arc<Semaphore>,
-    /// Shared budget, in MiB of finished-but-unsent provider response tree.
-    ///
-    /// The provider path skips `response_slots` so network calls do not
-    /// queue behind ONNX. Encoding is lazy after the handler returns, so
-    /// this bound still holds the tree until the body is dropped. One
-    /// budget for the node. Weight tracks response shape.
+    /// Shared budget, in MiB, of finished but unsent provider response trees.
+    /// The provider path skips `response_slots` so network calls do not queue behind ONNX.
+    /// Encoding is lazy, so this holds the tree until the body is dropped. Weight tracks shape.
     provider_response_bytes: Arc<Semaphore>,
-    /// External-provider gateway. Empty in the zero-config case; `owns()`
-    /// decides routing after the engine readiness check.
+    /// External-provider gateway. Empty when unconfigured. `owns()` routes after the readiness check.
     gateway: Arc<Gateway>,
 }
 
@@ -197,9 +177,8 @@ impl InferenceService {
     }
 }
 
-/// The metric label for a refusal: its wire error code when it carries one,
-/// otherwise the gRPC status name. Both are closed sets, so neither can grow
-/// the label cardinality of `postvec_server_request_errors_total`.
+/// Wire error code when the refusal carries one, otherwise the gRPC status name.
+/// Both are closed sets, so neither grows the error-counter labels.
 fn status_label(status: &Status) -> &str {
     status
         .metadata()
@@ -217,8 +196,7 @@ fn status_label(status: &Status) -> &str {
         })
 }
 
-/// Thin instrumentation wrapper: every exit path, including early
-/// refusals, releases its in-flight slot and lands in one counter.
+/// Every exit, including an early refusal, releases its in-flight slot and lands in one counter.
 #[tonic::async_trait]
 impl NinferenceService for InferenceService {
     async fn embed_texts(
@@ -264,19 +242,16 @@ impl NinferenceService for InferenceService {
     }
 }
 
-// These helpers carry the tonic trait signature (`Result<_, Status>`) one
-// level down so the trait methods stay thin; newer clippy flags the error
-// variant as large, and the type is fixed by the wire contract.
+// These helpers carry tonic's `Result<_, Status>` so the trait methods stay thin.
+// Clippy flags the error variant as large. The type is fixed by the wire contract.
 #[allow(clippy::result_large_err)]
 impl InferenceService {
     async fn embed_texts_inner(
         &self,
         request: Request<EmbedTextsRequest>,
     ) -> Result<Response<EmbedTextsResponse>, Status> {
-        // The HTTP service layer stamps this before tonic decodes the body;
-        // direct unit calls fall back to anchoring here. One instant bounds
-        // decode, response-slot wait, validation, construction, admission,
-        // execution, and response-tree conversion.
+        // Stamped before protobuf decode. Direct unit calls anchor here instead.
+        // One instant bounds decode, admission, execution and response-tree conversion.
         let deadline_std = request_deadline(&request, self.predict_timeout);
         let deadline = tokio::time::Instant::from_std(deadline_std);
         let req = request.into_inner();
@@ -301,10 +276,9 @@ impl InferenceService {
             return Err(model_not_loaded_status(&req.model));
         }
 
-        // Item ceiling first: later guards are O(items). Then refuse a
-        // batch whose response cannot fit the encode ceiling, before the
-        // engine builds the tree. Dimension is best-effort (bridges
-        // carry none).
+        // Item ceiling first: later guards are O(items). Then refuse a batch
+        // whose response cannot fit the encode ceiling, before the tree is built.
+        // Dimension is best-effort. Bridges carry none.
         if req.texts.len() > crate::limits::MAX_REQUEST_ITEMS {
             return Err(Status::invalid_argument(format!(
                 "{} texts exceeds the {} items-per-request ceiling; split the request",
@@ -318,8 +292,7 @@ impl InferenceService {
             &req.bridge_model,
             &req.target_model,
         )?
-        // Unknown means the conservative cap. A request this cap wrongly
-        // rejects would have failed resolution in the executor anyway.
+        // Unknown means the conservative cap. A wrong rejection would fail in the executor anyway.
         .unwrap_or(16_000);
         let max_items = crate::limits::max_items_for_dim(dim);
         if req.texts.len() > max_items {
@@ -361,9 +334,8 @@ impl InferenceService {
                 Value::Number(req.dimensions.into()),
             );
         }
-        // `input_type` stays off the engine path. The client always sets it
-        // for Cohere. Template-less models would warn per request; templated
-        // models would silently change vectors.
+        // `input_type` stays off the engine path. The client always sets it for Cohere.
+        // Template-less models would warn per request. Templated models would change vectors.
         let _ = req.input_type;
         let _ = req.user;
 
@@ -390,9 +362,8 @@ impl InferenceService {
         Ok(response)
     }
 
-    /// Provider `EmbedTexts`. Bounded by the per-provider semaphore and the
-    /// caller's deadline, not by `response_slots`. Take the byte-weighted
-    /// response permit before the paid call.
+    /// Provider `EmbedTexts`. Bounded by the per-provider semaphore and the caller's deadline,
+    /// not by `response_slots`. Take the byte-weighted response permit before the paid call.
     async fn embed_via_gateway(
         &self,
         req: EmbedTextsRequest,
@@ -462,9 +433,8 @@ impl InferenceService {
         req: ConvertEmbeddingsRequest,
         deadline: std::time::Instant,
     ) -> Result<Response<ConvertEmbeddingsResponse>, Status> {
-        // The gateway serves direct conversion only; the bridge fields
-        // belong to engine executors. A call that names a chain is refused
-        // so it cannot silently get a single hop.
+        // Direct conversion only. Bridge fields belong to engine executors.
+        // A named chain is refused, not silently served as one hop.
         if !(req.source_model.is_empty()
             && req.bridge_model.is_empty()
             && req.target_model.is_empty())
@@ -513,8 +483,7 @@ impl InferenceService {
         })?
         .map_err(|_| Status::unavailable("provider response-capacity gate closed"))?;
 
-        // Width and finiteness of every input are the gateway's checks —
-        // made before any paid call, against the descriptor's source_dim.
+        // Width and finiteness of every input are checked before any paid call, against source_dim.
         let inputs: Vec<Vec<f32>> = req.embeddings.into_iter().map(|fv| fv.vector).collect();
         let vectors = self
             .gateway
@@ -560,8 +529,7 @@ impl InferenceService {
             return Err(model_not_loaded_status(&req.model));
         }
 
-        // Estimate every input vector, not only the first. Cap the expected
-        // response to the wire envelope before building a tree.
+        // Estimate every input vector, not only the first. Cap the response before building a tree.
         let count = req.embeddings.len() as u64;
         if req.embeddings.len() > crate::limits::MAX_REQUEST_ITEMS {
             return Err(Status::invalid_argument(format!(
@@ -665,8 +633,7 @@ impl InferenceService {
 #[derive(Clone, Debug)]
 struct ResponsePermit(#[allow(dead_code)] Arc<OwnedSemaphorePermit>);
 
-/// Body wrapper whose only extra responsibility is owning a response permit
-/// until hyper finishes or drops lazy gRPC encoding.
+/// Owns a response permit until hyper finishes or drops lazy gRPC encoding.
 struct PermitBody<B> {
     inner: Pin<Box<B>>,
     _permit: Option<ResponsePermit>,
@@ -692,9 +659,8 @@ impl<B: Body> Body for PermitBody<B> {
     }
 }
 
-/// HTTP-level layer around tonic. It stamps the absolute deadline before
-/// protobuf decode and transfers the handler's response permit from response
-/// extensions into the lazy body.
+/// Stamps the absolute deadline before protobuf decode and moves the response
+/// permit from extensions into the lazy body.
 #[derive(Clone)]
 struct ResponsePermitLayer {
     predict_timeout: Duration,
@@ -822,9 +788,7 @@ pub async fn serve(
         .map_err(|e| format!("gRPC server exited: {e}"))
 }
 
-/// `EngineError` → tonic Status + `x-ravenna-error-code` metadata: the same
-/// mapping the production gRPC server applies for engine
-/// errors, so postvec's (and any other) client classifies identically.
+/// `EngineError` to tonic Status plus `x-ravenna-error-code`, so every client classifies it the same way.
 fn engine_error_to_status(e: EngineError) -> Status {
     let code = e.to_error_code();
     let message = e.to_string();
@@ -846,15 +810,12 @@ fn engine_error_to_status(e: EngineError) -> Status {
     status
 }
 
-/// [`GatewayError`] to tonic Status + `x-ravenna-error-code`, the same
-/// wire contract as [`engine_error_to_status`]. The client classifies
-/// provider failures like this node's engine answers. Messages are
-/// secret-free by construction in the providers crate.
+/// [`GatewayError`] to tonic Status plus `x-ravenna-error-code`, same wire contract
+/// as [`engine_error_to_status`]. Messages are secret-free in the providers crate.
 fn gateway_error_to_status(e: GatewayError) -> Status {
     let code = e.code;
     let message = e.message;
-    // Log the code only. The message can echo source text; that belongs
-    // on the wire back to the database, not in this node's log.
+    // Log the code only. The message can echo source text. That stays on the wire, not in the log.
     log::warn!("provider request failed [{}]", code.as_str());
     let mut status = match code {
         shared::ErrorCode::Timeout => Status::deadline_exceeded(message),
@@ -873,10 +834,9 @@ fn gateway_error_to_status(e: GatewayError) -> Status {
     status
 }
 
-/// Gateway vectors → prost `ListValue[ListValue[NumberValue]]`, the direct
-/// twin of [`json_to_list_value`] without the intermediate JSON tree (the
-/// gateway already validated count and dimension). The same output-tree
-/// budget and deadline cadence apply.
+/// Gateway vectors to prost `ListValue[ListValue[NumberValue]]`, without the JSON tree
+/// [`json_to_list_value`] builds. The gateway already checked count and dimension.
+/// The same output-tree budget and deadline cadence apply.
 #[allow(clippy::result_large_err)]
 fn vectors_to_list_value(
     vectors: Vec<Vec<f32>>,
@@ -923,10 +883,8 @@ fn vectors_to_list_value(
     })
 }
 
-/// Refusal for a request naming a model that is not resident+ready:
-/// `FailedPrecondition` + `MODEL_NOT_LOADED`, pointing at the load paths.
-/// FailedPrecondition because the model may exist on disk; the caller's
-/// next step is an admin action.
+/// Not resident and ready: `FailedPrecondition` plus `MODEL_NOT_LOADED`.
+/// The model may exist on disk. The next step is an admin load.
 #[allow(clippy::result_large_err)]
 fn model_not_loaded_status(model: &str) -> Status {
     let mut status = Status::failed_precondition(format!(
@@ -1009,9 +967,8 @@ fn split_output(output: ExecutorOutput) -> Result<(Value, Option<TokenUsage>), S
     }
 }
 
-/// JSON `[[f32]]` to prost nested lists. Engine JSON and prost trees
-/// coexist, so check the actual shape and combined size before building
-/// the second tree.
+/// JSON `[[f32]]` to prost nested lists. The JSON and prost trees coexist,
+/// so check shape and combined size before building the second tree.
 #[allow(clippy::result_large_err)]
 fn json_to_list_value(
     embeddings: Value,
@@ -1032,9 +989,8 @@ fn json_to_list_value(
             crate::limits::MAX_REQUEST_ITEMS
         )));
     }
-    // A row is an array of numbers or, with `encoding_format=base64`, one
-    // string the executor already encoded (OpenAI parity). Strings pass
-    // through unchanged and cost their bytes twice (JSON + prost copy).
+    // A row is numbers, or one base64 string the executor already encoded.
+    // Strings pass through and cost their bytes twice (JSON and prost).
     let mut total_components = 0u64;
     let mut string_bytes = 0u64;
     for vec_value in outer {
@@ -1295,12 +1251,9 @@ mod tests {
 mod deadline_tests {
     use super::*;
 
-    /// The exhausted-budget pre-check must run before any other work.
-    /// Inference RPCs never load models (an unready model is
-    /// `MODEL_NOT_LOADED`), so with an expired inbound `grpc-timeout` the
-    /// handler must answer DeadlineExceeded — not the readiness error the
-    /// missing model would otherwise produce, which would prove work ran
-    /// after the budget was gone.
+    /// An expired `grpc-timeout` is DeadlineExceeded before any other work,
+    /// including the readiness check. That check would answer `MODEL_NOT_LOADED`
+    /// and prove work ran after the budget was gone.
     #[test]
     fn expired_inbound_deadline_refuses_before_model_load() {
         let root = tempfile::tempdir().unwrap();
@@ -1398,8 +1351,7 @@ mod gateway_tests {
         // A providers.d is 0700; the loader refuses a group/world-writable
         // one, and `create_dir_all` honours the umask.
         std::fs::set_permissions(&providers_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        // …and its parent: the loader refuses a providers.d whose ancestor is
-        // group-writable, and `tempfile`/`create_dir_all` honour the umask.
+        // And its parent: the loader refuses a providers.d whose ancestor is group-writable.
         if let Some(parent) = &providers_dir.parent() {
             std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
@@ -1426,8 +1378,7 @@ mod gateway_tests {
             engine,
             metrics: Arc::new(Metrics::new()),
             predict_timeout: Duration::from_secs(5),
-            // Zero permits: anything that waits on response_slots can never
-            // proceed — which is exactly what the provider path must not do.
+            // Zero permits: a wait on response_slots can never proceed. The provider path must not wait.
             response_slots: Arc::new(Semaphore::new(0)),
             provider_response_bytes,
             gateway,
@@ -1444,16 +1395,10 @@ mod gateway_tests {
         )
     }
 
-    /// A completed unary response is encoded *lazily*, after the handler
-    /// future has returned — so by the time the bytes are written, the
-    /// per-provider semaphore and the tower ingress permit are both long
-    /// released. Without a response-lifetime permit, a slow or abandoned
-    /// reader could accumulate finished provider trees without limit; in
-    /// embedded mode that is the PostgreSQL launcher's RSS.
-    ///
-    /// The engine path has held such a permit since it was written. This is
-    /// the same mechanism on its own budget, and the assertion is the one
-    /// that matters: the permit is still held when the handler has returned.
+    /// A unary response is encoded after the handler returns, so the per-provider
+    /// semaphore and the tower permit are already released. Without a response-lifetime
+    /// permit, a slow reader can accumulate finished trees. In embedded mode that is
+    /// the PostgreSQL launcher's RSS. The permit must still be held when the handler returns.
     #[test]
     fn a_provider_response_holds_its_permit_until_the_body_is_dropped() {
         let root = tempfile::tempdir().unwrap();
@@ -1474,9 +1419,8 @@ mod gateway_tests {
             })))
             .expect("provider embed");
 
-        // The handler has returned and the vectors are in hand — and the
-        // budget is still spent, because the response has not been written.
-        // The permit is weighted: this response's own MiB, not "one response".
+        // The handler has returned and the vectors are in hand. The budget is still
+        // spent, because the response has not been written. The weight is this response's MiB.
         assert_eq!(
             slots.available_permits(),
             0,
@@ -1495,9 +1439,8 @@ mod gateway_tests {
         );
     }
 
-    /// A provider-only name serves (the gateway is consulted before
-    /// MODEL_NOT_LOADED) and takes no `response_slots` permit; convert with
-    /// the same name never touches the gateway.
+    /// A provider-only name serves and takes no `response_slots` permit.
+    /// Convert with the same name never touches the gateway.
     #[test]
     fn provider_names_serve_without_engine_gates_and_convert_never_routes() {
         let root = tempfile::tempdir().unwrap();
@@ -1521,10 +1464,8 @@ mod gateway_tests {
             .expect("provider path is not gated by response_slots");
         assert!(response.into_inner().embeddings.is_some());
 
-        // A convert request consults the gateway only through
-        // `owns_converter`: a provider-backed EMBED model refuses exactly
-        // like any model the engine does not hold — only a `kind =
-        // "convert"` entry dispatches (see the univec tests below).
+        // Convert consults the gateway only through `owns_converter`.
+        // An embed entry refuses. Only `kind = "convert"` dispatches.
         let req = Request::new(ConvertEmbeddingsRequest {
             model: "openai-text-embedding-3-small".to_string(),
             ..Default::default()
@@ -1542,9 +1483,8 @@ mod gateway_tests {
         );
     }
 
-    /// A UniVec providers.d beside the engine: one embed model and one
-    /// converter (`source_dim` 3 → `dim` 2, distinct on purpose so a
-    /// swapped-axis bug cannot pass both width checks).
+    /// One embed model and one converter (`source_dim` 3, `dim` 2).
+    /// The widths differ so a swapped axis cannot pass both checks.
     fn univec_gateway_for(dir: &std::path::Path, base_url: &str) -> Arc<Gateway> {
         use std::os::unix::fs::PermissionsExt;
         let providers_dir = dir.join("providers.d");
@@ -1571,11 +1511,8 @@ mod gateway_tests {
         Arc::new(Gateway::load(&providers_dir, &Default::default()))
     }
 
-    /// The convert twin of the provider dispatch proof: a `kind = "convert"`
-    /// name serves `ConvertEmbeddings` through the gateway — bypassing
-    /// `response_slots` (zero permits here) — and its byte-weighted response
-    /// permit is still held when the handler has returned, exactly like the
-    /// embed path's.
+    /// A `kind = "convert"` name serves through the gateway, takes no `response_slots`
+    /// permit and still holds its byte-weighted response permit after the handler returns.
     #[test]
     fn a_provider_converter_serves_convert_and_holds_its_permit() {
         let root = tempfile::tempdir().unwrap();
@@ -1620,8 +1557,7 @@ mod gateway_tests {
         assert!(body.contains("\"target_model\":\"target-space\""), "{body}");
     }
 
-    /// The gateway serves direct conversion only: a request that names a
-    /// bridge chain must be refused, not silently served a single hop.
+    /// A request that names a bridge chain is refused, not served as one hop.
     #[test]
     fn a_gateway_convert_with_bridge_fields_is_refused() {
         let root = tempfile::tempdir().unwrap();
@@ -1677,9 +1613,8 @@ mod gateway_tests {
         assert!(!err.message().contains("sk-test"), "{}", err.message());
     }
 
-    /// A loaded local model wins its name on the embed path; the provider
-    /// claiming it is never dialed. The fixture is a dummy-executor model,
-    /// whose error proves which path served.
+    /// A loaded local model wins the name. The provider claiming it is never dialed.
+    /// The dummy executor's error shows which path served.
     #[test]
     fn a_loaded_local_model_wins_the_name_collision() {
         let root = tempfile::tempdir().unwrap();
@@ -1743,8 +1678,8 @@ mod gateway_tests {
 mod label_tests {
     use super::*;
 
-    /// A refusal that carries the wire code is labelled by it; one that does
-    /// not falls back to the gRPC status name. Neither can invent a label.
+    /// A refusal with a wire code is labelled by it. Otherwise the gRPC status name.
+    /// Neither invents a label.
     #[test]
     fn status_labels_come_from_the_wire_code_then_the_status() {
         assert_eq!(status_label(&invalid_input_status("x")), "INVALID_INPUT");

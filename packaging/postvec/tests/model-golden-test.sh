@@ -1,35 +1,22 @@
 #!/usr/bin/env bash
 # Prove the bundled model still produces the same embeddings.
 #
-#   tests/model-golden-test.sh <image>            # check model/golden/<name>.json
-#   tests/model-golden-test.sh --record <image>   # regenerate the goldens
+#   tests/model-golden-test.sh <image>
+#   tests/model-golden-test.sh --record <image>
 #
-# This is the check that protects stored data. A model bundle's name is a
-# database compatibility identifier: `postvec.models` and every registry row
-# store it, and a vector is only comparable to vectors produced by the same
-# weights, tokenizer, pooling and normalisation. The package version is not
-# part of that identity; nothing in a database records it. A bundle whose
-# numbers moved must be published under a new internal name.
+# The model name is a database compatibility id. Weights, tokenizer, pooling
+# and normalisation must not move under it. Dimension and rank checks miss
+# those changes. Compare the numbers.
 #
-# Dimension, finiteness, unit norm and "does the obvious sentence rank first"
-# all survive a tokenizer change, a pooling change, a different opset, or a
-# quantised graph slipping into the bundle. Comparing the numbers catches
-# those.
-#
-# Tolerance is per-element and absolute: ONNX Runtime does not promise
-# bit-identical results across CPU microarchitectures, so this must pass on
-# amd64 and arm64 without being loose enough to miss a behavioural change.
+# Tolerance is per-element and absolute. ONNX Runtime is not bit-identical
+# across CPUs, so this must pass on amd64 and arm64 without hiding a change.
 
 set -Eeuo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PKG_DIR="$(cd "${TESTS_DIR}/.." && pwd)"
 
-# Goldens are keyed by model name, and the name comes from the reviewed pin —
-# not from inside a single golden file. Reading the name out of the goldens
-# would make a bundled-model change compare the new model's vectors against the
-# old model's file and pass, which is exactly the accident this test exists to
-# prevent.
+# Key goldens by the pin, not by a name inside the golden file. Otherwise a new model is checked against the old file and passes.
 MODEL="$(sed -n 's/^BUNDLED_MODEL_NAME=//p' "${PKG_DIR}/versions.env")"
 [[ -n "${MODEL}" ]] || { echo "no BUNDLED_MODEL_NAME in ${PKG_DIR}/versions.env" >&2; exit 2; }
 GOLDEN="${PKG_DIR}/model/golden/${MODEL}.json"
@@ -39,7 +26,7 @@ IMAGE=""
 while (($#)); do
     case "$1" in
     --record) RECORD=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) IMAGE="$1"; shift ;;
     esac
 done
@@ -153,7 +140,7 @@ EOF
     exit 1
 }
 # The file has to be the right model's. It is selected by name, so this can
-# only fire if a file was hand-edited or copied — which is worth catching
+# only fire if a file was hand-edited or copied: which is worth catching
 # loudly rather than comparing against another model's vectors.
 [[ "$(jq -r .model "${GOLDEN}")" == "${MODEL}" ]] \
     || { echo "${GOLDEN} records model '$(jq -r .model "${GOLDEN}")', not '${MODEL}'" >&2; exit 1; }

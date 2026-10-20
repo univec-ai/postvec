@@ -1,19 +1,18 @@
 //! Subprocess execution and the privilege boundary.
 //!
-//! Every external program the CLI runs goes through here, with three rules
-//! that are not negotiable:
+//! Every external program the CLI runs goes through here, with three rules:
 //!
-//! - **No shell.** Programs are executed as `(program, argv)`; no string is
-//!   ever handed to `/bin/sh`.
-//! - **Minimal environment.** The child gets a fixed `PATH` and `LC_ALL=C`
-//!   and nothing else, so a connection URI in the caller's environment cannot
-//!   leak into a child (or into its error output).
-//! - **Bounded.** Every run has a deadline and is killed when it expires.
+//! - No shell. Programs run as `(program, argv)`. No string is handed to
+//!   `/bin/sh`.
+//! - Minimal environment. The child gets a fixed `PATH` and `LC_ALL=C` and
+//!   nothing else, so a connection URI in the caller's environment cannot
+//!   leak into a child or its error output.
+//! - Bounded. Every run has a deadline and is killed when it expires.
 //!
 //! Privilege dropping resolves the target account's ids and supplementary
-//! groups **before** forking, so the `pre_exec` closure only issues plain
-//! syscalls. Doing the lookup after fork would call into the allocator and
-//! the name-service switch from a forked child of a multi-threaded process.
+//! groups before forking, so the `pre_exec` closure only issues plain
+//! syscalls. A lookup after fork would call the allocator and the
+//! name-service switch from a forked child of a multi-threaded process.
 
 use crate::error::{redact, CliError, Result};
 use std::ffi::{CStr, CString};
@@ -162,8 +161,8 @@ fn group_list(name: &CStr, gid: u32) -> Vec<u32> {
     }
 }
 
-/// The home directory of a local account, from the passwd database — not
-/// from `$HOME`, which `sudo` rewrites to root's.
+/// The home directory of a local account, from the passwd database, not
+/// from `$HOME`. `sudo` rewrites `$HOME` to root's.
 pub fn home_dir(name: &str) -> Result<PathBuf> {
     let c_name = CString::new(name)
         .map_err(|_| CliError::internal(format!("account name {name:?} contains NUL")))?;
@@ -217,9 +216,8 @@ pub fn is_stderr_tty() -> bool {
 }
 
 /// Columns available for stdout. `COLUMNS` wins (tests and constrained
-/// environments), then the tty size, then 80. Never below 40 — a table that
-/// shrinks further is unreadable, and we would rather wrap than invent a
-/// second layout.
+/// environments), then the tty size, then 80. Never below 40. A table that
+/// shrinks further is unreadable, and wrapping beats a second layout.
 pub fn stdout_width() -> usize {
     terminal_width(libc::STDOUT_FILENO)
 }
@@ -254,11 +252,11 @@ fn env_columns() -> Option<usize> {
     (width > 0).then_some(width.clamp(40, 500))
 }
 
-/// Read one line from stdin with terminal echo disabled — the masked
-/// `API key:` prompt. On a TTY, echo is restored
-/// whatever happens (including a mid-read error) and a newline is printed so
-/// the next output does not share the prompt's line. On a non-TTY (a pipe:
-/// `postvec login < keyfile`), this is a plain line read.
+/// Read one line from stdin with terminal echo disabled, the masked
+/// `API key:` prompt. On a TTY, echo is restored whatever happens (including
+/// a mid-read error) and a newline is printed so the next output does not
+/// share the prompt's line. On a non-TTY (a pipe: `postvec login < keyfile`),
+/// this is a plain line read.
 pub fn read_hidden_line(prompt: &str) -> std::io::Result<String> {
     use std::io::{BufRead, Write};
 
@@ -402,8 +400,8 @@ fn apply_privilege_drop(cmd: &mut tokio::process::Command, account: OsAccount) {
 }
 
 /// Irreversibly become `account`: supplementary groups, then gid, then uid,
-/// then assert the drop took — a `setuid` that silently failed to shed root
-/// would be a privilege-retention bug, not an inconvenience.
+/// then assert the drop took. A `setuid` that silently failed to shed root
+/// is a privilege-retention bug, not an inconvenience.
 fn become_account(account: &OsAccount) -> std::io::Result<()> {
     let groups: Vec<libc::gid_t> = account.groups.iter().map(|g| *g as libc::gid_t).collect();
     unsafe {
@@ -425,11 +423,11 @@ fn become_account(account: &OsAccount) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Process-wide, irreversible privilege drop for a child that should live out
-/// its whole remaining life as `account`. The database agent execs as root —
-/// so the kernel can load the binary from a path the target account cannot
-/// traverse, such as a build under a home directory — and calls this before
-/// reading any input or opening any connection.
+/// Process-wide, irreversible privilege drop for a child that should live
+/// out its remaining life as `account`. The database agent execs as root so
+/// the kernel can load the binary from a path the target account cannot
+/// traverse (a build under a home directory) and calls this before reading
+/// any input or opening any connection.
 pub fn drop_privileges(account: &OsAccount) -> Result<()> {
     become_account(account).map_err(|e| {
         CliError::precondition(format!("cannot become {:?}: {e}", account.name))
@@ -490,8 +488,8 @@ const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 /// The child's pipes are taken before waiting, so the [`tokio::process::Child`]
 /// handle survives the timeout and the whole process group can actually be
 /// signalled. `wait_with_output()` would consume it, leaving an overrunning
-/// command — a hung `systemctl restart`, say — orphaned and still holding the
-/// resources the caller just gave up on.
+/// command, a hung `systemctl restart` for example, orphaned and still
+/// holding the resources the caller just gave up on.
 pub async fn run(cmd: &Cmd, timeout: Duration) -> Result<Output> {
     let mut command = cmd.build()?;
     let mut child = command.spawn().map_err(|e| {
@@ -521,10 +519,10 @@ pub async fn run(cmd: &Cmd, timeout: Duration) -> Result<Output> {
         };
         tokio::pin!(drains);
 
-        // The child exiting is the completion signal — *not* the pipes closing.
+        // The child exiting is the completion signal, not the pipes closing.
         // A backgrounded helper inherits the child's stdout and can hold it
-        // open long after the command itself is done; waiting for EOF would
-        // stall a finished command until its whole deadline expired.
+        // open after the command is done. Waiting for EOF would stall a
+        // finished command until its deadline expired.
         let wait = async {
             tokio::select! {
                 status = child.wait() => (status, false),
@@ -604,10 +602,10 @@ async fn terminate_group(child: &mut tokio::process::Child, pid: Option<u32>) {
     if group_exists(pid) {
         signal_group(pid, libc::SIGKILL);
     }
-    // The direct child may still be an unreaped zombie — it is only guaranteed
-    // to be collected by an explicit wait, whether it died to the TERM above or
-    // to the KILL just now. Bounded, so an unkillable process (uninterruptible
-    // sleep) cannot hang the CLI as well.
+    // The direct child may still be an unreaped zombie. It is only collected
+    // by an explicit wait, whether it died to the TERM above or the KILL just
+    // now. Bounded, so an unkillable process (uninterruptible sleep) cannot
+    // hang the CLI as well.
     let _ = tokio::time::timeout(TERMINATE_GRACE, child.wait()).await;
 }
 
@@ -696,7 +694,7 @@ impl InterruptGuard {
             state.warned = false;
         }
         if !LISTENER_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            // Registered here, synchronously, *before* returning: registering
+            // Registered here, synchronously, before returning. Registering
             // inside the spawned task would leave a window between `hold()`
             // returning and the task first being polled, during which a SIGINT
             // still has default handling and would terminate mid-change.
@@ -865,7 +863,7 @@ mod tests {
         );
     }
 
-    /// A direct child that ignores SIGTERM must be killed *and* reaped: an
+    /// A direct child that ignores SIGTERM must be killed and reaped. An
     /// unreaped zombie is not guaranteed to be collected for us.
     #[tokio::test]
     async fn a_direct_child_that_ignores_sigterm_is_killed_and_reaped() {
@@ -976,7 +974,7 @@ mod tests {
     }
 
     /// Output must still be captured in full when a command writes more than a
-    /// pipe buffer holds — the reason the pipes are drained while waiting.
+    /// pipe buffer holds. That is why the pipes are drained while waiting.
     #[tokio::test]
     async fn large_output_does_not_deadlock() {
         let out = run(
@@ -1063,7 +1061,7 @@ mod tests {
 
         // The handler deliberately stays installed for the life of the
         // process; a disarmed interrupt is re-raised with default handling by
-        // the listener itself (not exercised here — it would kill the test).
+        // the listener itself (not exercised here: it would kill the test).
         assert!(!interrupt_is_default());
     }
 

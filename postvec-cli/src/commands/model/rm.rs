@@ -1,21 +1,15 @@
 //! `postvec model rm`.
 //!
-//! Refused, in order: not installed, package-owned, manual with no receipt,
-//! named in `postvec.embedded_models` (edit that list first, or the next
-//! start fails or changes what loads), or required by another enabled model
-//! (`--force` overrides after naming it).
+//! Refused when missing, package-owned, manual with no receipt, named in
+//! `postvec.embedded_models` or required by an enabled model (`--force`
+//! overrides the last). Columns that lose their route need
+//! `--acknowledge-in-use` with `--yes`. `--force` only answers dependants.
 //!
-//! Columns that would lose their route need the same acknowledgement as
-//! `model deactivate`: the plan names them, interactive use types the names
-//! back, and a script passes `--acknowledge-in-use` with `--yes`. `--force`
-//! only answers "other models depend on this".
-//!
-//! On a cluster: one unload for the whole set (dependents before
-//! dependencies), every outcome `unloaded` or `not-loaded`, then
-//! rename-to-trash, then the SQL cache refresh, then delete the trash. An
-//! unload failure leaves the disk untouched. An unreachable engine on an
-//! embedded target is a start racing this command. `--path` removes files
-//! only and tells you to stop the serving process first.
+//! On a cluster: one unload for the set, every outcome `unloaded` or
+//! `not-loaded`, then rename-to-trash, refresh the SQL cache and delete the
+//! trash. An unload failure leaves the disk untouched. An unreachable engine
+//! on an embedded target is a start racing this command. `--path` removes
+//! files only.
 
 use crate::cli::{Cli, ModelRmArgs};
 use crate::commands::model::{
@@ -30,10 +24,8 @@ use crate::registry::root::Ownership;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// The embedded admin endpoint accepts at most this many models per request,
-/// and the whole removal set must ride one request for its unload ordering
-/// to be correct — so this is also the per-command ceiling on a cluster
-/// target.
+/// The admin endpoint accepts at most this many models per request. The whole
+/// removal set must ride one request, so this is also the cluster ceiling.
 const MAX_CLUSTER_REMOVALS: usize = 32;
 
 pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> {
@@ -56,8 +48,8 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
         )));
     }
 
-    // Same preconditions the real run enforces, minus the exclusive lock —
-    // see `ModelRoot::check_mutable`.
+    // Same preconditions the real run enforces, minus the exclusive lock.
+    // See `ModelRoot::check_mutable`.
     let _shared = if args.dry_run {
         root.check_mutable()?;
         root.lock_shared()?
@@ -125,8 +117,8 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
             .with_fix("remove the dependents first, or pass --force to break them knowingly"));
         }
 
-        // An explicit preload allow-list naming this model must change first —
-        // the same gate `deactivate` applies, for the same reason.
+        // An explicit preload allow-list naming this model must change first.
+        // Same gate as `deactivate`.
         if let ModelTarget::Embedded { settings, .. } = &target {
             refuse_if_on_allow_list(&settings.embedded_models(), name, "removing")?;
         }
@@ -176,9 +168,9 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
         output.show_result(&result)?;
         return Ok(Exit::Success);
     }
-    // A flag that acknowledged nothing is reported rather than refused (see
-    // `Plan::in_use_models`), and the report says *why* it was unnecessary —
-    // "nothing is affected" and "nothing was looked at" are different facts.
+    // A flag that acknowledged nothing is reported, not refused. See
+    // `Plan::in_use_models`. "Nothing is affected" and "nothing was looked at"
+    // are different facts.
     if args.acknowledge_in_use && plan.in_use_models().is_empty() {
         output.note(if scanned {
             "--acknowledge-in-use was not needed: no managed column loses its embedding route \
@@ -203,7 +195,7 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
 
     let mut journal = ApplyJournal::default();
 
-    // Phase 1 — one batched unload, verified, before any disk mutation.
+    // One batched unload, verified, before any disk mutation.
     if let ModelTarget::Embedded { settings, .. } = &target {
         let listen = settings.embedded_http_listen();
         let outcomes = admin::unload(&listen, &removal_names, cli.timeout)
@@ -230,9 +222,8 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
         }
     }
 
-    // Phase 2 — retire every directory into root-local trash; on any failure
-    // restore what was already retired so a partial multi-model removal
-    // cannot leave a broken closure.
+    // Retire every directory into root-local trash. On failure, restore what
+    // was already retired so a partial removal cannot leave a broken closure.
     let mut retired: Vec<(String, PathBuf, PathBuf)> = Vec::new();
     let mut retire_failure: Option<(String, CliError)> = None;
     for (name, path, _) in &removals {
@@ -255,9 +246,9 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
         }
         journal.failed(failed_name, &error);
     } else {
-        // Phase 3 — SQL caches, while the bytes are still recoverable.
+        // Refresh SQL caches while the bytes are still recoverable.
         refresh_databases(&mut target, &mut journal).await;
-        // Phase 4 — delete the retired bytes.
+        // Delete the retired bytes.
         for (name, original, grave) in &retired {
             match root.purge_retired(original, grave) {
                 Ok(()) => journal.record(format!("removed {name} ({})", original.display())),
@@ -273,8 +264,7 @@ pub async fn run(cli: &Cli, args: ModelRmArgs, output: &Output) -> Result<Exit> 
 }
 
 /// Every requested name must come back exactly once, as `unloaded` or
-/// `not-loaded` — the shared strict verifier in [`admin::verify_outcomes`],
-/// which the upgrade path uses too.
+/// `not-loaded`. Same verifier as upgrade: [`admin::verify_outcomes`].
 fn verify_unload_outcomes(
     requested: &[String],
     outcomes: &[admin::AdminOutcome],

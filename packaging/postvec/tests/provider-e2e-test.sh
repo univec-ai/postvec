@@ -1,31 +1,15 @@
 #!/usr/bin/env bash
-# Packaged external-provider gate. One scenario suite through the shipped
-# artifacts: trigger -> queue -> worker -> host gateway -> provider ->
-# write-back -> search. No internet, no paid request, no real credential
-# (the mock is tests/provider-mock.py, loopback inside the inference container).
+# Packaged external-provider gate through shipped artifacts. The mock is
+# tests/provider-mock.py. No internet and no real credential.
 #
 #   tests/provider-e2e-test.sh --target package --distro debian12 --pg 18
-#   tests/provider-e2e-test.sh --target package --distro el9 --pg 18
 #   tests/provider-e2e-test.sh --target image --variant local <image>
 #   tests/provider-e2e-test.sh --target image --variant remote \
 #       --server-image postvec-server:amd64 <image>
 #
-# The scenarios:
-#   A  live verification: `provider add` probes the mock (no --no-verify)
-#   B  success + write-back + hybrid search
-#   C  bounded upstream retry (429, 500, success — exactly three requests)
-#   D  oversized response → dead letter naming the budget, bounded RSS
-#   E  slow/trickling response → deadline, bounded retries, bounded RSS
-#   F  connector reload + key rotation (key A → key B, no restart)
-#   G  in-flight crash of the serving process + recovery
-#   H  hosted conversion: `provider add univec --convert-to` discovers the
-#      route from the mock's catalogue (no dims on the command line, one
-#      convert probe, no embed probe), `provider ls --available` shows it
-#      configured, migrate(strategy => 'convert') converts through it
-#
-# Speed knobs (all SIGHUP; recorded in the output): max_retries=2,
-# retry_backoff_ms=500, job_visibility_timeout_ms=5000, poll_interval_ms=1000,
-# embed_timeout_ms=20000 (8000 during E only).
+# Scenarios A-H: verify, write-back and search, bounded retry, oversized
+# body, slow body, key rotation, crash recovery and hosted conversion.
+# Speed knobs are SIGHUP settings recorded in the output.
 
 set -Eeuo pipefail
 
@@ -44,7 +28,7 @@ while (($#)); do
     --arch)         RELEASE_ARCH="$2"; shift 2 ;;
     --variant)      VARIANT="$2"; shift 2 ;;
     --server-image) SERVER_IMAGE="$2"; shift 2 ;;
-    -h|--help)      sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help)      sed -n '2,12p' "$0"; exit 0 ;;
     *)              IMAGE="$1"; shift ;;
     esac
 done
@@ -83,10 +67,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# ---------------------------------------------------------------- adapters
 #
-# DB   — the container PostgreSQL runs in.
-# SRV  — the container the provider-serving process runs in (== DB for the
+# DB  : the container PostgreSQL runs in.
+# SRV : the container the provider-serving process runs in (== DB for the
 #        embedded cells; the postvec-server container for the remote cell).
 # The mock always runs inside SRV, on ITS loopback: the serving process dials
 # 127.0.0.1, so no TLS and no allow_insecure_transport enter the test.
@@ -121,16 +104,16 @@ mock_state() { # <field>
         | python3 -c "import json,sys; print(json.load(sys.stdin)['$1'])"
 }
 
-# The bundled model's width, from the cluster's own model cache — the mock's
+# The bundled model's width, from the cluster's own model cache: the mock's
 # catalogue advertises the converter at that dimension, so scenario H follows
 # the bundle rather than a hard-coded number.
 #
-# `missing`  — no cache row yet. The worker writes a heartbeat before the
+# `missing` : no cache row yet. The worker writes a heartbeat before the
 #              engine has finished loading, and the first discovery refresh
 #              is delayed up to 15 s; this is a wait, not a failure.
-# `no-dim`   — the row is there but target_dim is NULL/non-positive: the
+# `no-dim`  : the row is there but target_dim is NULL/non-positive: the
 #              cache is broken, fail now.
-# otherwise  — a positive width.
+# otherwise : a positive width.
 bundled_model_dim() {
     dbsql "SELECT coalesce(
               (SELECT CASE
@@ -260,7 +243,6 @@ container_healthy() { # <container>
     [[ "$(docker inspect --format '{{.State.Health.Status}}' "$1" 2>/dev/null)" == healthy ]]
 }
 
-# ------------------------------------------------------------ target setup
 
 setup_package() {
     distro_facts "${DISTRO}"
@@ -271,7 +253,7 @@ setup_package() {
     rpm) BIN="/usr/pgsql-${PG_MAJOR}/bin" ;;
     esac
 
-    # The full release package set for this one major, from its three roots —
+    # The full release package set for this one major, from its three roots -
     # the same selection the full install test stages.
     local common noarch cell
     common="$(common_dist_dir "${DISTRO}" "${RELEASE_ARCH}")"
@@ -374,7 +356,7 @@ setup_remote_image() {
 
     # The shipped CLI administers the node's providers.d on the node itself.
     # Prefer the build tree's binary; in CI's image jobs only the packages
-    # are present, so fall back to extracting the CLI from the deb — which is
+    # are present, so fall back to extracting the CLI from the deb: which is
     # also the more honest artifact to exercise.
     local cli="${PKG_DIR}/build/debian12-pg${PG_MAJOR}-${RELEASE_ARCH}/cli/postvec"
     [[ -x "${cli}" ]] || cli="${PKG_DIR}/build/debian12-pg18-${RELEASE_ARCH}/cli/postvec"
@@ -393,7 +375,6 @@ setup_remote_image() {
     ok "the remote pair serves; the shipped CLI is on the node"
 }
 
-# --------------------------------------------------------------- provider ops
 
 provider_keys_dir() { if (( EMBEDDED )); then echo /etc/postvec/keys; else echo /opt/postvec/keys; fi; }
 provider_key_path() { echo "$(provider_keys_dir)/e2e.key"; }
@@ -403,7 +384,7 @@ provider_file_owner() {
     else echo postvec-server; fi
 }
 
-write_key() { # <value> — atomic replace, owner + 0600 preserved
+write_key() { # <value>: atomic replace, owner and mode 0600 preserved
     local owner root; owner="$(provider_file_owner)"
     if (( EMBEDDED )); then root=/etc/postvec; else root=/opt/postvec; fi
     docker exec -u root -e KEYVAL="$1" "${SRV}" bash -c "
@@ -475,7 +456,6 @@ provider_ls_available_univec() {
     fi
 }
 
-# ----------------------------------------------------------------- scenarios
 
 apply_speed_knobs() {
     step "speed knobs (all SIGHUP; values recorded here by design)"
@@ -582,7 +562,7 @@ scenario_C_bounded_retry() {
         || bad "the row never filled ($(filled_count)/4)"
     # The in-client retry (providers/src/retry.rs, MAX_RETRIES=2) absorbs the
     # 429 and the 500 inside ONE worker attempt: exactly three upstream
-    # requests, and none after — a quiet period proves the count is final.
+    # requests, and none after: a quiet period proves the count is final.
     sleep 3
     requests_are 3 \
         && ok "exactly three upstream requests (429, 500, success), none after" \
@@ -640,7 +620,7 @@ scenario_E_trickle() {
     # Ceiling rationale: a one-row request's computed response budget is
     # ~256 KiB and the absolute reader ceiling is 64 MiB; 262144 kB (256 MiB)
     # of VmHWM growth across D+E means the whole aggregate provider budget
-    # leaked — far above any legitimate observation (single-digit MiB in
+    # leaked: far above any legitimate observation (single-digit MiB in
     # amd64 runs), far below a machine-threatening allocation.
     (( delta < 262144 )) \
         && ok "RSS bounded: VmHWM grew ${delta} kB since baseline (< 262144 kB)" \
@@ -685,7 +665,7 @@ scenario_G_crash_recovery() {
         pid="$(serving_pid)" || { bad "no serving pid"; return; }
         docker exec -u root "${SRV}" bash -c "kill -9 ${pid}"
         ok "killed the embedded launcher (pid ${pid}) mid-request"
-        # A bgworker crash takes PostgreSQL through crash recovery — expected
+        # A bgworker crash takes PostgreSQL through crash recovery: expected
         # and documented for embedded mode. The database must come BACK.
         mockctl '{"release": true, "mode": "success"}'
         wait_for "PostgreSQL to finish crash recovery" 120 db_alive \
@@ -804,7 +784,6 @@ final_asserts() {
     fi
 }
 
-# ------------------------------------------------------------------- driver
 
 case "${TARGET}" in
 package)

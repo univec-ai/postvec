@@ -15,17 +15,11 @@ while (($#)); do
     case "$1" in
     --distro) DISTRO="$2"; shift 2 ;;
     --arch)   RELEASE_ARCH="$2"; shift 2 ;;
-    # A Debian package-name regex (`^libssl3(t64)?$`) to install in the
-    # generator's container before it runs. dpkg-shlibdeps can only name the
-    # package that provides a soname if that package is *installed* — the
-    # bare base image carries no OpenSSL, so without this the node's
-    # libssl.so.3 is "cannot find library" rather than `libssl3 (>= 3.0.0)`.
-    # A regex rather than a name because the package is spelled differently
-    # per release (Ubuntu 24.04: libssl3t64), and the container of the target
-    # is the right place to resolve that. RPM's generator needs nothing
-    # installed: rpmdeps emits `libssl.so.3()(64bit)` from NEEDED alone.
+    # Debian package-name regex to install before dpkg-shlibdeps. It can name
+    # a soname's package only if that package is installed. A regex because
+    # Ubuntu 24.04 spells it libssl3t64. RPM needs nothing installed.
     --runtime-package) RUNTIME_PACKAGES+=("$2"); shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *)        FILES+=("$1"); shift ;;
     esac
 done

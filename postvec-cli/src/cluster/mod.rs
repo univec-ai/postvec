@@ -1,14 +1,13 @@
-//! Cluster discovery, offline configuration validation, and restart.
+//! Cluster discovery, offline configuration checks and restart.
 //!
-//! Two host shapes are supported, in decreasing order of what the CLI is
-//! willing to do automatically:
+//! Two host shapes, in decreasing order of what the CLI will do automatically:
 //!
 //! - [`debian`]: a `postgresql-common` cluster (`pg_lsclusters`). Known
-//!   `conf.d`, known owner, known service unit — the CLI can write
-//!   configuration and restart.
-//! - [`explicit`]: selected with `--pg-config`. The CLI can inspect, and can
-//!   write configuration when given an already-included `--config-dir`, but it
-//!   will not invent a restart command for a service it cannot identify.
+//!   `conf.d`, owner and service unit, so the CLI can write configuration
+//!   and restart.
+//! - [`explicit`]: `--pg-config`. The CLI can inspect, and can write
+//!   configuration into an already-included `--config-dir`, but it will not
+//!   invent a restart command for a service it cannot identify.
 
 pub mod debian;
 pub mod explicit;
@@ -29,7 +28,7 @@ pub fn is_supported_major(major: u32) -> bool {
     SUPPORTED_MAJORS.contains(&major)
 }
 
-/// How the cluster was selected — it determines what the CLI may do.
+/// How the cluster was selected. That decides what the CLI may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ClusterKind {
@@ -57,8 +56,8 @@ impl RestartCommand {
     }
 
     /// The same service command with `restart` replaced by `action`
-    /// (`stop`/`start`) — both `systemctl` and `pg_ctlcluster` take it in
-    /// that position.
+    /// (`stop` or `start`). Both `systemctl` and `pg_ctlcluster` take it
+    /// in that position.
     fn action(&self, action: &str) -> Cmd {
         Cmd::new(&self.program).args(self.args.iter().map(|arg| {
             if arg == "restart" {
@@ -136,9 +135,8 @@ impl Cluster {
         if let Ok(entries) = std::fs::read_dir(&extension_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                // `postvec--0.1.0.sql` is an install script; `postvec--a--b.sql`
-                // is an upgrade script and says nothing about what can be
-                // installed from scratch.
+                // `postvec--0.1.0.sql` installs. `postvec--a--b.sql` upgrades
+                // and says nothing about a fresh install.
                 if let Some(rest) = name
                     .strip_prefix("postvec--")
                     .and_then(|r| r.strip_suffix(".sql"))
@@ -167,18 +165,12 @@ impl Cluster {
         }
     }
 
-    /// Query the candidate configuration with `postgres -C`, without touching
-    /// the running server.
+    /// Read the candidate with `postgres -C`, not the running server.
     ///
-    /// This is how the CLI proves that its `conf.d` snippet is included *and*
-    /// wins precedence: `postgres -C` applies the same file resolution the
-    /// postmaster does, including `postgresql.auto.conf` (which `ALTER SYSTEM`
-    /// writes and which is read *after* `include_dir`, so it can shadow the
-    /// snippet).
-    ///
-    /// `pg_reload_conf()` is deliberately not used for this: it would apply
-    /// SIGHUP-context postvec settings to a running deployment as a side effect
-    /// of a validation step.
+    /// Same file resolution as the postmaster, including `postgresql.auto.conf`
+    /// (`ALTER SYSTEM`, read after `include_dir`, so it can shadow the snippet).
+    /// `pg_reload_conf()` is not used: it would apply SIGHUP-context settings
+    /// as a side effect of validation.
     pub async fn query_setting_offline(
         &self,
         name: &str,
@@ -244,10 +236,9 @@ impl Cluster {
         self.wait_for_new_postmaster(db, previous, deadline).await
     }
 
-    /// Issue the service stop command. Verification is separate
-    /// ([`Cluster::verify_stopped`]) so a caller can tell "the command was
-    /// issued and may have taken effect" from "the down state is proven" —
-    /// once issued, a start attempt is mandatory on every path.
+    /// Issue the service stop. [`Cluster::verify_stopped`] is separate so a
+    /// caller can tell "the command was issued" from "down is proven". Once
+    /// issued, a start attempt is mandatory on every path.
     pub async fn stop_cluster(&self, deadline: Duration) -> Result<()> {
         let restart = self.restart.as_ref().ok_or_else(|| {
             CliError::precondition(format!(
@@ -288,7 +279,6 @@ impl Cluster {
         .with_fix("check the service status and the PostgreSQL log"))
     }
 
-    /// Issue the service start command.
     pub async fn start_cluster(&self, deadline: Duration) -> Result<()> {
         let restart = self.restart.as_ref().ok_or_else(|| {
             CliError::precondition(format!(
@@ -402,12 +392,11 @@ pub enum OfflineSetting {
     NotObservable(String),
 }
 
-/// A cluster known only through a supplied connection URI.
+/// A cluster known only through a connection URI.
 ///
-/// `doctor --database-url …` must still work on a host with no local
-/// PostgreSQL installation — a workstation, a container, a CI runner pointed at
-/// a managed server. Everything that needs the host is then unobservable, which
-/// the checks report as SKIP.
+/// `doctor --database-url` must work with no local PostgreSQL (a workstation,
+/// container or CI runner pointed at a managed server). Host facts are then
+/// unobservable and the checks report SKIP.
 pub fn remote_only(server: &ServerFacts) -> Cluster {
     Cluster {
         identity: ClusterIdentity {
@@ -442,12 +431,10 @@ pub async fn discover(
     discover_with(cluster, pg_config, config_dir, timeout, false).await
 }
 
-/// Discovery for **read-only diagnosis**, which may select a single supported
-/// cluster that is not running.
+/// Read-only discovery. May select one supported cluster that is not running.
 ///
-/// Only `doctor` uses this. Every mutating command goes through [`discover`],
-/// which still requires an online cluster, so nothing that changes a system can
-/// reach a stopped one by accident.
+/// Only `doctor` uses this. Mutating commands use [`discover`], which still
+/// requires an online cluster, so a change cannot reach a stopped server.
 pub async fn discover_allowing_offline(
     cluster: Option<&str>,
     pg_config: Option<&Path>,

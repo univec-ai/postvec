@@ -1,8 +1,7 @@
-//! Typed errors, exit codes, and secret redaction.
+//! Typed errors, exit codes and secret redaction.
 //!
-//! Redaction is applied at the boundary where a message is *built*, not where
-//! it is printed, so a value that never entered an error string cannot leak
-//! through a later formatting path.
+//! Redact when the message is built, not when it is printed. A secret that
+//! never entered an error string cannot leak through a later format path.
 
 use std::fmt;
 
@@ -30,8 +29,7 @@ impl Exit {
         self as i32
     }
 
-    /// Recover the variant from a recorded code. Used where a result carries
-    /// its exit code as data before the command returns it.
+    /// Map a recorded exit code back to its variant before the command returns.
     pub fn from_code(code: i32) -> Self {
         match code {
             0 => Exit::Success,
@@ -64,9 +62,8 @@ pub enum CliError {
     Internal(String),
 }
 
-/// `registry-schema`'s archive errors carry the same two classes and the
-/// same operator-facing fix, so the conversion is total and lossless: the
-/// shared reader/writer keeps the exit code its caller would have chosen.
+/// Archive errors use the same classes and fix text, so this conversion
+/// keeps the caller's exit code.
 impl From<registry_schema::archive::ArchiveError> for CliError {
     fn from(e: registry_schema::archive::ArchiveError) -> Self {
         use registry_schema::archive::ArchiveError;
@@ -187,8 +184,7 @@ impl From<sqlx::Error> for CliError {
 
 pub use postvec_registry::error::redact;
 
-/// The registry crate's errors carry the same classes and remediation, so
-/// the conversion is total: exit codes survive the crate boundary.
+/// Registry errors use the same classes, so exit codes survive this conversion.
 impl From<postvec_registry::error::Error> for CliError {
     fn from(e: postvec_registry::error::Error) -> Self {
         use postvec_registry::error::Error as E;

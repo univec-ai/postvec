@@ -1,18 +1,12 @@
-//! Probing an embedded-mode installation: the engine root on disk, and the
-//! launcher's loopback listeners.
+//! Probing an embedded installation: the engine root and the launcher's
+//! loopback listeners. Diagnosis matches the loader:
 //!
-//! Everything here mirrors what the `engine` crate actually does, so a
-//! diagnosis agrees with the loader:
-//!
-//! - models live at exactly `<root>/models/<backend>/<model>/ninference.hub.json`
-//!   (two directory levels, no deeper; `engine/src/lib.rs`);
-//! - scan-loading takes descriptors whose `enabled` is true and registers
-//!   them under `configuration.name`;
-//! - an explicitly requested model is resolved by matching the directory
-//!   name, which is why both names are recorded;
-//! - the ONNX Runtime library is found by an exact filename match
-//!   (`libonnxruntime.so` on Linux). A versioned `libonnxruntime.so.1.22.0`
-//!   alone will not satisfy the loader.
+//! - models live at `<root>/models/<backend>/<model>/ninference.hub.json`
+//!   (exactly two levels; `engine/src/lib.rs`)
+//! - scan-load takes `enabled` descriptors and registers `configuration.name`
+//! - an explicit request matches the directory name, so both names are kept
+//! - ONNX Runtime is an exact filename (`libonnxruntime.so`). A versioned
+//!   `libonnxruntime.so.1.22.0` alone does not satisfy the loader.
 
 use super::{parse_config_body, HttpProbes, ProbeOutcome};
 use crate::cli::TlsPolicy;
@@ -83,11 +77,10 @@ pub fn inspect_root(
     probe
 }
 
-/// Walk `<root>/models/<backend>/<model>/ninference.hub.json`, exactly two
-/// levels deep — skipping dot-directories at both levels, exactly as the
-/// engine's own scan does. `models/.staging`, `.trash` and `.swap` are the
-/// CLI's private transaction state, and reporting a model out of one of them
-/// would describe an inventory the engine will never load.
+/// Two levels under `<root>/models`: `<backend>/<model>/ninference.hub.json`.
+/// Skip dot-directories, as the engine does. `.staging`, `.trash` and `.swap`
+/// are private transaction state. A model reported from one is an inventory
+/// the engine will never load.
 fn is_scannable(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -182,8 +175,8 @@ fn read_descriptor(path: &Path) -> std::result::Result<ParsedDescriptor, String>
     })
 }
 
-/// Exact-name matches (what the loader accepts) plus, separately, versioned
-/// near-misses — a root that has only `libonnxruntime.so.1.22.0` fails to load
+/// Exact-name matches (what the loader accepts) and, separately, versioned
+/// near-misses. A root with only `libonnxruntime.so.1.22.0` fails to load
 /// with a message that does not obviously mean "make a symlink".
 pub fn find_ort_libraries(libs_dir: &Path) -> Vec<PathBuf> {
     if !libs_dir.is_dir() {
@@ -204,14 +197,10 @@ pub fn find_ort_libraries(libs_dir: &Path) -> Vec<PathBuf> {
 
 /// Whether a path is, or points at, a regular file.
 ///
-/// The unversioned `libonnxruntime.so` is a **symlink** in every normal
-/// layout — it is how upstream ships the runtime and how every distribution
-/// packages a shared library. `dlopen` follows it without noticing, so a check
-/// that only counts regular files rejects a perfectly good engine root and
-/// tells the operator to create a symlink that is already there.
-///
-/// `Path::is_file` follows the link, which also makes a dangling symlink
-/// correctly *not* count.
+/// `libonnxruntime.so` is a symlink in normal layouts. `dlopen` follows it,
+/// and `Path::is_file` does too, so a dangling symlink does not count.
+/// Counting only regular files rejects a good root and asks for a symlink
+/// that is already there.
 fn resolves_to_file(path: &Path) -> bool {
     path.is_file()
 }
@@ -535,9 +524,8 @@ mod tests {
     }
 
     /// The layout every real package has: one versioned file and an
-    /// unversioned **symlink** pointing at it. `dlopen` follows the link, so a
-    /// check that ignores symlinks rejects a working engine root and tells the
-    /// operator to create a link that already exists.
+    /// unversioned symlink pointing at it. `dlopen` follows the link, so a
+    /// check that ignores symlinks rejects a working engine root.
     #[test]
     fn the_unversioned_library_may_be_a_symlink() {
         let dir = tempfile::tempdir().unwrap();
@@ -561,7 +549,7 @@ mod tests {
         assert!(found[0].ends_with(ORT_LIBRARY));
     }
 
-    /// …but a link pointing at nothing is not a library.
+    /// A link pointing at nothing is not a library.
     #[test]
     fn a_dangling_symlink_is_not_a_library() {
         let dir = tempfile::tempdir().unwrap();
@@ -571,14 +559,12 @@ mod tests {
         assert!(find_ort_libraries(&libs).is_empty());
     }
 
-    /// A loopback port nothing in this process will ever bind.
+    /// A loopback port nothing in this process will bind.
     ///
-    /// The obvious way to get a closed port — bind an ephemeral one and drop
-    /// the listener — is a race, not a fact: the kernel is free to hand that
-    /// exact port to the next `127.0.0.1:0` bind, and this suite makes a lot
-    /// of those in parallel. It failed that way. Port 1 is in the privileged
-    /// range, so no test (and no unprivileged process) can take it, which
-    /// makes "connection refused" the only possible outcome.
+    /// Binding an ephemeral port and dropping the listener is a race: the
+    /// kernel can hand that port to the next `127.0.0.1:0` bind, and this
+    /// suite does many of those in parallel. Port 1 is privileged, so no
+    /// unprivileged process can take it. Refusal is the only outcome.
     const CLOSED_PORT: &str = "127.0.0.1:1";
 
     #[tokio::test]

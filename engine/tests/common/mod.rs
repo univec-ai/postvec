@@ -1,7 +1,7 @@
-//! Shared helpers for the `engine` integration tests.
+//! Shared helpers for the engine integration tests.
 //!
-//! Each test file is its own crate (`mod common;`), so not every helper is used
-//! by every file — hence the broad `dead_code` allowance.
+//! Each test file is its own crate (`mod common;`), so not every helper
+//! is used by every file. The `dead_code` allowance covers that.
 #![allow(dead_code)]
 
 use ndarray::{Array, IxDyn};

@@ -32,7 +32,7 @@ contents:
   - src: ${REPO_ROOT}/postvec/LICENSE
     dst: ${LICENSE_DST}/postvec-cli/${LICENSE_NAME}
     file_info: { mode: 0644, owner: root, group: root }
-  # Debian Policy §12.7 requires a changelog in every non-native package. One
+  # Debian Policy 12.7 requires a changelog in every non-native package. One
   # release, one changelog, shipped by every package it produced; rendered by
   # scripts/build-packages.sh (see render_changelog in scripts/lib.sh).
   - src: ${CHANGELOG_FILE}
@@ -66,5 +66,5 @@ rpm:
   group: Applications/Databases
 
 umask: 0022
-# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly: an
 # explicit `mtime:` here would be parsed before environment expansion.

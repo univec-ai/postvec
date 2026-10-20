@@ -29,9 +29,9 @@ LABEL org.opencontainers.image.title="postvec-server" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.vendor="UniVec"
 
-# The engine root is the path the packages install to — and the one the
-# postvec CLI treats as its default — so `--path` values are identical on a
-# database host, in the local image, and here. POSTVEC_PATH names it for the
+# The engine root is the path the packages install to, and the one the
+# postvec CLI treats as its default, so `--path` values are identical on a
+# database host, in the local image and here. POSTVEC_PATH names it for the
 # server and the bundled CLI alike, so model and provider commands need no
 # extra path flags.
 #
@@ -71,12 +71,12 @@ COPY postvec-server-entrypoint.sh /usr/local/bin/postvec-server-entrypoint
 # Run unprivileged. The packages leave /opt/postvec and /etc/postvec-server
 # root-owned, which is right for a host; in a container the service account
 # owns both, so that the entrypoint can generate a per-container certificate
-# beside the configuration and `docker exec <ctr> postvec model pull …` can
+# beside the configuration and `docker exec <ctr> postvec model pull ...` can
 # add models without a second account. Mount your own pair over
 # /etc/postvec-server/server.{crt,key} to skip generation.
 # The serving-lease directory is what the unit's ExecStartPre creates
 # on a host; the server FAILS TO START without it, deliberately. 1775
-# root:postvec-server — group write for the lease, sticky so the service
+# root:postvec-server: group write for the lease, sticky so the service
 # account cannot unlink locks it does not own. If your runtime mounts a fresh
 # tmpfs over /run, recreate it exactly like this; if this container shares its
 # engine root with the host (a bind-mounted /opt/postvec), bind-mount

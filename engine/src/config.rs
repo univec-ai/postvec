@@ -4,34 +4,22 @@ use std::path::PathBuf;
 
 /// Resource policy for the process hosting the engine.
 ///
-/// Default is unbounded: no admission gate, ONNX Runtime threading left at
-/// onnxruntime's defaults (one intra-op pool of about physical-core threads
-/// per session, spin-wait on). That is what a dedicated inference node wants.
-/// A host that sits next to another workload (the postvec PostgreSQL
-/// launcher) opts into tighter bounds. Requests for different models can
-/// enter blocking execution at the same time, and each session's intra-op
-/// pool multiplies with the core count, so an unbounded engine would compete
-/// with the database for every core.
+/// Default is unbounded, which suits a dedicated inference node. A host
+/// that shares the machine with PostgreSQL sets tighter bounds.
 #[derive(Debug, Clone, Default)]
 pub struct HostPolicy {
-    /// Cap on concurrently executing predictions across all models. `None`
-    /// means unlimited. The permit is held for the native run itself: a
-    /// caller whose deadline expires does not free capacity while onnxruntime
-    /// is still computing.
+    /// Cap on predictions in native execution. `None` is unlimited. The
+    /// permit stays held until onnxruntime finishes, even after the deadline.
     pub admission_limit: Option<usize>,
-    /// Hold the load-commit gate across native instantiation as well as
-    /// publication. `false` (default) lets concurrent loads of different
-    /// models instantiate in parallel; publication and executor build still
-    /// serialize. A shared host (the postvec embedded launcher) sets `true`
-    /// so a cancelled load cannot start a second native instantiation while
-    /// the first is still running on a blocking thread.
+    /// Hold the load-commit gate across native instantiation, not just
+    /// publication. Default `false` lets different models instantiate in
+    /// parallel. A shared host sets `true` so a cancelled load cannot start
+    /// a second native instantiation while the first is still running.
     pub serialized_model_loads: bool,
-    /// Engine-wide ceiling on tokens fed to a model per input, applied on
-    /// top of each descriptor's `tokenizer.max_length` or `params.sequence_len`.
-    /// `None` (the default) uses [`DEFAULT_MAX_SEQUENCE_LEN`]. `Some(0)` means
-    /// no ceiling. `Some(n)` means n tokens. Attention memory grows with the
-    /// square of the length, so a descriptor that declares 32k tokens still
-    /// cannot admit a 32k-token input on a host that cannot hold it.
+    /// Engine-wide token ceiling per input, on top of each descriptor's
+    /// `tokenizer.max_length` or `params.sequence_len`. `None` uses
+    /// [`DEFAULT_MAX_SEQUENCE_LEN`]. `Some(0)` means no ceiling. Attention
+    /// memory grows with the square of the length.
     pub max_sequence_len: Option<usize>,
 }
 
@@ -49,17 +37,16 @@ impl HostPolicy {
     }
 }
 
-/// Per-session ONNX Runtime threading policy, applied to every session built
-/// after it is set. Process-global because model construction happens deep in
-/// pool factories; set it once, before the first model loads. Standalone
-/// ninference never sets it and keeps onnxruntime's defaults.
+/// Per-session ONNX Runtime threading, applied to every session built
+/// after it is set. Process-global, because construction happens inside
+/// pool factories. Set it once, before the first load. Standalone
+/// ninference leaves onnxruntime's defaults.
 #[derive(Debug, Clone, Copy)]
 pub struct SessionThreadPolicy {
     /// Intra-op thread count per session (onnxruntime default: ~physical cores).
     pub intra_op_threads: usize,
-    /// Disable the intra-op pool's spin-wait. Spinning burns idle CPU for
-    /// lower latency: right on a dedicated inference node, wrong on a
-    /// shared database host (the post-inference spin looks like busy CPU).
+    /// Turn off the intra-op pool's spin-wait. Spinning buys latency with
+    /// idle CPU: fine on a dedicated node, wrong next to PostgreSQL.
     pub disable_spinning: bool,
 }
 

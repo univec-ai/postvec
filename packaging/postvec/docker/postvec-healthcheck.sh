@@ -117,7 +117,7 @@ if (( psql_status != 0 )); then
     exit 1
 fi
 
-# Every property must say true. `false` fails, and so does an empty value —
+# Every property must say true. `false` fails, and so does an empty value -
 # which is what a NULL renders as, and what "no heartbeat row exists at all"
 # looks like.
 for property in extension versions mode capability heartbeat model; do

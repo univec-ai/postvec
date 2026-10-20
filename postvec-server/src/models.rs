@@ -20,10 +20,8 @@ const MAX_DEPENDENCY_DEPTH: usize = 32;
 pub const DESCRIPTOR_FILENAME: &str = "ninference.hub.json";
 pub const MODELS_DIR: &str = "models";
 
-/// A deliberately minimal descriptor view: only the admission facts. The
-/// engine re-parses the full schema in `load_model` and stays authoritative
-/// for everything else, so widening this struct would create a second
-/// definition of the same file.
+/// Admission facts only. The engine re-parses the full schema in `load_model`.
+/// Widening this struct would be a second definition of the same file.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Descriptor {
     pub name: String,
@@ -44,7 +42,7 @@ pub struct DiskModel {
     pub ambiguous: bool,
 }
 
-/// Everything a scan found, plus everything it could not make sense of.
+/// What a scan found, and the warnings for what it could not parse.
 #[derive(Debug, Clone, Default)]
 pub struct Inventory {
     pub models: Vec<DiskModel>,
@@ -52,7 +50,7 @@ pub struct Inventory {
 }
 
 impl Inventory {
-    /// Enabled, unambiguous names — the set this node will try to load.
+    /// Enabled, unambiguous names. The set this node will try to load.
     pub fn loadable(&self) -> Vec<String> {
         self.models
             .iter()
@@ -61,8 +59,7 @@ impl Inventory {
             .collect()
     }
 
-    /// Every enabled name, ambiguity included. `status` reports these so a
-    /// duplicate shows up as a fact.
+    /// Every enabled name, ambiguity included, so `status` can show a duplicate.
     pub fn enabled(&self) -> Vec<String> {
         self.models
             .iter()
@@ -80,15 +77,10 @@ impl Inventory {
 /// exists under more than one backend.
 pub type DescriptorIndex = BTreeMap<String, Vec<PathBuf>>;
 
-/// Names this node's engine owns: currently loaded, plus every on-disk
-/// descriptor.
-///
-/// Wider than `get_active_models()`. A configured model that failed to load
-/// is missing from the engine map; reserving only loaded names would let a
-/// provider file take that name and send source text off-box.
-///
-/// A failed scan is an error. The caller keeps the previous gateway snapshot
-/// on reload, or serves no providers at boot.
+/// Names this engine owns: loaded now, plus every on-disk descriptor.
+/// Wider than `get_active_models()`. A failed load is missing from the engine map.
+/// Reserving only loaded names would let a provider file take that name and send text off-box.
+/// A failed scan is an error: reload keeps the previous snapshot. Boot serves no providers.
 pub fn reserved_local_names(
     root: &Path,
     engine: &engine::InferenceEngine,
@@ -109,9 +101,7 @@ pub fn reserved_local_names(
 }
 
 /// Walk `<root>/models/*/*/ninference.hub.json`.
-///
-/// Dot-directories are skipped. The CLI stages downloads in
-/// `models/.staging`; a half-written descriptor there stays out of the scan.
+/// Dot-directories are skipped, including the CLI's `models/.staging`.
 pub fn descriptor_index(root: &Path) -> Result<DescriptorIndex, String> {
     let models_dir = root.join(MODELS_DIR);
     let backends = std::fs::read_dir(&models_dir).map_err(|e| {
@@ -221,8 +211,7 @@ pub fn inventory(root: &Path) -> Result<Inventory, String> {
     Ok(inventory_from_index(&descriptor_index(root)?))
 }
 
-/// Validate a request-supplied model name before it is joined into
-/// `<root>/models/<backend>/<name>/`. Path-like names are refused.
+/// Refuse a path-like name before it is joined under `<root>/models/<backend>/<name>/`.
 pub fn validate_model_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("model names must be non-empty".to_string());
@@ -255,9 +244,7 @@ pub struct Closure {
 }
 
 /// Walk the dependency closure of `roots`.
-///
-/// Disabled members are recorded. The startup preflight uses the walk for a
-/// resource count; `/admin/load` uses it to refuse a deactivated model.
+/// Disabled members are recorded. Startup counts them. `/admin/load` refuses them.
 pub fn closure_of(
     index: &DescriptorIndex,
     roots: &[String],
@@ -339,13 +326,9 @@ fn visit(
     Ok(())
 }
 
-/// The `/admin/load` closure: refused outright when any member is
-/// deactivated.
-///
-/// `InferenceEngine::load_model` refuses a disabled configuration anyway, so
-/// the load would fail mid-closure. Catching it here names the deactivated
-/// model and the command that fixes it, and it matches what a restart would
-/// produce — a load that would not survive one is not a load worth doing.
+/// The `/admin/load` closure. Refused when any member is deactivated.
+/// `load_model` would fail mid-closure anyway. Naming it here matches a restart:
+/// a load that would not survive one is not worth doing.
 pub fn admin_load_closure(index: &DescriptorIndex, name: &str) -> Result<BTreeSet<String>, String> {
     let closure = closure_of(index, std::slice::from_ref(&name.to_string()), usize::MAX)?;
     if let Some(first) = closure.disabled.iter().next() {
@@ -420,7 +403,6 @@ mod tests {
         assert!(inv.warnings.is_empty(), "{:?}", inv.warnings);
     }
 
-    /// One bad directory must not keep the rest of the root offline.
     #[test]
     fn a_malformed_descriptor_warns_and_the_rest_still_load() {
         let root = Root::new();
@@ -452,8 +434,7 @@ mod tests {
         );
     }
 
-    /// Two backends, one name: the engine picks by read order, so the scan
-    /// refuses to pick at all.
+    /// The engine would pick by read order, so the scan refuses to pick.
     #[test]
     fn an_enabled_duplicate_is_excluded_with_a_warning() {
         let root = Root::new();

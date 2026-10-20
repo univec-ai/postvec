@@ -1,21 +1,17 @@
-//! `postvec uninstall --all --purge`: host-side sweep. Experimental.
+//! `postvec uninstall --all --purge` sweeps the host. Experimental.
 //! Destructive cleanup for disposable test hosts.
 //!
 //! Deletes only paths with positive evidence postvec created them, under
 //! roots that pass [`safe_root`]. Model dirs need `ninference.hub.json`.
-//! CLI state is exact names (`.staging`, `.trash`, `.swap`). `libs/` only
-//! if it holds ONNX Runtime. Provider files are `<name>.toml`; other
-//! files in providers.d stay. Extension and state files are exact names
-//! under trusted roots.
+//! CLI state, extension files and `<name>.toml` provider files are exact
+//! names. Other files in providers.d stay. `libs/` goes only if it holds
+//! ONNX Runtime.
 //!
-//! Every leaf is classified (device/inode, every package database,
-//! fail-closed). Apply re-enumerates and deletes only an identical leaf
-//! set, file by file, directories with `rmdir`. Unreadable candidates are
-//! retained and the run is partial (exit 3).
-//!
-//! Caller holds the host lock exclusive and has stopped the cluster.
-//! [`apply`] then takes the model-store and providers locks, re-checks,
-//! rebuilds the plan and deletes.
+//! Every leaf is classified fail-closed, including every package database.
+//! Apply re-enumerates and deletes only an identical set, file by file,
+//! directories with `rmdir`. Unreadable candidates are kept and the run is
+//! partial (exit 3). The caller holds the host lock exclusive and has
+//! stopped the cluster.
 
 use crate::commands::provider::FileOwner;
 use crate::config::owned;
@@ -62,8 +58,7 @@ pub fn acquire_serving_lease(canonical_root: &Path) -> Result<owned::HostLock> {
 }
 
 /// Directories a purge root may never be. Anything directly under `/` is a
-/// system directory; a postvec root lives at least one level deeper
-/// (`/opt/postvec`, `/etc/postvec/providers.d`, `/srv/postvec/…`).
+/// system directory. A postvec root lives at least one level deeper.
 const SYSTEM_DIRS: &[&str] = &[
     "/",
     "/bin",
@@ -103,7 +98,7 @@ const SYSTEM_DIRS: &[&str] = &[
 /// safe, with the reason in `excluded`.
 #[derive(Debug, Clone)]
 pub struct PurgeRoots {
-    /// The cluster being torn down (`18/main`), so every *other* cluster on
+    /// The cluster being torn down (`18/main`), so every other cluster on
     /// the host can be checked.
     pub cluster_id: String,
     pub engine_root: Option<PathBuf>,
@@ -114,7 +109,7 @@ pub struct PurgeRoots {
     /// Who owns the providers directory (the cluster account): the provider
     /// lock is taken on their behalf.
     pub provider_owner: Option<FileOwner>,
-    /// `/var/lib/postvec` — holds `clusters/<key>.json` and `auth.json`.
+    /// `/var/lib/postvec` holds `clusters/<key>.json` and `auth.json`.
     pub state_dir: PathBuf,
     pub cluster_key: String,
     pub pkglibdir: PathBuf,
@@ -125,12 +120,12 @@ pub struct PurgeRoots {
     pub extension_files_removable: bool,
     /// The running CLI binary, reported but never deleted.
     pub cli_binary: Option<PathBuf>,
-    /// Why a root was excluded — reported in the plan, never silent.
+    /// Why a root was excluded. Reported in the plan, never silent.
     pub excluded: Vec<String>,
 }
 
-/// Which package manager claimed a file, and therefore which command removes
-/// what the sweep left alone.
+/// Which package manager claimed a file, and which command removes what the
+/// sweep left alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PackageManager {
     Dpkg,
@@ -208,9 +203,9 @@ pub struct Candidate {
 pub struct PurgePlan {
     /// Paths to delete, in order.
     pub remove: Vec<Candidate>,
-    /// Package-owned paths, grouped by `(manager, package)` — a hybrid host
-    /// gets one removal command per manager, and an identically named dpkg
-    /// and RPM package cannot collapse into one entry.
+    /// Package-owned paths, grouped by `(manager, package)`. A hybrid host
+    /// gets one removal command per manager. An identically named dpkg and
+    /// RPM package cannot collapse into one entry.
     pub packaged: BTreeMap<(PackageManager, String), Vec<PathBuf>>,
     /// Paths whose ownership could not be established or whose contents
     /// could not be fully inspected: retained, and the result is partial.
@@ -265,9 +260,9 @@ impl PurgePlan {
         ))
     }
 
-    /// Everything that makes the outcome *partial* — safety uncertainty, as
-    /// opposed to designed retention. The caller journals each as incomplete
-    /// (exit 3), in a dry run as much as in an apply.
+    /// Everything that makes the outcome partial: safety uncertainty, not
+    /// designed retention. The caller journals each as incomplete (exit 3),
+    /// in a dry run as much as in an apply.
     pub fn incomplete(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .unresolved
@@ -354,9 +349,9 @@ pub fn safe_root(
             meta.uid()
         ));
     }
-    // Ancestors: the same owner rule (the cluster account included — `setup`
-    // creates `/etc/postvec` for it), and a writable ancestor is tolerated
-    // only when it is sticky and the entry below it is protected.
+    // Ancestors follow the same owner rule. `setup` creates `/etc/postvec`
+    // for the cluster account, so that owner counts. A writable ancestor is
+    // tolerated only when it is sticky and the entry below it is protected.
     let mut child_uid = meta.uid();
     let mut current = root.parent();
     while let Some(dir) = current {
@@ -428,12 +423,12 @@ pub fn other_clusters_configured(
 pub struct OtherClusters {
     /// Every other cluster's id, whether or not it uses postvec.
     pub all: Vec<String>,
-    /// Those whose effective `shared_preload_libraries` names postvec — or
+    /// Those whose effective `shared_preload_libraries` names postvec, or
     /// whose configuration could not be read, which counts the same way.
     pub preloading: Vec<String>,
 }
 
-/// Every *other* cluster `pg_lsclusters` knows. A malformed listing is an
+/// Every other cluster `pg_lsclusters` knows. A malformed listing is an
 /// error: the purge cannot prove it examined every cluster.
 pub async fn other_clusters(own_id: &str, timeout: Duration) -> Result<OtherClusters> {
     let listings = crate::cluster::debian::list_clusters(timeout).await?;
@@ -515,8 +510,8 @@ fn identity_of(meta: &fs::Metadata) -> (u64, u64) {
 }
 
 /// Enumerate `path` and everything below it, each with its identity. Symlinks
-/// are leaves (never followed). `complete` is false when any entry could not
-/// be read or stat'ed — the candidate is then never deleted.
+/// are leaves and are never followed. `complete` is false when any entry
+/// could not be read or stat'ed. The candidate is then never deleted.
 fn enumerate_leaves(path: &Path) -> (Vec<Leaf>, bool) {
     let mut leaves = Vec::new();
     let mut complete = true;
@@ -580,9 +575,9 @@ fn candidate(path: PathBuf, what: String) -> Option<Candidate> {
 }
 
 /// Does this directory hold ONNX Runtime? Any regular file whose name starts
-/// with `libonnxruntime`, at any depth (bounded). Tri-state: an entry that
-/// cannot be read makes the answer `Err` — the caller retains the directory
-/// as uncertain rather than guessing.
+/// with `libonnxruntime`, at any depth (bounded). An entry that cannot be
+/// read makes the answer `Err`. The caller retains the directory rather than
+/// guessing.
 fn onnxruntime_evidence(libs: &Path) -> std::result::Result<bool, String> {
     fn walk(dir: &Path, depth: usize) -> std::result::Result<bool, String> {
         if depth > 6 {
@@ -627,7 +622,7 @@ pub struct Gathered {
 }
 
 /// Everything the sweep would touch, before asking the package manager.
-/// Pure filesystem reading. An unreadable location is *uncertain*: retained,
+/// Pure filesystem reading. An unreadable location is uncertain: retained,
 /// reported, and the whole result partial.
 pub fn gather(roots: &PurgeRoots) -> Gathered {
     let mut candidates = Vec::new();
@@ -637,7 +632,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
     let mut notes = roots.excluded.clone();
     let mut uncertain = Vec::new();
 
-    // --- engine root -------------------------------------------------------
     match (&roots.engine_root, roots.engine_root_in_use) {
         (Some(root), true) => notes.push(format!(
             "a postvec-server process is running on this host; the engine root {} was \
@@ -753,7 +747,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         _ => {}
     }
 
-    // --- provider connector files ------------------------------------------
     if let Some(dir) = &roots.providers_dir {
         if dir.is_dir() {
             match crate::commands::provider::ls::provider_files(dir) {
@@ -825,7 +818,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         }
     }
 
-    // --- CLI state ---------------------------------------------------------
     let state = roots
         .state_dir
         .join("clusters")
@@ -836,10 +828,9 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
     if roots.state_dir.exists() {
         prune.push(roots.state_dir.join("clusters"));
         prune.push(roots.state_dir.clone());
-        // The root registry login goes with the sweep — a purge is the "this
-        // host is done with postvec" verb, and a stale credential is worse
-        // than re-running the cheap `postvec login`. Per-user XDG stores are
-        // not the system sweep's to touch.
+        // The root registry login goes with the sweep. A stale credential is
+        // worse than re-running `postvec login`. Per-user XDG stores are not
+        // the system sweep's to touch.
         let auth = roots.state_dir.join(AUTH_FILE);
         if auth.exists() {
             candidates.extend(candidate(
@@ -849,7 +840,6 @@ pub fn gather(roots: &PurgeRoots) -> Gathered {
         }
     }
 
-    // --- extension files ---------------------------------------------------
     let mut extension_files = vec![
         (
             roots.pkglibdir.join("postvec.so"),
@@ -981,10 +971,9 @@ fn gather_backend(
 }
 
 /// Split the gathered candidates by package ownership. `owners` answers
-/// "which package claims this path?" for every leaf of every candidate — the
-/// real one shells out to dpkg/rpm, tests use a table. A leaf with no answer
-/// is unknown, never unowned; an incompletely enumerated candidate is
-/// unresolved whatever the answers.
+/// which package claims each leaf. The real one shells out to dpkg/rpm.
+/// Tests use a table. A leaf with no answer is unknown, never unowned. An
+/// incompletely enumerated candidate is unresolved whatever the answers.
 pub fn resolve(
     gathered: Gathered,
     cli_binary: Option<&Path>,
@@ -1070,11 +1059,11 @@ pub fn resolve(
     plan
 }
 
-/// Ask **every** installed package database who owns each path. One answer
-/// per input path: a package if any database claims it; unknown if any
-/// database could not answer and none claimed it; unowned only when every
-/// database answered "no". Without dpkg or rpm at their fixed locations the
-/// host has no package database and every path is unowned.
+/// Ask every installed package database who owns each path. One answer per
+/// input path: a package if any database claims it, unknown if any database
+/// could not answer and none claimed it, unowned only when every database
+/// answered no. Without dpkg or rpm at their fixed locations the host has
+/// no package database and every path is unowned.
 pub async fn package_owners(paths: &[PathBuf], timeout: Duration) -> BTreeMap<PathBuf, Owner> {
     let managers = PackageManager::all_installed();
     let mut answers: BTreeMap<PathBuf, Owner> = BTreeMap::new();
@@ -1127,10 +1116,10 @@ pub async fn package_owners(paths: &[PathBuf], timeout: Duration) -> BTreeMap<Pa
 /// One `Owner` per queried path out of a dpkg/rpm invocation.
 ///
 /// dpkg: stdout carries `pkg[:arch][, pkg2]: /path` per owned path, stderr
-/// `dpkg-query: no path found matching pattern /path` per unowned one; a path
-/// in neither is unknown. rpm: one stdout line per argument, in order —
-/// either the package or `file /path is not owned by any package`; a line
-/// count that does not match the arguments makes the whole batch unknown.
+/// `dpkg-query: no path found matching pattern /path` per unowned one. A path
+/// in neither is unknown. rpm: one stdout line per argument, in order, either
+/// the package or `file /path is not owned by any package`. A line count that
+/// does not match the arguments makes the whole batch unknown.
 pub fn parse_owners(
     manager: PackageManager,
     queried: &[PathBuf],
@@ -1257,12 +1246,11 @@ pub async fn plan(roots: &PurgeRoots, timeout: Duration) -> Result<PurgePlan> {
     Ok(resolve(gathered, roots.cli_binary.as_deref(), &owners))
 }
 
-/// Descriptor-relative filesystem primitives: after one absolute
-/// `O_NOFOLLOW` open of the candidate's parent, every descent, stat and
-/// unlink is `*at()` against a held directory descriptor — a symlink swapped
-/// in anywhere along the path cannot redirect the operation. The residual
-/// window is a same-directory rename between `fstatat` and `unlinkat`, an
-/// act only a writer of that (ownership-verified) directory can perform.
+/// After one absolute `O_NOFOLLOW` open of the candidate's parent, every
+/// descent, stat and unlink uses that directory descriptor. A symlink swapped
+/// in along the path cannot redirect the operation. The residual window is a
+/// same-directory rename between `fstatat` and `unlinkat`, and only a writer
+/// of that ownership-verified directory can do it.
 mod at {
     use std::ffi::{CString, OsStr};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -1344,12 +1332,12 @@ mod at {
     }
 }
 
-/// Delete one candidate leaf by leaf, descriptor-relative: one absolute
-/// `O_NOFOLLOW` open of the candidate's parent, then `openat`/`fstatat`/
-/// `unlinkat` all the way down. Files go only when their recorded identity
-/// still matches; directories go with `rmdir` deepest-first — never
-/// recursively — so a child that appeared after classification keeps its
-/// directory. Anything that does not match is left and reported.
+/// Delete one candidate leaf by leaf. One absolute `O_NOFOLLOW` open of the
+/// parent, then `openat`, `fstatat` and `unlinkat` down. Files go only when
+/// their recorded identity still matches. Directories go with `rmdir`
+/// deepest-first, never recursively, so a child that appeared after
+/// classification keeps its directory. Anything that does not match is left
+/// and reported.
 pub fn delete_candidate(candidate: &Candidate) -> Vec<String> {
     let mut problems = Vec::new();
     let (Some(parent_path), Some(_)) = (candidate.path.parent(), candidate.path.file_name()) else {
@@ -1847,7 +1835,7 @@ mod tests {
     }
 
     /// The root registry login is an ordinary candidate of every purge:
-    /// planned, package-checked, deleted — never silently retained.
+    /// planned, package-checked and deleted. Never silently retained.
     #[test]
     fn the_registry_login_is_swept() {
         let dir = tempfile::tempdir().unwrap();
@@ -1941,9 +1929,9 @@ mod tests {
             .any(|n| n.contains("postvec.so") && n.contains("dpkg timed out")));
     }
 
-    /// Leaf-wise deletion: a child that appears after classification keeps
-    /// its directory (rmdir refuses), the classified leaves still go, and
-    /// the outcome is reported — never a recursive delete of the unknown.
+    /// A child that appears after classification keeps its directory (`rmdir`
+    /// refuses). The classified leaves still go. The outcome is reported.
+    /// Never a recursive delete of the unknown.
     #[test]
     fn a_child_added_after_classification_survives_and_is_reported() {
         let dir = tempfile::tempdir().unwrap();
@@ -2242,9 +2230,9 @@ mod tests {
         assert!(acquire_serving_lease(&root).is_ok());
         assert!(lease_path.exists(), "the lease inode is never unlinked");
 
-        // The exclusive side needs a writable open (HostLock): a lease this
-        // account cannot write — root-owned on a real host, chmod-simulated
-        // here — is a refusal, never a bypass.
+        // The exclusive side needs a writable open (HostLock). A lease this
+        // account cannot write is a refusal, never a bypass. On a real host
+        // that lease is root-owned. Here it is simulated with chmod.
         if unsafe { libc::geteuid() } == 0 {
             eprintln!("skipped (unwritable-lease refusal): root bypasses file modes");
         } else {
@@ -2338,7 +2326,7 @@ mod tests {
         fs::set_permissions(&real, fs::Permissions::from_mode(0o775)).unwrap();
         assert!(safe_root(&real.canonicalize().unwrap(), "root", None).is_err());
         fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
-        // A group-writable *ancestor* is refused too (no sticky bit).
+        // A group-writable ancestor is refused too (no sticky bit).
         let parent = dir.path().join("a");
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o775)).unwrap();
         let error = safe_root(&real.canonicalize().unwrap(), "root", None).unwrap_err();

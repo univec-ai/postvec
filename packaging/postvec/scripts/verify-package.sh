@@ -38,10 +38,10 @@ check_maintainer_scripts() {
         return
     fi
 
-    # Scan executable code only. A postrm that *prints* "run postvec uninstall
+    # Scan executable code only. A postrm that prints "run postvec uninstall
     # before removing the package" is exactly the guidance the operator needs;
-    # a postrm that *runs* it is the defect. So comments and here-document
-    # bodies are removed before matching — text is not an action.
+    # a postrm that runs it is the defect. So comments and here-document
+    # bodies are removed before matching: text is not an action.
     code="$(python3 - "${scripts}" <<'PY'
 import re, sys
 
@@ -69,7 +69,6 @@ PY
     (( found )) || pass "maintainer scripts touch no cluster, database or network"
 }
 
-# ------------------------------------------------------------------- lintian
 
 # The reviewed exceptions: lintian tags postvec accepts, each with its reason
 # recorded next to it. Anything not in this file is a defect to fix, not a
@@ -89,8 +88,8 @@ read_lintian_exceptions() {
 # never run. Classifying the output instead keeps every accepted tag on screen,
 # named and counted.
 #
-# And `--fail-on none` guarantees lintian exits 0 whenever it *ran*, so a
-# non-zero exit means lintian itself failed — which is worth distinguishing
+# And `--fail-on none` guarantees lintian exits 0 whenever it ran, so a
+# non-zero exit means lintian itself failed: which is worth distinguishing
 # from "lintian ran and found nothing".
 lintian_gate() {
     local pkg="$1" output line tag status
@@ -141,7 +140,6 @@ still being present on the machine that wrote it."
     fi
 }
 
-# ------------------------------------------------------------ shared assertions
 
 # Directory entries of models/<backend> and models/<backend>/<name> are not a
 # layout defect. dpkg lists them with a trailing slash and the original check
@@ -180,8 +178,8 @@ check_engine_root_paths() {
     local files="$1" subtree="$2" path stray=0
     while IFS= read -r path; do
         [[ -n "${path}" ]] || continue
-        # dpkg lists `./opt/…` with trailing slashes on directories; rpm lists
-        # `/opt/…` with neither. Normalise both to `opt/…`.
+        # dpkg lists `./opt/...` with trailing slashes on directories; rpm lists
+        # `/opt/...` with neither. Normalise both to `opt/...`.
         path="${path#./}"
         path="${path#/}"
         case "${path}" in
@@ -255,7 +253,7 @@ check_contents() {
         # crate's <root>/certs default is under root-owned, read-only
         # /opt/postvec, which the service account can neither write nor read a
         # 0600 key in. A config that regressed to the relative default would
-        # install fine and refuse to start on every host — so the file itself
+        # install fine and refuse to start on every host: so the file itself
         # is read (${pkg_config}, extracted by the caller), not only listed.
         if grep -qE '^\.?/etc/postvec-server$' <<<"${files}" \
             || grep -qE '^\.?/etc/postvec-server/$' <<<"${files}"; then
@@ -286,7 +284,7 @@ PY
         # runtime and model) with the CLI, both weak so that a provider-only
         # or slim node stays possible. See the description's comment.
         # The exact relation, not its shape: the metapackage, the CLI with
-        # both bounds, and nothing else — a direct runtime recommendation
+        # both bounds, and nothing else: a direct runtime recommendation
         # would duplicate the metapackage's pin, and a dropped upper bound
         # would let a future incompatible CLI satisfy the node silently.
         local rec_lines
@@ -380,7 +378,7 @@ PY
         ;;
     postvec-model-*)
         # The canonical root, and only the canonical root. A package built from
-        # a payload in a former layout (/opt/postvec/ninference/…) has every
+        # a payload in a former layout (/opt/postvec/ninference/...) has every
         # file the checks below look for, at paths nothing loads.
         check_engine_root_paths "${files}" models
         grep -q '/opt/postvec/models/' <<<"${files}" \
@@ -478,8 +476,8 @@ verify_deb() {
             && pkg_config="${tmp}/etc/postvec-server/config.json"
     fi
     owners="$(dpkg-deb --contents "${pkg}" | awk '{print $2}' | sort -u)"
-    # The licence a package declares. Debian has no control field for it —
-    # nfpm writes its `license:` into the copyright file — so it is read from
+    # The licence a package declares. Debian has no control field for it -
+    # nfpm writes its `license:` into the copyright file: so it is read from
     # /usr/share/doc/<pkg>/copyright, which for this project's packages is
     # either the DEP-5 rendering (a `License:` line) or the verbatim text.
     pkg_license="$(dpkg-deb --fsys-tarfile "${pkg}" \
@@ -500,9 +498,9 @@ verify_deb() {
         && pass "ships a copyright file" \
         || problem "no /usr/share/doc/<package>/copyright"
 
-    # Debian Policy §12.7. Asserted here as well as by lintian below, because
+    # Debian Policy 12.7. Asserted here as well as by lintian, because
     # lintian only runs where it is installed and a package with no changelog
-    # should fail on every host — including the developer machine that built it.
+    # should fail on every host: including the developer machine that built it.
     grep -q "/usr/share/doc/[^/]*/changelog\.Debian\.gz$" <<<"${files}" \
         && pass "ships a changelog" \
         || problem "no /usr/share/doc/<package>/changelog.Debian.gz"
@@ -533,10 +531,10 @@ verify_deb() {
 }
 
 # `rpm` is not installed on a Debian/Ubuntu release runner, and requiring it
-# would mean the RPM packages are only ever verified on an RPM host — which is
+# would mean the RPM packages are only ever verified on an RPM host: which is
 # exactly when nobody looks. Fall back to a container of the target
 # distribution, which is also the more faithful inspector.
-# Takes rpm's flags and then the package *basename*; the directory is mounted
+# Takes rpm's flags and then the package basename; the directory is mounted
 # at a fixed path. (Rewriting an absolute path inside the argument list with
 # bash pattern substitution looks tidier and is not: the pattern itself
 # contains slashes, which is exactly where that syntax stops being readable.)
@@ -618,7 +616,7 @@ while True:
     check_maintainer_scripts /tmp/postvec-rpm-scripts.$$
     rm -f /tmp/postvec-rpm-scripts.$$
 
-    # Note: nFPM does *not* run RPM's automatic dependency generator — it
+    # Note: nFPM does not run RPM's automatic dependency generator: it
     # writes exactly the Requires it is given. The generated ones therefore
     # have to be present because scripts/elf-depends.sh put them there, which
     # `check_contents` asserts for every package carrying a binary.
@@ -626,7 +624,7 @@ while True:
 
     # `postvec-cli-[0-9]*` and not `postvec-cli-*`: the version field is what
     # separates the CLI package from postvec-cli-debuginfo, which carries no
-    # binary by design — the check above asserts exactly that — and so can only
+    # binary by design. The check above asserts exactly that, and so can only
     # ever fail a check for one.
     if [[ "${name}" == postvec-cli-[0-9]* ]]; then
         if command -v rpm2cpio >/dev/null 2>&1 && command -v cpio >/dev/null 2>&1; then
@@ -637,8 +635,8 @@ while True:
             # cpio matches the stored spelling literally: a pattern for either
             # convention extracts nothing from the other, silently and with a
             # zero exit. And cpio's copy-in mode honours an absolute member
-            # name by default, so a *matching* pattern would write through to
-            # the host's real /usr/bin/postvec rather than into ${xdir} —
+            # name by default, so a matching pattern would write through to
+            # the host's real /usr/bin/postvec rather than into ${xdir} -
             # extracting the whole payload under --no-absolute-filenames is
             # both convention-independent and confined to the temporary tree.
             (cd "${xdir}" && rpm2cpio "${RPM_QUERY_DIR}/${name}" \

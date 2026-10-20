@@ -165,8 +165,8 @@ async fn run_available(cli: &Cli, args: &ModelLsArgs, output: &Output) -> Result
                     None => ("?", Tone::Dim),
                 }
             };
-            // `?` is unknown — no resolvable root, or an install the CLI cannot
-            // compare — and is never collapsed to "current".
+            // `?` is unknown: no resolvable root, or an install the CLI cannot
+            // compare. Never collapsed to "current".
             let (update, update_tone) = match (row.update, row.installed_revision) {
                 (None, _) | (Some("unknown"), _) => ("?".to_string(), Tone::Dim),
                 (Some("upgradable"), Some(from)) => {

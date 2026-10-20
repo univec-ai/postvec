@@ -1,9 +1,8 @@
-//! The owned configuration file, the ownership state file, and the host lock.
+//! The owned configuration file, the ownership state file and the host lock.
 //!
-//! Paths under `/etc` are treated as hostile: the destination is `lstat`ed and
-//! opened with `O_NOFOLLOW`, symlinks and multiply-linked files are refused,
-//! and every write is a same-directory temporary file plus `rename`, with
-//! `fsync` on both the file and its directory. A half-written
+//! Paths under `/etc` are hostile: `lstat` plus `O_NOFOLLOW`, refuse symlinks
+//! and multiply-linked files, write via a same-directory temp plus `rename`,
+//! and `fsync` the file and its directory. A half-written
 //! `shared_preload_libraries` line is a cluster that will not start.
 
 use crate::error::{CliError, Result};
@@ -28,7 +27,7 @@ pub struct ClusterState {
     pub cluster: String,
     pub config_path: PathBuf,
     pub config_sha256: String,
-    /// Databases this CLI configured and is therefore willing to remove.
+    /// Databases this CLI configured and will remove.
     pub managed_databases: Vec<String>,
     /// Databases that were already in `postvec.database` when the CLI took
     /// over. They are rendered so setup does not disrupt them, but the CLI
@@ -60,11 +59,10 @@ pub enum Ownership {
     /// A `99-postvec.conf` exists that the CLI did not write (no management
     /// marker and no ownership state). Never overwritten.
     Foreign { content: String },
-    /// The file carries the management marker but there is no ownership state
-    /// (state directory wiped, or written by a different root filesystem).
-    /// Adoptable: the CLI wrote this file and no longer remembers which
-    /// databases were its own, so every database already configured is
-    /// treated as preserved.
+    /// The file has the management marker but no ownership state (state
+    /// directory wiped, or written on a different root filesystem).
+    /// Adoptable: the CLI wrote the file and does not know which databases
+    /// were its own, so every configured database is preserved.
     AdoptableMarker { content: String },
     /// State exists but the file was edited by hand. Never overwritten.
     Modified {
@@ -136,11 +134,10 @@ impl Ownership {
     }
 }
 
-/// Extract `name = 'value'` from one configuration line. Deliberately
-/// minimal: used only to read back a file the CLI itself rendered, or to name
-/// what a foreign file configures. Effective values always come from the
-/// server, never from this — except the offline model-command fallback,
-/// which has no server to ask.
+/// Extract `name = 'value'` from one configuration line. Minimal on purpose:
+/// only to read back a file the CLI rendered, or to name what a foreign file
+/// configures. Effective values come from the server, never from this, except
+/// the offline model-command fallback, which has no server to ask.
 pub(crate) fn parse_config_line(line: &str, name: &str) -> Option<String> {
     let line = line.trim();
     if line.starts_with('#') {
@@ -325,14 +322,12 @@ impl OwnedPaths {
     }
 }
 
-/// A committed configuration *and* its ownership state, remembering what was
-/// there before so a failed restart can be rolled back.
+/// A committed configuration and its ownership state, with the previous
+/// contents kept so a failed restart can roll back.
 ///
-/// Both files, because they are one logical unit: restoring the configuration
-/// while leaving the new state behind would leave the recorded digest
-/// describing a candidate that was rejected, so the installation would read as
-/// hand-edited (`Ownership::Modified`) and every later `setup` would refuse to
-/// repair it.
+/// Both files are one unit. Restoring configuration without the state would
+/// record a digest for a rejected candidate, so the install reads as
+/// hand-edited and later `setup` refuses to repair it.
 #[derive(Debug)]
 pub struct CommittedConfig {
     pub config_path: PathBuf,

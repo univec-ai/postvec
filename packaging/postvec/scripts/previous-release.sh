@@ -6,21 +6,13 @@
 #   previous-release.sh --versions   # those product versions, oldest first
 #   previous-release.sh --identity   # newest tag with a lower release identity
 #
-# A lower product version is 0.1.0 when this tree is 0.2.0 or 0.1.1. That is
-# the hop `upgrade_test.sh` and the upgrade graph walk. A lower *identity* also
-# includes a same-version packaging predecessor: 0.2.0-1 when this tree is
-# 0.2.0-2. `assert-versions.sh` uses --identity to freeze upgrade scripts that
-# the previous tag already shipped.
+# A lower product version is the upgrade hop. --identity also includes a
+# same-version packaging predecessor (0.2.0-1 when building 0.2.0-2) and
+# freezes upgrade scripts that tag already shipped.
 #
-# Prints the tag (or versions) on stdout. Empty stdout and exit 0 when there is
-# no match: the first release, or a packaging-only rebuild of the current
-# product when the query is for an older product. Exit 1 if git or gh fails.
-#
-# A 0.1.1 hotfix in a repository that already has 0.2.0 tagged upgrades from
-# 0.1.0. Rehearsal tags (postvec-rehearsal-v*) are ignored.
-#
-# Test overrides: POSTVEC_CURRENT_VERSION, POSTVEC_CURRENT_RELEASE,
-# POSTVEC_TAG_REPO, POSTVEC_GH_REPO.
+# Empty stdout and exit 0 when nothing matches. Exit 1 if git or gh fails.
+# A hotfix upgrades from the previous patch, not from a newer line.
+# Rehearsal tags are ignored.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -32,7 +24,7 @@ while (($#)); do
     --published) MODE=published; shift ;;
     --versions)  MODE=versions; shift ;;
     --identity)  MODE=identity; shift ;;
-    -h|--help)   sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,15p' "$0"; exit 0 ;;
     *)           die "unknown argument: $1" ;;
     esac
 done

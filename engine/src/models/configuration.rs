@@ -30,38 +30,32 @@ pub enum ExecutionProvider {
 /// Quantization mode. Affects whether batches can share a scaling factor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum QuantizationMode {
-    /// No quantization.
     #[default]
     None,
-    /// Static quantization, where scaling factors are fixed. Compatible with batching.
+    /// Static quantization. Scaling factors are fixed, so batches can share them.
     #[serde(rename = "static")]
     Static,
-    /// Dynamic quantization, where scaling factors are computed per-batch.
-    /// This mode is generally incompatible with batching across different inference calls,
-    /// as the embeddings would not be comparable.
+    /// Dynamic quantization. Scaling is per batch, so embeddings from
+    /// different calls are not comparable. Do not batch across calls.
     #[serde(rename = "dynamic")]
     Dynamic,
 }
 /// Tokenizer output mapped onto a model input layer (`input_layout`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InputLayoutItemType {
-    /// Corresponds to the `input_ids` tensor.
     #[serde(rename = "input_ids")]
     InputIds,
-    /// Corresponds to the `attention_mask` tensor.
     #[serde(rename = "attention_mask")]
     AttentionMask,
-    /// Corresponds to the `token_type_ids` tensor.
     #[serde(rename = "token_type_ids")]
     TokenTypeIds,
-    /// `position_ids` tensor (RoPE models such as Qwen2).
+    /// RoPE models such as Qwen2.
     #[serde(rename = "position_ids")]
     PositionIds,
 }
 /// One entry in `input_layout`: order and type of a model input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputLayoutItem {
-    /// The type of input this layer expects (e.g., "input_ids").
     #[serde(rename = "type")]
     pub item_type: InputLayoutItemType,
 }
@@ -92,13 +86,11 @@ pub struct ModelOverview {
 /// Maps a JSON request key onto a model input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct InputMapping {
-    /// The key to look for in the incoming JSON payload.
     pub json_key: String,
 }
 /// Maps a model output onto a JSON response key, with optional pooling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OutputMapping {
-    /// The key to use for this output in the outgoing JSON response.
     pub json_key: String,
     /// Output layer name. `None` means the first tensor (index 0).
     #[serde(default)]
@@ -117,16 +109,13 @@ pub struct OutputMapping {
 /// The `executor` block in `ninference.hub.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ExecutorConfiguration {
-    /// The key that determines which executor implementation to use (e.g., "passthru").
+    /// Which executor to build. Empty means `passthru`.
     #[serde(default)]
     pub key: String,
-    /// A list defining how to map incoming JSON fields to the model's input tensors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<InputMapping>,
-    /// A list defining how to map the model's output tensors to the outgoing JSON response.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<OutputMapping>,
-    /// A key-value map for executor-specific parameters.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub params: HashMap<String, Value>,
 }
@@ -141,13 +130,9 @@ pub struct ModelConfiguration {
     pub backend: ModelBackend,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
-    /// A list of execution providers for ONNX Runtime to attempt to use, in order.
-    /// If empty, a sensible default (usually CPU) will be used.
-    /// Example: `["cuda", "cpu"]`
+    /// ONNX Runtime providers to try, in order. Empty leaves the runtime default (usually CPU).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_providers: Vec<ExecutionProvider>,
-    /// The quantization mode of the model.
-    /// Defaults to `None`.
     #[serde(default)]
     pub quantization: QuantizationMode,
     /// A key-value map for model-specific parameters, such as `input_layout`.

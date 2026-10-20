@@ -11,10 +11,9 @@ use std::sync::Arc;
 pub struct ModelPoolManager {
     pub config: ModelConfiguration,
     pub config_path: PathBuf,
-    /// Test seam: when set, the pool hands out clones of this model instead
-    /// of instantiating from configuration — the only way unit tests can
-    /// drive the REAL predict path (admission, deadline, watchdog) against a
-    /// scripted model. Compiled out of release builds.
+    /// Test seam: the pool clones this model instead of building from
+    /// configuration, so tests can drive admission, deadline and watchdog
+    /// against a scripted model. Compiled out of release builds.
     #[cfg(test)]
     pub test_model: Option<Arc<dyn Model>>,
 }
@@ -23,7 +22,6 @@ impl Manager for ModelPoolManager {
     type Type = Arc<dyn Model>;
     type Error = EngineError;
 
-    /// Creates a new `Model` instance for the pool.
     fn create(&self) -> impl Future<Output = Result<Self::Type, Self::Error>> + Send {
         log::debug!("Creating new model instance for pool: {}", self.config.name);
 

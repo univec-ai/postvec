@@ -77,17 +77,15 @@ impl ModelTarget {
     }
 }
 
-/// Resolve the model-command target for **read-only** commands (`ls`, `show`).
+/// Resolve the model-command target for read-only commands (`ls`, `show`).
 ///
-/// A live database session is preferred (effective GUCs, loaded state).
-/// It is not required: if peer authentication fails, the owned
-/// `99-postvec.conf` is enough to find the engine root or the remote
-/// endpoints. That is why `postvec model ls` does not need `sudo`.
+/// A live session is preferred but not required. If peer authentication
+/// fails, the owned snippet is enough to find the engine root. That is why
+/// `model ls` does not need `sudo`.
 ///
-/// Mutating commands must use [`resolve_target_for_mutation`]: a cluster
-/// pull/rm that proceeds without a login writes files as the invoking
-/// user and then cannot refresh `postvec.models`, after which `sudo`
-/// refuses the now-foreign-owned tree.
+/// Mutating commands must use [`resolve_target_for_mutation`]. Writing the
+/// tree as the invoking user and then failing to refresh leaves a tree
+/// `sudo` will refuse.
 pub async fn resolve_target(
     cli: &Cli,
     path: Option<&Path>,
@@ -96,11 +94,10 @@ pub async fn resolve_target(
     resolve_target_inner(cli, path, output, /*allow_snippet=*/ true).await
 }
 
-/// Resolve a target that will mutate the engine root or refresh SQL
-/// caches (`pull`, `upgrade`, `rm`, `activate`).
+/// Resolve a target that will mutate the engine root or refresh SQL caches.
 ///
-/// `--path` stays filesystem-only. A cluster target needs a live
-/// database session — the snippet fallback is for listing only.
+/// `--path` stays filesystem-only. A cluster target needs a live database
+/// session. The snippet fallback is for listing only.
 pub async fn resolve_target_for_mutation(
     cli: &Cli,
     path: Option<&Path>,
@@ -120,15 +117,14 @@ async fn resolve_target_inner(
         return Ok(ModelTarget::Path(ModelRoot::new(path)));
     }
     // An operator-supplied URI is an explicit authentication choice. Do not
-    // fall back to a local snippet that may belong to a different server —
-    // and do not let an image-baked environment override shadow it either.
+    // fall back to a local snippet that may belong to a different server,
+    // and do not let an image-baked environment override shadow it.
     if cli.database_url.is_some() {
         let context = Context::open(cli, output).await?;
         return target_from_live(context).await;
     }
-    // POSTVEC_PATH: same semantics as --path (pure filesystem
-    // management). The container images set it, which is what lets
-    // `docker exec <ctr> postvec model …` run flag-free.
+    // POSTVEC_PATH: same semantics as --path (filesystem only). Container
+    // images set it so `docker exec` can run `postvec model` without flags.
     if cli.cluster.is_none() && cli.pg_config.is_none() {
         if let Some(root) = crate::config::env_path_override(crate::config::ENGINE_ROOT_ENV)? {
             output.note(&format!(
@@ -397,23 +393,16 @@ pub async fn restore_and_prove(
     Ok(root.clear_swap(transaction)?)
 }
 
-/// Settle an interrupted `model upgrade` transaction before this command
-/// changes anything else. Every exclusive-lock holder calls this.
+/// Settle an interrupted `model upgrade` before this command changes
+/// anything else. Every exclusive-lock holder calls this.
 ///
 /// A confirmed transaction only has superseded copies to drop. An
-/// unconfirmed one means the replacement was never proven loadable, so the
-/// protocol runs in full: quiesce every recorded name (the engine may hold
-/// new bytes, or may hold nothing because the crash happened between the
-/// unload and the rename), restore the filesystem, reload the complete
-/// predecessor set, and clear the record last. If any of that cannot be
-/// proven, the record and every recoverable copy are retained and the
-/// command refuses: guessing here is what would lose the last good revision.
+/// unconfirmed one was never proven loadable: quiesce every recorded name,
+/// restore the filesystem, reload the predecessor set and clear the record
+/// last. If that cannot be proven, the record and every recoverable copy
+/// stay and the command refuses. Guessing would lose the last good revision.
 ///
-/// A `--path` target has no live engine to consult; the replacement's local
-/// extraction and descriptor checks already passed, and the publisher's load
-/// check is the upstream loadability gate, so recovery is the filesystem
-/// rollback alone and runtime compatibility stays unknown until a serving
-/// engine loads it.
+/// `--path` has no live engine. Recovery is the filesystem rollback alone.
 pub async fn recover_pending_swap(
     root: &ModelRoot,
     target: &ModelTarget,
@@ -517,10 +506,10 @@ pub fn resolve_unambiguous<'a>(
 
 /// Ownership gate for every command that changes a model's state.
 ///
-/// Package-owned content is refused unconditionally — a package upgrade
-/// rewrites the descriptor to whatever it ships, so a persisted flip would be
-/// a promise the CLI cannot keep. A directory with no receipt is refused
-/// because there is nothing to keep `--verify` truthful against.
+/// Package-owned content is refused. A package upgrade rewrites the
+/// descriptor, so a persisted flip is a promise the CLI cannot keep. A
+/// directory with no receipt is refused: `--verify` would have nothing to
+/// check.
 pub async fn require_cli_owned(
     model: &InstalledModel,
     verb: &str,
@@ -556,10 +545,9 @@ pub async fn require_cli_owned(
 /// An explicit `postvec.embedded_models` list naming this model must change
 /// before the model may be taken away.
 ///
-/// The engine's startup preflight refuses a listed root whose descriptor is
-/// disabled, and it refuses the whole initialization — so deactivating (or
-/// removing) a listed model without editing the list first is a cluster that
-/// will not bring its engine back on the next restart.
+/// Startup preflight refuses a listed root whose descriptor is disabled, and
+/// refuses the whole initialization. Taking a listed model away without
+/// editing the list first leaves a cluster whose engine will not return.
 pub fn refuse_if_on_allow_list(allow_list: &[String], name: &str, verb: &str) -> Result<()> {
     if !allow_list.iter().any(|listed| listed == name) {
         return Ok(());
@@ -585,15 +573,13 @@ pub fn refuse_if_on_allow_list(allow_list: &[String], name: &str, verb: &str) ->
 /// `Descriptor::derived_postvec_requires` emits exactly this string.
 const EMBED_BRIDGE: &str = "embed-bridge";
 
-/// The vector space an embed model produces, as `postvec.models` records it
-/// and `api/embed.rs` matches it: `COALESCE(target_model, name)`.
+/// The vector space an embed model produces, as `postvec.models` records it:
+/// `COALESCE(target_model, name)`.
 ///
-/// The two keys are genuinely different. `postvec.embedded_models` and an
-/// engine load request name the **directory**; the resolver matches the
-/// **declared** name, or the `target_model` alias when the descriptor sets
-/// one. Published registry models make all three agree, so this only shows up
-/// on an aliased or hand-built model — but reading it wrong there would let an
-/// aliased embed silently look like no route at all.
+/// `postvec.embedded_models` and a load request name the directory. The
+/// resolver matches the declared name, or `target_model` when set. Published
+/// models make those agree. Reading an alias as the directory would make a
+/// real route look like none.
 fn embed_space_of(model: &InstalledModel) -> &str {
     model
         .target_model
@@ -602,24 +588,14 @@ fn embed_space_of(model: &InstalledModel) -> &str {
         .unwrap_or(&model.dir_name)
 }
 
-/// The models the engine would actually hold, given an explicit
-/// `postvec.embedded_models` allow-list (empty means scan-load) and a set of
-/// names treated as already gone.
+/// The models the engine would actually hold. An empty allow-list means
+/// scan-load. `going_away` names are already gone.
 ///
-/// Enabled-on-disk is necessary but not sufficient. With an explicit list
-/// the engine loads only listed roots plus their dependency closure, so an
-/// enabled-but-unlisted converter serves nothing. Counting it as a route
-/// would silence the warning for the model that is actually serving the
-/// column.
-///
+/// Enabled-on-disk is not enough. An explicit list loads only listed roots
+/// plus their closure, so an enabled-but-unlisted converter serves nothing.
 /// A root whose closure contains a deactivated or absent model is dropped
-/// whole: `InferenceEngine::load_model` refuses a disabled config, so the
-/// load fails and the root is not resident either.
-///
-/// `going_away` is a parameter so the walk can drop parents that fail to
-/// load without those names. Subtracting names from an already-computed
-/// resident set would keep those parents looking resident, and a column
-/// they serve would lose its route with no warning.
+/// whole: the engine refuses that load. Subtracting names from an already
+/// computed resident set would leave those parents looking resident.
 fn resident_models<'a>(
     inventory: &'a [InstalledModel],
     allow_list: &[String],
@@ -630,9 +606,9 @@ fn resident_models<'a>(
         .map(|model| (model.dir_name.as_str(), model))
         .collect();
 
-    /// Add `name` and its dependency closure to `closure`; `false` if any
-    /// member is missing, deactivated or going away, in which case nothing is
-    /// added — the engine's load of the root would fail on that member.
+    /// Add `name` and its dependency closure to `closure`. Returns false, and
+    /// adds nothing, if any member is missing, deactivated or going away.
+    /// The engine's load of the root would fail on that member.
     fn visit(
         by_dir: &std::collections::BTreeMap<&str, &InstalledModel>,
         going_away: &[String],
@@ -693,19 +669,17 @@ fn resident_models<'a>(
 }
 
 /// Can the resident inventory still serve a column declared on `space`?
-/// Mirrors the extension's two-tier resolver (`api/embed.rs`):
+/// Mirrors the extension's two-tier resolver:
 ///
-/// 1. a direct embed model whose space **is** `space` — `COALESCE(target_model,
-///    name)`, not the directory name; or
-/// 2. a converter **into** `space` whose own source space is itself
-///    embeddable, routed through the `embed-bridge` executor.
+/// 1. a direct embed model whose space is `space`, via
+///    `COALESCE(target_model, name)`, not the directory name, or
+/// 2. a converter into `space` whose source space is itself embeddable,
+///    routed through `embed-bridge`.
 ///
-/// Matching a column only by `registry.model == NAME` — the obvious reading —
-/// is wrong in both directions. It misses the case this product exists for: a
-/// column on `openai-text-embedding-ada-002` is served by a *converter* and
-/// the bridge, neither of which is named `openai-text-embedding-ada-002`, so
-/// deactivating the converter would have broken search with no warning at all.
-/// And it over-warns when a second route into the same space survives.
+/// Matching only `registry.model == NAME` is wrong both ways. A column on
+/// `openai-text-embedding-ada-002` is served by a converter and the bridge,
+/// neither of which has that name. Deactivating the converter would break
+/// search with no warning. It also over-warns when a second route survives.
 fn space_is_servable(resident: &[&InstalledModel], space: &str) -> bool {
     let is = |model: &InstalledModel, kind: &str| model.model_type.as_deref() == Some(kind);
     let embeddable = |target: &str| {
@@ -726,25 +700,14 @@ fn space_is_servable(resident: &[&InstalledModel], space: &str) -> bool {
 }
 
 /// Every managed column that would lose its embedding route if `names`
-/// stopped serving, across every configured database, plus the databases
-/// whose registry could not be read.
+/// stopped serving, plus databases whose registry could not be read.
 ///
-/// The question is whether the column can still be embedded afterwards,
-/// evaluated against what the engine would actually hold with `names`
-/// removed. A column whose route was already missing is omitted: this
-/// command did not break it.
+/// Evaluated against what the engine would hold with `names` removed. A
+/// column whose route was already missing is omitted: this command did not
+/// break it. A database that cannot be inspected is unknown, never clean.
 ///
-/// Reuses the ordinary database inspection, which already tolerates an
-/// absent, unreachable or extension-less database, so there is one
-/// implementation of what `postvec.registry` says.
-///
-/// A database that cannot be inspected is reported as unknown. A silent
-/// "looked clean" is the failure this gate exists to prevent.
-///
-/// `registry.model` is the entry's declared model, so a column part-way
-/// through a `migrate()` still reads as its pre-migration space until
-/// finalization. That is the conservative direction: it warns about the
-/// model the column is still being served by.
+/// A column part-way through `migrate()` still reads as its pre-migration
+/// space until finalization. That warns about the model still serving it.
 pub async fn in_use_columns(
     target: &mut ModelTarget,
     names: &[String],
@@ -805,16 +768,15 @@ pub async fn in_use_columns(
                 continue;
             }
             // Every name going away that this column's route depended on gets
-            // the row, not just the first: when two equivalent routes are
-            // removed together neither breaks the space *alone*, and blaming
-            // one of them would leave the other's warning missing the column
-            // it is actually taking down.
+            // the row, not just the first. Two equivalent routes removed
+            // together: neither breaks the space alone, and blaming one would
+            // hide the column from the other's warning.
             let mut blamed: Vec<String> = without_each
                 .iter()
                 .filter(|(name, without)| {
                     // Either this name alone breaks the space, or it takes part
-                    // in the route at all — the second test is what attributes
-                    // the column to *every* removed leg when no single one is
+                    // in the route at all. The second test attributes the
+                    // column to every removed leg when no single one is
                     // solely responsible.
                     !space_is_servable(without, &entry.model)
                         || provides_route(&before, name, &entry.model)
@@ -873,8 +835,8 @@ fn provides_route(resident: &[&InstalledModel], name: &str, space: &str) -> bool
 
 /// Attach one `AcknowledgeInUse` step per affected model, in `names` order.
 ///
-/// A model with no columns *and* no unreadable database is simply absent from
-/// the plan: nothing declares it, and there is nothing to acknowledge.
+/// A model with no columns and no unreadable database is absent from the
+/// plan. There is nothing to acknowledge.
 pub fn push_in_use_steps(
     plan: &mut crate::plan::Plan,
     names: &[String],
@@ -1037,9 +999,8 @@ mod tests {
 
     /// Residency is not the `enabled` bit. With an explicit
     /// `postvec.embedded_models`, the engine loads listed roots plus their
-    /// dependency closure — so an enabled-but-unlisted converter serves
-    /// nothing, and counting it as a route would silence the warning for the
-    /// converter that really is serving the column.
+    /// dependency closure. An enabled-but-unlisted converter serves nothing.
+    /// Counting it as a route would silence the real warning.
     #[test]
     fn an_unlisted_model_is_not_a_route_even_when_enabled_on_disk() {
         let mut serving = model(
@@ -1076,9 +1037,9 @@ mod tests {
             "scan mode really does have a second route"
         );
 
-        // Explicit list: only the listed converter (and its closure) is
-        // resident, so removing it takes the space down — and the unlisted
-        // twin must not silence that.
+        // Explicit list: only the listed converter and its closure are
+        // resident. Removing it takes the space down. The unlisted twin must
+        // not silence that.
         let listed = resident_models(&inventory, &["convert-listed".to_string()], &[]);
         assert!(space_is_servable(&listed, space));
         assert!(
@@ -1121,20 +1082,19 @@ mod tests {
         }
     }
 
-    /// The case a subtraction misses: deactivating an engine `dependencies`
-    /// member that is neither the converter's source space nor `embed-bridge`.
+    /// Deactivating an engine `dependencies` member that is neither the
+    /// converter's source space nor `embed-bridge`.
     ///
-    /// Dropping only the named model leaves the parent looking resident, so the
-    /// column it serves keeps a route on paper — but `load_model` refuses the
-    /// disabled dependency, the parent's executor build fails, and after a
-    /// restart nothing serves that space. Walking residency a second time with
-    /// the name treated as gone is what makes the warning fire.
+    /// Dropping only the named model leaves the parent looking resident, so
+    /// the column keeps a route on paper. `load_model` refuses the disabled
+    /// dependency and the parent stops serving. Walk residency again with the
+    /// name treated as gone so the warning fires.
     #[test]
     fn deactivating_a_plain_dependency_takes_its_parent_down_too() {
         let mut converter = model("converter", "convert", Some("embed-a"), Some("space"));
-        // A tokenizer/companion the converter loads but that is not its source
-        // space and not the bridge — the shape `postvec_requires` does not
-        // derive, so only the engine's `dependencies` list knows about it.
+        // A tokenizer the converter loads that is not its source space and
+        // not the bridge. `postvec_requires` does not derive that shape.
+        // Only the engine's `dependencies` list knows about it.
         converter.dependencies = vec!["companion".into(), "embed-a".into(), EMBED_BRIDGE.into()];
         let inventory = [
             model("embed-a", "embed", None, None),
@@ -1169,10 +1129,10 @@ mod tests {
         );
     }
 
-    /// The resolver keys an embed model by `COALESCE(target_model, name)`, not
-    /// by its directory. An aliased embed would otherwise read as no route at
-    /// all — and the directory is what a load request and the allow-list use,
-    /// so the two keys have to stay distinct.
+    /// The resolver keys an embed model by `COALESCE(target_model, name)`,
+    /// not by its directory. An aliased embed would otherwise read as no
+    /// route. The directory is what a load request and the allow-list use,
+    /// so the two keys stay distinct.
     #[test]
     fn an_aliased_embed_serves_the_space_it_declares() {
         let mut aliased = model("vendor-dir-name", "embed", None, Some("public-space"));
@@ -1191,8 +1151,8 @@ mod tests {
     }
 
     /// Removing two equivalent routes at once: neither breaks the space
-    /// *alone*, so a first-match blame would leave one model's warning missing
-    /// the column it is really taking down. Both are attributed.
+    /// alone, so blaming the first would hide the column from the other
+    /// warning. Both are attributed.
     #[test]
     fn removing_two_equivalent_routes_blames_both() {
         let inventory = [
@@ -1205,7 +1165,7 @@ mod tests {
         let before = resident_models(&inventory, &[], &[]);
         assert!(space_is_servable(&before, "space"));
 
-        // Neither converter alone breaks it…
+        // Neither converter alone breaks it.
         for one in ["convert-a", "convert-b"] {
             let after: Vec<&InstalledModel> = before
                 .iter()
@@ -1215,7 +1175,7 @@ mod tests {
             assert!(space_is_servable(&after, "space"));
             assert!(provides_route(&before, one, "space"));
         }
-        // …but together they do, and both are named as providers.
+        // Together they do, and both are named as providers.
         let after: Vec<&InstalledModel> = before
             .iter()
             .copied()
@@ -1230,7 +1190,7 @@ mod tests {
         assert!(!provides_route(&before, "embed-a", "other-space"));
     }
 
-    /// A direct embed model is a route on its own — no bridge needed — and a
+    /// A direct embed model is a route on its own. No bridge is needed. A
     /// column on a space nothing provides is unservable either way, so this
     /// command is not what broke it.
     #[test]
@@ -1497,7 +1457,7 @@ mod recovery_tests {
         );
     }
 
-    /// A mixed result — some unloaded, one failing — fails the whole batch.
+    /// A mixed result, some unloaded and one failing, fails the whole batch.
     #[tokio::test]
     async fn a_partial_unload_fails_the_batch() {
         let engine = FakeEngine::start();
@@ -1519,10 +1479,10 @@ mod recovery_tests {
         assert!(err.to_string().contains("no result"), "{err}");
     }
 
-    /// A crash after `begin_swap` but *before* the first rename leaves every
-    /// predecessor on disk — and, if the unload had already happened, out of
-    /// memory. Recovery must reload the complete recorded set, not just the
-    /// names that happened to be parked.
+    /// A crash after `begin_swap` but before the first rename leaves every
+    /// predecessor on disk and, if the unload already happened, out of
+    /// memory. Recovery reloads the complete recorded set, not just the
+    /// names that were parked.
     #[tokio::test]
     async fn recovery_reloads_every_recorded_name_even_when_none_were_parked() {
         let (_guard, root) = root_fixture();
@@ -1583,9 +1543,9 @@ mod recovery_tests {
         assert!(root.pending_swap().unwrap().is_some());
     }
 
-    /// Rollback order: everything that could hold new bytes is unloaded
-    /// *before* the files it refers to are restored, so the engine can never
-    /// be left serving bytes that rollback removed.
+    /// Rollback unloads everything that could hold new bytes before restoring
+    /// the files those bytes came from. The engine must not serve bytes that
+    /// rollback removed.
     #[tokio::test]
     async fn rollback_unloads_before_restoring() {
         let (_guard, root) = root_fixture();
@@ -1658,15 +1618,9 @@ mod recovery_tests {
         assert!(root.pending_swap().unwrap().is_none());
     }
 
-    // ---------------------------------------------------------------------
     // Mixed batches: a replacement and a fresh dependency in one command.
-    //
-    // These are the composition cases the earlier protocol tests could not
-    // reach. The replacement half could pass every one of them while fresh
-    // installs sat outside the transaction entirely, which is exactly how a
-    // crash could leave a fresh model installed and resident with recovery
-    // unable to name it.
-    // ---------------------------------------------------------------------
+    // Both ride the same transaction. A fresh install outside it is a crash
+    // recovery cannot name.
 
     fn mixed_batch() -> Vec<SwapModel> {
         vec![
@@ -1685,10 +1639,10 @@ mod recovery_tests {
         ]
     }
 
-    /// The blocker, end to end: a crash during the batched load leaves the
-    /// replacement swapped in *and* the fresh dependency installed. Recovery
-    /// must quiesce **both** names, restore the predecessor, **remove** the
-    /// fresh install, and reload only the predecessor.
+    /// A crash during the batched load can leave the replacement swapped in
+    /// and the fresh dependency installed. Recovery must quiesce both names,
+    /// restore the predecessor, remove the fresh install and reload only the
+    /// predecessor.
     #[tokio::test]
     async fn recovery_removes_a_fresh_install_and_restores_the_replacement() {
         let (_guard, root) = root_fixture();
@@ -1725,7 +1679,7 @@ mod recovery_tests {
         assert!(root.pending_swap().unwrap().is_none(), "record not cleared");
 
         let seen = engine.seen();
-        // Both names quiesced — the fresh one is resident-capable too.
+        // Both names quiesced. The fresh one is resident-capable too.
         assert_eq!(seen[0].0, "unload");
         assert_eq!(seen[0].1, vec!["replaced".to_string(), "fresh".to_string()]);
         // Only the predecessor is reloaded: "fresh" no longer exists on disk,
@@ -1734,11 +1688,10 @@ mod recovery_tests {
         assert_eq!(seen[1].1, vec!["replaced".to_string()]);
     }
 
-    /// The post-rename `fsync` case, expressed as the property that matters:
-    /// the record — not in-process bookkeeping — is what makes a landed fresh
-    /// install removable. `install_staged` can return `Err` from a `fsync`
-    /// *after* the rename, so the caller may never learn the path; recovery
-    /// must remove it anyway.
+    /// The post-rename `fsync` case. The record, not in-process bookkeeping,
+    /// is what makes a landed fresh install removable. `install_staged` can
+    /// fail a `fsync` after the rename, so the caller may never learn the
+    /// path. Recovery must remove it anyway.
     #[tokio::test]
     async fn a_landed_fresh_install_is_removed_even_if_the_caller_never_saw_it() {
         let (_guard, root) = root_fixture();
@@ -1750,8 +1703,8 @@ mod recovery_tests {
                 reload_on_rollback: false,
             }])
             .unwrap();
-        // Land it exactly as a successful rename would, without telling the
-        // caller — the state a post-rename fsync failure leaves behind.
+        // Land it as a successful rename would, without telling the caller.
+        // That is the state a post-rename fsync failure leaves behind.
         let fresh = root.models_dir().join("onnx-runtime").join("fresh");
         fs::create_dir_all(&fresh).unwrap();
         fs::write(fresh.join("marker"), "fresh").unwrap();
@@ -1777,9 +1730,8 @@ mod recovery_tests {
         );
     }
 
-    /// A crash *before* any fresh entry landed. Recovery must treat the
-    /// absence as an ordinary no-op — the record describes intent, not proof
-    /// of arrival — and still clear the record.
+    /// A crash before any fresh entry landed. Treat the absence as a no-op.
+    /// The record describes intent, not proof of arrival. Still clear it.
     #[tokio::test]
     async fn recovery_is_a_no_op_when_the_fresh_install_never_landed() {
         let (_guard, root) = root_fixture();

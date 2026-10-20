@@ -26,7 +26,6 @@ use std::sync::Mutex;
 pub struct OnnxRuntimeModel {
     pub base: BaseModel,
     session: Mutex<Session>,
-    /// A pre-computed overview of the model's input and output layers.
     overview: ModelOverview,
 }
 
@@ -67,28 +66,19 @@ impl OnnxRuntimeModel {
             .zip(ort_values)
             .collect();
 
-        // Lock the session to get mutable access for the `run` call.
-        // Recover from poisoning rather than panicking: ort's `run` reports
-        // native failures as `Result` and does not unwind through the C ABI,
-        // so a panic while the lock is held can only originate in Rust-side
-        // output conversion *after* the native run returned — the session
-        // itself is still consistent. Propagating the poison would instead
-        // turn one conversion panic into a permanently dead pooled instance
-        // that nothing evicts.
+        // Recover from a poisoned mutex. `run` returns native failures as
+        // `Result` and does not unwind through the C ABI, so a panic under
+        // the lock is Rust-side conversion after the session is consistent.
+        // Leaving the instance poisoned would kill a pooled model nothing evicts.
         let mut session_guard = self
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // Execute inference. With a deadline, the run carries `RunOptions`
-        // and a watchdog task (on the ambient tokio runtime) calls
-        // `terminate()` when the deadline passes — onnxruntime then stops at
-        // the next node boundary and the call returns an error, releasing
-        // the model lease and any admission permit. The watchdog is aborted
-        // on normal completion. `RunOptions<NoSelectedOutputs>` is
-        // Send + Sync, so sharing it with the watchdog is sound.
-        // The RunOptions must outlive the returned SessionOutputs (the ort
-        // API ties their lifetimes), so it is hoisted out of the branch.
+        // With a deadline, a watchdog on the bound's runtime calls `terminate()`
+        // so onnxruntime stops at the next node and the lease comes back.
+        // Abort it if the run finishes first. `RunOptions` must outlive
+        // `SessionOutputs` (ort ties their lifetimes), so it is hoisted.
         let options = match bound {
             Some(_) => Some(std::sync::Arc::new(
                 ort::session::RunOptions::new()
@@ -96,10 +86,9 @@ impl OnnxRuntimeModel {
             )),
             None => None,
         };
-        // The watchdog runs on the runtime the bound CARRIES — this thread
-        // may be a Rayon worker (the embedding executor's pool) with no
-        // ambient tokio context, where `Handle::try_current()` would fail
-        // and silently degrade to an unbounded run.
+        // Schedule the watchdog on the runtime the bound carries. This
+        // thread may be a Rayon worker with no ambient tokio context, and
+        // `Handle::try_current()` would leave the run unbounded.
         let watchdog = match (bound, &options) {
             (Some(b), Some(options)) => {
                 let opts = options.clone();
@@ -126,18 +115,13 @@ impl OnnxRuntimeModel {
         }
         let ort_outputs = run_result?;
 
-        // Convert the `ort::value::Value`s from `SessionOutputs` back into our `GenericTensor`.
         let generic_outputs = ort_outputs
             .into_iter()
             .map(|(_name, ort_value)| -> Result<GenericTensor, ModelError> {
-                // `query()` converts *every* model output, including ones a given
-                // executor won't select (e.g. a quantised `pooler_output_int8`
-                // sitting next to a float `pooler_output`). `TensorValue` only
-                // carries Float32/Int64, so each ONNX element type is widened into
-                // one of those: float-like -> Float32, integer/bool -> Int64.
-                // Downstream embedding extraction already casts Int64 -> f32
-                // (shared::vectors::tensor), so a selected int8 output still
-                // yields a correct vector.
+                // Convert every output, including ones this executor will not
+                // select. `TensorValue` only holds Float32 and Int64, so
+                // float-like types widen to Float32 and integer or bool types
+                // widen to Int64. Embedding extraction casts Int64 to f32.
                 macro_rules! try_extract {
                     ($t:ty => $variant:ident as $cast:ty) => {
                         if let Ok(view) = ort_value.try_extract_array::<$t>() {
@@ -253,9 +237,9 @@ impl OnnxRuntimeModel {
         session_builder =
             session_builder.with_optimization_level(GraphOptimizationLevel::Level3)?;
 
-        // Shared hosts (postvec embedded) set this before the first load to
-        // bound each session's intra-op pool and turn off onnxruntime's
-        // spin-wait. Standalone nodes leave onnxruntime's defaults.
+        // A shared host sets this before the first load to bound each
+        // session's intra-op pool and turn off spin-wait. Standalone nodes
+        // leave the defaults.
         if let Some(policy) = crate::config::session_thread_policy() {
             log::info!(
                 "Applying host session-thread policy to '{}': intra_op_threads={}, \
@@ -348,9 +332,8 @@ impl Model for OnnxRuntimeModel {
         self.run_bounded(inputs, None)
     }
 
-    /// Terminate the native run at the deadline so the model lease and
-    /// admission permit come back. Without a tokio runtime the watchdog
-    /// cannot be scheduled and this falls back to unbounded `query`.
+    /// Stop the native run at the deadline so the model lease and admission
+    /// permit come back. `bound: None` is an ordinary unbounded query.
     fn query_with_deadline(
         &self,
         inputs: &[GenericTensor],
@@ -387,8 +370,8 @@ impl Model for OnnxRuntimeModel {
     }
 }
 
-/// ONNX `TensorProto.DataType` code for `LayerOverview.data_type`. Metadata
-/// only; nothing in this crate branches on it, so the full set is mapped.
+/// ONNX `TensorProto.DataType` code for `LayerOverview.data_type`.
+/// Metadata only: nothing here branches on it.
 fn ort_type_to_i32(dtype: TensorElementType) -> Result<i32, ModelError> {
     use ort_sys::ONNXTensorElementDataType as T;
     let sys_type: ort_sys::ONNXTensorElementDataType = dtype.into();
@@ -409,8 +392,7 @@ fn ort_type_to_i32(dtype: TensorElementType) -> Result<i32, ModelError> {
         T::ONNX_TENSOR_ELEMENT_DATA_TYPE_COMPLEX64 => Ok(14),
         T::ONNX_TENSOR_ELEMENT_DATA_TYPE_COMPLEX128 => Ok(15),
         T::ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16 => Ok(16),
-        // Exotic / not-yet-standardised codes (UNDEFINED, FP8, INT4, …): keep the
-        // explicit error so an unexpected type is surfaced rather than mislabelled.
+        // Unknown codes (UNDEFINED, FP8, INT4): error instead of mislabelling them.
         _ => Err(ModelError::NotImplemented(
             format!("Conversion for ONNX data type {:?} to i32", dtype),
             "onnx-runtime".to_string(),

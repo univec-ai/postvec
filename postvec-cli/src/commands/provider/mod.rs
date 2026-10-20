@@ -146,12 +146,11 @@ impl ProviderTarget {
     }
 }
 
-/// The provider name is a **file stem** that every command joins onto the
-/// providers.d path, so it has to be validated before it becomes one —
-/// `provider rm ../../etc/something` under `sudo` would otherwise delete a
-/// file outside the directory entirely. The charset is the loader's own
-/// (`config::validate_model_name`), which also keeps a name from colliding
-/// with the `.tmp` sibling `write_secret_file` uses.
+/// The provider name is a file stem that every command joins onto the
+/// providers.d path, so it is validated before it becomes one. Otherwise
+/// `provider rm ../../etc/something` under `sudo` would delete a file
+/// outside the directory. The charset is the loader's own, which also keeps
+/// a name from colliding with the `.tmp` sibling `write_secret_file` uses.
 pub fn validate_provider_name(name: &str, flag: &str) -> Result<()> {
     if name.is_empty() || name.len() > 64 {
         return Err(CliError::usage(format!("{flag} must be 1..=64 characters")));
@@ -173,9 +172,9 @@ pub fn validate_provider_name(name: &str, flag: &str) -> Result<()> {
     Ok(())
 }
 
-/// Regular files in `<providers.d parent>/keys/` — where `provider add
-/// univec --api-key-from-login` copies the login key and where operator
-/// key files conventionally live. Teardown reports them and retains them.
+/// Regular files in `<providers.d parent>/keys/`, where `provider add univec
+/// --api-key-from-login` copies the login key and where operator key files
+/// live. Teardown reports them and retains them.
 pub fn sibling_key_files(providers_dir: &Path) -> Vec<PathBuf> {
     let Some(keys) = providers_dir.parent().map(|p| p.join("keys")) else {
         return Vec::new();
@@ -360,13 +359,9 @@ fn target_from_settings(
     }
 }
 
-// ---- providers.d file editing (CLI side) --------------------------------
-//
-// The serve-path parser (0600 refusal, secret resolution, validation) lives
-// in the providers crate; this side edits files as TOML documents so
-// unknown-but-valid future fields survive a `provider add` to an existing
-// file. Comments do not survive a rewrite — the header says the file is
-// CLI-managed.
+// The serve-path parser lives in the providers crate. This side edits files
+// as TOML documents so unknown-but-valid fields survive a `provider add`.
+// Comments do not survive a rewrite. The header says the file is CLI-managed.
 
 /// A providers.d file as an editable TOML document.
 pub struct ProviderFileDoc {
@@ -383,11 +378,10 @@ impl ProviderFileDoc {
         use std::io::Read;
         use std::os::unix::fs::OpenOptionsExt;
 
-        // `O_NOFOLLOW`, because this path is about to be *rewritten* by a
-        // root-run command: following a symlink here would make the rename
-        // below land somewhere the operator did not name. Bounded for the
-        // same reason the loader bounds it — a connector file is a few dozen
-        // lines.
+        // `O_NOFOLLOW`, because a root-run command is about to rewrite this
+        // path. Following a symlink would make the rename land somewhere the
+        // operator did not name. Bounded like the loader: a connector file
+        // is a few dozen lines.
         let file = match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -413,12 +407,10 @@ impl ProviderFileDoc {
             .metadata()
             .map_err(|e| CliError::precondition(e.to_string()))?;
         let mut raw = String::new();
-        // `take(limit + 1)`, exactly as the loader's `read_private` does. A
-        // `take(limit)` followed by `len() > limit` is an unreachable check:
-        // the read stops at the limit, so an oversized file arrived here as a
-        // silently truncated prefix — which then parsed, and which a
-        // subsequent `add` would have *rewritten*, discarding the tail of the
-        // operator's file without a word.
+        // `take(limit + 1)`, as the loader's `read_private` does. A
+        // `take(limit)` followed by `len() > limit` never fires: the read
+        // stops at the limit, so an oversized file arrives as a truncated
+        // prefix. A later `add` would then rewrite the file and drop the tail.
         file.take(providers::config::MAX_FILE_BYTES + 1)
             .read_to_string(&mut raw)
             .map_err(|e| CliError::precondition(format!("cannot read {}: {e}", path.display())))?;
@@ -458,10 +450,9 @@ impl ProviderFileDoc {
             .unwrap_or(true)
     }
 
-    /// Every field this file uses as a *file* secret source. The loader
-    /// refuses each of them at 0600, so every one of them is worth checking
-    /// before the host does — including the AWS SigV4 pair, which is easy to
-    /// forget precisely because `provider add` never writes it.
+    /// Every field this file uses as a file secret source. The loader refuses
+    /// each of them unless it is 0600, so check them before the host does.
+    /// That includes the AWS SigV4 pair, which `provider add` never writes.
     pub fn secret_file_fields(&self) -> Vec<(&'static str, String)> {
         [
             "api_key_file",
@@ -479,7 +470,7 @@ impl ProviderFileDoc {
         .collect()
     }
 
-    /// Every field this file uses as an *environment* secret source.
+    /// Every field this file uses as an environment secret source.
     pub fn secret_env_fields(&self) -> Vec<(&'static str, String)> {
         [
             "api_key_env",
@@ -517,8 +508,8 @@ impl ProviderFileDoc {
     }
 
     /// Typed `[[models]]` entries, via the loader's own schema. Entries the
-    /// schema refuses (hand-edited files) are skipped — callers that need a
-    /// lenient view keep using [`Self::models`].
+    /// schema refuses are skipped. Callers that need a lenient view keep
+    /// using [`Self::models`].
     pub fn descriptors(&self) -> Vec<providers::config::ModelDescriptor> {
         self.value
             .get("models")
@@ -532,15 +523,14 @@ impl ProviderFileDoc {
             .unwrap_or_default()
     }
 
-    /// `(public name, ROUTE model id)` pairs, in file order — the identity
-    /// [`providers::config::ServedBy`] carries. An embed entry's route id IS
-    /// its `provider_model_id`; a converter's folds in its provider-side
-    /// pair, dims and postvec-side spaces via the same `route_model_id`
-    /// derivation the loader and the serving descriptor use — one
-    /// derivation, or `provider rm`'s no-host conservative view would report
-    /// a partial removal as a handoff to its own file. Entries the schema
-    /// refuses fall back to the raw pair, exactly what [`Self::models`]
-    /// reports.
+    /// `(public name, route model id)` pairs, in file order. That is the
+    /// identity [`providers::config::ServedBy`] carries. An embed entry's
+    /// route id is its `provider_model_id`. A converter's folds in its
+    /// provider-side pair, dims and postvec-side spaces via the same
+    /// `route_model_id` the loader and the serving descriptor use. One
+    /// derivation, or `provider rm` with no host would report a partial
+    /// removal as a handoff to its own file. Entries the schema refuses fall
+    /// back to the raw pair [`Self::models`] reports.
     pub fn route_models(&self) -> Vec<(String, String)> {
         let typed: std::collections::BTreeMap<String, String> = self
             .descriptors()
@@ -556,7 +546,7 @@ impl ProviderFileDoc {
             .collect()
     }
 
-    /// The key source, for `ls`/doctor display — never a value.
+    /// The key source, for `ls` and doctor. Never a value.
     pub fn key_source(&self) -> String {
         let field = |name: &str| self.value.get(name).and_then(toml::Value::as_str);
         if let Some(path) = field("api_key_file") {
@@ -594,9 +584,8 @@ impl ProviderFileDoc {
             .expect("a parsed TOML document is a table")
     }
 
-    /// A hand-edited `models = 3` is an operator mistake, not an invariant
-    /// violation — so it is a refusal with the file named, never a panic in a
-    /// command an operator ran under `sudo`.
+    /// A hand-edited `models = 3` is an operator mistake, not a panic. Refuse
+    /// with the file named. This runs under `sudo`.
     pub fn push_model(&mut self, entry: toml::Value) -> Result<()> {
         let path = self.path.clone();
         let models = self
@@ -691,11 +680,10 @@ impl ProviderFileDoc {
             )
         };
         let enabled = providers::config::validate_str(&body, &label).map_err(refuse)?;
-        // The file can be fine and the *directory* still refused — over the
+        // The file can be fine and the directory still refused: over the
         // file, model or concurrency ceilings, or a name another file already
-        // owns — and then the whole gateway comes up empty at the next
-        // restart. Checked against the directory as it would be after this
-        // write.
+        // owns. The whole gateway then comes up empty at the next restart.
+        // Checked against the directory as it would be after this write.
         if let Some(dir) = self.path.parent() {
             providers::config::validate_prospective_dir(dir, &self.path, &body).map_err(|p| {
                 CliError::precondition(format!(
@@ -981,13 +969,12 @@ pub fn ensure_private_dir(dir: &Path, owner: Option<FileOwner>) -> Result<bool> 
         }
         anchor = candidate.parent();
     }
-    // Parents (`/etc/postvec`) are 0755, not 0700: only the leaf holds
+    // Parents (`/etc/postvec`) are 0755, not 0700. Only the leaf holds
     // credentials, and a 0700 `/etc/postvec` would hide unrelated files.
     //
-    // Explicitly 0755, because `create_dir_all` honours the umask — on a
-    // umask-002 host it produces a group-writable parent, and the loader
-    // refuses a providers.d whose ancestor can be replaced. postvec would
-    // otherwise create a directory its own serving host then rejects.
+    // Explicitly 0755, because `create_dir_all` honours the umask. On a
+    // umask-002 host that produces a group-writable parent, and the loader
+    // refuses a providers.d whose ancestor can be replaced.
     let mut missing: Vec<&Path> = Vec::new();
     let mut cursor = dir.parent();
     while let Some(ancestor) = cursor {
@@ -1133,11 +1120,11 @@ impl ApprovedFile {
         }
     }
 
-    /// Whether `path` (opened without following links) is still this
-    /// file: same identity, still a regular singly-linked private file
-    /// with the approved mode and owner, same length and digest. Any
-    /// change — a `chmod`, a `chown`, an added hard link, an edit — makes
-    /// it a file this command did not approve.
+    /// Whether `path` (opened without following links) is still this file:
+    /// same identity, still a regular singly-linked private file with the
+    /// approved mode and owner, same length and digest. A `chmod`, a `chown`,
+    /// an added hard link or an edit makes it a file this command did not
+    /// approve.
     pub fn still_is(&self, path: &Path) -> Result<bool> {
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -1180,12 +1167,12 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }
 
-/// Where an install left the filesystem when it failed — a durability
+/// Where an install left the filesystem when it failed. A durability
 /// record, not a summary. "Not applied" means the destination is exactly
-/// as it was *and* that state is crash-durable unless `sync_error` says
-/// otherwise; "applied" means the new secret is at the destination.
-/// `residue` / `displaced` name credential material left at a sibling
-/// path; `sync_error` is the directory sync that failed, verbatim.
+/// as it was and that state is crash-durable unless `sync_error` says
+/// otherwise. "Applied" means the new secret is at the destination.
+/// `residue` and `displaced` name credential material left at a sibling
+/// path. `sync_error` is the directory sync that failed, verbatim.
 #[derive(Debug)]
 pub enum InstallState {
     NotApplied {
@@ -1373,15 +1360,14 @@ fn sync_after(point: &str, dir: &Path, changed: &Path) -> Result<()> {
     sync_directory(dir, changed)
 }
 
-/// [`write_secret_file`] bound to the state a preflight approved: the
+/// [`write_secret_file`] bound to the state a preflight approved. The
 /// destination is taken over only if it is still absent, or still exactly
-/// the approved file. Nothing between preflight and this call — an
-/// operator, the inference account, another tool — can make this command
-/// replace a file it never inspected. Returns the approval token of the
-/// installed file, which is what any later restore must be bound to.
+/// the approved file. Nothing between preflight and this call can make this
+/// command replace a file it never inspected. Returns the approval token of
+/// the installed file, which any later restore must be bound to.
 //
-// The error carries the installed file's token on purpose: a caller must
-// be able to bind a rollback to it. Boxing it would only move the bytes.
+// The error carries the installed file's token so a caller can bind a
+// rollback to it. Boxing it would only move the bytes.
 #[allow(clippy::result_large_err)]
 pub fn install_secret_file(
     path: &Path,
@@ -1593,10 +1579,10 @@ fn stage_secret_file(
             )))
         })?;
 
-    // Everything below acts on the **descriptor**, never on the path, and in
-    // this order: content, then metadata, then one sync that covers both.
-    // Doing chmod/chown by path after the sync left a window where the file
-    // could be replaced, and left the metadata unsynced.
+    // Everything below acts on the descriptor, never on the path: content,
+    // then metadata, then one sync that covers both. chmod or chown by path
+    // after the sync would leave a window where the file could be replaced,
+    // and would leave the metadata unsynced.
     let prepared = (|| -> std::io::Result<std::fs::Metadata> {
         failpoint("stage-write")?;
         file.write_all(body)?;
@@ -1658,9 +1644,9 @@ fn chown_if_root(path: &Path, owner: Option<FileOwner>) -> Result<()> {
         .map_err(|e| CliError::apply(format!("cannot chown {}: {e}", path.display())))
 }
 
-/// Refuse a referenced secret file that is missing or broader than 0600 —
-/// the serve-path loader would refuse it too, so failing here is the same
-/// rule applied earlier, with a better message.
+/// Refuse a referenced secret file that is missing or broader than 0600.
+/// The serve-path loader refuses it too. Failing here is the same rule,
+/// earlier, with a better message.
 pub fn require_private_secret_file(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let meta = std::fs::symlink_metadata(path).map_err(|e| {
@@ -1692,12 +1678,9 @@ const MAX_SECRET_BYTES: u64 = 16 * 1024;
 
 /// Read a referenced key file for the verification probe.
 ///
-/// One `O_NOFOLLOW` open, then every check on the resulting descriptor, then
-/// a bounded read from that same descriptor — the shape the serving host
-/// uses, and for the same reason. `require_private_secret_file` followed by a
-/// separate `read_to_string(path)` asked about one file and read another, and
-/// this runs as root: winning that race means root reads a file the operator
-/// did not name.
+/// One `O_NOFOLLOW` open, then every check on that descriptor, then a
+/// bounded read from the same descriptor. This runs as root. A second open
+/// by path could read a file the operator did not name.
 pub fn read_secret_file(path: &Path) -> Result<String> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -1767,8 +1750,8 @@ pub fn read_secret_file(path: &Path) -> Result<String> {
 }
 
 /// Resolve the secret a provider file records, for the verification probe.
-/// An `_env` source resolves from *this* shell — the natural place a
-/// verifying operator has the key; the serving host resolves its own copy.
+/// An `_env` source resolves from this shell, where a verifying operator
+/// has the key. The serving host resolves its own copy.
 pub fn resolve_doc_secret(doc: &ProviderFileDoc) -> Result<String> {
     let field = |name: &str| {
         doc.value
@@ -1806,14 +1789,9 @@ pub fn resolve_doc_secret(doc: &ProviderFileDoc) -> Result<String> {
 /// One live single-input embed. Costs a paid API call.
 ///
 /// Shared by `provider add` and `provider test` so the two cannot disagree
-/// about what a good answer looks like — `test` had its own copy that
-/// accepted "the first vector, whatever it is", and would therefore report
-/// success for a response the serving gateway rejects.
-///
-/// The response contract is the serving gateway's, applied here: **exactly
-/// one** vector, reported for input `0`, non-empty. Accepting "the first
-/// vector, whatever it is" meant the probe passed against a provider whose
-/// response was already the shape that would dead-letter every batch later.
+/// about a good answer. The response contract is the serving gateway's:
+/// exactly one vector, reported for input `0`, non-empty. Anything else is
+/// a failure. The gateway would dead-letter that shape later.
 pub async fn probe_one(
     config: &providers::ProviderConfig,
     id: &str,
@@ -1821,10 +1799,9 @@ pub async fn probe_one(
     timeout: std::time::Duration,
 ) -> Result<u32> {
     // Before spending anything: the loader's own per-model rule. The factory
-    // knows nothing about per-model contracts, so without this a descriptor
-    // naming a Gemini model postvec cannot serve — or a Cohere width the
-    // model does not produce — was probed, billed, and only then refused at
-    // the write.
+    // knows nothing about per-model contracts. Without this, a descriptor
+    // naming a model postvec cannot serve would be probed and billed, then
+    // refused at the write.
     providers::config::validate_model_for_provider(&config.provider, id, declared_dim).map_err(
         |e| {
             CliError::precondition(format!("{id}: {e}"))
@@ -1875,12 +1852,10 @@ pub async fn probe_one(
 /// One live single-vector conversion. Costs a paid API call.
 ///
 /// The convert sibling of [`probe_one`], shared by `provider add` and
-/// `provider test` for the same reason those share the embed probe. The
-/// response contract is the serving gateway's, applied here: exactly one
-/// vector, non-empty; its width is the measured target dimension the caller
-/// compares (or patches) against the declared one. The probe input is a unit
-/// basis vector — finite and non-zero, because a zero vector cannot survive
-/// the re-normalisation some conversion pipelines apply.
+/// `provider test`. The response contract is the serving gateway's: exactly
+/// one non-empty vector. Its width is what the caller compares against the
+/// declared dimension. The probe input is a unit basis vector, finite and
+/// non-zero, because a zero vector cannot survive some pipelines.
 pub async fn probe_convert_one(
     config: &providers::ProviderConfig,
     model: &providers::config::ModelDescriptor,
@@ -1934,7 +1909,6 @@ pub async fn probe_convert_one(
     Ok(vectors[0].len() as u32)
 }
 
-// ---- Reload client -------------------------------------------------------
 
 /// What `POST /admin/providers/reload` reported.
 #[derive(Debug, Deserialize)]
@@ -1985,9 +1959,9 @@ pub async fn post_reload(listen: &str, timeout: std::time::Duration) -> Result<R
         .ok_or_else(|| CliError::precondition(format!("{listen} answered without a report")))
 }
 
-/// Nudge the serving host to reload after files changed. Best effort by
-/// design — a restart also picks changes up — but the outcome is always in
-/// the journal, never silently assumed.
+/// Nudge the serving host to reload after files changed. Best effort: a
+/// restart also picks changes up. The outcome is always in the journal,
+/// never silently assumed.
 pub async fn reload_host(
     target: &ProviderTarget,
     timeout: std::time::Duration,
@@ -1996,10 +1970,9 @@ pub async fn reload_host(
     let candidates: Vec<String> = match target {
         ProviderTarget::Embedded { settings, .. } => vec![settings.embedded_http_listen()],
         // A --path root belongs to some host this CLI was not told about.
-        // Try the two loopback defaults — the postvec-server admin port
-        // first (--path is the remote-node administration story), then the
-        // embedded listener — rather than demanding a new flag for the
-        // common case of running on the node itself.
+        // Try the two loopback defaults: the postvec-server admin port first
+        // (--path is how a remote node is administered), then the embedded
+        // listener. That covers running on the node itself.
         ProviderTarget::Path { .. } => vec![
             POSTVEC_SERVER_ADMIN.to_string(),
             crate::config::DEFAULT_EMBEDDED_HTTP_LISTEN.to_string(),
@@ -2009,13 +1982,11 @@ pub async fn reload_host(
     for listen in &candidates {
         match post_reload(listen, timeout).await {
             Ok(outcome) => {
-                // A host that reads a *different* providers.d did not apply
-                // this change. Saying "reloaded" there would be the worst
-                // kind of wrong: the operator would believe the files are
-                // live. This is reachable in the ordinary way — `--path
-                // <server-root>` on a machine that also runs an embedded
-                // cluster, where the node is down and the embedded host
-                // answers instead.
+                // A host that reads a different providers.d did not apply this
+                // change. Saying "reloaded" would tell the operator the files
+                // are live. This happens with `--path <server-root>` on a
+                // machine that also runs an embedded cluster, when the node
+                // is down and the embedded host answers instead.
                 if let Some(served) = &outcome.path {
                     if Path::new(served) != wanted {
                         journal.record(format!(
@@ -2055,13 +2026,11 @@ pub async fn reload_host(
     );
 }
 
-/// A host that did not answer the reload. On a **cluster** target the CLI
-/// just connected to that cluster, so a live engine was expected and its
-/// absence leaves the job half-done (partial). On a `--path` root the CLI
-/// was never told which host owns it — provisioning files for a node that
-/// is not running here is the ordinary case — so this is a note, not a
-/// partial result. Either way the files are written and a restart applies
-/// them.
+/// A host that did not answer the reload. On a cluster target the CLI just
+/// connected, so a live engine was expected and its absence is partial. On
+/// a `--path` root the CLI was never told which host owns it. Provisioning
+/// files for a node that is not running here is ordinary, so this is a note.
+/// Either way the files are written and a restart applies them.
 fn unreachable_host(target: &ProviderTarget, journal: &mut ApplyJournal, detail: &str) {
     let tail = "the files are written — the serving host picks them up at its next restart, or \
                 POST /admin/providers/reload on its loopback admin listener";
@@ -2071,19 +2040,16 @@ fn unreachable_host(target: &ProviderTarget, journal: &mut ApplyJournal, detail:
     }
 }
 
-/// Serialize provider-file mutations against other `postvec` commands on this
-/// host.
+/// Serialize provider-file mutations against other `postvec` commands.
 ///
 /// `provider add` and `provider rm` are read-modify-write over a TOML
-/// document: two concurrent runs both load the file, both append, and the
-/// second rename silently discards the first one's model. The lock is the
-/// same advisory `flock` the `model` family already uses — held only for the
-/// life of the process, so a killed command releases it and there is no stale
-/// lock to clean up, which is why the earlier decision to skip it was wrong.
+/// document. Two concurrent runs both load, both append, and the second
+/// rename discards the first model's edit. The lock is the same advisory
+/// `flock` the model commands use, held only for the life of the process, so
+/// a killed command releases it.
 ///
-/// The lock file sits beside the connector files rather than inside them:
-/// `.lock` is not `*.toml`, so the loader never sees it, and a `--path` root
-/// on a server node gets the same protection as a cluster's providers.d.
+/// The lock file sits beside the connector files. `.lock` is not `*.toml`,
+/// so the loader never sees it. A `--path` root gets the same protection.
 pub fn lock_provider_dir(
     dir: &Path,
     owner: Option<FileOwner>,
@@ -2097,21 +2063,17 @@ pub fn lock_provider_dir(
     Ok(lock)
 }
 
-/// Refresh `postvec.models` in every configured database after a successful
-/// provider change.
+/// Refresh `postvec.models` in every configured database after a provider
+/// change.
 ///
-/// Without this, `provider add` reported success and `enable()` on the new
-/// name failed until the worker's next discovery cycle — up to
-/// `postvec.model_refresh_interval_ms` (60 s by default) plus jitter — because
-/// `resolve_embed_route` refuses a name the cache does not carry. The
-/// documented quick start is `provider add` then `enable`, back to back.
-/// Removal has the mirror problem: a stale route stays selectable and
-/// produces avoidable model-not-found retries.
+/// Without this, `enable()` on a name just added fails until the worker's
+/// next discovery cycle, up to `postvec.model_refresh_interval_ms` (60 s by
+/// default) plus jitter. `resolve_embed_route` refuses a name the cache does
+/// not carry. Removal has the mirror problem: a stale route stays selectable.
 ///
-/// This is deliberately the same shape as the `model` family's
-/// `refresh_databases` — the same journal vocabulary, the same
-/// per-database isolation — because it is the same operation. A `--path`
-/// target has no cluster and is left alone; the caller says so.
+/// Same shape as the model family's `refresh_databases`: same journal
+/// vocabulary and per-database isolation. A `--path` target has no cluster
+/// and is left alone. The caller says so.
 pub async fn refresh_databases(target: &mut ProviderTarget, journal: &mut ApplyJournal) {
     let ProviderTarget::Embedded {
         context, settings, ..
@@ -2142,15 +2104,14 @@ pub async fn refresh_databases(target: &mut ProviderTarget, journal: &mut ApplyJ
     }
 }
 
-// ---- The privacy / in-use scan -------------------------------------------
 
 /// What a column scan asks about a set of routes.
 #[derive(Clone, Copy)]
 pub enum Scan {
     /// Routes that start serving: `(route, space)` pairs. A column is
     /// affected when it is bound to the route by name, or bound in its space
-    /// and the route becomes its preferred one — because nothing serves the
-    /// space yet, or because `prefer` puts it first.
+    /// and the route becomes preferred because nothing serves the space yet
+    /// or because `prefer` puts it first.
     Gains { prefer: bool },
     /// Routes that stop serving. A column is affected when the route in use
     /// is one of them and no other served route remains in its space.
@@ -2161,11 +2122,11 @@ pub enum Scan {
 }
 
 /// Every managed column whose embedding route `scan` changes, across every
-/// configured database. `routes` are `(name, space)` pairs; a `Loses` scan
-/// needs only the names. Resolution follows `postvec._route()` over what
-/// the running host serves; an unreachable host or uninspectable database
-/// is reported as unknown, never as clean —
-/// the conservative direction for a privacy gate.
+/// configured database. `routes` are `(name, space)` pairs. A `Loses` scan
+/// needs only the names. Resolution follows `postvec._route()` over what the
+/// running host serves. An unreachable host or uninspectable database is
+/// unknown, never clean. That is the conservative direction for a privacy
+/// gate.
 pub async fn columns_bound_to(
     target: &mut ProviderTarget,
     routes: &[(String, String)],
@@ -2398,7 +2359,7 @@ mod tests {
             assert_eq!(entries(), 1, "no temp file left");
         };
 
-        // NoReplace: absent → installed; present → refused, intact.
+        // NoReplace: absent becomes installed. Present is refused, intact.
         let token = install_secret_file(&path, b"one", None, &InstallGuard::NoReplace).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"one");
         assert!(
@@ -2408,10 +2369,10 @@ mod tests {
         refused(&InstallGuard::NoReplace, "appeared");
         assert_eq!(std::fs::read(&path).unwrap(), b"one");
 
-        // Exact: not after a swap, an edit, a chmod or an extra link…
-        // (A swap for a file with the same bytes, mode and owner that
-        // happens to reuse the inode is indistinguishable, and replacing it
-        // is equivalent; the swap here carries different bytes.)
+        // Exact: not after a swap, an edit, a chmod or an extra link.
+        // A swap that reuses the inode with the same bytes, mode and owner
+        // is indistinguishable, and replacing it is equivalent. The swap
+        // here carries different bytes.
         let exact = InstallGuard::Exact(token.clone());
         std::fs::remove_file(&path).unwrap();
         write_secret_file(&path, b"uno", None).unwrap();
@@ -2455,7 +2416,7 @@ mod tests {
             "{err:?}"
         );
         std::fs::remove_file(&link).unwrap();
-        // …but the approved file itself is replaced, leaving no residue.
+        // The approved file itself is replaced, leaving no residue.
         assert!(token.still_is(&path).unwrap());
         let rotated = install_secret_file(&path, b"two", None, &exact).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"two");
@@ -2509,7 +2470,7 @@ mod tests {
         assert!(tmp_of().is_none() && !path.exists());
         // Staging cleanup fails: the residue is named in the state and the message.
         set_failpoint(Some("stage-cleanup"));
-        let _ = install(&InstallGuard::NoReplace, b"new"); // stage ok, rename ok → no cleanup
+        let _ = install(&InstallGuard::NoReplace, b"new"); // stage ok, rename ok, no cleanup
         let _ = std::fs::remove_file(&path);
         set_failpoint(Some("stage-cleanup"));
         std::fs::write(&path, b"blocker").unwrap();
@@ -2542,7 +2503,7 @@ mod tests {
         }
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
 
-        // Rotation: displaced-key unlink fails → applied, displaced named.
+        // Rotation: displaced-key unlink fails. Applied, displaced named.
         let token = reset(b"old");
         set_failpoint(Some("displaced-unlink"));
         let err = install(&InstallGuard::Exact(token.clone()), b"new").unwrap_err();
@@ -2619,8 +2580,8 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"old");
         assert!(tmp_of().is_none());
 
-        // Compound: exchange-back fails AND the directory sync fails —
-        // applied, displaced named, the sync error kept alongside.
+        // Compound: exchange-back fails and the directory sync fails.
+        // Applied, displaced named, the sync error kept alongside.
         let token = reset(b"old");
         std::fs::write(&path, b"old-edited").unwrap();
         set_failpoints(&[("exchange-back", 1), ("sync", 1)]);
@@ -2641,7 +2602,7 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // Compound: refusal cleanup fails — the unlink cause is in the
+        // Compound: refusal cleanup fails. The unlink cause is in the
         // message, and no sync is claimed for a removal that did not happen.
         let _ = std::fs::remove_file(tmp_of().unwrap());
         let _ = std::fs::remove_file(&path);
@@ -2724,7 +2685,7 @@ mod tests {
         set_failpoint(None);
 
         // Rotation refused cleanly: not applied, destination as it was,
-        // candidate removed, removal synced — or the sync error recorded.
+        // candidate removed, removal synced, or the sync error recorded.
         let token = reset(b"old");
         std::fs::write(&path, b"old-edited").unwrap();
         set_failpoint(None);
@@ -2962,12 +2923,11 @@ mod tests {
         );
     }
 
-    /// One rulebook for route identity: the ids `route_models()` reads from
-    /// the document must be byte-equal to the `ServedBy.model_id` the
-    /// loader's `served_names_if` computes for the same body. `provider rm`
-    /// compares one against the other whenever no host answers — a converter
-    /// whose two derivations disagreed would report a partial removal as a
-    /// handoff to its own file.
+    /// One rulebook for route identity. The ids `route_models()` reads must
+    /// be byte-equal to the `ServedBy.model_id` the loader's `served_names_if`
+    /// computes for the same body. `provider rm` compares them when no host
+    /// answers. A converter whose two derivations disagreed would report a
+    /// partial removal as a handoff to its own file.
     #[test]
     fn route_models_matches_the_loaders_served_identity() {
         let dir = tempfile::tempdir().unwrap();

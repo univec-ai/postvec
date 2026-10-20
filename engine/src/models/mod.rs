@@ -20,6 +20,5 @@ pub use self::error::ModelError;
 pub use self::generic_model::GenericModel;
 pub use self::model::{Model, QueryBound};
 
-// Conditionally re-export the OnnxRuntimeModel from its new module.
 #[cfg(feature = "onnx")]
 pub use self::onnx_runtime::OnnxRuntimeModel;

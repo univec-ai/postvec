@@ -12,8 +12,8 @@ use std::collections::HashSet;
 use tokio::runtime::Handle;
 
 pub struct EmbedBridgeExecutor {
-    /// Semantic target names this bridge will not produce (`params.restrictions.target_models`,
-    /// matched against input 2). Used to refuse commercially restricted targets.
+    /// Semantic names this bridge will not produce
+    /// (`params.restrictions.target_models`, checked against input 2).
     restricted_targets: HashSet<String>,
 }
 
@@ -52,20 +52,13 @@ impl Executor for EmbedBridgeExecutor {
 
         tokio::task::block_in_place(|| {
             handle.block_on(async {
-                // --- 1. Get Input ---
-                // Input 0: texts (array of strings)
-                // Input 1: bridge_model (string) - the semantic target of the embedding
-                // Input 2: target_model (string) - the final desired format
                 let texts_value = ctx.input_json(0)?.as_value().clone();
                 let bridge_model_name = ctx.input_json(1)?.as_string()?;
                 let target_model_name = ctx.input_json(2)?.as_string()?;
 
-                // Reject restricted targets before any model resolution work.
-                // Matches against the *semantic* target name aphex passes
-                // through gRPC (e.g. "openai-text-embedding-3-small").
-                // `TargetRestricted` (not `Prediction`) so the refusal crosses
-                // gRPC as TARGET_RESTRICTED and callers (aphex, postvec) can
-                // fail fast instead of retrying a policy decision.
+                // Refuse restricted targets before resolving models. The check
+                // is the semantic name from the request, not an internal name.
+                // `TargetRestricted` so callers don't retry a policy decision.
                 if self.restricted_targets.contains(&target_model_name) {
                     return Err(EngineError::TargetRestricted(format!(
                         "embed-bridge target '{}' is not available for bridge embedding on this deployment",
@@ -78,8 +71,6 @@ impl Executor for EmbedBridgeExecutor {
                     bridge_model_name, target_model_name
                 );
 
-                // --- 2. Resolve Models ---
-                // Rule 1: Find an embedding model that outputs `bridge_model_name`
                 let embed_resolved = ctx.resolver()
                     .resolve_embed(&bridge_model_name)
                     .ok_or_else(|| EngineError::BridgePathNotFound(format!(
@@ -87,7 +78,6 @@ impl Executor for EmbedBridgeExecutor {
                         bridge_model_name
                     )))?;
 
-                // Rule 2: Find a converter that goes from `bridge_model_name` to `target_model_name`
                 let convert_resolved = ctx.resolver()
                     .resolve_convert(&bridge_model_name, &target_model_name)
                     .ok_or_else(|| EngineError::ConverterNotFound(format!(
@@ -100,19 +90,14 @@ impl Executor for EmbedBridgeExecutor {
                     embed_resolved.internal_name, convert_resolved.internal_name
                 );
 
-                // --- 3. Call Source Embedding Model ---
-                // The source model (e.g., Alibaba-NLP.gte-base-en-v1.5) expects
-                // texts as its first input and returns embeddings.
-                // We use the RESOLVED internal name, not the user-provided public name.
+                // Use the resolved internal name, not the public name from the request.
                 let source_model_handle = ctx.model(&embed_resolved.internal_name)?;
-                // Get the source model's configuration for output key lookup.
                 let source_config = source_model_handle.configuration().clone();
                 let source_output = source_model_handle
                     .predict(&[texts_value], ctx.remaining())
                     .await?;
 
-                // --- 4. Extract Intermediate Embeddings ---
-                // Attempts to extract usage metadata if available.
+                // Keep usage when the source model reported it.
                 let (embeddings_value, usage) = match source_output {
                     ExecutorOutput::StructuredWithUsage { mut outputs, usage } => {
                        if outputs.is_empty() {
@@ -125,22 +110,14 @@ impl Executor for EmbedBridgeExecutor {
                     other => (crate::utils::extract_embeddings(other, &source_config)?, ExecutionMetadata::default()),
                 };
 
-                // --- 5. Call Target Conversion Model ---
-                // The target model expects embeddings as its first input
-                // and returns converted embeddings.
                 let target_model_handle = ctx.model(&convert_resolved.internal_name)?;
-                // Get the target model's configuration for output key lookup.
                 let target_config = target_model_handle.configuration().clone();
                 let target_output = target_model_handle
                     .predict(&[embeddings_value], ctx.remaining())
                     .await?;
 
-                // --- 6. Extract and Return Final Embeddings ---
-                // Use the target model's config to find the correct output key.
                 let final_embeddings = crate::utils::extract_embeddings(target_output, &target_config)?;
 
-                // Return in the standard Structured format, matching other executors.
-                // The server will map this to the output keys defined in executor.outputs.
                 Ok(ExecutorOutput::StructuredWithUsage {
                     outputs: vec![final_embeddings],
                     usage,
@@ -170,9 +147,8 @@ mod tests {
         assert!(exec.restricted_targets.contains("text-embedding-3-small"));
     }
 
-    /// The restriction refusal must map to TARGET_RESTRICTED on the wire —
-    /// a generic Prediction/INTERNAL_ERROR would make callers retry a policy
-    /// decision forever.
+    /// The restriction refusal must map to TARGET_RESTRICTED. A generic
+    /// Prediction would make callers retry a policy decision.
     #[test]
     fn restricted_target_error_maps_to_target_restricted_code() {
         let err = EngineError::TargetRestricted(
@@ -193,7 +169,7 @@ mod tests {
 
     #[test]
     fn malformed_restrictions_are_ignored() {
-        // target_models not an array → treated as no restrictions, not an error.
+        // A non-array `target_models` means no restrictions, not an error.
         let exec = EmbedBridgeExecutor::new(&config_with_params(json!({
             "restrictions": { "target_models": "not-an-array" }
         })))
@@ -213,8 +189,7 @@ mod tests {
 
     use crate::executors::bridge_test_support::{execute_against_resolver, model_cfg};
 
-    /// Drive a real embed-bridge request (embed "m", convert into "t")
-    /// through `execute()` against the given resolver inventory.
+    /// Run an embed-bridge request (embed "m", convert into "t") and return the error.
     fn run_incomplete(loaded: &[ModelConfiguration]) -> EngineError {
         let exec_cfg = model_cfg("embed-bridge", json!({ "model_type": "embed-bridge" }));
         match execute_against_resolver(
@@ -228,9 +203,7 @@ mod tests {
         }
     }
 
-    /// A real request with no embed model for the bridge source: the embed
-    /// leg must fail as `BridgePathNotFound` (BRIDGE_PATH_NOT_FOUND on the
-    /// wire), not a generic Prediction/INTERNAL_ERROR.
+    /// No embed model for the bridge source: `BridgePathNotFound`, not a generic `Prediction`.
     #[test]
     fn unresolved_embed_leg_is_bridge_path_not_found() {
         let err = run_incomplete(&[]);
@@ -244,8 +217,7 @@ mod tests {
         assert_eq!(err.to_error_code().as_str(), "BRIDGE_PATH_NOT_FOUND");
     }
 
-    /// Embed leg resolvable but no converter into the target: the converter
-    /// leg must fail as `ConverterNotFound`, naming the (m → t) pair.
+    /// Embed leg present, no converter into the target: `ConverterNotFound`, naming m to t.
     #[test]
     fn unresolved_converter_leg_is_converter_not_found() {
         let loaded = [model_cfg(

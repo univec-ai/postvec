@@ -4,21 +4,18 @@
 //! Response-envelope budgets, matching the embedded loopback server.
 //! These guard foreign or buggy callers.
 
-/// The gRPC response for a batch is `count × dim` doubles in a protobuf
-/// `Value` tree (~12 wire bytes per float, several times that while
-/// decoding). This budget bounds one call's expected response wire size;
-/// [`max_items_for_dim`] converts it to an item count.
+/// One call's response wire budget. A batch is `count x dim` doubles
+/// (~12 wire bytes per float, more while decoding). [`max_items_for_dim`]
+/// turns the budget into an item count.
 const RESPONSE_WIRE_BUDGET_BYTES: u64 = 48 * 1024 * 1024;
 const WIRE_BYTES_PER_FLOAT: u64 = 12;
-/// A response exists first as the engine's `serde_json::Value` tree and then,
-/// while that tree is still alive, as tonic/prost values. Ninety-six bytes per
-/// component is a deliberately conservative combined accounting unit.
+/// Combined budget while the engine JSON tree and the prost tree coexist.
+/// Ninety-six bytes per component is a conservative accounting unit.
 const RESPONSE_TREE_BUDGET_BYTES: u64 = 96 * 1024 * 1024;
 const TRANSIENT_TREE_BYTES_PER_FLOAT: u64 = 96;
 const TRANSIENT_TREE_BYTES_PER_ITEM: u64 = 256;
 
-/// How many embeddings of `dim` dimensions fit one response budget. Always
-/// at least 1 (a single embedding always fits any real configuration).
+/// Embeddings of `dim` that fit one response budget. Always at least 1.
 pub fn max_items_for_dim(dim: i32) -> usize {
     let dim = dim.max(1) as u64;
     let wire = RESPONSE_WIRE_BUDGET_BYTES / dim.saturating_mul(WIRE_BYTES_PER_FLOAT);
@@ -29,9 +26,7 @@ pub fn max_items_for_dim(dim: i32) -> usize {
     wire.min(trees).max(1).min(MAX_REQUEST_ITEMS as u64) as usize
 }
 
-/// Absolute per-request item ceiling, independent of dimension. 4096 items
-/// per gRPC call is far above any real embedding batch; the server refuses
-/// above it before touching a request's items.
+/// Item ceiling, independent of dimension. Refused before the items are walked.
 pub const MAX_REQUEST_ITEMS: usize = 4096;
 
 #[cfg(test)]
@@ -43,8 +38,7 @@ mod tests {
         assert_eq!(max_items_for_dim(1), MAX_REQUEST_ITEMS);
     }
 
-    /// The budget, not the item ceiling, is what binds at real embedding
-    /// widths — MiniLM's 384 already lands below 4096.
+    /// At real embedding widths the byte budget binds before the item ceiling.
     #[test]
     fn the_ceiling_falls_monotonically_with_dimension() {
         let widths = [384, 768, 1024, 3072, 8192];
@@ -61,8 +55,7 @@ mod tests {
         }
     }
 
-    /// A single embedding always fits, whatever the model claims. A
-    /// nonsensical dimension still returns at least 1.
+    /// A single embedding always fits, even for a nonsense dimension.
     #[test]
     fn degenerate_dimensions_stay_safe() {
         for dim in [0, -1, i32::MIN, i32::MAX] {

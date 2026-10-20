@@ -1,5 +1,4 @@
-//! Tests for `engine::models` — `GenericModel` / `BaseModel` behaviour and the
-//! `param_*_or_default` typed-parameter accessors used throughout model setup.
+//! `GenericModel`, `BaseModel` and the `param_*_or_default` accessors.
 
 use engine::models::base_model::BaseModel;
 use engine::models::GenericModel;
@@ -44,16 +43,12 @@ fn base_model_is_invalid_by_default() {
     assert!(base.overview().is_err());
 }
 
-// ---------------------------------------------------------------------------
-// param_*_or_default — present, missing, wrong-type
-// ---------------------------------------------------------------------------
-
 #[test]
 fn param_int_present_missing_wrongtype() {
     let m = model_with_params(json!({"n": 7, "s": "hi"}));
     assert_eq!(m.param_int_or_default("n", -1), 7);
     assert_eq!(m.param_int_or_default("missing", -1), -1);
-    // Present but wrong type → default.
+    // Present but the wrong type: the default.
     assert_eq!(m.param_int_or_default("s", -1), -1);
 }
 

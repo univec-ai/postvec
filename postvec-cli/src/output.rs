@@ -2,11 +2,11 @@
 //!
 //! Two invariants:
 //!
-//! - **JSON is exactly one object on stdout.** Progress from mutating commands
-//!   goes to stderr, so `postvec setup --format json | jq` never chokes on a
+//! - JSON is exactly one object on stdout. Progress from mutating commands
+//!   goes to stderr, so `postvec setup --format json | jq` never sees a
 //!   status line.
-//! - **Colour is never the only signal.** Every status is spelled out, so the
-//!   output is readable in a pipe, a log, and a CI transcript.
+//! - Colour is never the only signal. Every status is spelled out, so the
+//!   output is readable in a pipe, a log or a CI transcript.
 
 use crate::checks::{CheckResult, CheckStatus, Report};
 use crate::cli::OutputFormat;
@@ -151,7 +151,7 @@ impl Cell {
 
 /// Fit and render a table. `width` is the whole line budget, including the
 /// two-space gaps between columns. Overflow past every column's `min` is
-/// left as-is — better a wrapped line than a table that dropped a field.
+/// left as-is. Better a wrapped line than a table that dropped a field.
 pub fn render_table(style: &Style, columns: &[Column], rows: &[Vec<Cell>], width: usize) -> String {
     if columns.is_empty() {
         return String::new();
@@ -202,9 +202,8 @@ fn fit_widths(columns: &[Column], rows: &[Vec<Cell>], width: usize) -> Vec<usize
     }
     let mut order: Vec<usize> = (0..columns.len()).collect();
     order.sort_by_key(|&i| std::cmp::Reverse(columns[i].shrink));
-    // Highest `shrink` first, one cell at a time, stop as soon as we
-    // fit — so a long NAME absorbs the overflow before LICENSE is
-    // reduced to "LI…".
+    // Highest `shrink` first, one cell at a time, and stop once we fit.
+    // A long NAME absorbs the overflow before LICENSE shrinks to "LI...".
     while total > width {
         match order.iter().copied().find(|&i| widths[i] > columns[i].min) {
             Some(i) => {
@@ -217,8 +216,8 @@ fn fit_widths(columns: &[Column], rows: &[Vec<Cell>], width: usize) -> Vec<usize
     widths
 }
 
-/// Visible character count. ANSI is not expected in the *source* text we
-/// measure — styling is applied after truncation.
+/// Visible character count. ANSI is not expected in the source text we
+/// measure. Styling is applied after truncation.
 pub fn display_width(text: &str) -> usize {
     text.chars().count()
 }
@@ -367,7 +366,7 @@ impl Output {
 
     /// Emit a read-only command's document: in JSON mode, exactly one object
     /// on stdout; in human mode, the caller's pre-rendered lines. Model
-    /// listing/inspection commands use this — they are neither a check
+    /// listing and inspection commands use this. They are neither a check
     /// [`Report`] nor a mutating [`CommandResult`].
     pub fn show_document(
         &self,

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 #
-# Debian-family builder for one (distribution × PostgreSQL major × architecture)
-# release cell. It compiles the extension and the CLI, and emits a clean /out
-# tree; it does not build packages — packaging is nfpm's job, on the host.
+# Debian-family builder for one cell: distribution, PostgreSQL major and
+# architecture. It compiles the extension and the CLI and emits a clean /out
+# tree. It does not build packages. Packaging is nfpm's job, on the host.
 #
 # Every input is pinned: the base image by digest, PostgreSQL by PGDG's own
 # repository and key, Rust by a digest-verified rustup-init plus an exact
@@ -24,9 +24,8 @@ ARG PGRX_VERSION
 ARG SOURCE_DATE_EPOCH
 # 1 to also build postvec-server, the inference node, in this cell. Off by
 # default: the node is PostgreSQL-independent, so only the shared-package
-# builder (one per distribution × architecture) needs it, and compiling it in
-# all 24 extension cells would be 24 chances for a longer build and no extra
-# artifact. See scripts/build-extension-stage.sh --with-server.
+# builder (one per distribution and architecture) needs it. Compiling it in
+# every extension cell would repeat a build the manifest cannot accept twice.
 ARG WITH_SERVER=0
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -49,7 +48,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         curl gnupg xz-utils unzip zstd git file binutils \
         libssl-dev
 
-# PGDG, through its documented signed-by mechanism — never apt-key, never an
+# PGDG, through its documented signed-by mechanism: never apt-key, never an
 # unauthenticated repository. This is what makes postgresql-server-dev-${PG_MAJOR}
 # resolvable for majors the distribution itself does not ship.
 ARG PGDG_KEY_FINGERPRINT

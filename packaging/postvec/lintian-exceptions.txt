@@ -1,29 +1,12 @@
 # lintian tags postvec accepts, and why.
 #
-# `scripts/verify-package.sh` fails on any lintian *error* that is not listed
-# here. A tag on this list is a reviewed divergence from Debian archive policy,
-# not a suppression of convenience — and each one has to survive the question
-# "what would go wrong for a user if we fixed it instead?".
-#
-# Format: one tag per line; `#` starts a comment. Reasons belong above the tag
-# they justify, because an exception without a reason is indistinguishable from
-# a workaround somebody added in a hurry.
-#
-# Everything not listed here is a defect. Every package ships
-# /usr/share/doc/<package>/changelog.Debian.gz from
-# scripts/lib.sh:render_changelog.
+# verify-package.sh fails on any lintian error not listed here. A listed
+# tag is a reviewed divergence from Debian archive policy. One tag per
+# line. Put the reason above the tag. Everything else is a defect.
 
-# The engine assets — the ONNX Runtime shared libraries and the bundled model —
-# live under /opt/postvec.
-#
-# Debian Policy §9.1.1 forbids /opt to packages *in the Debian archive*, and
-# defers to the FHS, which reserves /opt/<provider> for exactly this: add-on
-# software from a third-party distributor. postvec is not in the Debian
-# archive, and the path is not incidental — `postvec.path` defaults
-# to it, the container image sets POSTVEC_PATH to it, and
-# `postvec setup --embedded --path /opt/postvec` is the documented
-# command. Moving the assets to /usr/lib to satisfy a rule written for archive
-# packages would mean shipping model weights and a vendored runtime into a
-# directory the distribution owns, which is the outcome the rule exists to
-# prevent.
+# Engine assets live under /opt/postvec. Debian Policy 9.1.1 forbids /opt
+# to archive packages and defers to the FHS, which reserves
+# /opt/<provider> for a third-party distributor. postvec.path, POSTVEC_PATH
+# and `postvec setup --embedded --path /opt/postvec` all use that path.
+# Do not move the assets under /usr/lib.
 dir-or-file-in-opt

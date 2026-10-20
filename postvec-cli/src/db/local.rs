@@ -1,8 +1,7 @@
 //! In-process execution of [`DbRequest`]s.
 //!
-//! This is the only place queries actually run — the privilege-dropped agent
-//! decodes a request and calls straight into here, so root and the cluster
-//! owner cannot diverge in behaviour.
+//! The only place queries run. The privilege-dropped agent decodes a request
+//! and calls straight into here, so root and the cluster owner cannot diverge.
 //!
 //! Connections are cached per database. A `doctor` run over three databases
 //! opens three connections and no more.
@@ -51,10 +50,9 @@ impl Direct {
                 .socket(dir)
                 .port(*port)
                 .username(user),
-            // The database is set through the option, never by editing the URI
-            // string. `sslmode` and every other parameter the operator chose
-            // survives untouched — a requested TLS connection is never
-            // silently downgraded.
+            // The database is set through the option, never by editing the URI.
+            // `sslmode` and every other parameter the operator chose survives,
+            // so a requested TLS connection is never silently downgraded.
             DbTarget::Url(url) => PgConnectOptions::from_str(&normalize_database_url(url))
                 .map_err(|e| {
                     CliError::usage(format!(
@@ -766,12 +764,11 @@ impl Direct {
     }
 }
 
-/// Why a connection failed, as far as the driver's error can tell us.
+/// Why a connection failed, as far as the driver's error can tell.
 ///
-/// What the operator has to do differs completely between "nothing is
-/// listening", "the server rejected who I am" and "that database is not
-/// there", so the message has to read the error. Classifying only by
-/// target kind (socket vs TCP) would tell a stopped cluster to check
+/// "Nothing is listening", "the server rejected who I am" and "that database
+/// is not there" need different advice, so the message reads the error.
+/// Classifying only by socket vs TCP would tell a stopped cluster to check
 /// peer authentication and re-run as root.
 #[derive(Debug, PartialEq, Eq)]
 enum ConnectFailure {
@@ -783,7 +780,7 @@ enum ConnectFailure {
     Rejected,
     /// The server answered; that database does not exist (SQLSTATE 3D000).
     NoSuchDatabase,
-    /// Anything else — say less rather than guess.
+    /// Anything else. Say less rather than guess.
     Other,
 }
 
@@ -810,13 +807,12 @@ fn classify(error: &sqlx::Error) -> ConnectFailure {
     }
 }
 
-/// Rewrite the libpq-only spelling `scheme://user[:pass]@/db?host=…` —
-/// userinfo over an empty host, which psql accepts for socket connections —
-/// into the equivalent URI sqlx's parser (the WHATWG `url` crate, which
-/// rejects userinfo without a host) understands, by moving the credentials
-/// into `user=`/`password=` query parameters. Every other shape passes
-/// through untouched: this is a compatibility shim for one documented libpq
-/// form, not a second URI parser.
+/// Rewrite the libpq-only spelling `scheme://user[:pass]@/db?host=...`
+/// (userinfo over an empty host, which psql accepts for sockets) into a URI
+/// sqlx's parser accepts, by moving credentials into `user=`/`password=`
+/// query parameters. The WHATWG `url` crate rejects userinfo without a host.
+/// Every other shape passes through. One documented libpq form, not a second
+/// URI parser.
 fn normalize_database_url(url: &str) -> std::borrow::Cow<'_, str> {
     let pass = std::borrow::Cow::Borrowed(url);
     let Some((scheme, rest)) = url.split_once("://") else {
@@ -844,16 +840,15 @@ fn normalize_database_url(url: &str) -> std::borrow::Cow<'_, str> {
         Some((user, password)) => (user, Some(password)),
         None => (userinfo, None),
     };
-    // The moved text keeps its percent-encoding — query values are decoded
-    // the same way as userinfo — except '+', which only a query reads as a
-    // space.
+    // Keep percent-encoding. Query values decode like userinfo, except '+',
+    // which only a query reads as a space.
     let escape = |s: &str| s.replace('+', "%2B");
     let mut out = String::with_capacity(url.len() + 16);
     out.push_str(scheme);
     out.push_str("://");
     if !tail.starts_with('/') {
-        // `postgres:///?host=…` is the shape sqlx documents for an empty
-        // host; keep the path slash so the query is unambiguous.
+        // `postgres:///?host=...` is the shape sqlx documents for an empty
+        // host. Keep the path slash so the query is unambiguous.
         out.push('/');
     }
     out.push_str(tail);
@@ -1061,8 +1056,8 @@ mod tests {
         assert!(!hint.contains("peer authentication"), "{hint}");
     }
 
-    /// The server answered and refused the identity: peer authentication is
-    /// genuinely the story, so the original advice still applies.
+    /// The server answered and refused the identity, so peer authentication
+    /// is the right advice.
     #[test]
     fn a_rejected_identity_explains_peer_authentication() {
         let hint = connect_hint(&socket(), &auth_error());
@@ -1070,8 +1065,8 @@ mod tests {
         assert!(hint.contains("postgres"), "{hint}");
     }
 
-    /// A stopped cluster produced exactly the wrong advice before: no amount
-    /// of re-running as root creates a socket that is not there.
+    /// A stopped cluster is unreachable, not an auth failure. Re-running as
+    /// root does not create a socket that is not there.
     #[test]
     fn an_absent_socket_says_the_cluster_is_not_running() {
         for kind in [

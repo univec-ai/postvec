@@ -1,9 +1,5 @@
-//! Test-only helpers.
-//!
-//! A hand-rolled HTTP fixture instead of a mock-server dependency: the probes
-//! under test only need "a real socket that answers a canned body for a path",
-//! and keeping the dependency set to crates already in the workspace lockfile
-//! matters more here than convenience.
+//! Test-only helpers. Hand-rolled HTTP fixture: probes only need a socket
+//! that returns a canned body, and a mock-server crate is not in the lockfile.
 
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,8 +11,7 @@ pub struct HttpFixture {
 }
 
 impl HttpFixture {
-    /// Start a server that answers every request by calling `handler` with the
-    /// request path.
+    /// Answer every request by calling `handler` with the request path.
     pub async fn start<F>(handler: F) -> Self
     where
         F: Fn(&str) -> (u16, String) + Send + Sync + 'static,

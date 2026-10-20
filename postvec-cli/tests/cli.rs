@@ -1,11 +1,5 @@
-//! End-to-end tests of the binary's contract: argument validation, exit codes,
-//! output formats, and the guarantees that must hold before anything touches a
-//! cluster.
-//!
-//! These run the real executable, so they cover the parts unit tests cannot:
-//! what a caller actually observes on stdout, stderr and the exit status.
-//! Anything needing a live PostgreSQL cluster is a separate integration
-//! matrix.
+//! End-to-end tests of the real binary: argument validation, exit codes and output, before anything touches a cluster.
+//! A live PostgreSQL cluster is a separate suite.
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -172,16 +166,11 @@ fn model_help_lists_every_verb() {
     }
 }
 
-/// The activate/deactivate argument contract, which is asymmetric on
-/// purpose: a bare `activate` still means "everything eligible", while
-/// `deactivate` has no `--all` at all — turning every model off in one flag
-/// is how search goes down by accident.
+/// `deactivate` has no `--all`: one flag that turns every model off would take search down.
 #[test]
 fn activate_takes_names_or_all_and_deactivate_requires_a_name() {
     assert_eq!(code(&run(&["model", "activate", "--help"])), 0);
-    // A bare activate is valid: it keeps its original catch-up meaning. The
-    // absent root below is a precondition failure (exit 1), never usage —
-    // and `--path` keeps this away from whatever cluster the host has.
+    // A bare activate is not usage. The missing root is a precondition (exit 1).
     assert_ne!(
         code(&run(&[
             "model",
@@ -193,7 +182,6 @@ fn activate_takes_names_or_all_and_deactivate_requires_a_name() {
         2,
         "a bare `model activate` must not be a usage error"
     );
-    // …but naming a model and --all at once is contradictory.
     assert_eq!(code(&run(&["model", "activate", "m", "--all"])), 2);
 
     // Deactivate needs at least one name and offers no --all.
@@ -217,8 +205,7 @@ fn activate_takes_names_or_all_and_deactivate_requires_a_name() {
     );
 }
 
-/// `--acknowledge-in-use` exists exactly where a model can be taken away
-/// from a column that still declares it, and nowhere else.
+/// `--acknowledge-in-use` is only on commands that can drop a model a column still names.
 #[test]
 fn the_in_use_acknowledgement_is_offered_only_where_it_applies() {
     for verb in ["deactivate", "rm"] {
@@ -237,8 +224,7 @@ fn the_in_use_acknowledgement_is_offered_only_where_it_applies() {
     }
 }
 
-/// `pull` must not promise activation any more: the whole point of the split
-/// is that installing files and serving them are separate decisions.
+/// Pull help must not claim activation. Installing files and serving them are separate.
 #[test]
 fn pull_help_does_not_claim_to_activate() {
     let text = stdout(&run(&["model", "--help"]));
@@ -294,8 +280,7 @@ fn model_pull_requires_an_absolute_path() {
     assert!(stderr(&output).contains("--path"), "{}", stderr(&output));
 }
 
-/// `whoami` must succeed (exit 0) with no credential anywhere, even on a host
-/// with no cluster — it reports the anonymous state rather than failing.
+/// `whoami` exits 0 with no credential and no cluster, and reports the anonymous state.
 #[test]
 fn whoami_succeeds_anonymously() {
     let output = Command::new(binary())
@@ -319,10 +304,7 @@ fn whoami_succeeds_anonymously() {
     assert!(text.contains("Searched:"), "{text}");
 }
 
-/// The container entrypoint delegates `shared_preload_libraries` merging here
-/// rather than reimplementing PostgreSQL's list grammar in shell. It has to
-/// work with no cluster, no database and no privileges — it is pure string
-/// work — and it must preserve the operator's own list.
+/// `__preload-merge` applies the server's list grammar with no cluster and keeps the operator's list.
 #[test]
 fn preload_merge_applies_the_servers_list_grammar() {
     for (input, expected) in [
@@ -330,12 +312,11 @@ fn preload_merge_applies_the_servers_list_grammar() {
         ("postvec", "postvec"),
         ("pg_stat_statements", "pg_stat_statements,postvec"),
         ("pg_stat_statements,postvec", "pg_stat_statements,postvec"),
-        // Surrounding whitespace is ignored, exactly as the server does…
+        // Surrounding whitespace is ignored, as the server does.
         ("  pg_stat_statements  ", "pg_stat_statements,postvec"),
-        // …but case is not: these are file names, not identifiers.
+        // Case is kept: these are file names, not identifiers.
         ("  PG_Stat_Statements ", "PG_Stat_Statements,postvec"),
-        // Quoting is only re-emitted where it is load-bearing: `MyLib` and
-        // `"MyLib"` name the same file, so the rendered form drops the quotes.
+        // `MyLib` and `"MyLib"` name the same file, so the quotes are dropped.
         ("\"MyLib\",pg_cron", "MyLib,pg_cron,postvec"),
         // A name that genuinely needs quoting keeps it.
         ("\"my,lib\"", "\"my,lib\",postvec"),
@@ -348,9 +329,7 @@ fn preload_merge_applies_the_servers_list_grammar() {
     }
 }
 
-/// A value PostgreSQL would refuse must be refused here too. Repairing it
-/// silently is how a configuration the operator got wrong becomes one that
-/// starts, with the mistake still in their file.
+/// A value PostgreSQL would refuse is refused here too, not repaired into a config that starts.
 #[test]
 fn preload_merge_refuses_what_postgresql_refuses() {
     for malformed in [
@@ -409,8 +388,7 @@ fn missing_required_arguments_exit_with_the_usage_code() {
 
 #[test]
 fn a_malformed_endpoint_is_rejected_before_any_host_access() {
-    // The endpoint is invalid, so this must fail on validation rather than on
-    // cluster discovery — which also means it is safe to run anywhere.
+    // An invalid endpoint fails validation (exit 2), not cluster discovery, so this is safe anywhere.
     let output = run(&[
         "setup",
         "--database",
@@ -526,8 +504,7 @@ fn validation_errors_are_reported_as_a_versioned_json_envelope() {
 
 #[test]
 fn an_unknown_cluster_is_a_usage_error_that_lists_what_exists() {
-    // Safe anywhere: either the host has no pg_lsclusters (a precondition
-    // error) or it has one and the requested name does not match.
+    // Exit 1 if the host has no pg_lsclusters, otherwise exit 2 when the name does not match.
     let output = run(&["doctor", "--cluster", "99/nonexistent"]);
     assert!(
         matches!(code(&output), 1 | 2),
@@ -556,8 +533,7 @@ fn config_dir_without_pg_config_is_refused() {
 
 #[test]
 fn the_internal_agent_refuses_an_interactive_invocation() {
-    // Its stdin here is not a TTY, so it exits cleanly on an empty protocol
-    // stream rather than doing anything.
+    // Stdin is not a TTY, so an empty protocol stream exits 0 without acting.
     let output = Command::new(binary())
         .arg("__db-agent")
         .stdin(std::process::Stdio::null())
@@ -580,19 +556,7 @@ fn a_bad_timeout_value_is_a_usage_error() {
 
 #[test]
 fn dry_run_never_needs_yes() {
-    // What is under test is the confirmation guard, so the assertion reads
-    // the guard's own message rather than an exit code.
-    //
-    // `CliError::usage` — exit 2 — is raised BOTH by the guard and by cluster
-    // selection ("no supported cluster is online"), so "exit code is not 2"
-    // silently means "and a cluster happened to be running". On a host with
-    // PostgreSQL stopped, and on any CI runner, that made this test fail for
-    // a reason it was never about. The exit code cannot distinguish the two;
-    // the message can.
-    //
-    // These two strings are the guard's contract (`plan.rs::confirm`): one
-    // for an ordinary change, one for the destructive path. If either is
-    // reworded, reword it here too.
+    // Match the confirmation text, not the exit code. Exit 2 is also raised when no cluster is online.
     let output = run(&[
         "setup",
         "--database",
@@ -610,8 +574,7 @@ fn dry_run_never_needs_yes() {
             "--dry-run must never be refused for lack of --yes, but stderr contains {refusal:?}: {err}"
         );
     }
-    // Whatever else happens, a dry run must not report a deferred restart or
-    // a partial apply: it changed nothing, so those codes cannot apply.
+    // A dry run changes nothing, so it cannot report a deferred restart or a partial apply.
     assert!(
         !matches!(code(&output), 3 | 4),
         "a dry run cannot report Partial or RestartRequired: {err}"
@@ -620,9 +583,7 @@ fn dry_run_never_needs_yes() {
 
 #[test]
 fn setup_without_yes_is_refused_before_touching_anything_when_not_interactive() {
-    // Whatever the host looks like, a mutating command with no TTY and no
-    // --yes must never proceed. Either it is refused for that reason (exit 2)
-    // or it never got past discovery (exit 1) — it must not report success.
+    // No TTY and no `--yes`: exit 2 if refused or exit 1 if discovery fails, never success.
     let output = run(&[
         "setup",
         "--database",
@@ -635,15 +596,7 @@ fn setup_without_yes_is_refused_before_touching_anything_when_not_interactive() 
     assert_ne!(code(&output), 0, "{}", stderr(&output));
 }
 
-// ---- external providers (`postvec provider …`) --------------------------
-
-/// A `--path` root for the provider tests.
-///
-/// `tempfile` honours the umask, so on a umask-002 host the root is
-/// group-writable — and the loader refuses a providers.d whose *ancestor* can
-/// be replaced by another account. A real root (`/opt/postvec`,
-/// `/etc/postvec`) is not group-writable, so this restores the deployed
-/// shape rather than relaxing the rule.
+/// chmod 0755. tempfile follows the umask, and a group-writable ancestor is refused.
 fn provider_root() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("tempdir");
@@ -678,7 +631,6 @@ fn provider_help_lists_every_verb_and_the_key_rules() {
     assert!(add.contains("--path"), "{add}");
 }
 
-/// A key is never accepted as a bare flag value, on any provider verb.
 #[test]
 fn no_provider_verb_accepts_a_key_on_the_command_line() {
     for args in [
@@ -701,10 +653,7 @@ fn no_provider_verb_accepts_a_key_on_the_command_line() {
     }
 }
 
-/// `provider add` writes a 0600 file into `<path>/providers.d`, `ls` reads
-/// it back showing the key *source* and never the key, and `rm` removes it
-/// — the walkthrough, entirely on the filesystem (`--path`, so no cluster
-/// and no network).
+/// Add, ls and rm on a `--path` root: a 0600 file, the key source shown and the key value never shown.
 #[test]
 fn provider_add_ls_rm_round_trip_on_a_path_root() {
     use std::os::unix::fs::PermissionsExt;
@@ -728,8 +677,7 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
         root_arg,
         // No paid API call in a test, and no cluster is in scope.
         "--no-verify",
-        // --path cannot inspect a cluster, so every name this makes live
-        // gets the UNKNOWN privacy step; `--yes` does not answer it.
+        // `--path` cannot inspect a cluster, so the privacy step stays UNKNOWN and `--yes` does not answer it.
         "--acknowledge-in-use",
         "--yes",
     ]);
@@ -783,9 +731,7 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
         "provider ls must never print a key: {text}"
     );
 
-    // `--path` cannot scan columns, so `--yes` alone must not remove a
-    // route. The lost-route acknowledgement is demanded with databases
-    // marked not inspected, same as `add`.
+    // `--path` cannot scan columns, so `--yes` alone must not remove a route. Databases are marked not inspected.
     let refused = run(&["provider", "rm", "openai", "--path", root_arg, "--yes"]);
     assert_ne!(code(&refused), 0, "{}", stdout(&refused));
     let text = format!("{}{}", stdout(&refused), stderr(&refused));
@@ -806,12 +752,8 @@ fn provider_add_ls_rm_round_trip_on_a_path_root() {
     assert!(!file.exists(), "provider rm left the file behind");
 }
 
-/// The UniVec converter round trip on a `--path` root: `--convert-source`
-/// writes a `kind = "convert"` entry with both vocabularies, `ls` renders
-/// the route, and `rm` takes it away with the lost-route acknowledgement.
-/// Plain `--yes` suffices for the ADD: a converter's own name never binds a
-/// column and no source text flows through it, so there is no privacy step
-/// to acknowledge — its consent moment is postvec.migrate()'s NOTICE.
+/// A converter add needs only `--yes`: its name never binds a column and no source text flows through it.
+/// `rm` still needs the lost-route acknowledgement.
 #[test]
 fn provider_add_univec_converter_round_trip_on_a_path_root() {
     use std::os::unix::fs::PermissionsExt;
@@ -883,9 +825,7 @@ fn provider_add_univec_converter_round_trip_on_a_path_root() {
         "{text}"
     );
 
-    // rm still demands the lost-route acknowledgement: an in-flight
-    // migration may be resolved through this converter, and `--path` cannot
-    // check.
+    // `rm` still needs the lost-route acknowledgement: an in-flight migration may use this converter.
     let removed = run(&[
         "provider",
         "rm",
@@ -899,10 +839,7 @@ fn provider_add_univec_converter_round_trip_on_a_path_root() {
     assert!(!file.exists(), "provider rm left the file behind");
 }
 
-/// A partial `rm` beside a surviving converter, with no host to ask: the
-/// converter must compare equal to ITSELF across the removal — the document
-/// reader and the loader derive one route id — or the plan would report a
-/// handoff/drift for an entry the command does not touch.
+/// A surviving converter must match itself across a partial rm, or the plan reports a handoff it does not touch.
 #[test]
 fn a_surviving_converter_is_not_its_own_handoff() {
     use std::os::unix::fs::PermissionsExt;
@@ -955,8 +892,7 @@ fn a_surviving_converter_is_not_its_own_handoff() {
     ]);
     assert_eq!(code(&added), 0, "{}", stderr(&added));
 
-    // Remove only the embed model. The surviving converter must not be
-    // reported as drifted or handed off, and must survive the write.
+    // The surviving converter must not be reported as drifted or handed off.
     let removed = run(&[
         "provider",
         "rm",
@@ -982,10 +918,7 @@ fn a_surviving_converter_is_not_its_own_handoff() {
     );
 }
 
-/// `--dry-run` sends nothing. The verification embed is a live, billed
-/// request that also puts the key on the network, so the dry run must skip
-/// it: this test passes on a host with no route to any provider, which it
-/// could not do if the probe still ran.
+/// `--dry-run` skips the billed verification embed, so this passes with no route to a provider.
 #[test]
 fn provider_add_dry_run_makes_no_provider_call_and_writes_nothing() {
     use std::os::unix::fs::PermissionsExt;
@@ -1005,8 +938,7 @@ fn provider_add_dry_run_makes_no_provider_call_and_writes_nothing() {
         key.to_str().unwrap(),
         "--path",
         root.path().to_str().unwrap(),
-        // Deliberately NOT --no-verify: the dry run itself is what must
-        // suppress the probe.
+        // No `--no-verify`: the dry run itself must suppress the probe.
         "--dry-run",
     ]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
@@ -1021,17 +953,14 @@ fn provider_add_dry_run_makes_no_provider_call_and_writes_nothing() {
     );
 }
 
-/// A `--path` root that does not exist is refused. It is the only thing that
-/// says who the files should belong to, and a typo would otherwise build a
-/// credential directory nothing reads.
+/// A missing `--path` root is refused. A typo must not create a credential directory nothing reads.
 #[test]
 fn provider_add_refuses_a_path_root_that_does_not_exist() {
     let root = provider_root();
     let missing = root.path().join("no-such-root");
 
     let output = run(&["provider", "ls", "--path", missing.to_str().unwrap()]);
-    // A precondition, not a usage error: the value is well formed, the host
-    // is not in the state it describes.
+    // Exit 1: the value is well formed and the host is not in that state.
     assert_eq!(code(&output), 1, "{}", stderr(&output));
     let text = stderr(&output);
     assert!(
@@ -1040,8 +969,7 @@ fn provider_add_refuses_a_path_root_that_does_not_exist() {
     );
 }
 
-/// Re-running `add` purely to move `base_url` is a real change, not a
-/// no-op. The file records the new value and the command says it wrote.
+/// Moving `base_url` on an existing file is a write, not a no-op.
 #[test]
 fn provider_add_applies_a_base_url_change_to_an_existing_file() {
     use std::os::unix::fs::PermissionsExt;
@@ -1065,16 +993,13 @@ fn provider_add_applies_a_base_url_change_to_an_existing_file() {
         "--path",
         root_arg,
         "--no-verify",
-        // --path cannot inspect a cluster, so every name it makes live gets
-        // the UNKNOWN privacy step. `--yes` does not answer it.
+        // `--path` cannot inspect a cluster, so the privacy step stays UNKNOWN and `--yes` does not answer it.
         "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&first), 0, "{}", stderr(&first));
 
-    // Same model, same key, new front end. Moving the endpoint of an
-    // *existing* file is a recipient change, so it needs the privacy
-    // acknowledgement as well as --yes.
+    // Moving the endpoint of an existing file is a recipient change and needs the privacy acknowledgement.
     let second = run(&[
         "provider",
         "add",
@@ -1103,8 +1028,7 @@ fn provider_add_applies_a_base_url_change_to_an_existing_file() {
     );
 }
 
-/// A world-readable key file is refused with the same rule the serving host
-/// applies, before anything is written.
+/// A world-readable key file is refused before anything is written, same rule as the serving host.
 #[test]
 fn provider_add_refuses_a_world_readable_key_file() {
     use std::os::unix::fs::PermissionsExt;
@@ -1137,8 +1061,7 @@ fn provider_add_refuses_a_world_readable_key_file() {
     );
 }
 
-/// An unknown model id with --no-verify has no dimension to write, and
-/// says so instead of guessing one.
+/// With `--no-verify`, an unknown model has no dimension and must not guess one.
 #[test]
 fn an_unknown_model_needs_a_dim_when_verification_is_skipped() {
     let root = provider_root();
@@ -1161,8 +1084,7 @@ fn an_unknown_model_needs_a_dim_when_verification_is_skipped() {
     assert!(err.contains("--dim"), "{err}");
 }
 
-/// `gemini` is accepted and writes the canonical `google` connector type,
-/// so the file matches the factory arm.
+/// The `gemini` alias writes `provider = "google"` so the file matches the factory.
 #[test]
 fn the_gemini_alias_writes_the_google_connector_type() {
     let root = provider_root();
@@ -1189,9 +1111,7 @@ fn the_gemini_alias_writes_the_google_connector_type() {
     assert!(body.contains("name = \"gemini-embedding-001\""), "{body}");
 }
 
-/// The provider name becomes `<providers.d>/<name>.toml` in every verb, and
-/// `rm` deletes that path. A traversing name — under `sudo`, against a
-/// system directory — must be refused before it is joined onto anything.
+/// A traversing provider name is refused before it is joined onto `providers.d`, including under sudo.
 #[test]
 fn a_traversing_provider_name_is_refused_by_every_verb() {
     let root = provider_root();
@@ -1229,9 +1149,7 @@ fn a_traversing_provider_name_is_refused_by_every_verb() {
     assert!(outside.exists(), "provider rm escaped the providers.d");
 }
 
-/// The Titan connector derives its endpoint from the region and never reads
-/// `base_url`, so accepting the flag would write a setting the host silently
-/// ignores. The region itself becomes a hostname, so it is validated too.
+/// Titan builds its endpoint from the region and ignores `base_url`, so the flag is refused. The region is checked as a hostname.
 #[test]
 fn aws_refuses_a_base_url_and_a_region_that_could_move_the_endpoint() {
     let root = provider_root();
@@ -1277,8 +1195,7 @@ fn aws_refuses_a_base_url_and_a_region_that_could_move_the_endpoint() {
     assert!(!body.contains("base_url"), "{body}");
 }
 
-/// `enabled = false` is a state an operator chose. `ls` says so instead of
-/// telling them to reload a host that is behaving correctly.
+/// `enabled = false` is reported as disabled, not as a host that still needs a reload.
 #[test]
 fn provider_ls_reports_a_disabled_file_as_disabled() {
     use std::os::unix::fs::PermissionsExt;
@@ -1305,10 +1222,7 @@ fn provider_ls_reports_a_disabled_file_as_disabled() {
     );
 }
 
-/// A model id the host's name charset does not accept is *reduced*, not
-/// written through. A public name the loader refuses fails the whole
-/// connector file at the next reload, taking that provider's working models
-/// down with it — so the derivation has to be total.
+/// An awkward model id is reduced to a public name the loader accepts. A refused name fails the whole file on reload.
 #[test]
 fn an_awkward_model_id_still_derives_a_name_the_host_accepts() {
     let root = provider_root();
@@ -1342,19 +1256,14 @@ fn an_awkward_model_id_still_derives_a_name_the_host_accepts() {
     );
 }
 
-/// `provider add` composes a file the serving host then has to accept as a
-/// **whole** — one bad entry takes that provider's already-working models
-/// down at the next reload. So the rendered document is run through the
-/// loader's own rules before it lands, and a refusal leaves the host exactly
-/// as it was.
+/// The rendered file is checked with the loader's rules before it is written. One bad entry takes that provider's working models down on reload.
 #[test]
 fn provider_add_will_not_write_a_file_the_host_would_refuse() {
     let root = provider_root();
     let root_arg = root.path().to_str().unwrap();
     let file = root.path().join("providers.d").join("openai.toml");
 
-    // An implausible dimension. Nothing else catches it: --no-verify skips
-    // the probe, and the loader refuses `dim = 0`.
+    // `dim = 0` is refused by the loader. `--no-verify` skips the probe, so nothing else catches it.
     let output = run(&[
         "provider",
         "add",
@@ -1368,17 +1277,14 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
         "--path",
         root_arg,
         "--no-verify",
-        // --path cannot inspect a cluster, so every name it makes live gets
-        // the UNKNOWN privacy step. `--yes` does not answer it.
+        // `--path` cannot inspect a cluster, so the privacy step stays UNKNOWN and `--yes` does not answer it.
         "--acknowledge-in-use",
         "--yes",
     ]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
     assert!(!file.exists(), "a refused file must not be written");
 
-    // A base_url reqwest cannot parse would fail at request time as a
-    // *transport* error, which the taxonomy classifies transient — so the
-    // rows would be retried to death over a permanent typo.
+    // An unparseable base_url would be a transient transport error and retried forever.
     let output = run(&[
         "provider",
         "add",
@@ -1392,8 +1298,7 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
         "--path",
         root_arg,
         "--no-verify",
-        // --path cannot inspect a cluster, so every name it makes live gets
-        // the UNKNOWN privacy step. `--yes` does not answer it.
+        // `--path` cannot inspect a cluster, so the privacy step stays UNKNOWN and `--yes` does not answer it.
         "--acknowledge-in-use",
         "--yes",
     ]);
@@ -1401,8 +1306,7 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
     assert!(stderr(&output).contains("base_url"), "{}", stderr(&output));
     assert!(!file.exists());
 
-    // And an unsupported connector type, which the factory would only
-    // refuse at gateway build, in the host's log.
+    // An unknown connector type would otherwise fail later, at gateway build.
     let output = run(&[
         "provider",
         "add",
@@ -1414,8 +1318,7 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
         "--path",
         root_arg,
         "--no-verify",
-        // --path cannot inspect a cluster, so every name it makes live gets
-        // the UNKNOWN privacy step. `--yes` does not answer it.
+        // `--path` cannot inspect a cluster, so the privacy step stays UNKNOWN and `--yes` does not answer it.
         "--acknowledge-in-use",
         "--yes",
     ]);
@@ -1427,8 +1330,7 @@ fn provider_add_will_not_write_a_file_the_host_would_refuse() {
     );
 }
 
-/// A hand-edited file the host refuses reads as a refusal in `ls`, not
-/// as "reload the host". Same question doctor asks via the loader rules.
+/// A file the host refuses is reported as a refusal, not as a reload the operator still owes.
 #[test]
 fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
     use std::os::unix::fs::PermissionsExt;
@@ -1437,8 +1339,7 @@ fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
     let dir = root.path().join("providers.d");
     std::fs::create_dir_all(&dir).expect("mkdir");
     let file = dir.join("openai.toml");
-    // A transposed credential field: valid TOML, refused by the host's
-    // `deny_unknown_fields`, and invisible to a permissive read.
+    // A transposed credential field: valid TOML, refused by `deny_unknown_fields` and invisible to a permissive read.
     std::fs::write(
         &file,
         "provider = \"openai\"\napi_kee = \"sk-x\"\n\n[[models]]\n\
@@ -1459,11 +1360,7 @@ fn provider_ls_names_a_refused_file_instead_of_blaming_a_reload() {
     );
 }
 
-/// This command runs under `sudo`. A providers.d another account can write
-/// to lets that account choose what a root-run `provider add` creates — and,
-/// with a planted `.NAME.postvec.tmp` symlink, what it truncates. The
-/// serving host refuses such a directory outright; the CLI refuses to write
-/// into one, and names the fix rather than repairing it silently.
+/// A providers.d another account can write is refused, not repaired. Under sudo that account could plant the file or a temp symlink.
 #[test]
 fn provider_add_refuses_a_world_writable_providers_directory() {
     use std::os::unix::fs::PermissionsExt;
@@ -1496,10 +1393,7 @@ fn provider_add_refuses_a_world_writable_providers_directory() {
     );
 }
 
-/// The temporary file a privileged writer creates must be *created*, not
-/// opened: a pre-planted symlink at the temp path would otherwise be followed
-/// and truncated. `create_new` + `O_NOFOLLOW` makes that a refusal even if
-/// the directory check above were somehow passed.
+/// The temp path is created, not opened, so a planted symlink is not followed.
 #[test]
 fn provider_add_will_not_follow_a_planted_temporary_symlink() {
     use std::os::unix::fs::PermissionsExt;
@@ -1528,8 +1422,7 @@ fn provider_add_will_not_follow_a_planted_temporary_symlink() {
         "--acknowledge-in-use",
         "--yes",
     ]);
-    // Either the symlink is refused, or it was removed as a stale temp file
-    // and a fresh regular file was created — never followed.
+    // The symlink is refused or replaced by a new regular file, never followed.
     assert_eq!(
         std::fs::read_to_string(&victim).unwrap_or_default(),
         "must survive",
@@ -1538,8 +1431,7 @@ fn provider_add_will_not_follow_a_planted_temporary_symlink() {
     );
 }
 
-/// A hand-edited `models = 3` is an operator mistake. It must be a refusal
-/// naming the file, not a panic in a command run under `sudo`.
+/// `models = 3` is a refusal that names the file, not a panic under sudo.
 #[test]
 fn a_malformed_models_field_is_an_error_not_a_panic() {
     use std::os::unix::fs::PermissionsExt;
@@ -1574,15 +1466,8 @@ fn a_malformed_models_field_is_an_error_not_a_panic() {
     assert!(err.contains("models"), "{err}");
 }
 
-/// Moving `base_url` or `region` on an existing file is a **recipient**
-/// change: the same public names, the same bound columns, a different
-/// organisation receiving their source text. The privacy gate was built from
-/// newly added names only, which for an endpoint-only edit is the empty set —
-/// so the one gate this feature is designed around never fired for the one
-/// edit that most needs it.
-///
-/// With `--path` there is no cluster to scan, so the command must say so
-/// rather than silently treating "no columns found" as "no columns".
+/// Moving `base_url` or `region` is a recipient change: same names, a different organisation receiving the text.
+/// With `--path` there is no cluster to scan, so that is stated rather than treated as no columns.
 #[test]
 fn moving_an_endpoint_announces_that_the_recipient_changes() {
     let root = provider_root();
@@ -1601,22 +1486,18 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
         "--path",
         root_arg,
         "--no-verify",
-        // --path cannot inspect a cluster, so every name it makes live gets
-        // the UNKNOWN privacy step. `--yes` does not answer it.
+        // `--path` cannot inspect a cluster, so the privacy step stays UNKNOWN and `--yes` does not answer it.
         "--acknowledge-in-use",
         "--yes",
     ]);
     assert_eq!(code(&first), 0, "{}", stderr(&first));
 
-    // Same models, same key, different endpoint. `--yes` alone must NOT get
-    // through: it answers "change the configuration", not "may this text go
-    // to someone else". With --path there is no cluster to list the affected
-    // columns, and an unanswerable question is not a clean answer.
+    // `--yes` answers the config change, not the recipient change. With `--path` the columns cannot be listed.
     let moved_args = [
         "provider",
         "add",
         "openai",
-        // Already declared, so this adds nothing — the endpoint is the change.
+        // Already declared, so this adds nothing. The endpoint is the change.
         "--model",
         "text-embedding-3-small",
         "--base-url",
@@ -1647,9 +1528,7 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
     let moved = run(&acked);
     assert_eq!(code(&moved), 0, "{}", stderr(&moved));
 
-    // A key-source rotation to the same endpoint is NOT a recipient change,
-    // and must not raise the same alarm — over-prompting is how a gate stops
-    // being read.
+    // A key-source rotation to the same endpoint is not a recipient change and must not raise that gate.
     let rotated = run(&[
         "provider",
         "add",
@@ -1661,8 +1540,7 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
         "--path",
         root_arg,
         "--no-verify",
-        // --path cannot inspect a cluster, so every name it makes live gets
-        // the UNKNOWN privacy step. `--yes` does not answer it.
+        // `--path` cannot inspect a cluster, so the privacy step stays UNKNOWN and `--yes` does not answer it.
         "--acknowledge-in-use",
         "--yes",
     ]);
@@ -1674,19 +1552,13 @@ fn moving_an_endpoint_announces_that_the_recipient_changes() {
     );
 }
 
-/// `ensure_private_dir` validated only a providers.d that *already existed*,
-/// so the very first `provider add` on a host created the credential
-/// directory — and then a `.lock` file and a `chown` — under a parent chain
-/// nobody had looked at. The deepest existing ancestor is what the new
-/// directory hangs from, so it is what has to be safe.
+/// The deepest existing ancestor of a new providers.d is checked before the directory is created and chowned.
 #[test]
 fn creating_a_providers_directory_checks_the_chain_it_hangs_from() {
     use std::os::unix::fs::PermissionsExt;
 
     let root = provider_root();
-    // A world-writable parent for the not-yet-existing providers.d: anyone
-    // could swap the directory out from under the command that is about to
-    // create and chown it.
+    // A world-writable parent of a not-yet-existing providers.d can be swapped before create and chown.
     let hostile = root.path().join("hostile");
     std::fs::create_dir(&hostile).expect("mkdir");
     std::fs::set_permissions(&hostile, std::fs::Permissions::from_mode(0o777)).expect("chmod");
@@ -1717,11 +1589,7 @@ fn creating_a_providers_directory_checks_the_chain_it_hangs_from() {
     );
 }
 
-/// The probe is a paid call, so it must not be spent on a file or model
-/// the serving host would refuse.
-///
-/// Hermetic: the mock must see zero requests. Multi-threaded runtime so
-/// the accept loop actually runs.
+/// A file or model the host would refuse is never probed. Multi-threaded so the accept loop runs.
 #[test]
 fn nothing_the_host_would_refuse_is_ever_probed() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1729,8 +1597,7 @@ fn nothing_the_host_would_refuse_is_ever_probed() {
         .enable_all()
         .build()
         .expect("runtime");
-    // The OpenAI response shape, for the positive control at the end. The
-    // refusal cases never reach the mock, so its body is irrelevant to them.
+    // OpenAI response shape for the positive control. Refusal cases never reach the mock.
     let mock = runtime.block_on(providers::testing::always(
         200,
         r#"{"data":[{"embedding":[0.1,0.2],"index":0}]}"#,
@@ -1749,8 +1616,7 @@ fn nothing_the_host_would_refuse_is_ever_probed() {
             .env_remove("POSTVEC_PATH")
             .env_remove("POSTVEC_PROVIDERS_PATH")
             .env("NO_COLOR", "1")
-            // Resolvable, so every one of these runs would otherwise reach
-            // the mock.
+            // Resolvable, so these runs would reach the mock without the gate.
             .env("POSTVEC_PROBE_GATE_KEY", "not-a-real-key")
             .output()
             .expect("run postvec")
@@ -1765,23 +1631,20 @@ fn nothing_the_host_would_refuse_is_ever_probed() {
             mock.url.as_str(),
             "--path",
             root_arg,
-            // Deliberately NOT --no-verify: the probe is what must be
-            // skipped, and only the gate can skip it.
+            // No `--no-verify`: only the gate can skip the probe.
             "--acknowledge-in-use",
             "--yes",
         ]);
         cli(&args)
     };
 
-    // A per-model contract the connector cannot honour: a Cohere v3 width
-    // that model never produces, and a Gemini id postvec has no contract for.
+    // A Cohere width that model never produces, and a Gemini id with no contract.
     let output = add(&["cohere", "--model", "embed-english-v3.0", "--dim", "512"]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
     let output = add(&["gemini", "--model", "gemini-embedding-2", "--dim", "1536"]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
 
-    // A structurally invalid *file*: an unknown field the serving loader
-    // refuses, which no per-model rule can see.
+    // An unknown field the loader refuses, which no per-model rule can see.
     let file = providers_d.join("openai.toml");
     std::fs::write(
         &file,
@@ -1801,21 +1664,17 @@ fn nothing_the_host_would_refuse_is_ever_probed() {
     let text = format!("{}{}", stdout(&output), stderr(&output));
     assert!(text.contains("api_kee"), "{text}");
 
-    // And `provider test` on the same broken file, which had no document
-    // validation at all.
+    // `provider test` refuses the same broken file.
     let output = cli(&["provider", "test", "openai", "--path", root_arg]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
 
-    // The assertion the whole test exists for.
     assert_eq!(
         mock.request_count(),
         0,
         "a refused file or model must never reach the provider"
     );
 
-    // Positive control, on the *same* mock: a legitimate run does reach it.
-    // Without this, "zero requests" would also hold for a mock that cannot
-    // count — which is exactly how the first version of this test passed.
+    // Positive control on the same mock: a legitimate run does reach it, so zero is a real count.
     std::fs::remove_file(&file).expect("clear the broken file");
     let output = add(&["openai", "--model", "text-embedding-3-small", "--dim", "2"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
@@ -1831,8 +1690,7 @@ fn set_mode(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
 }
 
-/// Unknown-dimension models stay in the document under validation so they
-/// can still reach the probe. Structural rules still see them.
+/// Unknown-dimension models stay under validation so they can reach the probe. Structural rules still see them.
 #[test]
 fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1871,8 +1729,7 @@ fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
             .expect("run postvec")
     };
 
-    // A model the built-in catalog does not know, into a file that does not
-    // exist yet: the probe is the only thing that can supply its dimension.
+    // A model the catalog does not know, in a new file: only the probe can supply its dimension.
     let output = add(&["--model", "some-uncatalogued-model"]);
     assert_eq!(code(&output), 0, "{}", stderr(&output));
     assert_eq!(mock.request_count(), 1, "the probe must have run");
@@ -1881,9 +1738,7 @@ fn an_uncatalogued_model_reaches_dimension_discovery_and_duplicates_do_not() {
     assert!(body.contains("dim = 3"), "the measured dimension: {body}");
     assert!(body.contains("openai-some-uncatalogued-model"), "{body}");
 
-    // Two ids that derive one public name. Both would be probed and only one
-    // written, while both were journaled as added — so the check has to
-    // happen before either call.
+    // Two ids that derive one public name must be refused before either is probed.
     let before = mock.request_count();
     let output = add(&["--model", "foo/bar", "--model", "foo--bar"]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
@@ -1915,8 +1770,7 @@ fn a_composed_file_over_the_byte_ceiling_is_refused_before_anything_is_spent() {
     set_mode(&providers_d, 0o700);
     let file = providers_d.join("openai.toml");
 
-    // Just *under* the ceiling, so the file itself loads: the overflow has to
-    // come from what this run adds.
+    // Just under the ceiling, so the file itself loads and the overflow comes from this run.
     let ceiling = providers::config::MAX_FILE_BYTES as usize;
     let head = format!(
         "provider = \"openai\"\napi_key_env = \"POSTVEC_CEILING_KEY\"\nbase_url = \"{}/\
@@ -1970,8 +1824,6 @@ fn a_composed_file_over_the_byte_ceiling_is_refused_before_anything_is_spent() {
     );
 }
 
-/// Adding a valid file that would push the directory over a loader ceiling
-/// must fail, including `--dry-run`.
 #[test]
 fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1990,8 +1842,7 @@ fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
     std::fs::create_dir_all(&providers_d).expect("mkdir");
     set_mode(&providers_d, 0o700);
 
-    // Siblings whose max_concurrent sums to exactly the 256 ceiling — legal
-    // on their own, and one more file of any size tips the directory over.
+    // Siblings whose max_concurrent sums to the 256 ceiling. One more file tips the directory over.
     for i in 0..4 {
         let file = providers_d.join(format!("sibling{i}.toml"));
         std::fs::write(
@@ -2004,8 +1855,7 @@ fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
         .expect("write");
         set_mode(&file, 0o600);
     }
-    // Connector files only: the advisory `.lock` the command takes is not
-    // one, and is expected to appear.
+    // Count connector files only. The advisory `.lock` is not one and is expected to appear.
     let tomls = |dir: &std::path::Path| -> usize {
         std::fs::read_dir(dir)
             .unwrap()
@@ -2048,8 +1898,7 @@ fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
             .expect("run postvec")
     };
 
-    // The new file defaults to max_concurrent = 4, which is four too many.
-    // Dry run first: it must refuse, for the same reason the real run would.
+    // The new file defaults to max_concurrent = 4, four over the ceiling. Dry run must refuse too.
     let output = add(&["--dry-run"]);
     assert_ne!(code(&output), 0, "{}", stdout(&output));
     let text = format!("{}{}", stdout(&output), stderr(&output));
@@ -2068,7 +1917,6 @@ fn a_write_that_would_break_the_directory_is_refused_and_dry_run_says_so() {
     );
 }
 
-/// An oversized file is refused, not read as a truncated prefix.
 #[test]
 fn an_oversized_connector_file_is_refused_not_truncated() {
     let root = provider_root();
@@ -2077,9 +1925,7 @@ fn an_oversized_connector_file_is_refused_not_truncated() {
     set_mode(&providers_d, 0o700);
     let file = providers_d.join("openai.toml");
 
-    // A legal prefix, then a tail that takes it over the ceiling. If the
-    // reader truncated, the prefix alone would parse and the command would
-    // proceed to rewrite the file without the tail.
+    // A legal prefix plus a tail over the ceiling. A truncating reader would parse the prefix and rewrite.
     let prefix = "provider = \"openai\"\napi_key_env = \"POSTVEC_TRUNC_KEY\"\n\n[[models]]\n\
                   name = \"openai-text-embedding-3-small\"\n\
                   provider_model_id = \"text-embedding-3-small\"\ndim = 1536\n";
@@ -2138,12 +1984,8 @@ fn an_oversized_connector_file_is_refused_not_truncated() {
     );
 }
 
-/// Removing one claimant of a contested name hands the name to the surviving
-/// file. With no host to say what is served under that name today, disk
-/// identity alone cannot establish that the survivor writes into the same
-/// space — the host may hold an older snapshot — so this is refused outright,
-/// not acknowledged; the survivor's *other* model is the ordinary activation
-/// and would have taken the recipient acknowledgement.
+/// Without a host, removing one claimant of a contested name is refused outright, not acknowledged.
+/// The survivor's other model would be an ordinary activation and would take the recipient acknowledgement.
 #[test]
 fn removing_a_contested_claimant_without_a_host_is_refused() {
     let root = provider_root();
@@ -2152,8 +1994,7 @@ fn removing_a_contested_claimant_without_a_host_is_refused() {
     std::fs::create_dir_all(&providers_d).expect("mkdir");
     set_mode(&providers_d, 0o700);
 
-    // Two files claim `shared-name`; the second also carries an unrelated
-    // model that is refused along with it while the contest stands.
+    // Two files claim `shared-name`. The second's other model is refused with it while the contest stands.
     let write = |stem: &str, body: &str| {
         let path = providers_d.join(format!("{stem}.toml"));
         std::fs::write(&path, body).expect("write");
@@ -2164,9 +2005,7 @@ fn removing_a_contested_claimant_without_a_host_is_refused() {
         "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
          provider_model_id = \"a\"\ndim = 4\n",
     );
-    // Same connector, endpoint, upstream model id and width — only the file
-    // (and so possibly the account) differs: the same vector space from a
-    // different recipient, a handoff an acknowledgement covers.
+    // Same connector, endpoint, model id and width. Only the file, and so possibly the account, differs.
     write(
         "beta",
         "provider = \"openai\"\napi_key = \"inline-test-key\"\n\n[[models]]\nname = \"shared-name\"\n\
@@ -2202,11 +2041,7 @@ fn removing_a_contested_claimant_without_a_host_is_refused() {
     }
 }
 
-/// No host: the files say a sibling is served, but the host may have loaded
-/// before it existed or refused its secret, and the reload this command asks
-/// for would bring it online. A sibling untouched by the removal is therefore
-/// treated as *starting* — the recipient acknowledgement, with databases
-/// UNKNOWN — and `--yes` alone must not proceed.
+/// Without a host, an untouched sibling is treated as starting. Databases stay UNKNOWN, so `--yes` alone must not proceed.
 #[test]
 fn without_a_host_an_untouched_sibling_takes_the_recipient_acknowledgement() {
     let root = provider_root();
@@ -2256,12 +2091,8 @@ fn without_a_host_an_untouched_sibling_takes_the_recipient_acknowledgement() {
     assert!(providers_d.join("beta.toml").exists());
 }
 
-/// The surviving claimant declares the same public name with a different
-/// semantic identity — upstream model, width, connector or endpoint. That is
-/// not a handoff an acknowledgement can cover: the vectors already stored
-/// under the name can no longer be assumed to match the ones written next,
-/// and nothing migrates them. Refused with every flag, and the fix points at
-/// a new public name plus migrate().
+/// A survivor with the same name but a different model, width, connector or endpoint is refused with every flag.
+/// Stored vectors may no longer match what is written next. The fix is a new name plus migrate().
 #[test]
 fn a_repair_that_changes_the_vector_space_under_a_name_is_refused() {
     for (provider, base_url, model_id, dim) in [
@@ -2331,11 +2162,8 @@ fn a_repair_that_changes_the_vector_space_under_a_name_is_refused() {
     }
 }
 
-/// No host answers and the file no longer declares any model — edited since
-/// the host loaded it, or its models section gone. The unreachable host may
-/// still be serving routes from the version it read, and nothing on disk can
-/// name them. The file itself is then the route whose loss is acknowledged:
-/// `--yes` alone must not remove it.
+/// A file with no models and no host may still be serving routes the disk cannot name.
+/// The file itself is the acknowledged route, so `--yes` alone must not remove it.
 #[test]
 fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgement() {
     let root = provider_root();
@@ -2376,8 +2204,7 @@ fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgem
     );
     assert!(path.exists(), "nothing removed without the acknowledgement");
 
-    // Interactively the operator types the route names back, so the
-    // synthetic one must be a single token: the file name, nothing more.
+    // The operator types route names back, so the synthetic one is a single token: the file name.
     let output = Command::new(binary())
         .args([
             "provider",
@@ -2414,11 +2241,8 @@ fn removing_a_file_with_no_recoverable_routes_and_no_host_needs_the_acknowledgem
     assert!(!path.exists());
 }
 
-/// The same bare file beside a sibling that serves afterwards: one of the
-/// routes the unreachable host still serves from the bare file may share a
-/// public name with the sibling's under a different vector identity, which
-/// neither acknowledgement states or prevents. Refused with every flag until
-/// a host answers.
+/// A bare file beside a sibling that would serve afterwards is refused with every flag until a host answers.
+/// A route from the bare file may share a name with the sibling under a different vector identity.
 #[test]
 fn a_bare_file_beside_a_surviving_route_is_refused_without_a_host() {
     let root = provider_root();
@@ -2461,10 +2285,7 @@ fn a_bare_file_beside_a_surviving_route_is_refused_without_a_host() {
     }
 }
 
-/// Removing a file can *repair* a directory the host refuses as a whole — and
-/// then every remaining provider comes online at once. That is the largest
-/// recipient change this command can cause, and it must take the recipient
-/// acknowledgement rather than sail through on `--yes`.
+/// Removing the file that repairs an over-ceiling directory brings every remaining provider online and needs the recipient acknowledgement.
 #[test]
 fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledgement() {
     let root = provider_root();
@@ -2509,8 +2330,7 @@ fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledg
             "{name} comes online and must be named: {text}"
         );
     }
-    // And the removed file's own model is not described as losing a route:
-    // it was never served.
+    // The removed file's own model is not a lost route: it was never served.
     assert!(
         !text.contains("lose their embedding route"),
         "nothing was served before, so nothing is lost: {text}"
@@ -2521,12 +2341,8 @@ fn removing_the_file_that_repairs_an_over_ceiling_directory_needs_the_acknowledg
     assert_eq!(code(&output), 0, "{}", stderr(&output));
 }
 
-// ---- `provider add univec` discovery, `provider ls --available` ----------
-//
-// A path-aware mock aphex on loopback serves the four routes the flow uses:
-// the public catalogue, the best-effort identity check, and the two billed probes.
-// Every test counts requests per route, so "no billed call" claims are
-// checked against a mock that can observe one (positive controls below).
+// A loopback mock serves the catalogue, the identity check and the two billed probes.
+// Counts are per route, so a "no billed call" claim is checked on a mock that can see one.
 
 mod univec_discovery {
     use super::*;
@@ -2587,8 +2403,7 @@ mod univec_discovery {
             "--acknowledge-in-use",
             "--yes",
         ]);
-        // A rerun on an existing file passes no key source (the file's
-        // own is reused, so nothing counts as a credential change).
+        // A rerun passes no key source: the file's own is reused, so it is not a credential change.
         if !extra
             .iter()
             .any(|a| a.starts_with("--api-key") || *a == "--existing-key")
@@ -2616,10 +2431,8 @@ mod univec_discovery {
         std::fs::read_to_string(root.join("providers.d/univec.toml")).unwrap_or_default()
     }
 
-    /// Scenarios 1, 8 and the `--no-verify` rule: the zero-argument add
-    /// materialises every catalogue embed with catalogue dims and
-    /// `max_tokens`, bills exactly one embed against the cheapest ADDED
-    /// model, and a rerun spends nothing.
+    /// A zero-argument add writes every catalogue embed and bills one probe on the cheapest added model.
+    /// `--no-verify` uses catalogue dims, and a rerun spends nothing.
     #[test]
     fn a_zero_argument_add_writes_every_embed_and_bills_one_probe() {
         let rt = runtime();
@@ -2691,8 +2504,7 @@ mod univec_discovery {
         );
     }
 
-    /// Scenarios 2 and 10: a convert-only add writes both vocabularies from
-    /// the catalogue, bills one convert probe and no embed probe.
+    /// A convert-only add writes both vocabularies from the catalogue and bills one convert probe, no embed probe.
     #[test]
     fn convert_to_adds_every_route_into_the_target_with_one_convert_probe() {
         let rt = runtime();
@@ -2726,8 +2538,7 @@ mod univec_discovery {
         assert!(t.contains("catalogue: 0 embed, 2 convert added"), "{t}");
         assert!(t.contains("local embed model of the target"), "{t}");
 
-        // The union: --model plus a single --convert with a custom name,
-        // one billed call of each kind.
+        // `--model` plus one `--convert` with a custom name: one billed call of each kind.
         let fresh = provider_root();
         let out = add(
             &mock,
@@ -2756,8 +2567,7 @@ mod univec_discovery {
         );
     }
 
-    /// Scenarios 3 and 9: selections the catalogue cannot satisfy are
-    /// refused before anything is written, naming the way out.
+    /// A selection the catalogue cannot satisfy is refused before anything is written, and the message names the way out.
     #[test]
     fn unlisted_selections_are_refused_with_the_fallback_named() {
         let rt = runtime();
@@ -2780,9 +2590,7 @@ mod univec_discovery {
         );
     }
 
-    /// A catalogue that breaks its contract (a known kind missing a
-    /// dimension) is refused whole — even for a `--model` add that could
-    /// have fallen back — with the row named, nothing written, nothing billed.
+    /// A catalogue row of a known kind with no dimension is refused whole, even for a `--model` that could have fallen back.
     #[test]
     fn a_catalogue_that_breaks_its_contract_is_refused_whole() {
         let rt = runtime();
@@ -2806,8 +2614,7 @@ mod univec_discovery {
             mock.path_count("/v1/embeddings") + mock.path_count("/v1/registry/index.json"),
             0
         );
-        // A configured file pointing at the broken catalogue: `ls --available`
-        // names the row (a bare lookup would go to the real API).
+        // A configured file on the broken catalogue: `ls --available` names the row instead of calling the real API.
         assert_eq!(
             code(&add(
                 &mock,
@@ -2838,8 +2645,7 @@ mod univec_discovery {
         );
     }
 
-    /// Scenario 4: a dead catalogue stops a run that needs it and only
-    /// warns a run that named its models.
+    /// A dead catalogue stops a run that needs it and only warns a run that named its models.
     #[test]
     fn an_unreachable_catalogue_fails_only_selections_that_need_it() {
         let rt = runtime();
@@ -2866,8 +2672,7 @@ mod univec_discovery {
         assert!(text(&out).contains("--dim"), "{}", text(&out));
     }
 
-    /// Scenarios 5, 6 and 11: `ls --available` per file, joined against
-    /// what is configured, and honest about connectors that cannot list.
+    /// `ls --available` lists each file against what is configured and names connectors that cannot list.
     #[test]
     fn ls_available_lists_per_file_and_names_what_cannot_list() {
         let rt = runtime();
@@ -2991,9 +2796,8 @@ mod univec_discovery {
         );
     }
 
-    /// A configured file that cannot be loaded is a named `failed` result
-    /// in both formats, the other files still list, and a request for that
-    /// stem does not degrade into a bare-connector lookup.
+    /// A file that cannot be loaded is a named `failed` result in both formats, and the other files still list.
+    /// Asking for that stem does not fall back to a bare-connector lookup.
     #[test]
     fn ls_available_names_a_malformed_configured_file() {
         let rt = runtime();
@@ -3137,8 +2941,7 @@ mod univec_discovery {
         }
     }
 
-    /// An explicit target that cannot be honoured is an error, never a
-    /// silent catalogue-only listing.
+    /// An explicit target that cannot be honoured is an error, never a silent catalogue-only listing.
     #[test]
     fn ls_available_propagates_an_explicit_target_failure() {
         let out = run(&[
@@ -3180,8 +2983,7 @@ mod univec_discovery {
         );
     }
 
-    /// Scenario 7: a converter whose stated width contradicts the listed
-    /// embed of the same name is refused with both numbers.
+    /// A converter whose stated width contradicts the listed embed of the same name is refused with both numbers.
     #[test]
     fn a_catalogue_that_contradicts_itself_is_refused() {
         let rt = runtime();
@@ -3201,8 +3003,7 @@ mod univec_discovery {
         assert_eq!(mock.path_count("/v1/convert"), 0);
     }
 
-    /// Scenario 12: the best-effort identity check. A 401 stops the run before a
-    /// billed call; a 500 on that route is a warning and the probe decides.
+    /// A 401 on the identity check stops the run before a billed call. A 500 is a warning and the probe decides.
     #[test]
     fn the_identity_check_stops_a_bad_key_and_tolerates_an_outage() {
         let rt = runtime();
@@ -3263,8 +3064,7 @@ mod univec_discovery {
         mock(rt, (200, CATALOGUE), EMBED_3, identity)
     }
 
-    /// Scenario 13: the probe contradicting the catalogue is a refusal,
-    /// never a silent patch; and `--dim` cannot override the catalogue.
+    /// A probe that contradicts the catalogue is a refusal, not a silent patch, and `--dim` cannot override the catalogue.
     #[test]
     fn a_probe_that_disagrees_with_the_catalogue_is_refused() {
         let rt = runtime();
@@ -3285,9 +3085,7 @@ mod univec_discovery {
         assert_eq!(code(&out), 0, "{}", text(&out));
     }
 
-    /// The login-key reuse, scripted: the key is COPIED into keys/univec.key
-    /// (0600) and referenced, never written inline; without a credential the
-    /// flag is a usage error.
+    /// `--api-key-from-login` copies the key into `keys/univec.key` (0600) and references it. No credential is a usage error.
     #[test]
     fn api_key_from_login_copies_the_stored_key_into_a_referenced_file() {
         use std::os::unix::fs::PermissionsExt;
@@ -3435,8 +3233,7 @@ mod univec_discovery {
             "uv_someone_elses_key"
         );
 
-        // An unsafe destination is refused before any request, billed or
-        // not, and nothing is written.
+        // An unsafe destination is refused before any request, and nothing is written.
         let blocked = provider_root();
         std::fs::create_dir_all(blocked.path().join("keys/univec.key")).unwrap();
         set_mode(&blocked.path().join("keys"), 0o700);
@@ -3536,9 +3333,8 @@ mod univec_discovery {
         );
     }
 
-    /// Rotation of a copied key: refused by default, allowed with
-    /// `--replace-copied-key` only for a file this stem alone references,
-    /// with the new key verified before the old one goes.
+    /// Replacing a copied key needs `--replace-copied-key` and a file only this stem references.
+    /// The new key is verified before the old one is replaced.
     #[test]
     fn replace_copied_key_rotates_only_this_connectors_own_copy() {
         const KEY2: &str = "uv_rotated_key_value_2";
@@ -3625,9 +3421,7 @@ mod univec_discovery {
             t.contains(&format!("rewrite {}", key_file.display())) && t.contains("rotated"),
             "{t}"
         );
-        // A key rotation re-verifies ONE representative existing embed (the
-        // file has one) plus the one-per-kind probe for what was added, and
-        // the plan said so before confirmation.
+        // A key rotation re-verifies one existing embed plus one probe per added kind, and the plan said so.
         assert!(
             t.contains(
                 "verify against univec with 1 billable embed probe attempt(s) and 1 billable convert probe attempt(s)"
@@ -3643,7 +3437,7 @@ mod univec_discovery {
         );
         assert_eq!(std::fs::read_to_string(&key_file).unwrap(), KEY2);
         assert!(file(root.path()).contains("univec-convert-src-to-big"));
-        // Without the flag, the flag is a usage error on its own.
+        // `--replace-copied-key` by itself is a usage error.
         assert_eq!(
             code(&run(&[
                 "provider",
@@ -3658,9 +3452,7 @@ mod univec_discovery {
         );
     }
 
-    /// A credential change on any OTHER connector still re-verifies every
-    /// existing route: the one-representative rule is UniVec's account-wide
-    /// key contract, not a general one.
+    /// A credential change on any other connector re-verifies every existing route. The one-representative rule is UniVec only.
     #[test]
     fn a_non_univec_key_change_reverifies_every_route() {
         let rt = runtime();
@@ -3710,8 +3502,7 @@ mod univec_discovery {
         assert_eq!(mock.request_count(), before + 2, "every existing route");
     }
 
-    /// A selected key over the copied-file bound is refused before any
-    /// request, verified or not.
+    /// A selected key over the copied-file bound is refused before any request.
     #[test]
     fn an_oversized_selected_key_is_refused_before_anything_is_sent() {
         let rt = runtime();
@@ -3749,12 +3540,8 @@ mod univec_discovery {
         assert!(!root.path().join("keys").exists());
     }
 
-    /// The command-level contract of a partial commit, through the real
-    /// binary (debug-build failpoints): a connector that fails before its
-    /// rename after the key was copied exits 3 with a JSON envelope whose
-    /// messages carry the connector error and the kept key, reports nothing
-    /// as written and attempts no reload; a connector whose directory sync
-    /// fails after the rename exits 3, keeps both files, and does reload.
+    /// Failpoints on the real binary: a rename failure after the key copy is exit 3, nothing written, no reload.
+    /// A directory sync failure after the rename is exit 3, both files kept and a reload.
     #[test]
     fn a_partial_commit_is_a_structured_exit_3_without_a_reload() {
         let rt = runtime();
@@ -3834,11 +3621,8 @@ mod univec_discovery {
         assert!(root.path().join("keys/univec.key").is_file());
     }
 
-    /// Connector cleanup residue is a structured exit 3 for every key
-    /// source: an identical login key (JSON) and an inline key from stdin
-    /// (human), through the real binary with debug-build failpoints. The
-    /// residue — a staged copy of a connector that holds the inline key —
-    /// is named, nothing is reported as written, and no reload runs.
+    /// Cleanup residue is exit 3 for a copied login key and for an inline key from stdin.
+    /// The staged copy is named, nothing is reported written and no reload runs.
     #[test]
     fn connector_residue_is_a_structured_exit_3_for_every_key_source() {
         use std::io::Write;
@@ -3855,9 +3639,7 @@ mod univec_discovery {
                 .find(|p| p.to_string_lossy().contains(".postvec.tmp"))
         };
 
-        // Identical login key: the key is already in place from the first
-        // run; the second run adds a model and its connector rename fails
-        // with the staged copy left behind.
+        // The second run reuses the login key, adds a model and leaves the staged copy when rename and cleanup fail.
         let first = Command::new(binary())
             .args([
                 "provider",
@@ -3994,15 +3776,7 @@ mod univec_discovery {
         assert!(!fresh.path().join("providers.d/univec.toml").exists());
     }
 
-    /// `provider rm --model` rewrites the connector under the same cleanup
-    /// contract as `add`, driven through the real binary with debug-build
-    /// failpoints on a file that carries an INLINE key: (1) rename + cleanup
-    /// failure → exit 3, connector unchanged, residue named with the
-    /// inline-key warning and really holding the key, empty `applied`, no
-    /// reload; (2) staging + cleanup-sync failure → exit 3, durability
-    /// error, no reload; (3) a clean refusal → ordinary error; (4) rename
-    /// then failed directory sync → exit 3, removal recorded, reload
-    /// attempted because the rewritten connector is in place.
+    /// `provider rm --model` uses the same cleanup contract as `add` on a file with an inline key.
     #[test]
     fn provider_rm_rewrite_residue_is_a_structured_exit_3() {
         use std::io::Write;
@@ -4156,8 +3930,7 @@ mod univec_discovery {
         );
     }
 
-    /// The manual converter flags stay usable and hidden; the selectors
-    /// are documented; a bare `provider add univec` is accepted by clap.
+    /// Manual converter flags stay usable and hidden. Selectors appear in help. A bare `provider add univec` passes clap.
     #[test]
     fn help_shows_the_selectors_and_hides_the_manual_flags() {
         let help = stdout(&run(&["provider", "add", "--help"]));
@@ -4188,9 +3961,7 @@ mod univec_discovery {
     }
 }
 
-/// `model prefer` / `model set-space` rewrite the `[[models]]` entries of
-/// several files at once and refuse a width disagreement; `provider add`
-/// records the catalogue space and an `added` stamp.
+/// `model prefer` and `model set-space` rewrite several files and refuse a width disagreement. `provider add` records the catalogue space.
 #[test]
 fn model_prefer_and_set_space_rewrite_provider_files() {
     use std::os::unix::fs::PermissionsExt;
@@ -4341,8 +4112,7 @@ fn model_prefer_and_set_space_rewrite_provider_files() {
         stderr(&out)
     );
 
-    // `add` refuses a claimed space at another width before writing — and
-    // `--dry-run` must say the same, not "fine".
+    // `add` refuses a claimed space at another width before writing, and `--dry-run` says the same.
     let mistral = |dry: bool| {
         let mut args = vec![
             "provider",

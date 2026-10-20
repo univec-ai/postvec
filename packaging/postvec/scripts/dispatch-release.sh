@@ -7,15 +7,12 @@
 #   dispatch-release.sh --print-only publish  # print the command, run nothing
 #   dispatch-release.sh --watch publish       # follow the run afterwards
 #
-# `gh workflow run --ref X -f ref=Y` has two refs on purpose: `--ref` chooses
-# which copy of the *workflow file* GitHub executes, `-f ref=` chooses what it
-# checks out and builds. For a publication they must be the same tag, or the run
-# attests one commit's workflow against another commit's artifacts — and the
-# workflow refuses, hours in. This script derives both from versions.env, so the
-# pair cannot disagree.
+# `gh workflow run --ref X -f ref=Y` has two refs. `--ref` selects the
+# workflow file. `-f ref=` selects what is checked out and built. A
+# publication must use the same tag for both, or the run attests one
+# commit's workflow against another's artifacts. Both come from versions.env.
 #
-# It is a convenience, not a gate: every rule it observes is enforced again by
-# scripts/release-mode.sh inside the run, where it counts.
+# Convenience, not a gate. release-mode.sh enforces the same rules in the run.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -27,7 +24,7 @@ while (($#)); do
     --watch)      WATCH=1; shift ;;
     --image-repository)         IMAGE_OVERRIDE="$2"; shift 2 ;;
     --image-staging-repository) STAGING_OVERRIDE="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,15p' "$0"; exit 0 ;;
     -*)           die "unknown option: $1" ;;
     rehearse|publish|disposable-publication) MODE="$1"; shift ;;
     disposable)   MODE=disposable-publication; shift ;;
@@ -42,22 +39,16 @@ need git
 SLUG="${GH_REPO:-${SOURCE_REPOSITORY#https://github.com/}}"
 SLUG="${SLUG%.git}"
 
-# What each mode releases, and where its images go. The disposable namespaces
-# are derived from the pinned one so they are obviously related and obviously
-# not it; `release-mode.sh` refuses them if they ever collide.
-#
-# DISPATCH_REF is what `--ref` gets and must be a *name* — GitHub resolves it to
-# pick the workflow file, and answers `422 No ref found` for a commit SHA. REF is
-# what `-f ref=` gets and is what the run checks out and builds; a rehearsal may
-# pin an exact commit there. For the publishing modes the two are the same tag,
-# which `release-mode.sh` re-checks inside the run.
+# Disposable image names are derived from the pin and must not collide with it.
+# DISPATCH_REF (--ref) must be a branch or tag name. GitHub rejects a SHA.
+# REF (-f ref=) is what the run builds. Publishing modes use the same tag for both.
 ARGS=()
 DISPATCH_REF=""
 case "${MODE}" in
 rehearse)
     [[ -n "${REF}" ]] || REF="$(git -C "${REPO_ROOT}" rev-parse --abbrev-ref HEAD)"
-    # A branch or tag name is its own dispatch ref. Anything else — a SHA, or
-    # `HEAD` — is built from the workflow file on the branch that contains it.
+    # A branch or tag is its own dispatch ref. A SHA or HEAD is built from
+    # the workflow file on the current branch.
     if git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/heads/${REF}" \
         || git -C "${REPO_ROOT}" show-ref --verify --quiet "refs/tags/${REF}"; then
         DISPATCH_REF="${REF}"
@@ -77,8 +68,7 @@ disposable-publication)
     ARGS+=(-f "image_staging_repository=${STAGING_OVERRIDE:-${IMAGE_REPOSITORY}-rehearsal-staging}")
     ;;
 esac
-# Publishing modes attest the workflow file against the artifacts, so the two
-# refs must be the same tag.
+# Publishing modes use one tag for both refs. The run attests the workflow against the artifacts.
 [[ -n "${DISPATCH_REF}" ]] || DISPATCH_REF="${REF}"
 
 print_command() {
@@ -101,8 +91,7 @@ fi
 
 need gh
 
-# For a publication the ref must be a tag that exists here and on origin. The
-# workflow checks this too; failing now costs a second rather than a queue slot.
+# A publication ref must be a tag here and on origin. Failing now saves a queue slot.
 if [[ "${MODE}" != rehearse ]]; then
     git -C "${REPO_ROOT}" rev-parse --verify "refs/tags/${REF}" >/dev/null 2>&1 \
         || die "no such tag: ${REF}
@@ -116,8 +105,7 @@ log "dispatching ${MODE} for ${REF} on ${SLUG}"
 print_command
 
 if [[ "${MODE}" == publish ]]; then
-    # The one irreversible dispatch. GitHub still asks for the environment
-    # approval, but by then the run has spent hours of Actions minutes.
+    # Irreversible. GitHub still asks for approval, after hours of Actions time.
     warn "this publishes postvec ${RELEASE_ID} to ${IMAGE_REPOSITORY} and to the ${SLUG} releases page."
     read -r -p "Type the release id (${RELEASE_ID}) to continue: " confirm
     [[ "${confirm}" == "${RELEASE_ID}" ]] || die "not confirmed; nothing dispatched"

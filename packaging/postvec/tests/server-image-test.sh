@@ -5,14 +5,14 @@
 #   tests/server-image-test.sh ghcr.io/univec-ai/postvec-server:0.1.0-1
 #
 # The remote-mode smoke test (tests/image-smoke-test.sh --server-image) proves
-# that PostgreSQL can embed *through* this image. This proves the image
+# that PostgreSQL can embed through this image. This proves the image
 # itself: that it is composed of this release's packages and nothing else,
 # that it runs unprivileged with the admin port unexposed, that it becomes
 # ready only once the bundled model answers, that the node's own tooling works
 # inside it, that it says which licence it carries, and that it drains cleanly
 # on SIGTERM.
 #
-# Run it against exactly what will be published — a digest in a release job.
+# Run it against exactly what will be published: a digest in a release job.
 
 set -Eeuo pipefail
 
@@ -53,7 +53,7 @@ echo
 echo "composition"
 
 # The image is the release's packages. Ask dpkg inside it, and require every
-# package to carry this release's identity — a stale .deb picked up from an
+# package to carry this release's identity: a stale .deb picked up from an
 # earlier build would otherwise pass every functional check below.
 inventory="$(docker run --rm --entrypoint dpkg-query "${IMAGE}" \
     -W -f='${Package} ${Version}\n' \
@@ -181,7 +181,7 @@ done
 ok "healthy: /ready answered 200"
 
 # The discovery listener, from outside the container, over the TLS pair the
-# entrypoint generated — the way postvec's `/config` union reaches a node.
+# entrypoint generated: the way postvec's `/config` union reaches a node.
 port="$(docker port "${RUN_ID}" 22222/tcp | head -1 | sed 's/.*://')"
 config="$(curl --silent --show-error --insecure --fail "https://127.0.0.1:${port}/config" 2>&1)" \
     || { bad "GET /config failed: ${config}"; config=""; }

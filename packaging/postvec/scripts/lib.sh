@@ -29,18 +29,10 @@ need() {
     done
 }
 
-# ---------------------------------------------------------------- versions.env
+# Load the reviewed pins and refuse an unfilled one.
+# versions.env is data. Parse it. Do not source it: a release input must not run commands.
 
-# Load the reviewed pins and refuse to proceed on an unfilled one.
-#
-# versions.env is *data*, so it is parsed rather than sourced: a release input
-# file has no business being able to run commands, and parsing also catches a
-# typo that `source` would silently accept as a shell construct.
-
-# Parse a KEY=VALUE file into the environment. ${1} is the path, ${2} the label
-# used in diagnostics. Shared by `load_versions` and `load_model_facts`,
-# because both files are read by scripts that build what users install and
-# neither has any business being able to run a command.
+# Parse a KEY=VALUE file. ${1} is the path, ${2} the label. Do not source it.
 parse_env_file() {
     local file="$1" label="$2"
     local line key value lineno=0
@@ -116,9 +108,7 @@ load_versions() {
         [[ "${!name}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "versions.env: ${name} is not an image digest"
     done
 
-    # Every remaining pin, checked for shape. A digest that is quietly the empty
-    # string, or a truncated fingerprint, verifies nothing — and the failure
-    # would surface as a build that succeeded against the wrong input.
+    # Check every remaining pin's shape. An empty digest verifies nothing.
     for name in RUSTUP_INIT_X86_64_SHA256 RUSTUP_INIT_AARCH64_SHA256 \
                 PROTOC_LINUX_X86_64_SHA256 PROTOC_LINUX_AARCH64_SHA256; do
         [[ "${!name}" =~ ^[0-9a-f]{64}$ ]] || die "versions.env: ${name} is not a sha256"
@@ -127,10 +117,8 @@ load_versions() {
         [[ "${!name}" =~ ^[0-9A-F]{40}$ ]] \
             || die "versions.env: ${name} must be 40 uppercase hex digits"
     done
-    # An image reference without a digest is a tag, and a tag is a pointer
-    # somebody else can move. The *whole* suffix is checked, not just the
-    # presence of the marker: `…@sha256:` and `…@sha256:deadbeef` both contain
-    # it and neither pins anything.
+    # An image reference without a full digest is a movable tag.
+    # `@sha256:` and `@sha256:deadbeef` both contain the marker and pin nothing.
     for name in NFPM_IMAGE BUILDKIT_IMAGE; do
         [[ "${!name}" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]] \
             || die "versions.env: ${name} must be <reference>@sha256:<64 lowercase hex>,
@@ -145,9 +133,8 @@ not a tag and not a truncated digest (got: ${!name})"
     for name in BUNDLED_MODEL_REGISTRY_REVISION BUNDLED_MODEL_BUNDLE_VERSION; do
         [[ "${!name}" =~ ^[1-9][0-9]*$ ]] || die "versions.env: ${name} must be a positive integer"
     done
-    # The suffix becomes a package name — `postvec-model-<suffix>` — which apt
-    # and dnf resolve upgrades by, and which is therefore forever. Debian's
-    # grammar is the stricter of the two, so it is the one checked.
+    # The suffix becomes the package name apt and dnf upgrade by, so it is forever.
+    # Debian's grammar is the stricter of the two.
     [[ "${BUNDLED_MODEL_PKG_SUFFIX}" =~ ^[a-z0-9][a-z0-9.+-]*$ ]] \
         || die "versions.env: BUNDLED_MODEL_PKG_SUFFIX must be a Debian-safe package-name
 token (lowercase alphanumerics, '.', '+' and '-', starting alphanumeric)
@@ -156,14 +143,8 @@ token (lowercase alphanumerics, '.', '+' and '-', starting alphanumeric)
         || die "versions.env: BUNDLED_MODEL_NAME is not a registry model name
 (got: ${BUNDLED_MODEL_NAME})"
 
-    # The two container repositories are interpolated into registry commands in
-    # jobs that hold package-write permission. They are reviewed repository
-    # content rather than workflow input, so this is a second line rather than
-    # the first — but "reviewed" is a process, and a grammar is a check.
-    #
-    # An OCI repository reference: an optional registry host (with an optional
-    # port), then one or more lowercase path components. No tag, no digest, no
-    # whitespace, and nothing a shell would find interesting.
+    # These names are interpolated into registry commands that can push.
+    # Optional host and port, then lowercase path components. No tag, digest or whitespace.
     local oci_ref='^([a-z0-9]+([.-][a-z0-9]+)*(:[0-9]{1,5})?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$'
     for name in IMAGE_REPOSITORY IMAGE_STAGING_REPOSITORY SERVER_IMAGE_REPOSITORY; do
         [[ "${!name}" =~ ${oci_ref} ]] \
@@ -175,25 +156,18 @@ the release interpolates it into registry commands that can write packages."
     [[ "${IMAGE_REPOSITORY}" != "${IMAGE_STAGING_REPOSITORY}" ]] \
         || die "versions.env: IMAGE_STAGING_REPOSITORY must differ from IMAGE_REPOSITORY.
 Staging exists so an untested image never appears where a user would find it."
-    # Three distinct names: the node's image is its own product, with its own
-    # tag scheme (`<release id>` and `latest`, no PostgreSQL major), and
-    # sharing either of the other two would put those tags where a user
-    # browsing the database image's tags would find them.
+    # Three distinct names. The node image uses its own tags. Sharing a repository would mix them with the database images.
     [[ "${SERVER_IMAGE_REPOSITORY}" != "${IMAGE_REPOSITORY}" \
        && "${SERVER_IMAGE_REPOSITORY}" != "${IMAGE_STAGING_REPOSITORY}" ]] \
         || die "versions.env: SERVER_IMAGE_REPOSITORY must differ from IMAGE_REPOSITORY and
 IMAGE_STAGING_REPOSITORY (got: ${SERVER_IMAGE_REPOSITORY})"
-    # An SPDX identifier, because it is written verbatim into package metadata
-    # that dpkg, rpm and lintian read, and compared verbatim with the crate's
-    # `license = "…"` by assert-versions.sh.
+    # An SPDX identifier. It is written into package metadata and compared with the crate.
     [[ "${SERVER_LICENSE}" =~ ^[A-Za-z0-9][A-Za-z0-9.+-]*$ ]] \
         || die "versions.env: SERVER_LICENSE must be a single SPDX licence identifier
 (got: ${SERVER_LICENSE})"
     [[ "${SOURCE_REPOSITORY}" =~ ^https://[a-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~-]+)+$ ]] \
         || die "versions.env: SOURCE_REPOSITORY must be a plain https URL (got: ${SOURCE_REPOSITORY})"
-    # `Name <address>` — the form Debian and RPM both expect, and the form that
-    # ends up in every package's metadata. Held in a variable because `[[ ]]`
-    # parses a bare `<` as a comparison operator before it ever reaches `=~`.
+    # `Name <address>`, the form Debian and RPM expect. A variable, because `[[ ]]` treats a bare `<` as a comparison.
     local maintainer_re='^[^<>]+ <[^[:space:]<>@]+@[^[:space:]<>@]+>$'
     [[ "${MAINTAINER}" =~ ${maintainer_re} ]] \
         || die "versions.env: MAINTAINER must be \"Name <address@example.org>\" (got: ${MAINTAINER})"
@@ -214,10 +188,7 @@ local build you will throw away."
         warn "building with placeholder publication metadata — not publishable"
     fi
 
-    # The add-on metapackage is a pin: its name reaches every nfpm description,
-    # the release closure, and user-facing install lines. It must look like a
-    # Debian package name and must not reuse the mode word, the rejected
-    # "engine" name, or the all-in-one image suffix.
+    # The metapackage name is a pin. It must be a Debian package name and must not reuse a mode word, "engine" or the image suffix.
     [[ "${EXTRAS_METAPACKAGE}" =~ ^postvec-[a-z0-9]+(-[a-z0-9]+)*$ ]] \
         || die "versions.env: EXTRAS_METAPACKAGE is not a postvec-* package name (got: ${EXTRAS_METAPACKAGE})"
     case "${EXTRAS_METAPACKAGE}" in
@@ -239,10 +210,7 @@ variants; the add-on package is extras, not a one-shot install."
     export LOCAL_IMAGE_VARIANT LOCAL_IMAGE_SUFFIX
     export REMOTE_IMAGE_VARIANT REMOTE_IMAGE_SUFFIX
 
-    # The inference node's image: the `variant` the manifest records it under,
-    # and the one moving tag it has. `latest` is fine here and deliberately
-    # absent on the database images — see SERVER_IMAGE_REPOSITORY in
-    # versions.env for why.
+    # The node's manifest variant and its one moving tag. `latest` is for this image only, not the database images.
     SERVER_IMAGE_VARIANT=server
     SERVER_IMAGE_MOVING_TAG=latest
     export SERVER_IMAGE_VARIANT SERVER_IMAGE_MOVING_TAG
@@ -250,10 +218,7 @@ variants; the add-on package is extras, not a one-shot install."
     NEXT_BREAKING_VERSION="$(next_breaking_version "${POSTVEC_VERSION}")"
     export NEXT_BREAKING_VERSION
 
-    # The release identity, used for the git tag and for image tags. It carries
-    # the packaging revision because a packaging-only rebuild is a different
-    # release: same source, different bytes, and it must not be able to
-    # overwrite what the previous one published.
+    # Release identity for the git tag and image tags. The packaging revision keeps a rebuild from overwriting a published tag.
     RELEASE_ID="${POSTVEC_VERSION}-${PACKAGE_RELEASE}"
     RELEASE_TAG="postvec-v${RELEASE_ID}"
     # Rehearsal tags live in their own namespace so a rehearsal cannot
@@ -264,10 +229,8 @@ variants; the add-on package is extras, not a one-shot install."
     export SOURCE_DATE_EPOCH
 }
 
-# The first version that may break compatibility with ${1}, Cargo-style: for
-# 0.x a minor bump breaks, from 1.0 onwards a major bump does. Used for the
-# extension package's upper bound on postvec-cli, so a CLI from a future
-# incompatible line can never satisfy the dependency.
+# First version that may break compatibility with ${1}, Cargo-style.
+# The extension's upper bound on postvec-cli, so a future CLI cannot satisfy it.
 next_breaking_version() {
     local major minor
     IFS=. read -r major minor _ <<<"$1"
@@ -278,11 +241,8 @@ next_breaking_version() {
     fi
 }
 
-# True if $1 is a lower MAJOR.MINOR.PATCH than $2. previous-release.sh uses
-# this to pick the newest tag older than the version being built, so a 0.1.1
-# hotfix in a repo that already has 0.2.0 tagged upgrades from 0.1.0.
-# `head` closing the pipe can SIGPIPE `sort` under `pipefail`; `|| true`
-# keeps that from failing the comparison.
+# True if $1 is a lower MAJOR.MINOR.PATCH than $2.
+# `head` can SIGPIPE `sort` under pipefail; `|| true` keeps that from failing the comparison.
 version_less() {
     [[ "$1" != "$2" ]] || return 1
     local first
@@ -334,20 +294,10 @@ upgrade_graph_unreachable() {
     done
 }
 
-# Upgrade scripts that tag ${2} shipped and the working tree of ${1} has
-# since changed or removed. One `deleted NAME` or `changed NAME` line each.
-# Empty output: every shipped script is still byte-identical. Returns 2 when
-# git cannot answer, so a failed lookup fails the gate.
-#
-# A shipped script is frozen. PostgreSQL records that a user already applied
-# it, and will not run a later edit of the same file. Compare against the
-# previous release identity (previous-release.sh --identity), which is the
-# newest tag this tree is allowed to inherit scripts from: a packaging
-# predecessor of the same product, or the newest older product. Each earlier
-# release was held to this rule, so that tag already carries every script
-# shipped before it.
-#
-#   shipped_upgrade_scripts_changed "${REPO_ROOT}" postvec-v0.1.0-1 postvec/sql
+# Upgrade scripts tag ${2} shipped that ${1} has changed or removed.
+# Empty output means they are still byte-identical. Returns 2 when git cannot answer.
+# A shipped script is frozen: PostgreSQL will not re-run an edited file.
+# Compare against the previous release identity, which already carries every earlier script.
 shipped_upgrade_scripts_changed() {
     local repo="$1" tag="$2" rel="$3" listing path rc
     listing="$(git -C "${repo}" ls-tree -r --name-only "${tag}" -- "${rel}")" || return 2
@@ -367,16 +317,8 @@ shipped_upgrade_scripts_changed() {
     done <<<"${listing}"
 }
 
-# ---------------------------------------------------------- the bundled model
-
-# Facts derived from the *verified* registry archive by
-# scripts/check-model-bundle.py and written last by build-model-bundle.sh, so
-# their presence means the payload beside them is complete.
-#
-# They are parsed, not sourced, for the same reason versions.env is: this file
-# decides package names and paths, and a release input has no business being
-# able to run a command. (The registry's free-form `source` string is
-# deliberately not in it — see check-model-bundle.py.)
+# Facts from the verified archive, written last, so their presence means the payload is complete.
+# Parsed, not sourced. The registry's free-form source string is not in this file.
 MODEL_FACTS=(
     MODEL_PKG_NAME MODEL_PKG_VERSION MODEL_DOC_DIR MODEL_NAME MODEL_BACKEND
     MODEL_REGISTRY_REVISION MODEL_ARCHIVE_SHA256 MODEL_ARCHIVE_SIZE
@@ -404,20 +346,9 @@ Rebuild it: scripts/build-model-bundle.sh"
         [[ "${!name}" =~ ^[1-9][0-9]*$ ]] \
             || die "model-facts.env: ${name} must be a positive integer"
     done
-    # The facts must describe the model this release pins — *all five* reviewed
-    # values, plus the package identity derived from them.
-    #
-    # Checking only the name and the digest is not enough, and the gap is not
-    # theoretical: bumping BUNDLED_MODEL_PKG_SUFFIX or
-    # BUNDLED_MODEL_REGISTRY_REVISION without rebuilding leaves the same bytes
-    # under a stale package name or a stale version, which is a package that
-    # installs cleanly, upgrades wrongly, and says the wrong thing about itself.
-    # The facts are *generated* from the pins, so any disagreement means the
-    # payload predates an edit to versions.env.
-    #
-    # `${VAR:-<fact>}` throughout, because a caller that has not run
-    # `load_versions` (nothing does today, but the helper must not depend on
-    # that) compares a value with itself rather than with the empty string.
+    # The facts must match every reviewed pin, not only the name and digest.
+    # A suffix or revision bump without a rebuild leaves a stale package name.
+    # ${VAR:-<fact>} so a caller that skipped load_versions does not compare a value with itself.
     local stale=()
     _facts_agree() {  # <fact name> <fact value> <pin value>
         [[ "$2" == "$3" ]] || stale+=("$1: payload has '$2', versions.env implies '$3'")
@@ -430,11 +361,8 @@ Rebuild it: scripts/build-model-bundle.sh"
         "${BUNDLED_MODEL_REGISTRY_REVISION:-${MODEL_REGISTRY_REVISION}}"
     _facts_agree MODEL_BUNDLE_VERSION "${MODEL_BUNDLE_VERSION}" \
         "${BUNDLED_MODEL_BUNDLE_VERSION:-${MODEL_BUNDLE_VERSION}}"
-    # The package suffix reaches nothing but the package name, so it is checked
-    # through it — and the other two derived values are then checked against
-    # the facts' *own* revision, bundle version and package name, which the
-    # four comparisons above have already tied to the pins. A facts file whose
-    # halves disagree was hand-edited, and is worth refusing on its own.
+    # The suffix is checked through the package name. Derived fields must also
+    # agree with each other: a hand-edited facts file can disagree with itself.
     _facts_agree MODEL_PKG_NAME "${MODEL_PKG_NAME}" \
         "postvec-model-${BUNDLED_MODEL_PKG_SUFFIX:-${MODEL_PKG_NAME#postvec-model-}}"
     _facts_agree MODEL_PKG_VERSION "${MODEL_PKG_VERSION}" \
@@ -450,14 +378,8 @@ of pins than versions.env now holds. Rebuild it:
     fi
 }
 
-# The postvec CLI refuses to *mutate* a managed tree whose ancestry any other
-# account could rename out from under it (postvec-cli/src/config/owned.rs).
-# That is the right rule and it is not negotiable from here — so the packaging
-# scripts pick a directory that satisfies it rather than discovering the
-# refusal three minutes in.
-#
-# Prints the first offending ancestor and returns 1; prints nothing and returns
-# 0 when the whole chain is trustworthy.
+# The CLI refuses to mutate a tree another account could rename. Pick a
+# directory that already satisfies that. Prints the first bad ancestor, or nothing.
 untrusted_ancestor() {
     local path; path="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
     local euid; euid="$(id -u)"
@@ -473,8 +395,7 @@ untrusted_ancestor() {
             return 1
         fi
         # Group- or world-writable is refused unless the directory is sticky
-        # *and* the entry below it belongs to root or to us — /tmp semantics,
-        # where nobody else may rename our entry.
+        # and the entry belongs to root or to us. /tmp semantics.
         if (( $((8#${mode})) & 0022 )); then
             if (( ! ($((8#${mode})) & 01000) )) \
                || [[ "${child_owner}" != 0 && "${child_owner}" != "${euid}" ]]; then
@@ -489,10 +410,8 @@ untrusted_ancestor() {
     return 0
 }
 
-# A scratch path docker can bind-mount. A snap-confined docker (or a daemon
-# on another machine) silently mounts an EMPTY directory for host paths it
-# cannot read — /tmp included — so anything destined for `--volume` must live
-# in the checkout, where every other packaging mount already comes from.
+# A scratch path docker can bind-mount. Snap-confined docker mounts an empty
+# directory for paths it cannot read, including /tmp. Keep volumes in the checkout.
 mktemp_mountable_dir() {
     mkdir -p "${PKG_DIR}/build"
     mktemp -d "${PKG_DIR}/build/${1}.XXXXXX"
@@ -503,9 +422,7 @@ mktemp_mountable_file() {
 }
 
 # A temporary directory the CLI will accept as an engine root's parent.
-# `${PKG_DIR}/build` first — it shares a filesystem with the model cache, so
-# promoting a finished pull is a rename — and TMPDIR when the checkout itself
-# is group-writable, which an umask of 002 makes it. Prints the path.
+# build/ first, so promoting a pull is a rename. TMPDIR when the checkout is group-writable.
 mktemp_trusted_dir() {
     local basename="$1" quiet="${2:-}" dir problem
     mkdir -p "${PKG_DIR}/build"
@@ -533,20 +450,12 @@ will manage a model tree under: ${problem}
 Fix that directory's ownership/mode, or set TMPDIR to a private directory."
 }
 
-# The one place packaging talks to the registry, so the policy is stated once.
+# The one registry call. Anonymous, so a build credential cannot pull a private model.
 #
 #   anonymous_model_pull <cli> <engine-root> <model-name>
 #
-# Anonymous. The receipt's `access == "public"` check is the authoritative
-# gate (scripts/check-model-bundle.py); this is defence in depth, so a
-# credential in the build environment cannot quietly put a private model
-# inside a public package.
-#
-# For a non-root build, unsetting POSTVEC_API_KEY and pointing
-# XDG_CONFIG_HOME at a scratch directory hides the effective user's store.
-# Root is different: the CLI reads /var/lib/postvec/auth.json regardless of
-# XDG, so there is no scratch that hides it. The script refuses; it does
-# not move, delete or read around an operator's credential file.
+# A non-root build hides the user store via XDG_CONFIG_HOME. Root still reads
+# /var/lib/postvec/auth.json, so this refuses rather than touching that file.
 anonymous_model_pull() {
     local cli="$1" root="$2" name="$3"
     [[ "${root}" == /* ]] || die "anonymous_model_pull: the engine root must be absolute"
@@ -574,7 +483,6 @@ Run the model bundle step as an ordinary user, or `sudo postvec logout` first."
     (( status == 0 )) || die "postvec model pull failed for ${name} (exit ${status})"
 }
 
-# ------------------------------------------------------------------- platforms
 
 # Facts about a supported target distribution. Exports, for ${1}:
 #   DIST_ID          short tag used in artifact filenames  (deb12, ubuntu22.04, el9)
@@ -649,17 +557,9 @@ require_pg_major() {
     esac
 }
 
-# Where built packages live.
-#
-# Three roots, because the packages have three different identities.
-# `postvec-cli` and ONNX Runtime are native code identical for every
-# PostgreSQL major, so they belong to a (distribution, architecture) cell.
-# The model bundle and the metapackage are `all`/`noarch` and belong to a
-# distribution alone (`noarch_dist_dir`). The extension packages belong to a
-# (distribution, major, architecture) cell.
-#
-# Everything that consumes packages has to read all three. A PG 16 install
-# test looking only in its own cell would find no CLI at all.
+# Three package roots. CLI and ONNX Runtime are per distribution and architecture.
+# The model and metapackage are noarch. The extension is per distribution, major and architecture.
+# A consumer that reads only the extension cell will not find the CLI.
 common_dist_dir() {
     printf '%s/dist/common/%s-%s\n' "${PKG_DIR}" "$1" "$2"
 }
@@ -686,16 +586,9 @@ extension_package_name() {
     esac
 }
 
-# ------------------------------------------------------------------- utilities
-
-# The variables the nfpm package descriptions may reference. Listed explicitly
-# rather than swept up by a prefix match, so a description can never silently
-# depend on an unrelated variable that happens to be in the environment.
-#
-# The descriptions are rendered by `render_nfpm_config` below rather than by
-# nfpm's own environment expansion, which does not reach every field (notably
-# `contents[].src`). Rendering here also means an unset variable is a hard
-# error instead of an empty string that silently packages the wrong path.
+# Variables an nfpm description may reference. An explicit list, not a prefix match.
+# Rendered here because nfpm's own expansion misses contents[].src, and an unset
+# variable must be an error rather than an empty path.
 NFPM_ENV=(
     SOURCE_DATE_EPOCH SOURCE_DATE_ISO
     POSTVEC_VERSION PACKAGE_RELEASE NEXT_BREAKING_VERSION
@@ -714,10 +607,7 @@ NFPM_ENV=(
     SERVER_LICENSE SERVER_COPYRIGHT_SRC SERVER_UNIT_DIR
 )
 
-# Expand ${VAR} in an nfpm package description, from the allowlist above only.
-# An unset or unlisted variable is an error: a package description that
-# silently referenced an empty path would produce a package missing a file, and
-# that is exactly the class of defect this chain exists to prevent.
+# Expand ${VAR} from the allowlist only. An unset or unlisted variable is an error.
 render_nfpm_config() {
     local template="$1" rendered="$2"
     need python3
@@ -751,20 +641,9 @@ open(rendered, "w").write(out)
 PY
 }
 
-# Render the changelog every package ships, and compress it.
-#
-# Debian Policy §12.7 requires /usr/share/doc/<package>/changelog.Debian.gz
-# in every non-native package; lintian reports its absence as an error, and
-# it is where `apt changelog` looks first.
-#
-# nFPM has a `changelog:` field. Its .deb output omits the
-# `<distribution>; urgency=` header that the format requires, so dpkg and
-# lintian both reject the result as "not a Debian changelog". The source is
-# kept in the format it is published in, and rendered here.
-#
-# `gzip -n` because the file name and timestamp gzip would otherwise embed
-# are build-time facts: with them, the same source produces different bytes
-# on every run and the packages stop being reproducible.
+# Render the changelog every package ships, then gzip -n it.
+# nFPM's changelog field omits the urgency header, so dpkg rejects it.
+# gzip -n: a name or timestamp in the header would make the package unreproducible.
 render_changelog() {
     local template="$1" dest="$2" plain="${2%.gz}"
     need python3
@@ -774,12 +653,9 @@ render_changelog() {
     rm -f "${plain}"
 }
 
-# Run nfpm. Prefers a host binary (NFPM_BIN, or `nfpm` on PATH) and otherwise
-# uses the pinned container, so no script here ever installs anything on the
-# host. The repository is bind-mounted at its own path and the working
-# directory is preserved, so absolute `src:` paths resolve identically either
-# way.
-# Fixed hostname for the packaging container; see the `--hostname` note below.
+# Run nfpm from NFPM_BIN, PATH or the pinned container. Never install it on the host.
+# The repo is mounted at its own path so absolute src: paths match.
+# Fixed hostname: nfpm stamps an RPM buildhost from it.
 NFPM_BUILD_HOST=postvec-build
 
 nfpm() {
@@ -810,9 +686,7 @@ NFPM_BIN and remove nfpm from PATH, or build elsewhere."
     for name in "${NFPM_ENV[@]}"; do
         [[ -n "${!name:-}" ]] && envs+=(--env "${name}=${!name}")
     done
-    # `--hostname`: nfpm stamps an RPM's buildhost from the machine's hostname,
-    # so without this the same package built on two runners differs. There is
-    # no nfpm setting for it — the container's hostname *is* the setting.
+    # nfpm stamps an RPM buildhost from the hostname. There is no nfpm setting for it.
     docker run --rm \
         --user "$(id -u):$(id -g)" \
         --hostname "${NFPM_BUILD_HOST}" \
@@ -851,8 +725,8 @@ normalize_tree() {
     find "${root}" -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" {} +
 }
 
-# Write "sha256␠␠relative-path" for every file under ${1}, sorted by path, to
-# stdout. Stable across machines and filesystem ordering.
+# Write "sha256", two spaces, then the relative path, for every file under ${1}.
+# Sorted. Stable across machines.
 manifest_of_tree() {
     local root="$1"
     ( cd "${root}" && find . -type f -printf '%P\n' | LC_ALL=C sort | xargs -r sha256sum )

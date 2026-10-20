@@ -1,6 +1,6 @@
-//! `postvec provider test` — the verification probe on demand: one live
-//! single-input embed per configured model, dimensions checked against the
-//! file. Costs one paid API call per model probed.
+//! `postvec provider test` runs the verification probe: one live embed per
+//! configured model, dimensions checked against the file. One paid API call
+//! per model probed.
 
 use super::{
     probe_one, resolve_doc_secret, resolve_target, validate_provider_name, ProviderFileDoc,
@@ -131,9 +131,8 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
             .and_then(toml::Value::as_integer)
     };
 
-    // Schema-typed view for the probe dispatch: `validate_file` above
-    // passed, so every entry parses. A converter gets the convert probe —
-    // an embed call cannot verify it and would be billed for the wrong
+    // `validate_file` passed, so every entry parses. A converter gets the
+    // convert probe. An embed call cannot verify it and would bill the wrong
     // thing.
     let typed: std::collections::BTreeMap<String, providers::config::ModelDescriptor> = doc
         .descriptors()
@@ -146,9 +145,7 @@ pub async fn run(cli: &Cli, args: ProviderTestArgs, output: &Output) -> Result<E
     for (name, id) in &selected {
         let declared = declared_dim(name);
         // The same probes `provider add` runs: one aligned, non-empty vector
-        // and nothing less. `test`'s own copy accepted "the first vector,
-        // whatever it is", so it reported success for responses the serving
-        // gateway refuses.
+        // and nothing less. A response the serving gateway refuses is a failure.
         let outcome = match typed.get(name) {
             Some(descriptor) if descriptor.kind == providers::config::ModelKind::Convert => {
                 super::probe_convert_one(&config, descriptor, cli.timeout).await

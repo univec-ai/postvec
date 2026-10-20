@@ -6,10 +6,10 @@
 //!   file called `MyLib`. Folding it would point a working cluster at a
 //!   library that does not exist.
 //! - `postvec.database`, `postvec.grpc_endpoints`, `postvec.http_endpoints`
-//!   and `postvec.embedded_models` are `split(',')` + trim in the
+//!   and `postvec.embedded_models` are `split(',')` plus trim in the
 //!   extension, with no quoting.
 //!
-//! [`validate_library_list`] is the write path; the lenient splitter is
+//! [`validate_library_list`] is the write path. The lenient splitter is
 //! only for reading broken configs.
 
 /// The library name postvec is loaded under, and the `$libdir`-qualified form
@@ -17,20 +17,16 @@
 pub const POSTVEC_LIBRARY: &str = "postvec";
 const POSTVEC_LIBDIR_FORM: &str = "$libdir/postvec";
 
-/// Split a `shared_preload_libraries` value into its items, leniently.
+/// Split a `shared_preload_libraries` value into items, leniently.
 ///
-/// A state machine, because a quoted item may itself contain a comma.
-///
-/// Lenient on purpose: it recovers items from input the postmaster would
-/// reject (an unterminated quote, an empty item). That is the right
-/// behaviour for reading: `doctor` must be able to describe a cluster whose
-/// configuration is broken. Every path that renders a list back into a file
-/// validates it first with [`validate_library_list`].
+/// A quoted item may contain a comma. Recovers items the postmaster would
+/// reject (an unterminated quote, an empty item) so `doctor` can describe a
+/// broken config. Every path that writes a list validates first with
+/// [`validate_library_list`].
 pub fn parse_library_list(raw: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut chars = raw.chars().peekable();
     loop {
-        // Skip whitespace and empty items.
         while matches!(chars.peek(), Some(c) if c.is_whitespace() || *c == ',') {
             chars.next();
         }
@@ -51,9 +47,8 @@ pub fn parse_library_list(raw: &str) -> Vec<String> {
                         }
                     }
                     Some(c) => item.push(c),
-                    // Unterminated quote: take what we have, as the server's
-                    // parser would report an error and we only need to avoid
-                    // losing the operator's other entries.
+                    // Unterminated quote: keep what we have so the other
+                    // entries are not lost. The server would reject the value.
                     None => break,
                 }
             }
@@ -69,7 +64,7 @@ pub fn parse_library_list(raw: &str) -> Vec<String> {
                 item.push(*c);
                 chars.next();
             }
-            // No case folding: these are file names (see the module comment).
+            // No case folding: these are file names.
             let item = item.trim();
             if !item.is_empty() {
                 items.push(item.to_string());
@@ -106,10 +101,10 @@ pub fn remove_postvec(items: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Render a library list canonically. An item is quoted when it would not
-/// survive the server's parser unchanged — a comma, whitespace, a quote, or a
-/// character outside the plain file-name set. Case alone needs no quoting:
-/// unquoted items are not folded.
+/// Render a library list canonically. Quote an item that would not survive
+/// the server's parser unchanged: a comma, whitespace, a quote or a character
+/// outside the plain file-name set. Case alone needs no quoting. Unquoted
+/// items are not folded.
 pub fn render_library_list(items: &[String]) -> String {
     items
         .iter()
@@ -135,11 +130,11 @@ fn needs_quoting(item: &str) -> bool {
 /// would accept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListError {
-    /// `"foo` — the postmaster reports "invalid list syntax".
+    /// `"foo`. The postmaster reports "invalid list syntax".
     UnterminatedQuote,
-    /// `"foo"bar` — a closing quote must be followed by a comma or the end.
+    /// `"foo"bar`. A closing quote must be followed by a comma or the end.
     TextAfterQuote,
-    /// `a,,b`, `,a`, `a,` — an empty item anywhere is a syntax error.
+    /// `a,,b`, `,a`, `a,`. An empty item anywhere is a syntax error.
     EmptyItem,
 }
 
@@ -160,17 +155,13 @@ impl std::fmt::Display for ListError {
 
 /// Accept exactly what the postmaster accepts.
 ///
-/// The lenient parser above recovers items from a malformed value. Writing
-/// that recovery back would turn a configuration the server refuses into one
-/// it accepts, and the operator would not learn that what they wrote was
-/// wrong. Anything sourced from outside is checked against the real grammar
-/// first, and a malformed value is refused with the reason.
-///
-/// The corpus in the tests was produced by starting PostgreSQL 18 with each
-/// value and recording whether it reported `invalid list syntax`.
+/// The lenient parser recovers items from a malformed value. Writing that
+/// recovery back would turn a configuration the server refuses into one it
+/// accepts. Anything from outside is checked against the real grammar first.
+/// The tests match PostgreSQL 18's `invalid list syntax` rejections.
 pub fn validate_library_list(raw: &str) -> Result<(), ListError> {
-    // An empty (or whitespace-only) setting is legal — it means "preload
-    // nothing" — but a value that contains only separators is not.
+    // An empty or whitespace-only setting is legal: it means preload nothing.
+    // A value that contains only separators is not.
     if raw.trim().is_empty() {
         return if raw.contains(',') {
             Err(ListError::EmptyItem)
@@ -213,8 +204,8 @@ pub fn validate_library_list(raw: &str) -> Result<(), ListError> {
     Ok(())
 }
 
-/// Split on commas that are outside quotes, returning the raw items —
-/// including empty ones, which is the whole point.
+/// Split on commas outside quotes, keeping empty items. Empty items are
+/// the syntax error this exists to catch.
 fn split_top_level(raw: &str) -> Vec<&str> {
     let mut items = Vec::new();
     let mut start = 0;
@@ -265,15 +256,13 @@ mod tests {
         );
         assert_eq!(parse_library_list(""), Vec::<String>::new());
         assert_eq!(parse_library_list("   "), Vec::<String>::new());
-        // Lenient on purpose — see the function's own comment; the strict
-        // grammar lives in `validate_library_list`.
+        // Lenient on purpose. The strict grammar lives in `validate_library_list`.
         assert_eq!(parse_library_list(",,a,,"), ["a"]);
     }
 
     /// `shared_preload_libraries` holds file names, so case is significant.
-    /// Folding `MyLib` to `mylib` and writing that back would point a working
-    /// cluster at a library that does not exist. (Verified against
-    /// PostgreSQL 18: `MyLib` makes the postmaster look for a file `MyLib`.)
+    /// Folding `MyLib` to `mylib` would point a working cluster at a library
+    /// that does not exist. PostgreSQL 18 looks for a file named `MyLib`.
     #[test]
     fn unquoted_items_keep_their_case() {
         assert_eq!(parse_library_list("MyLib"), ["MyLib"]);
@@ -281,13 +270,13 @@ mod tests {
             parse_library_list("PG_Stat_Statements,postvec"),
             ["PG_Stat_Statements", "postvec"]
         );
-        // …and therefore `PostVec` is a *different* library from `postvec`.
+        // `PostVec` is a different library from `postvec`.
         assert!(!list_contains_postvec(&parse_library_list("PostVec")));
         assert!(list_contains_postvec(&parse_library_list("postvec")));
     }
 
-    /// The corpus: each value was fed to a real PostgreSQL 18 postmaster and
-    /// classified by whether it reported `invalid list syntax`.
+    /// Each value is one a PostgreSQL 18 postmaster accepts or rejects with
+    /// `invalid list syntax`.
     #[test]
     fn validation_matches_the_server() {
         for accepted in [

@@ -1,6 +1,5 @@
-//! Tests for `engine::new_executor` — the factory that maps an
-//! `executor.key` to a concrete executor. Only keys whose constructors don't
-//! require on-disk model assets are exercised here.
+//! `new_executor` maps `executor.key` to a concrete executor. Only keys
+//! whose constructors don't need on-disk model assets are covered here.
 
 use engine::{new_executor, EngineConfig, InferenceEngine, ModelConfiguration};
 use serde_json::json;
@@ -29,7 +28,7 @@ fn empty_key_defaults_to_passthru() {
         name: "m".into(),
         ..Default::default()
     };
-    // No key set → factory must fall back to "passthru" without error.
+    // No key set: fall back to "passthru".
     assert!(new_executor(&engine, &cfg).is_ok());
 }
 

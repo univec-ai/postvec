@@ -1,15 +1,10 @@
-//! Tests for `engine::models::configuration` — `ModelConfiguration` parsing,
-//! serde defaults/skips, `from_file`, `override_with`, and the supporting enums.
-//! This config is the contract every `ninference.hub.json` is parsed against.
+//! `ModelConfiguration` parsing, serde defaults, `from_file` and `override_with`.
+//! This is the contract every `ninference.hub.json` is parsed against.
 
 use engine::models::configuration::{ExecutionProvider, ModelBackend, QuantizationMode};
 use engine::pooling::PoolingStrategy;
 use engine::{ExecutorConfiguration, ModelConfiguration, OutputMapping};
 use std::io::Write;
-
-// ---------------------------------------------------------------------------
-// Defaults & enums
-// ---------------------------------------------------------------------------
 
 #[test]
 fn default_configuration_values() {
@@ -57,10 +52,6 @@ fn quantization_mode_serde_rename() {
         "\"static\""
     );
 }
-
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_minimal_config_applies_defaults() {
@@ -126,10 +117,7 @@ fn serialize_skips_empty_collections_and_none_file_path() {
     assert!(!json.contains("execution_providers"), "{json}");
     assert!(!json.contains("file_path"), "{json}");
     assert!(!json.contains("\"params\""), "{json}");
-    // NOTE: `dependencies` is the one collection field WITHOUT
-    // `skip_serializing_if`, so an empty `dependencies: []` is always emitted.
-    // This is harmless (it round-trips to an empty vec) but inconsistent with
-    // the other collections; asserted here to pin the current behaviour.
+    // `dependencies` has no `skip_serializing_if`, so an empty list is always emitted.
     assert!(json.contains("\"dependencies\":[]"), "{json}");
 }
 
@@ -163,10 +151,6 @@ fn from_file_reads_and_parses() {
 fn from_file_missing_errors() {
     assert!(ModelConfiguration::from_file("/no/such/ninference.hub.json").is_err());
 }
-
-// ---------------------------------------------------------------------------
-// override_with
-// ---------------------------------------------------------------------------
 
 #[test]
 fn override_with_replaces_scalars_and_merges_params() {
@@ -219,10 +203,6 @@ fn override_with_replaces_executor_wholesale() {
     assert!(base.executor.inputs.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Declared sequence length (feeds the tokenizer's truncation length)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn sequence_len_reads_positive_integers_only() {
     let parse = |params: serde_json::Value| -> ModelConfiguration {
@@ -237,7 +217,7 @@ fn sequence_len_reads_positive_integers_only() {
 
 #[test]
 fn pooling_strategy_default_is_cls_passthrough() {
-    // An absent `pooling_strategy` resolves to Cls (pass-through for 2-D outputs),
-    // not NoPooling — the embedding executor relies on this.
+    // An absent `pooling_strategy` is Cls (pass-through for 2-D outputs),
+    // not NoPooling. The embedding executor relies on that.
     assert_eq!(PoolingStrategy::default(), PoolingStrategy::Cls);
 }

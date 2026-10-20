@@ -1,14 +1,13 @@
-//! Database access, and the privilege boundary around it.
+//! Database access and the privilege boundary around it.
 //!
 //! The CLI normally runs as root (it writes `/etc/postgresql`), while local
-//! `peer` authentication expects the cluster owner's OS identity. Rather than
-//! guess a password or shell out to `psql`, database work is executed by a
-//! short-lived child of the same binary that has irreversibly dropped to the
-//! cluster owner ([`agent`]).
+//! peer auth expects the cluster owner's OS identity. Database work runs in a
+//! short-lived child of this binary that has dropped to the cluster owner
+//! ([`agent`]), rather than guessing a password or shelling out to `psql`.
 //!
-//! Both sides speak the same [`DbRequest`]/reply protocol, and the child's
-//! implementation *is* [`local::execute`] — so there is exactly one
-//! implementation of every query, whichever identity runs it.
+//! Both sides speak the same [`DbRequest`] protocol. The child's
+//! implementation is [`local::execute`], so there is one implementation of
+//! every query whichever identity runs it.
 
 pub mod agent;
 pub mod local;
@@ -140,7 +139,7 @@ pub enum DbRequest {
         lock_timeout_ms: u32,
     },
     /// Every database in the cluster, templates and non-connectable ones
-    /// included — the caller decides what to do about those.
+    /// included. The caller decides what to do about those.
     ListDatabases,
     /// `postvec.refresh_models()`. Mutating: `setup` smoke checks only.
     RefreshModels { database: String },

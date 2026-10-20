@@ -297,7 +297,7 @@ fn consistency(input: &RemoteInput<'_>) -> Vec<CheckResult> {
     }
 
     // Compared per database. A union would report agreement whenever the
-    // databases' caches *together* cover the inventory, even though each one is
+    // databases' caches together cover the inventory, even though each one is
     // individually incomplete.
     let mut drifted = serde_json::Map::new();
     for cache in input.cached_models {

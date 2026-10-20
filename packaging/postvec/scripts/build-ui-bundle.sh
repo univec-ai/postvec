@@ -4,11 +4,9 @@
 #   build-ui-bundle.sh            # in the pinned node container (releases)
 #   build-ui-bundle.sh --host     # with the host's npm, for iteration
 #
-# Writes build/payload-ui/opt/postvec/server/ui/ — the directory the node
-# serves by default (<root>/server/ui) — plus, under
-# usr/share/doc/postvec-server/, the third-party notices of every runtime npm
-# dependency the bundle inlines and a SOURCE.json recording what was built
-# from what. Architecture-independent: built once per release.
+# Writes build/payload-ui/opt/postvec/server/ui/, the directory the node
+# serves by default, plus third-party notices and SOURCE.json under
+# usr/share/doc/postvec-server/. Built once per release.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -16,7 +14,7 @@ HOST_BUILD=0
 while (($#)); do
     case "$1" in
     --host) HOST_BUILD=1; shift ;;
-    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
     esac
 done
@@ -36,7 +34,7 @@ mkdir -p "${DEST}" "${DOC}"
 # The build itself, as one script so the container and host paths are the
 # same. It writes dist/ and the notices file into the output directory.
 # Only runtime dependencies are inlined into the bundle, so only those are
-# listed; the build tools (vite, esbuild, …) never ship.
+# listed; the build tools (vite, esbuild, ...) never ship.
 read -r -d '' BUILD <<'SH' || true
 set -eu
 cd "$1"

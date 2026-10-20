@@ -49,11 +49,9 @@ impl HuggingFaceTokenizer {
         config: &TokenizerConfig,
         maybe_base_path: Option<&str>,
     ) -> Result<Self, TokenizerError> {
-        // Use the `params` field from the config for type-specific deserialization.
         let params_value = &config.params;
         let tokenizer_type = &config.tokenizer_type;
 
-        // Load the actual tokenizer instance based on its type.
         let mut instance = match tokenizer_type {
             TokenizerType::HuggingFacePretrained => {
                 let specific_params: HuggingFacePretrainedParams =
@@ -180,13 +178,12 @@ impl HuggingFaceTokenizer {
         })
     }
 
-    /// Converts a single `hf_tokenizers::Encoding` into our custom `TransformerEncodingsWithPosition`.
-    /// This is a helper to reduce code duplication between `encode_plus` and `encode_batch`.
+    /// Map one `hf_tokenizers::Encoding` onto `TransformerEncodingsWithPosition`.
     fn convert_encoding_to_custom(
         &self,
         encoding: hf_tokenizers::Encoding,
     ) -> Result<TransformerEncodingsWithPosition, TokenizerError> {
-        // Step 2: Group token IDs by their corresponding word ID.
+        // Group token ids by word id.
         let mut tokens_by_word_id: HashMap<u32, Vec<u32>> = HashMap::new();
         for (token_id, word_id_option) in encoding.get_ids().iter().zip(encoding.get_word_ids()) {
             if let Some(word_id) = word_id_option {
@@ -197,7 +194,7 @@ impl HuggingFaceTokenizer {
             }
         }
 
-        // Step 3: Decode each group of token IDs to get the original word string.
+        // Decode each group back to the original word.
         let mut word_id_to_word: HashMap<u32, String> = HashMap::new();
         for (word_id, token_ids) in &tokens_by_word_id {
             let word = self
@@ -207,7 +204,6 @@ impl HuggingFaceTokenizer {
             word_id_to_word.insert(*word_id, word.trim().to_string());
         }
 
-        // Step 4: Create the final `TokenWithPosition` list.
         let tokens_with_positions: Vec<TokenWithPosition> = encoding
             .get_tokens()
             .iter()
@@ -234,7 +230,6 @@ impl HuggingFaceTokenizer {
             })
             .collect();
 
-        // Assemble the final output structure.
         Ok(TransformerEncodingsWithPosition {
             attention_mask: encoding
                 .get_attention_mask()
@@ -278,13 +273,11 @@ impl Tokenizer for HuggingFaceTokenizer {
             texts.iter().map(|s| s.to_string()).collect()
         };
 
-        // Use the library's batch encoding method for efficiency.
         let batch_encodings = self
             .instance
             .encode_batch(input_texts, true)
             .map_err(|e| TokenizerError::Process(e.to_string()))?;
 
-        // Convert each encoding in the batch to our custom format.
         batch_encodings
             .into_iter()
             .map(|encoding| self.convert_encoding_to_custom(encoding))
@@ -456,9 +449,7 @@ mod tests {
         assert_eq!(encoded[1].attention_mask.iter().sum::<i64>(), 6);
     }
 
-    /// P3-R05 load-level proof: a model-relative WordLevel vocabulary loads
-    /// (and encodes) when the CWD does not contain it — the base directory,
-    /// not the process working directory, is what runtime opens.
+    /// A model-relative WordLevel vocab loads when the working directory does not contain it.
     #[test]
     fn wordlevel_loads_a_model_relative_vocabulary() {
         let dir = temp_model_dir();

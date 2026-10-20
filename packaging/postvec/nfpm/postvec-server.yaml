@@ -72,7 +72,7 @@ contents:
     file_info: { mode: 0755, owner: root, group: root }
 
   # The dashboard the node serves at / on the discovery port, built once per
-  # release by scripts/build-ui-bundle.sh into <root>/server/ui — the path
+  # release by scripts/build-ui-bundle.sh into <root>/server/ui: the path
   # the binary looks at by default. Static files, root-owned and read-only
   # like the rest of /opt/postvec; the service account only reads them.
   - src: ${UI_PAYLOAD_DIR}/opt/postvec/server/ui
@@ -154,5 +154,5 @@ rpm:
   group: System Environment/Daemons
 
 umask: 0022
-# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly — an
+# Timestamps come from SOURCE_DATE_EPOCH, which nfpm honours directly: an
 # explicit `mtime:` here would be parsed before environment expansion.

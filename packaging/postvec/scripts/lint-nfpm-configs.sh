@@ -3,7 +3,7 @@
 #
 #   scripts/lint-nfpm-configs.sh
 #
-# The templates are not valid YAML on their own — `${SHLIB_DEPENDS}` expands to
+# The templates are not valid YAML on their own: `${SHLIB_DEPENDS}` expands to
 # a block of list items, so it necessarily sits at column zero before
 # rendering. Parsing the template would therefore fail, and skipping the check
 # would leave a whole class of typo (a mis-indented `contents:` entry, a

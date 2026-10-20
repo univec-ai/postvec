@@ -66,10 +66,8 @@ pub async fn cluster_snapshot(context: &mut Context) -> Result<ClusterSnapshot> 
 
 /// Inspect each named database, optionally sampling the heartbeat twice.
 ///
-/// A database that cannot be inspected becomes a *fact* about that database,
-/// not an error for the whole run: a catalog inconsistency or a permission
-/// problem in one database must not take away the report for every other
-/// database and for the endpoints.
+/// A failure is a fact about that database, not an error for the run. One
+/// bad database must not drop the report for the others.
 pub async fn database_facts(
     context: &mut Context,
     names: &[String],
@@ -107,9 +105,8 @@ pub async fn database_facts(
 
 /// Take a second heartbeat reading and decide whether it advanced.
 ///
-/// Read-only: two `SELECT`s and a sleep. When the poll interval is longer than
-/// the sampling cap, the check is skipped instead of waiting — an operator
-/// running `doctor` should not be held for a minute.
+/// Read-only: two `SELECT`s and a sleep. Past the sampling cap the check is
+/// skipped instead of holding `doctor`.
 async fn sample_advancement(
     context: &mut Context,
     database: &str,
@@ -124,11 +121,9 @@ async fn sample_advancement(
         return;
     }
     let first = worker.last_beat_age_s;
-    // Heartbeats are change-gated: an idle worker writes once per
-    // postvec.heartbeat_interval_ms, so a beat within the freshness budget is
-    // already proof of life — a short double-sample would only observe the
-    // deliberate quiet and false-alarm. The double sample below is reserved
-    // for a beat that is already suspiciously old.
+    // Heartbeats are change-gated. An idle worker writes once per
+    // postvec.heartbeat_interval_ms, so a fresh beat is already proof of life.
+    // Sample twice only when the beat is already old.
     if let Some(first) = first {
         if first <= fresh.as_secs_f64() {
             worker.advanced = Some(true);
@@ -159,7 +154,7 @@ async fn sample_advancement(
     };
     let worker = facts.worker.as_mut().expect("worker was present above");
     worker.second_beat_age_s = sample.age_s;
-    // The age of the *same* beat grows with the wait; an advancing worker
+    // The age of the same beat grows with the wait. An advancing worker
     // produces a younger reading than the wait would imply.
     worker.advanced = match (first, sample.age_s) {
         (Some(first), Some(second)) => Some(second < first + wait.as_secs_f64() * 0.5),
@@ -318,9 +313,9 @@ pub fn model_store_facts(probe: &EmbeddedProbe, deep: bool) -> Option<ModelStore
     })
 }
 
-/// Probe the selected registry channel — `--deep` only, and read-only: it
-/// fetches and validates the index, nothing else. A resolved-but-broken
-/// credential is a finding, not an abort.
+/// Probe the selected registry channel. `--deep` only and read-only: fetch
+/// and validate the index, nothing else. A broken credential is a finding,
+/// not an abort.
 pub async fn registry_probe(deep: bool, timeout: Duration) -> RegistryProbeFacts {
     if !deep {
         return RegistryProbeFacts {
@@ -441,9 +436,8 @@ pub fn evaluate(
                 cached_models: &cached,
                 tls_strict,
             }));
-            // Provider files live on the server nodes in remote mode, so
-            // there is nothing here to inspect — say where they are rather
-            // than reporting a clean bill for something never looked at.
+            // Provider files live on the server nodes in remote mode. Say where
+            // they are instead of a clean bill for something never looked at.
             out.push(checks::provider::grpc_note());
         }
         InferenceProbe::Embedded(probe) => {
@@ -474,18 +468,16 @@ pub fn evaluate(
                 versioned_ort_libraries: versioned,
             }));
             // External providers: the providers.d files this host's engine
-            // reads. Read-only, and independent of the model store — a
-            // provider-backed model has no on-disk descriptor by design.
+            // reads. Read-only and independent of the model store. A
+            // provider-backed model has no on-disk descriptor.
             let provider_facts = checks::provider::gather(&snapshot.settings.providers_path());
             let loaded_names = probe.loaded.as_ref().map(|inv| inv.enabled_names());
             out.extend(checks::provider::checks(&checks::provider::ProviderInput {
                 facts: &provider_facts,
                 served: loaded_names.as_ref(),
             }));
-            // The CLI-managed model store (postvec model …): receipts,
-            // activation, and — under --deep — file integrity and registry
-            // reachability. Same filesystem-inspection latitude as the ORT
-            // scan above.
+            // The CLI-managed model store: receipts, activation and, under
+            // --deep, file integrity and registry reachability.
             let store = model_store_facts(probe, deep);
             out.extend(checks::models::checks(&checks::models::ModelsInput {
                 store: store.as_ref(),

@@ -47,7 +47,7 @@ FORBIDDEN_PATH_PARTS = (".staging", ".trash", ".swap", ".postvec.lock")
 # token, and "some permissive-looking id" is not authority to put weights in a
 # `.deb`. Adding an id here is the review event.
 #
-# `apache-2.0` renders the DEP-5 block that references Debian's common copy —
+# `apache-2.0` renders the DEP-5 block that references Debian's common copy -
 # repeating the Apache text in a copyright file is a lintian error. Every other
 # approved id inlines the archive's own LICENSE, indented for DEP-5.
 APACHE_2_0_BLOCK = """\
@@ -177,7 +177,6 @@ def main() -> int:
     except (OSError, ValueError) as error:
         die("cannot read %s: %s" % (descriptor_path, error))
 
-    # ---------------------------------------------------------- the contracts
 
     receipt_schema = receipt.get("schema_version")
     if receipt_schema != KNOWN_RECEIPT_SCHEMA:
@@ -195,7 +194,6 @@ def main() -> int:
             % (registry_schema, KNOWN_REGISTRY_SCHEMA)
         )
 
-    # ------------------------------------------------------------- the pin
 
     name = receipt.get("name")
     if name != want_name:
@@ -271,7 +269,6 @@ def main() -> int:
                 "docs/postgres/packaging-registry-models.md §8" % (field, ", ".join(closure))
             )
 
-    # -------------------------------------------------- required package facts
 
     license_id = receipt.get("license")
     if not license_id:
@@ -335,7 +332,6 @@ def main() -> int:
             )
             upstream_name = None
 
-    # ------------------------------------------- receipt against the descriptor
 
     if descriptor.get("name") != want_name:
         problem(
@@ -362,7 +358,6 @@ def main() -> int:
                 % (field, identity.get(field), params.get(field))
             )
 
-    # ------------------------------------------------------- the packaged graph
 
     graphs = sorted(
         str(path.relative_to(model_dir)) for path in model_dir.rglob("*.onnx") if path.is_file()
@@ -378,7 +373,6 @@ def main() -> int:
             "per-file receipt." % (len(graphs), ", ".join(graphs) or "none", file_path, want_name)
         )
 
-    # ------------------------------------------------------- the archive's files
 
     receipt_files = receipt.get("files")
     if not isinstance(receipt_files, list) or not receipt_files:
@@ -448,7 +442,6 @@ def main() -> int:
             print("  - %s" % item, file=sys.stderr)
         return 1
 
-    # ------------------------------------------------------------- the outputs
 
     pkg_name = "postvec-model-%s" % pkg_suffix
     doc_dir = "/usr/share/doc/%s" % pkg_name

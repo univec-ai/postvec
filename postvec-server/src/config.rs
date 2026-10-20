@@ -19,16 +19,10 @@ pub const DEFAULT_GROUP: &str = "postvec";
 pub const DEFAULT_PREDICT_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_MAX_RESIDENT_MODELS: usize = 16;
 /// How long a shutdown keeps serving while `/ready` already answers 503.
-///
-/// Five seconds covers the usual one-to-five-second probe interval, so a
-/// load balancer sees the 503 before the listener closes.
+/// Five seconds covers a typical probe interval, so a load balancer sees the 503 first.
 pub const DEFAULT_DRAIN_DELAY_MS: u64 = 5_000;
-/// Floor and ceiling for the autodetected `--max-inflight`.
-///
-/// The value bounds concurrently executing predictions: each ONNX session
-/// runs its own intra-op pool, and each in-flight request may hold a
-/// response tree up to the envelope in [`crate::limits`]. A dedicated node
-/// uses its hardware, with this ceiling.
+/// Floor and ceiling for autodetected `--max-inflight`.
+/// Each in-flight prediction holds an ONNX session and a response tree up to [`crate::limits`].
 pub const MIN_AUTO_INFLIGHT: usize = 4;
 pub const MAX_AUTO_INFLIGHT: usize = 16;
 /// Floor on the execution budget. Below this, no real model can answer.
@@ -36,8 +30,7 @@ pub const MIN_PREDICT_TIMEOUT_MS: u64 = 100;
 
 const CONFIG_FILENAME: &str = "postvec-server.json";
 
-/// Environment lookup, abstracted so the precedence tests stay independent
-/// under `cargo test`'s thread pool.
+/// Environment lookup. Tests inject a map so they do not share the process environment.
 pub trait EnvSource {
     fn get(&self, key: &str) -> Option<String>;
 }
@@ -61,8 +54,6 @@ impl EnvSource for BTreeMap<String, String> {
     }
 }
 
-// ---- The file layer ----------------------------------------------------
-
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SslFile {
@@ -71,9 +62,8 @@ pub struct SslFile {
     pub key: Option<String>,
 }
 
-/// The optional `postvec-server.json`. Every field is optional; unknown
-/// fields are refused. There is no `hub` block: this process loads models
-/// from disk.
+/// Optional `postvec-server.json`. Every field is optional. Unknown fields are refused.
+/// There is no `hub` block: this process loads models from disk.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
@@ -108,10 +98,7 @@ pub struct FileConfig {
     pub web_ui: Option<String>,
 }
 
-/// Strip comment keys, recursively.
-///
-/// Any key beginning with `//` is ignored. The shipped example file uses
-/// this so an operator can annotate the configuration in place.
+/// Drop keys that begin with `//`, recursively, so a file can carry notes in place.
 fn strip_comments(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
@@ -142,8 +129,6 @@ impl FileConfig {
     }
 }
 
-// ---- The resolved settings --------------------------------------------
-
 #[derive(Debug, Clone)]
 pub struct TlsPaths {
     pub cert: PathBuf,
@@ -154,7 +139,7 @@ pub struct TlsPaths {
 pub struct Settings {
     pub managed: Vec<crate::managed::ManagedDb>,
     pub root: PathBuf,
-    /// The file that was actually read, for the boot log. `None` = none found.
+    /// File that was read, for the boot log. `None` means none was found.
     pub config_path: Option<PathBuf>,
     pub bind: IpAddr,
     pub http_port: u16,
@@ -163,8 +148,7 @@ pub struct Settings {
     pub admin_port: u16,
     pub peers: Vec<String>,
     pub group: String,
-    /// Operator-pinned advertise IP. `None` means "derive it"; the derivation
-    /// lives in [`crate::net`] because it can touch the network stack.
+    /// Operator-pinned advertise IP. `None` means derive it in [`crate::net`].
     pub advertise: Option<IpAddr>,
     pub frontend: Option<String>,
     /// `None` = `--insecure`: discovery is served over plain HTTP.
@@ -193,16 +177,11 @@ pub fn default_max_inflight() -> usize {
         .clamp(MIN_AUTO_INFLIGHT, MAX_AUTO_INFLIGHT)
 }
 
-/// Engine root the packages install to and the postvec CLI manages by
-/// default. One path on every host, whether the engine is embedded, remote
-/// or both.
+/// Engine root the packages install and the CLI manages. One path per host.
 pub const DEFAULT_ROOT: &str = "/opt/postvec";
 
-/// `--root` > `POSTVEC_PATH` > [`DEFAULT_ROOT`]. The CLI reads the same
-/// variable, so one setting serves both.
-///
-/// The on-disk layout matches embedded mode, so a root is portable between
-/// an in-database engine and this server.
+/// `--root` > `POSTVEC_PATH` > [`DEFAULT_ROOT`]. The CLI reads the same variable.
+/// The on-disk layout matches embedded mode, so a root moves between the two.
 pub fn resolve_root(flag: Option<&Path>, env: &dyn EnvSource) -> Result<PathBuf, String> {
     match flag {
         Some(path) => Ok(path.to_path_buf()),
@@ -219,9 +198,7 @@ fn env_path(env: &dyn EnvSource, key: &str) -> Result<Option<PathBuf>, String> {
 }
 
 /// Where to look for the optional configuration file.
-///
-/// An explicit path that is missing is an error. An implicit candidate that
-/// is missing means no file.
+/// A missing explicit path is an error. A missing implicit candidate means no file.
 pub fn resolve_config_path(
     flag: Option<&Path>,
     env: &dyn EnvSource,
@@ -308,8 +285,7 @@ fn env_list(env: &dyn EnvSource, keys: &[&str]) -> Option<Vec<String>> {
     None
 }
 
-/// Comma-separated lists, with whitespace tolerated and empty entries
-/// dropped, matching how postvec parses its own endpoint GUCs.
+/// Comma-separated lists, trimmed, empty entries dropped. Matches postvec's endpoint GUCs.
 pub fn split_list(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(str::trim)
@@ -318,11 +294,7 @@ pub fn split_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Resolve a possibly-relative path against the engine root.
-///
-/// Relative certificate paths resolve against the root, so a unit that sets
-/// `POSTVEC_PATH=/srv/postvec` and drops certificates there is
-/// independent of where the JSON lives.
+/// Resolve a relative path against the engine root, not against the JSON file.
 fn against_root(root: &Path, value: impl AsRef<Path>) -> PathBuf {
     let value = value.as_ref();
     if value.is_absolute() {
@@ -332,8 +304,7 @@ fn against_root(root: &Path, value: impl AsRef<Path>) -> PathBuf {
     }
 }
 
-/// Merge the four layers. Pure: everything that touches the filesystem or the
-/// network happens in the caller.
+/// Merge the four layers. Filesystem and network work stays in the caller.
 pub fn resolve(
     flags: &ServeArgs,
     file: &FileConfig,
@@ -384,9 +355,8 @@ pub fn resolve(
             return Err(format!("{name} must be a real port, not 0"));
         }
     }
-    // The admin listener binds loopback while the others usually bind
-    // 0.0.0.0, which covers loopback. A shared number is a bind failure at
-    // boot, or an admin route answering on a published port.
+    // Admin binds loopback. The others usually bind 0.0.0.0, which covers it.
+    // A shared port is a boot failure, or an admin route on a published port.
     let mut seen: Vec<(&str, u16)> = Vec::new();
     for entry in [
         ("--http", http_port),
@@ -521,9 +491,7 @@ pub fn resolve(
         .filter(|m| !m.is_empty())
         .collect::<Vec<_>>();
 
-    // The server default nests under --root: the root is this process's
-    // configuration anchor, and each node is administered with
-    // `postvec provider ... --path <root>`.
+    // Default nests under --root, the path `postvec provider --path` administers.
     let providers_path = match &flags.providers_path {
         Some(path) => Some(path.clone()),
         None => env_path(env, "POSTVEC_PROVIDERS_PATH")?,
@@ -686,8 +654,7 @@ pub fn resolve(
     })
 }
 
-/// Read, parse and merge everything. The only impure step is reading the
-/// file the search order settled on.
+/// Read, parse and merge. The only impure step is reading the chosen file.
 pub fn load(flags: &ServeArgs, env: &dyn EnvSource) -> Result<Settings, String> {
     let root = resolve_root(flags.root.as_deref(), env)?;
     let config_path = resolve_config_path(flags.config.as_deref(), env, &root)?;
@@ -790,7 +757,7 @@ mod tests {
         assert_eq!(s.providers_path, PathBuf::from("/from/flag"));
     }
 
-    /// The documented precedence, one field at a time.
+    /// Flag beats env beats file beats default.
     #[test]
     fn flag_beats_env_beats_file_beats_default() {
         let file = FileConfig {
@@ -989,9 +956,7 @@ mod tests {
         }
     }
 
-    /// A flag cannot be "un-set", so `--insecure` beats a file that says
-    /// false — but a file that says true is *not* overridden by the absence
-    /// of the flag.
+    /// `--insecure` beats a file that says false. An absent flag does not clear a file that says true.
     #[test]
     fn insecure_flag_wins_over_a_false_file_value() {
         let s = resolve_with(

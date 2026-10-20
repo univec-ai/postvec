@@ -1,23 +1,14 @@
-//! Versioned terms notice for `model pull` / `model upgrade`.
+//! Versioned terms notice for `model pull` and `model upgrade`.
 //!
-//! After dependency expansion and preflight, the entries that will actually
-//! be downloaded or replaced are grouped by their exact terms document
-//! (license id, document version, canonical URL, acceptance policy) into
-//! the plan's `terms` block. A `none` policy is displayed. A `notice`
-//! policy must be acknowledged once per distinct document before any
-//! download and before the ordinary plan confirmation, interactively or
-//! with the exact `--accept-license <id>@<version>` flag. `--yes` answers
-//! only the ordinary mutation confirmation.
+//! Entries that will be downloaded or replaced are grouped by exact terms
+//! document. A `notice` must be acknowledged once per document before any
+//! download, interactively or with `--accept-license <id>@<version>`.
+//! `--yes` does not answer that. The receipt records that this host was
+//! shown the document. `organization` acceptance is refused here. The server
+//! gate is the authority.
 //!
-//! The acknowledgement is local evidence that this host was shown the
-//! exact document, recorded in the install receipt. An index that requires
-//! `organization` acceptance is refused here; the server gate is the
-//! authority for that policy.
-//!
-//! A flag naming a document this run does not need (unknown, wrong
-//! version, a `none` policy, or one already evidenced by the installation
-//! being replaced) is refused, so a copied command line cannot
-//! pre-acknowledge the next document.
+//! A flag for a document this run does not need is refused, so a copied
+//! command cannot pre-acknowledge the next document.
 
 use crate::error::{CliError, Result};
 use crate::plan::{Prompt, TermsDocument};
@@ -80,9 +71,8 @@ pub fn parse_accept_license(raw: &[String]) -> Result<Vec<AcceptedDocument>> {
     Ok(parsed)
 }
 
-/// Per-model input to the terms plan: the entry that will actually be
-/// downloaded or replaced, and — for a replacement — the receipt of the
-/// installation being replaced, whose recorded evidence may satisfy the
+/// Per-model input: the entry that will be downloaded or replaced, and for a
+/// replacement the receipt being replaced. Recorded evidence may satisfy the
 /// same exact document without a new prompt.
 pub struct TermsInput<'a> {
     pub model: &'a IndexModel,
@@ -98,9 +88,8 @@ pub struct TermsPlan {
     pub preserved: BTreeMap<String, LicenseEvidence>,
 }
 
-/// Group the work items by exact document. Deterministic: documents sort by
-/// (license, version, url, acceptance) and each lists its affected models
-/// sorted — requested models, dependencies and postvec companions alike.
+/// Group the work items by exact document. Documents sort by license,
+/// version, url and acceptance. Each lists its models sorted.
 pub fn build(inputs: &[TermsInput<'_>]) -> Result<TermsPlan> {
     /// One exact document: (license id, version, URL, effective acceptance).
     type DocumentKey = (String, Option<String>, Option<String>, String);
@@ -112,8 +101,7 @@ pub fn build(inputs: &[TermsInput<'_>]) -> Result<TermsPlan> {
     for input in inputs {
         let model = input.model;
         let Some(license) = &model.license else {
-            // No terms id, no document — the entry still appears in the
-            // ordinary plan steps.
+            // No terms id, no document. The entry still appears in the plan.
             continue;
         };
         let acceptance = model.license_acceptance().to_string();
@@ -140,8 +128,8 @@ pub fn build(inputs: &[TermsInput<'_>]) -> Result<TermsPlan> {
             )));
         }
 
-        // Evidence recorded by the installation being replaced counts only
-        // for the **exact** same document.
+        // Evidence from the installation being replaced counts only for the
+        // exact same document.
         let mut this_model_evidenced = false;
         if acceptance == "notice" {
             if let Some(receipt) = input.installed_receipt {
@@ -216,18 +204,13 @@ pub fn build(inputs: &[TermsInput<'_>]) -> Result<TermsPlan> {
     })
 }
 
-/// Resolve the acknowledgements a plan needs, before any download and before
-/// the ordinary confirmation.
+/// Resolve acknowledgements before any download and before confirmation.
 ///
-/// - Every supplied flag must name a document this plan actually requires an
-///   acknowledgement for; anything else is stale and refused — dry run
-///   included.
-/// - On a dry run, nothing is asked and missing flags are fine: the plan
-///   already printed them.
-/// - Otherwise, each document requiring acknowledgement is satisfied by its
-///   exact flag, or by one question to an interactive caller (`ask`, asked
-///   once per distinct document). A non-interactive run missing any flag
-///   fails with every exact token, before anything is downloaded or mutated.
+/// Every flag must name a document this plan needs. Anything else is stale,
+/// including on a dry run. A dry run does not ask, and missing flags are fine
+/// there because the plan printed them. Otherwise each document is satisfied
+/// by its exact flag or by one interactive question. A non-interactive run
+/// missing a flag fails with every exact token, before any download.
 ///
 /// Returns the freshly obtained evidence per (license, version).
 pub fn resolve(
@@ -361,9 +344,9 @@ pub fn evidence_for(
         .cloned()
 }
 
-/// The interactive acknowledgement: show the exact document — id, version,
-/// canonical URL, affected models — and ask. What is recorded is that the
-/// document was shown and acknowledged on this host, nothing more.
+/// Interactive acknowledgement: show the exact document (id, version, URL
+/// and affected models) and ask. What is recorded is that it was shown on
+/// this host, nothing more.
 pub fn interactive_acknowledgement(document: &TermsDocument) -> Result<bool> {
     eprintln!(
         "\nThe following models are distributed under terms that must be shown before \
@@ -545,8 +528,7 @@ mod tests {
         assert!(err.to_string().contains("server-side"), "{err}");
     }
 
-    /// None-policy documents never prompt — in any mode — and a flag
-    /// supplied for one is stale.
+    /// None-policy documents never prompt, in any mode. A flag for one is stale.
     #[test]
     fn a_none_policy_never_prompts_and_its_flag_is_stale() {
         let models = vec![model("m", "mit")];
@@ -771,7 +753,7 @@ mod tests {
         assert!(plan.documents[0].acknowledgement_required);
         assert!(plan.preserved.is_empty());
 
-        // …and so does a receipt with the same document but no recorded
+        // So does a receipt with the same document but no recorded
         // acknowledgement.
         let unacknowledged = receipt_for(&noticed, None);
         let plan = build(&[TermsInput {
@@ -782,9 +764,8 @@ mod tests {
         assert!(plan.documents[0].acknowledgement_required);
     }
 
-    /// A document evidenced for the replacement but also covering a freshly
-    /// installed dependency still requires acknowledgement — the new install
-    /// has no evidence of its own, and unrelated receipts are never scanned.
+    /// Evidence for a replacement does not cover a fresh dependency on the
+    /// same document. The new install has no evidence of its own.
     #[test]
     fn a_new_dependency_needs_its_own_acknowledgement() {
         let upgraded = notice_model("upgraded", "univec-commercial", "2026-08-09");

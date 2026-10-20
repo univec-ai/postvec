@@ -1,6 +1,6 @@
-//! Public-API tests for `engine::resolver::ModelResolver`, complementing the
-//! in-module unit tests. Focus: disabled-model skipping, deterministic
-//! last-wins on duplicate targets, and rebuild clearing stale indexes.
+//! `ModelResolver` from outside the module: disabled models are skipped,
+//! duplicate targets keep the last name alphabetically and rebuild drops
+//! stale indexes.
 
 use engine::resolver::ModelResolver;
 use engine::ModelConfiguration;
@@ -80,7 +80,7 @@ fn rebuild_clears_previous_indexes() {
     r.rebuild([embed("m1", Some("target-1"), true)].iter());
     assert!(r.resolve_embed("target-1").is_some());
 
-    // Rebuild with a different set — the old entry must be gone.
+    // A rebuild with a different set drops the old entry.
     r.rebuild([embed("m2", Some("target-2"), true)].iter());
     assert!(r.resolve_embed("target-1").is_none());
     assert!(r.resolve_embed("target-2").is_some());
@@ -88,8 +88,7 @@ fn rebuild_clears_previous_indexes() {
 
 #[test]
 fn implicit_convert_without_model_type() {
-    // No model_type, but both source_model and target_model present → treated
-    // as a convert model (fallback branch).
+    // No model_type, but both source and target set: treated as convert.
     let models = [cfg(
         "implicit",
         true,
